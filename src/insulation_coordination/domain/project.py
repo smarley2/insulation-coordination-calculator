@@ -130,6 +130,22 @@ class ProjectMetadata(FrozenModel):
     approver: str = ""
 
 
+class GroupSplit(FrozenModel):
+    """Presentation-only partition of one calculated signature."""
+
+    signature: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pair_ids: tuple[str, ...] = Field(min_length=1)
+
+    @field_validator("pair_ids")
+    @classmethod
+    def _requires_unique_pair_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not pair_id.strip() for pair_id in value):
+            raise ValueError("Group split pair IDs must not be blank")
+        if len(value) != len(set(value)):
+            raise ValueError("Group split pair IDs must be unique")
+        return value
+
+
 class PairCase(FrozenModel):
     id: UUID = Field(default_factory=uuid4)
     key: str = Field(min_length=1)
@@ -169,6 +185,7 @@ class Project(FrozenModel):
     defaults: ProjectDefaults
     net_classes: tuple[NetClass, ...]
     pairs: tuple[PairCase, ...]
+    group_splits: tuple[GroupSplit, ...] = ()
 
     @model_validator(mode="after")
     def _requires_consistent_pairs(self) -> Self:

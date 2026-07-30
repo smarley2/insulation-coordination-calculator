@@ -21,8 +21,13 @@ from insulation_coordination.calculation.high_frequency import (
     _apply_altitude_correction,
     _calculate_high_frequency_candidates,
 )
-from insulation_coordination.domain.enums import InsulationType
-from insulation_coordination.domain.project import EffectiveCase, FrozenModel
+from insulation_coordination.domain.enums import ConstructionType, FieldCondition, InsulationType
+from insulation_coordination.domain.project import (
+    EffectiveCase,
+    EffectiveValue,
+    FrozenModel,
+    PairVoltages,
+)
 from insulation_coordination.domain.quantities import DecimalValue
 from insulation_coordination.domain.rules import Maximum, RulePackage, Variable
 from insulation_coordination.domain.trace import Quantity, TraceStep
@@ -36,6 +41,7 @@ __all__ = [
     "CalculationRangeError",
     "CalculationTrace",
     "DistanceCandidate",
+    "EffectiveInputSnapshot",
     "PairResult",
     "RequiredStressError",
     "RuleMappingError",
@@ -87,6 +93,22 @@ class CalculationTrace(FrozenModel):
         return tuple(dict.fromkeys(ordered))
 
 
+class EffectiveInputSnapshot(FrozenModel):
+    """Immutable calculation inputs, excluding pair identity and display metadata."""
+
+    voltages: PairVoltages
+    frequency_hz: EffectiveValue[Decimal | None]
+    impulse_v: EffectiveValue[Decimal | None]
+    insulation_type: EffectiveValue[InsulationType | None]
+    field_condition: EffectiveValue[FieldCondition | None]
+    electrode_radius_mm: EffectiveValue[Decimal | None]
+    altitude_m: EffectiveValue[Decimal | None]
+    pollution_degree: EffectiveValue[int | None]
+    construction_type: EffectiveValue[ConstructionType | None]
+    cti_or_material_group: EffectiveValue[str | None]
+    conventional_construction_assumptions: EffectiveValue[tuple[str, ...] | None]
+
+
 class PairResult(FrozenModel):
     pair_id: UUID
     pair_key: str
@@ -96,6 +118,7 @@ class PairResult(FrozenModel):
     calculation_engine_version: str
     clearance_mm: DecimalValue
     creepage_mm: DecimalValue
+    effective_inputs: EffectiveInputSnapshot
     trace: CalculationTrace
 
 
@@ -182,6 +205,7 @@ def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
         calculation_engine_version=CALCULATION_ENGINE_VERSION,
         clearance_mm=final_clearance,
         creepage_mm=final_creepage,
+        effective_inputs=_snapshot_effective_inputs(effective),
         trace=CalculationTrace(
             insulation_type=kind,
             rule_package_id=rules.manifest.package_id,
@@ -207,6 +231,22 @@ def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
             governing_creepage_reason=creepage_step.reason,
             steps=steps,
         ),
+    )
+
+
+def _snapshot_effective_inputs(effective: EffectiveCase) -> EffectiveInputSnapshot:
+    return EffectiveInputSnapshot(
+        voltages=effective.voltages,
+        frequency_hz=effective.frequency_hz,
+        impulse_v=effective.impulse_v,
+        insulation_type=effective.insulation_type,
+        field_condition=effective.field_condition,
+        electrode_radius_mm=effective.electrode_radius_mm,
+        altitude_m=effective.altitude_m,
+        pollution_degree=effective.pollution_degree,
+        construction_type=effective.construction_type,
+        cti_or_material_group=effective.cti_or_material_group,
+        conventional_construction_assumptions=effective.conventional_construction_assumptions,
     )
 
 

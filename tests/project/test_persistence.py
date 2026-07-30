@@ -13,6 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 from insulation_coordination.domain.project import (
+    GroupSplit,
     NetClass,
     PairCase,
     PairVoltage,
@@ -105,25 +106,57 @@ def test_migration_returns_new_document_without_overwriting_source() -> None:
 
     migrated = migrate_project_document(raw)
 
-    assert migrated == original
+    assert migrated == {"schema_version": 2, "sentinel": True, "group_splits": []}
     assert raw == original
     assert migrated is not raw
 
 
 def test_future_schema_is_rejected() -> None:
     with pytest.raises(ProjectVersionError, match="newer"):
-        migrate_project_document({"schema_version": 2})
+        migrate_project_document({"schema_version": 3})
+
+
+def test_unsupported_older_schema_is_rejected() -> None:
+    with pytest.raises(ProjectVersionError, match="unsupported"):
+        migrate_project_document({"schema_version": 0})
 
 
 def test_load_rejects_future_schema_without_changing_file(tmp_path: Path) -> None:
     path = tmp_path / "future.icproj"
-    original = json.dumps({"schema_version": 2})
+    original = json.dumps({"schema_version": 3})
     path.write_text(original, encoding="utf-8")
 
     with pytest.raises(ProjectVersionError, match="newer"):
         load_project(path)
 
     assert path.read_text(encoding="utf-8") == original
+
+
+def test_schema_v1_loads_with_empty_group_splits_and_save_writes_v2(
+    sample_project: Project, tmp_path: Path
+) -> None:
+    old_document = {"schema_version": 1, **sample_project.model_dump(mode="json")}
+    old_document.pop("group_splits", None)
+    path = tmp_path / "old.icproj"
+    path.write_text(json.dumps(old_document), encoding="utf-8")
+
+    loaded = load_project(path)
+    save_project_atomic(path, loaded)
+    saved = json.loads(path.read_text(encoding="utf-8"))
+
+    assert loaded.group_splits == ()
+    assert saved["schema_version"] == 2
+    assert saved["group_splits"] == []
+
+
+def test_project_persists_group_split_metadata(sample_project: Project, tmp_path: Path) -> None:
+    split = GroupSplit(signature="a" * 64, pair_ids=(str(sample_project.pairs[0].id),))
+    project = sample_project.model_copy(update={"group_splits": (split,)})
+    path = tmp_path / "splits.icproj"
+
+    save_project_atomic(path, project)
+
+    assert load_project(path).group_splits == (split,)
 
 
 @pytest.mark.parametrize("location", ["top_level", "pair"])

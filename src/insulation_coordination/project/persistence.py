@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from insulation_coordination.domain.project import Project
 
-PROJECT_SCHEMA_VERSION = 1
+PROJECT_SCHEMA_VERSION = 2
 
 
 class ProjectSaveError(OSError):
@@ -30,10 +30,14 @@ def migrate_project_document(raw: dict[str, object]) -> dict[str, object]:
     if not isinstance(version, int) or isinstance(version, bool):
         raise ProjectVersionError("Project schema_version must be an integer")
     if version > PROJECT_SCHEMA_VERSION:
-        raise ProjectVersionError(f"Project schema {version} is newer than supported version 1")
-    if version != PROJECT_SCHEMA_VERSION:
+        raise ProjectVersionError(f"Project schema {version} is newer than supported version 2")
+    document = deepcopy(raw)
+    if version == 1:
+        document["schema_version"] = 2
+        document.setdefault("group_splits", [])
+    elif version != PROJECT_SCHEMA_VERSION:
         raise ProjectVersionError(f"Project schema {version} is unsupported")
-    return deepcopy(raw)
+    return document
 
 
 def load_project(path: Path) -> Project:
