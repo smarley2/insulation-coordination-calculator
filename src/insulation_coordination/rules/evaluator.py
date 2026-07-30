@@ -86,6 +86,8 @@ class _Result:
     steps: tuple[TraceStep, ...]
     symbolic: str
     substituted: str
+    embedded_symbolic: str
+    embedded_substituted: str
     symbolic_precedence: int
     substituted_precedence: int
     operation: str
@@ -244,7 +246,10 @@ class _Evaluator:
             expression,
             quantity,
             (numerator, denominator),
-            symbolic=rf"\frac{{{numerator.symbolic}}}{{{denominator.symbolic}}}",
+            symbolic=(
+                rf"\frac{{{numerator.embedded_symbolic}}}"
+                rf"{{{denominator.embedded_symbolic}}}"
+            ),
             substituted=(
                 f"{_render_child(numerator, 'substituted', _MULTIPLY_PRECEDENCE)} / "
                 f"{_render_child(denominator, 'substituted', _MULTIPLY_PRECEDENCE, group_equal=True)}"
@@ -306,9 +311,13 @@ class _Evaluator:
             expression,
             quantity,
             (condition, if_true, if_false),
-            symbolic=rf"\operatorname{{select}}({condition.symbolic}, {if_true.symbolic}, {if_false.symbolic})",
+            symbolic=(
+                rf"\operatorname{{select}}({condition.embedded_symbolic}, "
+                f"{if_true.embedded_symbolic}, {if_false.embedded_symbolic})"
+            ),
             substituted=(
-                f"select({condition.substituted}, {if_true.substituted}, {if_false.substituted})"
+                f"select({condition.embedded_substituted}, "
+                f"{if_true.embedded_substituted}, {if_false.embedded_substituted})"
             ),
             reason=f"{'true' if selected is if_true else 'false'} branch selected",
             label=selected.label,
@@ -335,8 +344,10 @@ class _Evaluator:
             expression,
             quantity,
             children,
-            symbolic=rf"\{operation}({', '.join(child.symbolic for child in children)})",
-            substituted=f"{operation}({', '.join(child.substituted for child in children)})",
+            symbolic=(rf"\{operation}({', '.join(child.embedded_symbolic for child in children)})"),
+            substituted=(
+                f"{operation}({', '.join(child.embedded_substituted for child in children)})"
+            ),
             reason=reason,
             label=winner_label,
         )
@@ -354,8 +365,8 @@ class _Evaluator:
             expression,
             quantity,
             (child,),
-            symbolic=rf"\operatorname{{round}}({child.symbolic}, {expression.places})",
-            substituted=f"round({child.substituted}, {expression.places})",
+            symbolic=(rf"\operatorname{{round}}({child.embedded_symbolic}, {expression.places})"),
+            substituted=f"round({child.embedded_substituted}, {expression.places})",
             reason=f"rounded to {expression.places} places using {expression.mode}",
             unrounded=child.quantity.value,
             rounded=rounded,
@@ -374,16 +385,22 @@ class _Evaluator:
         column_index = _exact_axis_index(table.column_axis, column.quantity.value)
         cell = _cell(table, row_index, column_index)
         quantity = _quantity(cell.value, table.unit)
+        symbolic = (
+            rf"\operatorname{{lookup}}_{{{table.id}}}"
+            f"({row.embedded_symbolic}, {column.embedded_symbolic})"
+        )
         return self._result(
             expression,
             quantity,
             (row, column),
-            symbolic=(
-                rf"\operatorname{{lookup}}_{{{table.id}}}"
-                f"({row.symbolic}, {column.symbolic})"
-            ),
+            symbolic=symbolic,
             substituted=(
-                f"lookup {table.id} at row {row.substituted}, column {column.substituted}"
+                f"lookup {table.id} at row {row.embedded_substituted}, "
+                f"column {column.embedded_substituted}"
+            ),
+            embedded_symbolic=symbolic,
+            embedded_substituted=(
+                f"lookup_{{{table.id}}}({row.embedded_substituted}, {column.embedded_substituted})"
             ),
             reason="exact table cell selected",
             source=cell.source,
@@ -446,7 +463,15 @@ class _Evaluator:
             )
         quantity = _quantity(rounded, table.unit)
         x_substituted = (
-            f"({x.substituted})" if x.substituted_precedence < _ATOM_PRECEDENCE else x.substituted
+            f"({x.embedded_substituted})"
+            if x.substituted_precedence < _ATOM_PRECEDENCE
+            else x.embedded_substituted
+        )
+        column_symbolic = (
+            column.embedded_symbolic if column is not None else str(column_quantity.value)
+        )
+        column_substituted = (
+            column.embedded_substituted if column is not None else _display(column_quantity)
         )
         substituted = (
             f"{lower.value} {table.unit} + ({x_substituted} - "
@@ -454,7 +479,7 @@ class _Evaluator:
             f"({upper.value} {table.unit} - {lower.value} {table.unit})"
             f"/({_coordinate(x1, table.row_axis.unit)} - "
             f"{_coordinate(x0, table.row_axis.unit)}), "
-            f"column {column.substituted if column is not None else _display(column_quantity)}"
+            f"column {column_substituted}"
         )
         return self._result(
             expression,
@@ -462,6 +487,13 @@ class _Evaluator:
             children,
             symbolic="y = y_0 + (x-x_0)(y_1-y_0)/(x_1-x_0)",
             substituted=substituted,
+            embedded_symbolic=(
+                rf"\operatorname{{interpolate}}_{{{table.id}}}"
+                f"({x.embedded_symbolic}, {column_symbolic})"
+            ),
+            embedded_substituted=(
+                f"interpolate_{{{table.id}}}({x.embedded_substituted}, {column_substituted})"
+            ),
             source=table.source,
             source_cells=(
                 _interpolation_cell_id(table, x0, column_quantity.value),
@@ -494,6 +526,8 @@ class _Evaluator:
         *,
         symbolic: str,
         substituted: str,
+        embedded_symbolic: str | None = None,
+        embedded_substituted: str | None = None,
         reason: str,
         inputs: tuple[Quantity, ...] | None = None,
         source: SourceReference | None = None,
@@ -534,6 +568,10 @@ class _Evaluator:
             steps=tuple(item for child in children for item in child.steps) + (step,),
             symbolic=symbolic,
             substituted=substituted,
+            embedded_symbolic=(symbolic if embedded_symbolic is None else embedded_symbolic),
+            embedded_substituted=(
+                substituted if embedded_substituted is None else embedded_substituted
+            ),
             symbolic_precedence=symbolic_precedence,
             substituted_precedence=substituted_precedence,
             operation=expression.op,
@@ -723,10 +761,10 @@ def _render_child(
     group_equal: bool = False,
 ) -> str:
     if field == "symbolic":
-        text = child.symbolic
+        text = child.embedded_symbolic
         precedence = child.symbolic_precedence
     elif field == "substituted":
-        text = child.substituted
+        text = child.embedded_substituted
         precedence = child.substituted_precedence
     else:
         raise ValueError(f"unknown rendered field {field!r}")

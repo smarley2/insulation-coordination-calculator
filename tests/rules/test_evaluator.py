@@ -464,6 +464,111 @@ def test_interpolation_trace_preserves_nested_x_and_column_expressions(
 
 
 @pytest.mark.parametrize(
+    ("table_operation", "parent_operation", "value", "symbolic", "substituted"),
+    [
+        (
+            "lookup",
+            "multiply",
+            Decimal("2.00"),
+            r"\operatorname{lookup}_{creepage}(voltage, 1) \times 2",
+            "lookup_{creepage}(100 V, 1 1) × 2 1",
+        ),
+        (
+            "lookup",
+            "divide",
+            Decimal("0.50"),
+            r"\frac{\operatorname{lookup}_{creepage}(voltage, 1)}{2}",
+            "lookup_{creepage}(100 V, 1 1) / 2 1",
+        ),
+        (
+            "lookup",
+            "add",
+            Decimal("1.50"),
+            r"\operatorname{lookup}_{creepage}(voltage, 1) + margin",
+            "lookup_{creepage}(100 V, 1 1) + 0.50 mm",
+        ),
+        (
+            "interpolation",
+            "multiply",
+            Decimal("3.00"),
+            r"\operatorname{interpolate}_{creepage}(voltage, 1) \times 2",
+            "interpolate_{creepage}(150 V, 1 1) × 2 1",
+        ),
+        (
+            "interpolation",
+            "divide",
+            Decimal("0.75"),
+            r"\frac{\operatorname{interpolate}_{creepage}(voltage, 1)}{2}",
+            "interpolate_{creepage}(150 V, 1 1) / 2 1",
+        ),
+        (
+            "interpolation",
+            "add",
+            Decimal("2.00"),
+            r"\operatorname{interpolate}_{creepage}(voltage, 1) + margin",
+            "interpolate_{creepage}(150 V, 1 1) + 0.50 mm",
+        ),
+    ],
+)
+def test_nested_table_operation_uses_an_embeddable_value_expression(
+    synthetic_table: Table,
+    table_operation: str,
+    parent_operation: str,
+    value: Decimal,
+    symbolic: str,
+    substituted: str,
+) -> None:
+    voltage = Decimal(100) if table_operation == "lookup" else Decimal(150)
+    child = (
+        Lookup(
+            table_id="creepage",
+            row=Variable(name="voltage"),
+            column=Literal(value=Decimal(1)),
+        )
+        if table_operation == "lookup"
+        else LinearInterpolate(
+            table_id="creepage",
+            x=Variable(name="voltage"),
+        )
+    )
+    if parent_operation == "multiply":
+        expression = Multiply(
+            operands=(child, Literal(value=Decimal(2))),
+        )
+    elif parent_operation == "divide":
+        expression = Divide(
+            numerator=child,
+            denominator=Literal(value=Decimal(2)),
+        )
+    else:
+        expression = Add(
+            operands=(child, Variable(name="margin")),
+        )
+
+    result = evaluate_formula(
+        expression,
+        {
+            "voltage": Quantity(value=voltage, unit="V"),
+            "margin": Quantity(value=Decimal("0.50"), unit="mm"),
+        },
+        {"creepage": synthetic_table},
+    )
+    parent = result.steps[-1]
+    table_step = next(
+        step for step in result.steps if step.operation in {"lookup", "linear_interpolate"}
+    )
+
+    assert result.value == value
+    assert parent.symbolic == symbolic
+    assert parent.substituted == substituted
+    if table_operation == "lookup":
+        assert table_step.substituted.startswith("lookup creepage at row")
+    else:
+        assert table_step.symbolic == "y = y_0 + (x-x_0)(y_1-y_0)/(x_1-x_0)"
+        assert table_step.source_cells == ("100V", "200V")
+
+
+@pytest.mark.parametrize(
     ("expression", "variables", "match"),
     [
         (
