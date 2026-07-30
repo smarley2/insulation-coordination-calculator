@@ -1,0 +1,47 @@
+[project]
+name = "insulation-coordination-calculator"
+version = "0.1.0"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "jinja2>=3.1,<4",
+  "pdfplumber>=0.11,<1",
+  "platformdirs>=4,<5",
+  "pydantic>=2.11,<3",
+  "pypdf>=5,<7",
+  "PySide6>=6.8,<7",
+]
+
+[project.scripts]
+icc = "insulation_coordination.cli:main"
+
+[dependency-groups]
+dev = [
+  "hypothesis>=6,<7",
+  "mypy>=1.15,<2",
+  "pyinstaller>=6,<7",
+  "pytest>=8,<10",
+  "pytest-cov>=6,<8",
+  "pytest-qt>=4.4,<5",
+  "ruff>=0.11,<1",
+]
+
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/insulation_coordination"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+markers = ["private_standard: requires ignored licensed PDFs"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["insulation_coordination"]
