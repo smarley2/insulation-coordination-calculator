@@ -70,3 +70,17 @@ def test_applicable_voltage_and_frequency_must_be_positive() -> None:
         PairVoltage.applicable(Decimal("0"))
     with pytest.raises(ValidationError, match="greater than zero"):
         ProjectDefaults(frequency_hz=Decimal("0"))
+
+
+def test_binary_float_engineering_inputs_raise_validation_errors() -> None:
+    with pytest.raises(ValidationError, match="Decimal"):
+        ProjectDefaults(frequency_hz=50.0)
+    with pytest.raises(ValidationError, match="Decimal"):
+        PairCase(
+            key="a::b",
+            net_a=UUID(int=1),
+            net_b=UUID(int=2),
+            frequency_hz=OverrideValue.override(50.0),
+        )
+    with pytest.raises(ValidationError, match="Decimal"):
+        PairVoltage.applicable(50.0)

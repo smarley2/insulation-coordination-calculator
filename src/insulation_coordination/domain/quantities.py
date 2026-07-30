@@ -6,7 +6,9 @@ from pydantic import BeforeValidator
 
 def _decimal(value: object) -> Decimal:
     if isinstance(value, (bool, float)):
-        raise TypeError("Engineering values must be Decimal, integer, or decimal text")
+        raise ValueError(  # noqa: TRY004 - Pydantic converts ValueError to ValidationError.
+            "Engineering values must be Decimal, integer, or decimal text"
+        )
     return Decimal(value)  # type: ignore[arg-type]
 
 
