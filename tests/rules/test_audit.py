@@ -6,14 +6,23 @@ from pathlib import Path
 
 import pytest
 
-from insulation_coordination.domain.rules import RulePackage
+from insulation_coordination.domain.rules import (
+    Literal,
+    RulePackage,
+    RulePackageError,
+    Variable,
+)
 from insulation_coordination.rules.archive import load_rule_package, write_rule_package
 from insulation_coordination.rules.audit import (
     build_audit_inventory,
     export_inventory_json,
     export_table_csv,
 )
-from insulation_coordination.rules.validation import validate_rule_package
+from insulation_coordination.rules.validation import (
+    ValidationReport,
+    ValidationResult,
+    validate_rule_package,
+)
 
 
 def test_audit_inventory_enumerates_all_package_content(
@@ -26,7 +35,7 @@ def test_audit_inventory_enumerates_all_package_content(
     inventory = build_audit_inventory(loaded)
 
     assert inventory.table_cell_count == 4
-    assert inventory.formula_node_count == 21
+    assert inventory.formula_node_count == 22
     assert inventory.mapping_count == 1
     assert inventory.parameter_set_count == 1
     assert inventory.supported_range_count == 2
@@ -38,6 +47,17 @@ def test_audit_inventory_enumerates_all_package_content(
     assert inventory.formula_nodes[0].node == loaded.formulas[0].expression
     assert len(inventory.source_references) == inventory.source_reference_count
     assert inventory.validation.is_valid is True
+    assert inventory.manifest == loaded.manifest
+    assert inventory.tables == loaded.tables
+    assert inventory.formulas == loaded.formulas
+    assert inventory.parameter_sets[0].owner_type == "formula"
+    assert inventory.parameter_sets[0].owner_id == "synthetic-formula"
+    assert inventory.parameter_sets[0].path == "parameter_sets.0"
+    assert {item.owner_type for item in inventory.supported_ranges} == {
+        "formula",
+        "table",
+    }
+    assert all(item.owner_id and item.path for item in inventory.source_references)
 
 
 def test_table_csv_has_one_row_per_cell_with_exact_reference_fields(
@@ -81,8 +101,17 @@ def test_inventory_json_records_counts_and_validation_without_pdf_bytes(
 
     exported = json.loads(inventory_path.read_text(encoding="utf-8"))
     assert exported["table_cell_count"] == 4
-    assert exported["formula_node_count"] == 21
+    assert exported["formula_node_count"] == 22
     assert exported["validation"]["is_valid"] is True
+    assert exported["manifest"]["importer_version"] == "test-1"
+    assert exported["manifest"]["approved"] is True
+    assert exported["manifest"]["compatible"] is True
+    assert exported["tables"][0]["row_axis"]["id"] == "voltage"
+    assert exported["tables"][0]["interpolation"] == "linear"
+    assert exported["tables"][0]["rounding_places"] == 2
+    assert exported["formulas"][0]["latex"] == "d = f(U)"
+    assert exported["formulas"][0]["expression"]["op"] == "select"
+    assert exported["parameter_sets"][0]["owner_id"] == "synthetic-formula"
     assert b"%PDF" not in archive_path.read_bytes()
     assert b"%PDF" not in inventory_path.read_bytes()
 
@@ -110,3 +139,181 @@ def test_validation_rejects_unapproved_or_incompatible_packages(
 
     assert validate_rule_package(unapproved).is_valid is False
     assert validate_rule_package(incompatible).is_valid is False
+
+
+def test_validation_recomputes_package_digest_and_audit_reflects_tampering(
+    synthetic_package: RulePackage, tmp_path: Path
+) -> None:
+    path = tmp_path / "approved.icrules"
+    write_rule_package(path, synthetic_package)
+    loaded = load_rule_package(path)
+    tampered = loaded.model_copy(update={"package_sha256": "b" * 64})
+
+    report = validate_rule_package(tampered)
+    inventory = build_audit_inventory(tampered)
+
+    assert _result(report, "package_digest").passed is False
+    assert inventory.validation.is_valid is False
+
+
+def test_validation_rejects_undeclared_variables_and_unlinked_ranges(
+    synthetic_package: RulePackage,
+) -> None:
+    formula = synthetic_package.formulas[0]
+    undeclared = synthetic_package.model_copy(
+        update={
+            "formulas": (
+                formula.model_copy(update={"expression": Variable(name="missing")}),
+            )
+        }
+    )
+    unlinked = synthetic_package.model_copy(
+        update={
+            "formulas": (
+                formula.model_copy(
+                    update={
+                        "supported_ranges": (
+                            formula.supported_ranges[0].model_copy(
+                                update={"variable": "missing"}
+                            ),
+                        )
+                    }
+                ),
+            )
+        }
+    )
+
+    assert _result(validate_rule_package(undeclared), "formula_parameters").passed is False
+    assert _result(validate_rule_package(unlinked), "range_linkage").passed is False
+
+
+def test_validation_rejects_ambiguous_interpolation_and_non_unique_axes(
+    synthetic_package: RulePackage,
+) -> None:
+    formula = synthetic_package.formulas[0]
+    expression = formula.expression
+    interpolation = expression.if_false.operands[2]
+    assert interpolation.op == "linear_interpolate"
+    ambiguous_expression = expression.model_copy(
+        update={
+            "if_false": expression.if_false.model_copy(
+                update={
+                    "operands": (
+                        *expression.if_false.operands[:2],
+                        interpolation.model_copy(update={"column": None}),
+                    )
+                }
+            )
+        }
+    )
+    ambiguous = synthetic_package.model_copy(
+        update={
+            "formulas": (
+                formula.model_copy(update={"expression": ambiguous_expression}),
+            )
+        }
+    )
+    table = synthetic_package.tables[0]
+    duplicate_axis = synthetic_package.model_copy(
+        update={
+            "tables": (
+                table.model_copy(
+                    update={
+                        "row_axis": table.row_axis.model_copy(
+                            update={"values": (Literal(value=0).value,) * 2}
+                        )
+                    }
+                ),
+            )
+        }
+    )
+
+    assert _result(validate_rule_package(ambiguous), "formula_tables").passed is False
+    assert _result(validate_rule_package(duplicate_axis), "table_axes").passed is False
+
+
+@pytest.mark.parametrize(
+    "location",
+    ["table", "formula", "range", "parameter_set", "mapping", "cell"],
+)
+def test_validation_rejects_incomplete_source_locators(
+    synthetic_package: RulePackage, location: str
+) -> None:
+    table = synthetic_package.tables[0]
+    formula = synthetic_package.formulas[0]
+    mapping = synthetic_package.mappings[0]
+    if location == "cell":
+        cells = (
+            table.cells[0].model_copy(
+                update={"source": table.cells[0].source.model_copy(update={"row": None})}
+            ),
+            *table.cells[1:],
+        )
+        package = synthetic_package.model_copy(
+            update={"tables": (table.model_copy(update={"cells": cells}),)}
+        )
+    elif location in {"table", "range"}:
+        if location == "table":
+            changed = table.model_copy(
+                update={"source": table.source.model_copy(update={"clause": None})}
+            )
+        else:
+            changed = table.model_copy(
+                update={
+                    "supported_ranges": (
+                        table.supported_ranges[0].model_copy(
+                            update={
+                                "source": table.supported_ranges[0].source.model_copy(
+                                    update={"clause": None}
+                                )
+                            }
+                        ),
+                    )
+                }
+            )
+        package = synthetic_package.model_copy(update={"tables": (changed,)})
+    elif location in {"formula", "parameter_set"}:
+        if location == "formula":
+            changed_formula = formula.model_copy(
+                update={"source": formula.source.model_copy(update={"clause": None})}
+            )
+        else:
+            changed_formula = formula.model_copy(
+                update={
+                    "parameter_sets": (
+                        formula.parameter_sets[0].model_copy(
+                            update={
+                                "source": formula.parameter_sets[0].source.model_copy(
+                                    update={"clause": None}
+                                )
+                            }
+                        ),
+                    )
+                }
+            )
+        package = synthetic_package.model_copy(update={"formulas": (changed_formula,)})
+    else:
+        package = synthetic_package.model_copy(
+            update={
+                "mappings": (
+                    mapping.model_copy(
+                        update={
+                            "source": mapping.source.model_copy(update={"clause": None})
+                        }
+                    ),
+                )
+            }
+        )
+
+    assert _result(validate_rule_package(package), "source_references").passed is False
+
+
+def test_parameter_set_source_is_required(package_dict: dict[str, object]) -> None:
+    package_dict["formulas"][0]["parameter_sets"][0]["source"] = None
+
+    with pytest.raises(RulePackageError, match="source"):
+        RulePackage.model_validate(package_dict)
+
+
+def _result(report: ValidationReport, code: str) -> ValidationResult:
+    return next(result for result in report.results if result.code == code)

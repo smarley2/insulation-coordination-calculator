@@ -138,6 +138,7 @@ def synthetic_rule_package() -> RulePackage:
                 LinearInterpolate(
                     table_id="synthetic-distance",
                     x=Variable(name="voltage"),
+                    column=Literal(value=Decimal(1)),
                 ),
             )
         ),

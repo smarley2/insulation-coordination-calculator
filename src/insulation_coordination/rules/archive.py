@@ -21,6 +21,9 @@ ARCHIVE_MEMBERS = (*CORE_MEMBERS, "checksums.json")
 FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 MAX_MEMBER_BYTES = 16 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
+MAX_COMPRESSION_RATIO = 100
+MAX_JSON_DEPTH = 64
+MAX_JSON_NODES = 200_000
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -73,6 +76,10 @@ def _require_usable_metadata(package: RulePackage) -> None:
 
 def _archive_bytes(package: RulePackage) -> tuple[bytes, dict[str, str]]:
     payloads = _core_member_payloads(package)
+    if any(len(payload) > MAX_MEMBER_BYTES for payload in payloads.values()):
+        raise RulePackageError("rules archive member exceeds the size limit")
+    if sum(len(payload) for payload in payloads.values()) > MAX_ARCHIVE_BYTES:
+        raise RulePackageError("rules archive exceeds the size limit")
     checksums = _member_checksums(payloads)
     payloads["checksums.json"] = _canonical_json(checksums)
     buffer = io.BytesIO()
@@ -83,7 +90,10 @@ def _archive_bytes(package: RulePackage) -> tuple[bytes, dict[str, str]]:
             info.create_system = 3
             info.external_attr = 0o600 << 16
             archive.writestr(info, payloads[name])
-    return buffer.getvalue(), checksums
+    content = buffer.getvalue()
+    if len(content) > MAX_ARCHIVE_BYTES:
+        raise RulePackageError("rules archive exceeds the size limit")
+    return content, checksums
 
 
 def _require_valid(package: RulePackage) -> None:
@@ -96,25 +106,14 @@ def _require_valid(package: RulePackage) -> None:
 
 
 def _revalidate(package: RulePackage) -> RulePackage:
-    return RulePackage.model_validate(
-        {
-            "manifest": package.manifest.model_dump(mode="json", warnings=False),
-            "tables": [
-                table.model_dump(mode="json", warnings=False)
-                for table in package.tables
-            ],
-            "formulas": [
-                formula.model_dump(mode="json", warnings=False)
-                for formula in package.formulas
-            ],
-            "mappings": [
-                mapping.model_dump(mode="json", warnings=False)
-                for mapping in package.mappings
-            ],
-            "checksums": package.checksums,
-            "package_sha256": package.package_sha256,
-        }
-    )
+    try:
+        raw = package.model_dump(mode="json", warnings=False)
+        raw["package_sha256"] = package.package_sha256
+        return RulePackage.model_validate(raw)
+    except RulePackageError:
+        raise
+    except (AttributeError, RecursionError, TypeError, ValueError) as error:
+        raise RulePackageError(f"invalid rule package: {error}") from error
 
 
 def write_rule_package(path: Path, package: RulePackage) -> str:
@@ -135,36 +134,81 @@ def write_rule_package(path: Path, package: RulePackage) -> str:
 
 def _read_members(path: Path) -> tuple[dict[str, bytes], bytes]:
     try:
-        content = path.read_bytes()
+        if path.stat().st_size > MAX_ARCHIVE_BYTES:
+            raise RulePackageError("rules archive exceeds the size limit")
+        with path.open("rb") as stream:
+            content = stream.read(MAX_ARCHIVE_BYTES + 1)
         if len(content) > MAX_ARCHIVE_BYTES:
             raise RulePackageError("rules archive exceeds the size limit")
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             names = archive.namelist()
             if len(names) != len(set(names)) or set(names) != set(ARCHIVE_MEMBERS):
                 raise RulePackageError("rules archive has missing, duplicate, or extra members")
+            infos = archive.infolist()
+            if any(member.is_dir() or member.flag_bits & 1 for member in infos):
+                raise RulePackageError("rules archive contains a directory or encrypted member")
             if any(
-                member.is_dir() or member.file_size > MAX_MEMBER_BYTES
-                for member in archive.infolist()
-            ) or sum(member.file_size for member in archive.infolist()) > MAX_ARCHIVE_BYTES:
+                member.file_size > MAX_MEMBER_BYTES
+                or member.compress_size > MAX_MEMBER_BYTES
+                for member in infos
+            ) or sum(member.file_size for member in infos) > MAX_ARCHIVE_BYTES:
                 raise RulePackageError("rules archive member exceeds the size limit")
+            if any(
+                member.file_size > max(member.compress_size, 1) * MAX_COMPRESSION_RATIO
+                for member in infos
+            ):
+                raise RulePackageError("rules archive member exceeds the compression ratio limit")
             return {name: archive.read(name) for name in ARCHIVE_MEMBERS}, content
     except RulePackageError:
         raise
-    except (OSError, zipfile.BadZipFile, NotImplementedError, RuntimeError) as error:
+    except (
+        OSError,
+        EOFError,
+        OverflowError,
+        RecursionError,
+        ValueError,
+        zipfile.BadZipFile,
+        zipfile.LargeZipFile,
+        NotImplementedError,
+        RuntimeError,
+    ) as error:
         raise RulePackageError(f"could not read rules archive: {error}") from error
 
 
 def _decode_json(payload: bytes, member: str) -> Any:
     try:
         value = json.loads(payload)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        _validate_json_shape(value, member)
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        RecursionError,
+        TypeError,
+        ValueError,
+    ) as error:
         raise RulePackageError(f"invalid JSON in {member}: {error}") from error
     try:
         if payload != _canonical_json(value):
             raise RulePackageError(f"{member} is not canonical JSON")
-    except (TypeError, ValueError) as error:
+    except (OverflowError, RecursionError, TypeError, ValueError) as error:
         raise RulePackageError(f"invalid JSON value in {member}: {error}") from error
     return value
+
+
+def _validate_json_shape(value: object, member: str) -> None:
+    nodes = 0
+    stack = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        nodes += 1
+        if depth > MAX_JSON_DEPTH:
+            raise ValueError(f"{member} exceeds the JSON depth limit")
+        if nodes > MAX_JSON_NODES:
+            raise ValueError(f"{member} exceeds the JSON node limit")
+        if isinstance(item, dict):
+            stack.extend((child, depth + 1) for child in item.values())
+        elif isinstance(item, list):
+            stack.extend((child, depth + 1) for child in item)
 
 
 def load_rule_package(path: Path) -> RulePackage:

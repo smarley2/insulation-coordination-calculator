@@ -13,7 +13,24 @@ from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.quantities import DecimalValue
 
 RULE_SCHEMA_VERSION = 1
+MAX_IDENTIFIER_LENGTH = 160
+MAX_REFERENCE_TEXT_LENGTH = 500
+MAX_NOTES_LENGTH = 2_000
+MAX_LATEX_LENGTH = 4_000
+MAX_APPLICABILITY_LENGTH = 1_000
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+
+Identifier = Annotated[
+    str,
+    Field(min_length=1, max_length=MAX_IDENTIFIER_LENGTH, pattern=r"\S"),
+]
+ReferenceText = Annotated[
+    str,
+    Field(min_length=1, max_length=MAX_REFERENCE_TEXT_LENGTH, pattern=r"\S"),
+]
+NotesText = Annotated[str, Field(max_length=MAX_NOTES_LENGTH)]
+LatexText = Annotated[str, Field(max_length=MAX_LATEX_LENGTH)]
+ApplicabilityText = Annotated[str, Field(max_length=MAX_APPLICABILITY_LENGTH)]
 
 
 class RulePackageError(ValueError):
@@ -21,19 +38,19 @@ class RulePackageError(ValueError):
 
 
 class SourceReference(FrozenModel):
-    standard: str = Field(min_length=1)
-    edition: str = Field(min_length=1)
-    clause: str | None = None
-    table: str | None = None
-    figure: str | None = None
-    row: str | None = None
-    column: str | None = None
-    note: str | None = None
+    standard: Identifier
+    edition: Identifier
+    clause: ReferenceText | None = None
+    table: ReferenceText | None = None
+    figure: ReferenceText | None = None
+    row: ReferenceText | None = None
+    column: ReferenceText | None = None
+    note: ReferenceText | None = None
 
 
 class SourceDocument(FrozenModel):
-    standard: str = Field(min_length=1)
-    edition: str = Field(min_length=1)
+    standard: Identifier
+    edition: Identifier
     sha256: str
 
     @field_validator("sha256")
@@ -46,9 +63,9 @@ class SourceDocument(FrozenModel):
 
 class ApprovalRecord(FrozenModel):
     action: TypingLiteral["extraction", "correction", "approval"]
-    actor: str = Field(min_length=1)
+    actor: Identifier
     recorded_at: datetime
-    notes: str = ""
+    notes: NotesText = ""
 
     @field_validator("recorded_at")
     @classmethod
@@ -61,14 +78,14 @@ class ApprovalRecord(FrozenModel):
 class Manifest(FrozenModel):
     schema_version: int = Field(ge=1)
     package_id: UUID
-    version: str = Field(min_length=1)
-    importer_version: str = Field(min_length=1)
+    version: Identifier
+    importer_version: Identifier
     created_at: datetime
     source_documents: tuple[SourceDocument, ...]
     approved: bool = False
     compatible: bool = False
     approval_records: tuple[ApprovalRecord, ...] = ()
-    notes: str = ""
+    notes: NotesText = ""
 
     @field_validator("created_at")
     @classmethod
@@ -85,7 +102,7 @@ class Literal(FrozenModel):
 
 class Variable(FrozenModel):
     op: TypingLiteral["variable"] = "variable"
-    name: str = Field(min_length=1)
+    name: Identifier
 
 
 class Add(FrozenModel):
@@ -145,15 +162,16 @@ class Round(FrozenModel):
 
 class Lookup(FrozenModel):
     op: TypingLiteral["lookup"] = "lookup"
-    table_id: str = Field(min_length=1)
+    table_id: Identifier
     row: Expression
     column: Expression
 
 
 class LinearInterpolate(FrozenModel):
     op: TypingLiteral["linear_interpolate"] = "linear_interpolate"
-    table_id: str = Field(min_length=1)
+    table_id: Identifier
     x: Expression
+    column: Expression | None = None
 
 
 Expression = Annotated[
@@ -188,8 +206,8 @@ for _recursive_node in (
 
 
 class Parameter(FrozenModel):
-    name: str = Field(min_length=1)
-    unit: str = Field(min_length=1)
+    name: Identifier
+    unit: Identifier
     minimum: DecimalValue | None = None
     maximum: DecimalValue | None = None
 
@@ -201,16 +219,16 @@ class Parameter(FrozenModel):
 
 
 class ParameterSet(FrozenModel):
-    id: str = Field(min_length=1)
+    id: Identifier
     parameters: tuple[Parameter, ...]
-    source: SourceReference | None = None
+    source: SourceReference
 
 
 class SupportedRange(FrozenModel):
-    variable: str = Field(min_length=1)
+    variable: Identifier
     minimum: DecimalValue
     maximum: DecimalValue
-    unit: str = Field(min_length=1)
+    unit: Identifier
     source: SourceReference
 
     @model_validator(mode="after")
@@ -221,8 +239,8 @@ class SupportedRange(FrozenModel):
 
 
 class TableAxis(FrozenModel):
-    id: str = Field(min_length=1)
-    unit: str = Field(min_length=1)
+    id: Identifier
+    unit: Identifier
     values: tuple[DecimalValue, ...] = Field(min_length=1)
 
 
@@ -230,13 +248,13 @@ class TableCell(FrozenModel):
     row: int = Field(ge=0)
     column: int = Field(ge=0)
     value: DecimalValue
-    unit: str = Field(min_length=1)
+    unit: Identifier
     source: SourceReference
 
 
 class Table(FrozenModel):
-    id: str = Field(min_length=1)
-    unit: str = Field(min_length=1)
+    id: Identifier
+    unit: Identifier
     row_axis: TableAxis
     column_axis: TableAxis
     cells: tuple[TableCell, ...]
@@ -247,23 +265,23 @@ class Table(FrozenModel):
 
 
 class Formula(FrozenModel):
-    id: str = Field(min_length=1)
+    id: Identifier
     expression: Expression
-    unit: str = Field(min_length=1)
+    unit: Identifier
     parameter_sets: tuple[ParameterSet, ...] = ()
     supported_ranges: tuple[SupportedRange, ...] = ()
-    latex: str = ""
-    applicability: str = ""
+    latex: LatexText = ""
+    applicability: ApplicabilityText = ""
     source: SourceReference
 
 
 class CompatibilityMapping(FrozenModel):
-    id: str = Field(min_length=1)
-    source_rule_id: str = Field(min_length=1)
-    target_rule_id: str = Field(min_length=1)
+    id: Identifier
+    source_rule_id: Identifier
+    target_rule_id: Identifier
     approved: bool = False
     source: SourceReference
-    notes: str = ""
+    notes: NotesText = ""
 
 
 class RulePackage(FrozenModel):
@@ -290,8 +308,8 @@ class RulePackage(FrozenModel):
             return super().model_validate(
                 obj,
                 strict=strict,
-                extra=extra,
-                from_attributes=from_attributes,
+                extra="forbid",
+                from_attributes=False,
                 context=context,
                 by_alias=by_alias,
                 by_name=by_name,
@@ -299,6 +317,8 @@ class RulePackage(FrozenModel):
         except ValidationError as error:
             if any(item["type"] == "union_tag_invalid" for item in error.errors()):
                 raise RulePackageError(f"unknown operator: {error}") from error
+            raise RulePackageError(f"invalid rule package: {error}") from error
+        except (AttributeError, RecursionError, TypeError, ValueError) as error:
             raise RulePackageError(f"invalid rule package: {error}") from error
 
 

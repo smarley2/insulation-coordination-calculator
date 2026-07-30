@@ -15,8 +15,10 @@ from insulation_coordination.domain.rules import (
     CompatibilityMapping,
     Divide,
     Expression,
+    Formula,
     LinearInterpolate,
     Lookup,
+    Manifest,
     Maximum,
     Minimum,
     Multiply,
@@ -27,6 +29,7 @@ from insulation_coordination.domain.rules import (
     SourceDocument,
     SourceReference,
     SupportedRange,
+    Table,
     TableCell,
 )
 from insulation_coordination.rules.validation import ValidationReport, validate_rule_package
@@ -36,6 +39,7 @@ class AuditedTableCell(FrozenModel):
     table_id: str
     row_index: int
     column_index: int
+    path: str
     cell: TableCell
 
 
@@ -51,18 +55,42 @@ class ChecksumRecord(FrozenModel):
     sha256: str
 
 
+class OwnedParameterSet(FrozenModel):
+    owner_type: str
+    owner_id: str
+    path: str
+    parameter_set: ParameterSet
+
+
+class OwnedSupportedRange(FrozenModel):
+    owner_type: str
+    owner_id: str
+    path: str
+    supported_range: SupportedRange
+
+
+class OwnedSourceReference(FrozenModel):
+    owner_type: str
+    owner_id: str
+    path: str
+    reference: SourceReference
+
+
 class AuditInventory(FrozenModel):
+    manifest: Manifest
     package_id: str
     version: str
     schema_version: int
     package_sha256: str | None
     source_documents: tuple[SourceDocument, ...]
+    tables: tuple[Table, ...]
+    formulas: tuple[Formula, ...]
     table_cells: tuple[AuditedTableCell, ...]
     formula_nodes: tuple[AuditedFormulaNode, ...]
     mappings: tuple[CompatibilityMapping, ...]
-    parameter_sets: tuple[ParameterSet, ...]
-    supported_ranges: tuple[SupportedRange, ...]
-    source_references: tuple[SourceReference, ...]
+    parameter_sets: tuple[OwnedParameterSet, ...]
+    supported_ranges: tuple[OwnedSupportedRange, ...]
+    source_references: tuple[OwnedSourceReference, ...]
     checksums: tuple[ChecksumRecord, ...]
     approval_records: tuple[ApprovalRecord, ...]
     validation: ValidationReport
@@ -122,7 +150,11 @@ def _children(expression: Expression) -> tuple[Expression, ...]:
     if isinstance(expression, Lookup):
         return (expression.row, expression.column)
     if isinstance(expression, LinearInterpolate):
-        return (expression.x,)
+        return (
+            (expression.x,)
+            if expression.column is None
+            else (expression.x, expression.column)
+        )
     return ()
 
 
@@ -134,21 +166,71 @@ def iter_formula_nodes(
         yield from iter_formula_nodes(child, f"{path}.{index}")
 
 
-def _source_references(package: RulePackage) -> tuple[SourceReference, ...]:
-    references: list[SourceReference] = []
+def _source_references(package: RulePackage) -> tuple[OwnedSourceReference, ...]:
+    references: list[OwnedSourceReference] = []
     for table in package.tables:
-        references.append(table.source)
-        references.extend(cell.source for cell in table.cells)
-        references.extend(item.source for item in table.supported_ranges)
-    for formula in package.formulas:
-        references.append(formula.source)
-        references.extend(
-            parameter_set.source
-            for parameter_set in formula.parameter_sets
-            if parameter_set.source is not None
+        references.append(
+            OwnedSourceReference(
+                owner_type="table",
+                owner_id=table.id,
+                path="source",
+                reference=table.source,
+            )
         )
-        references.extend(item.source for item in formula.supported_ranges)
-    references.extend(mapping.source for mapping in package.mappings)
+        references.extend(
+            OwnedSourceReference(
+                owner_type="table",
+                owner_id=table.id,
+                path=f"cells.{index}.source",
+                reference=cell.source,
+            )
+            for index, cell in enumerate(table.cells)
+        )
+        references.extend(
+            OwnedSourceReference(
+                owner_type="table",
+                owner_id=table.id,
+                path=f"supported_ranges.{index}.source",
+                reference=item.source,
+            )
+            for index, item in enumerate(table.supported_ranges)
+        )
+    for formula in package.formulas:
+        references.append(
+            OwnedSourceReference(
+                owner_type="formula",
+                owner_id=formula.id,
+                path="source",
+                reference=formula.source,
+            )
+        )
+        references.extend(
+            OwnedSourceReference(
+                owner_type="formula",
+                owner_id=formula.id,
+                path=f"parameter_sets.{index}.source",
+                reference=parameter_set.source,
+            )
+            for index, parameter_set in enumerate(formula.parameter_sets)
+        )
+        references.extend(
+            OwnedSourceReference(
+                owner_type="formula",
+                owner_id=formula.id,
+                path=f"supported_ranges.{index}.source",
+                reference=item.source,
+            )
+            for index, item in enumerate(formula.supported_ranges)
+        )
+    references.extend(
+        OwnedSourceReference(
+            owner_type="mapping",
+            owner_id=mapping.id,
+            path="source",
+            reference=mapping.source,
+        )
+        for mapping in package.mappings
+    )
     return tuple(references)
 
 
@@ -158,10 +240,11 @@ def build_audit_inventory(package: RulePackage) -> AuditInventory:
             table_id=table.id,
             row_index=cell.row,
             column_index=cell.column,
+            path=f"cells.{index}",
             cell=cell,
         )
         for table in package.tables
-        for cell in table.cells
+        for index, cell in enumerate(table.cells)
     )
     nodes = tuple(
         AuditedFormulaNode(
@@ -174,28 +257,46 @@ def build_audit_inventory(package: RulePackage) -> AuditInventory:
         for path, node in iter_formula_nodes(formula.expression)
     )
     return AuditInventory(
+        manifest=package.manifest,
         package_id=str(package.manifest.package_id),
         version=package.manifest.version,
         schema_version=package.manifest.schema_version,
         package_sha256=package.package_sha256,
         source_documents=package.manifest.source_documents,
+        tables=package.tables,
+        formulas=package.formulas,
         table_cells=cells,
         formula_nodes=nodes,
         mappings=package.mappings,
         parameter_sets=tuple(
-            parameter_set
+            OwnedParameterSet(
+                owner_type="formula",
+                owner_id=formula.id,
+                path=f"parameter_sets.{index}",
+                parameter_set=parameter_set,
+            )
             for formula in package.formulas
-            for parameter_set in formula.parameter_sets
+            for index, parameter_set in enumerate(formula.parameter_sets)
         ),
         supported_ranges=tuple(
-            supported_range
+            OwnedSupportedRange(
+                owner_type="table",
+                owner_id=table.id,
+                path=f"supported_ranges.{index}",
+                supported_range=supported_range,
+            )
             for table in package.tables
-            for supported_range in table.supported_ranges
+            for index, supported_range in enumerate(table.supported_ranges)
         )
         + tuple(
-            supported_range
+            OwnedSupportedRange(
+                owner_type="formula",
+                owner_id=formula.id,
+                path=f"supported_ranges.{index}",
+                supported_range=supported_range,
+            )
             for formula in package.formulas
-            for supported_range in formula.supported_ranges
+            for index, supported_range in enumerate(formula.supported_ranges)
         ),
         source_references=_source_references(package),
         checksums=tuple(
