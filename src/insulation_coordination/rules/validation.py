@@ -94,12 +94,13 @@ def _strictly_increasing(values: tuple[Decimal, ...]) -> bool:
 
 
 def _record_source_valid(source: SourceReference) -> bool:
-    return bool(source.clause and (source.table or source.figure or source.note))
+    return bool(source.clause and (source.table or source.figure))
 
 
 def _cell_source_valid(source: SourceReference) -> bool:
     return bool(
-        (source.table or source.figure)
+        source.clause
+        and (source.table or source.figure)
         and source.row is not None
         and source.column is not None
     )
@@ -182,12 +183,6 @@ def validate_rule_package(package: RulePackage) -> ValidationReport:
     )
     for formula in package.formulas:
         parameter_sets = formula.parameter_sets
-        parameters = tuple(
-            parameter
-            for parameter_set in parameter_sets
-            for parameter in parameter_set.parameters
-        )
-        declared = {parameter.name for parameter in parameters}
         used = {
             node.name
             for node in _walk_expression(formula.expression)
@@ -195,16 +190,20 @@ def validate_rule_package(package: RulePackage) -> ValidationReport:
         }
         formula_parameters_valid = formula_parameters_valid and (
             len({item.id for item in parameter_sets}) == len(parameter_sets)
+            and (not used or bool(parameter_sets))
             and all(
                 len({parameter.name for parameter in item.parameters})
                 == len(item.parameters)
+                and used <= {parameter.name for parameter in item.parameters}
                 for item in parameter_sets
             )
-            and used <= declared
         )
-        range_linkage_valid = range_linkage_valid and all(
-            _range_matches_parameter(supported_range, parameters)
+        range_linkage_valid = range_linkage_valid and (
+            not formula.supported_ranges or bool(parameter_sets)
+        ) and all(
+            _range_matches_parameter(supported_range, parameter_set.parameters)
             for supported_range in formula.supported_ranges
+            for parameter_set in parameter_sets
         )
 
     tables_by_id = {table.id: table for table in package.tables}
@@ -223,7 +222,8 @@ def validate_rule_package(package: RulePackage) -> ValidationReport:
             if table is None:
                 continue
             formula_tables_valid = formula_tables_valid and (
-                len(table.row_axis.values) >= 2
+                table.interpolation == "linear"
+                and len(table.row_axis.values) >= 2
                 and (node.column is not None or len(table.column_axis.values) == 1)
                 and (
                     not isinstance(node.x, Variable)

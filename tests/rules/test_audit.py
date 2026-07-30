@@ -8,6 +8,8 @@ import pytest
 
 from insulation_coordination.domain.rules import (
     Literal,
+    Parameter,
+    ParameterSet,
     RulePackage,
     RulePackageError,
     Variable,
@@ -187,6 +189,61 @@ def test_validation_rejects_undeclared_variables_and_unlinked_ranges(
     assert _result(validate_rule_package(unlinked), "range_linkage").passed is False
 
 
+@pytest.mark.parametrize(
+    ("alternative", "result_code"),
+    [
+        (
+            lambda formula: ParameterSet(
+                id="empty",
+                parameters=(),
+                source=formula.source,
+            ),
+            "formula_parameters",
+        ),
+        (
+            lambda formula: ParameterSet(
+                id="wrong-unit",
+                parameters=(
+                    Parameter(
+                        name="voltage",
+                        unit="kV",
+                        minimum=0,
+                        maximum=20,
+                    ),
+                ),
+                source=formula.source,
+            ),
+            "range_linkage",
+        ),
+    ],
+)
+def test_each_parameter_set_alternative_must_independently_satisfy_formula(
+    synthetic_package: RulePackage, alternative: object, result_code: str
+) -> None:
+    formula = synthetic_package.formulas[0]
+    changed = formula.model_copy(
+        update={"parameter_sets": (*formula.parameter_sets, alternative(formula))}
+    )
+    package = synthetic_package.model_copy(update={"formulas": (changed,)})
+
+    assert _result(validate_rule_package(package), result_code).passed is False
+
+
+def test_interpolation_requires_table_linear_permission(
+    synthetic_package: RulePackage,
+) -> None:
+    table = synthetic_package.tables[0]
+    package = synthetic_package.model_copy(
+        update={
+            "tables": (
+                table.model_copy(update={"interpolation": "none"}),
+            )
+        }
+    )
+
+    assert _result(validate_rule_package(package), "formula_tables").passed is False
+
+
 def test_validation_rejects_ambiguous_interpolation_and_non_unique_axes(
     synthetic_package: RulePackage,
 ) -> None:
@@ -304,6 +361,36 @@ def test_validation_rejects_incomplete_source_locators(
                 )
             }
         )
+
+    assert _result(validate_rule_package(package), "source_references").passed is False
+
+
+def test_owner_note_does_not_replace_table_or_figure_locator(
+    synthetic_package: RulePackage,
+) -> None:
+    table = synthetic_package.tables[0]
+    source = table.source.model_copy(update={"table": None, "figure": None})
+    package = synthetic_package.model_copy(
+        update={"tables": (table.model_copy(update={"source": source}),)}
+    )
+
+    assert _result(validate_rule_package(package), "source_references").passed is False
+
+
+def test_cell_table_coordinates_do_not_replace_clause_locator(
+    synthetic_package: RulePackage,
+) -> None:
+    table = synthetic_package.tables[0]
+    first = table.cells[0]
+    cells = (
+        first.model_copy(
+            update={"source": first.source.model_copy(update={"clause": None})}
+        ),
+        *table.cells[1:],
+    )
+    package = synthetic_package.model_copy(
+        update={"tables": (table.model_copy(update={"cells": cells}),)}
+    )
 
     assert _result(validate_rule_package(package), "source_references").passed is False
 
