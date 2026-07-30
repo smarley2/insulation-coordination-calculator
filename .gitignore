@@ -2,6 +2,7 @@
 /standards/
 /private-rules/
 /rule-workspaces/
+/rule-audits/
 *.icrules
 
 # Engineering project files and generated reports

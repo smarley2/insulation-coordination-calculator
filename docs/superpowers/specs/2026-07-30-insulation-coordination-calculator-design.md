@@ -26,17 +26,19 @@ The application is a calculation aid. It does not claim product certification or
 - Define net classes once and create every unordered net-class pair automatically.
 - Enter voltage stress manually for each pair.
 - Use project defaults with visible pair-level overrides for environmental, construction, frequency, impulse, and insulation inputs.
-- Calculate basic and reinforced clearance and creepage requirements under the supported rules from IEC 60664-1 and IEC 60664-4.
+- Calculate functional, basic, and reinforced clearance and creepage requirements under the supported rules from IEC 60664-1 and IEC 60664-4.
 - Preserve a reproducible audit trace for every calculated value.
 - Import licensed PDFs into a locally reviewed `.icrules` package without publishing IEC data.
 - Allow an approved `.icrules` package to be shared internally with colleagues who are covered by the company's IEC licence.
+- Import and use an approved `.icrules` package supplied by a colleague without requiring the standard PDFs on the receiving computer.
+- Audit every table, formula, parameter, mapping, reference, and approval record contained in an `.icrules` package.
 - Generate both `.tex` and PDF output.
 
 ## 3. Explicit non-goals for version 1
 
 - Automatic derivation of pair voltages from net-class nominal values, waveforms, switching states, or schematics.
 - Cloud storage, accounts, simultaneous editing, or a central server.
-- Functional or supplementary insulation calculations.
+- Supplementary insulation calculations.
 - Solid-insulation dimensioning or dielectric test design.
 - Reduced distances based on coating, potting, or moulding under IEC 60664-3.
 - Automated special-path treatment for ribs, mixed materials, multiple pollution degrees, floating conductive parts, or reduced short-duration creepage stress.
@@ -96,6 +98,7 @@ The UI presents domain results but contains no calculation logic.
 - calculate clearance candidates;
 - calculate creepage candidates;
 - select governing values;
+- evaluate only the whitelisted declarative table and formula operations defined by the rules package;
 - produce typed trace steps and warnings;
 - remain deterministic for the same project, engine version, and rules-package hash.
 
@@ -106,7 +109,9 @@ The UI presents domain results but contains no calculation logic.
 - run structural and semantic extraction checks;
 - present extracted content for human review;
 - approve and export `.icrules`;
-- import internally shared `.icrules` packages;
+- import internally shared `.icrules` packages without requiring source PDFs;
+- provide a complete read-only audit browser for imported package contents;
+- export private table-audit data for internal review;
 - verify package and file hashes before use.
 
 #### Report generator
@@ -135,7 +140,7 @@ The public repository does not contain:
 - engineering `.icproj` files;
 - temporary table extraction workspaces.
 
-The repository ignores `/standards/`, `/private-rules/`, `/rule-workspaces/`, `*.icrules`, `*.icproj`, `/.superpowers/`, and generated-report directories.
+The repository ignores `/standards/`, `/private-rules/`, `/rule-workspaces/`, `/rule-audits/`, `*.icrules`, `*.icproj`, `/.superpowers/`, and generated-report directories.
 
 An `.icproj` stores the required rule-pack identifier and SHA-256 hash, not its contents. Opening a project with a missing or different rules package blocks calculation until the exact package is installed or the project is deliberately migrated and recalculated.
 
@@ -180,12 +185,16 @@ Project saves use write-to-temporary-file, flush, and atomic replacement. A fail
 `.icrules` is a ZIP container with deterministic, canonical JSON members:
 
 - `manifest.json`: package schema, semantic standard IDs, editions, importer version, source PDF hashes, creation time, approver identity, approval time, and notes;
-- `rules.json`: private numeric tables, edition-specific parameters, supported ranges, interpolation and rounding declarations, and semantic rule mappings;
+- `tables.json`: private numeric tables, units, dimensions, cell-level source references, supported ranges, and interpolation and rounding declarations;
+- `formulas.json`: declarative formula expression trees, parameter definitions, units, applicability conditions, LaTeX display templates, and exact standard references;
+- `mappings.json`: semantic rule mappings, edition compatibility decisions, and calculation-path applicability;
 - `checksums.json`: SHA-256 hashes of all other package members.
 
 The package contains no original PDF pages, screenshots, or extracted standard prose beyond the minimal identifiers needed for traceable calculations.
 
 Checksums detect accidental or post-approval changes and allow a project to pin an exact package. They do not prove organizational authorship against a malicious actor. Cryptographic signing is deferred.
+
+Formula definitions are data, never Python, JavaScript, macros, or another executable language. The engine evaluates a versioned whitelist of operators such as table lookup, linear interpolation, comparison, selection, addition, multiplication, division, minimum/maximum selection, and rounding. Importing a colleague's `.icrules` package can therefore never execute arbitrary code.
 
 ## 7. Standards import and approval
 
@@ -201,11 +210,26 @@ The import flow is:
 6. The review UI shows each extracted rule set alongside the relevant locally rendered source page or region.
 7. The engineer confirms or corrects the draft and records approval metadata.
 8. The application exports the approved `.icrules` package.
-9. Colleagues import that file locally; their projects pin its exact hash.
+9. Colleagues import that file locally without needing either source PDF; their projects pin its exact hash.
 
 Calculations cannot use a draft or unapproved rules package.
 
 IEC 60664-4:2005 references an older IEC 60664-1 edition and older table numbering, while the supplied Part 1 is the 2020 edition. The `.icrules` manifest therefore uses semantic rule identifiers rather than assuming table numbers are compatible. The maintainer must explicitly approve the mapping between the Part 4 references and the selected Part 1 rules. The application blocks the combined ruleset if that compatibility mapping is absent.
+
+### 7.1 Rules-package audit
+
+Any installed `.icrules` package can be audited without the original PDFs. The read-only audit browser exposes:
+
+- package identity, editions, source-file hashes, importer version, approval metadata, and package checksums;
+- an inventory of every table, formula, parameter set, mapping, and supported range;
+- every table row, column, cell value, unit, and cell-level clause/table reference;
+- interpolation, extrapolation, rounding, and applicability declarations;
+- every formula as a structured expression and rendered mathematical equation;
+- formula variables, units, constraints, and source reference;
+- Part 1/Part 4 compatibility mappings;
+- structural, semantic, and checksum validation results.
+
+The browser supports searching by semantic rule ID or standard reference and exporting private CSV files for individual tables plus a package-inventory JSON file. These audit exports contain licensed derived data, remain local/private, and are covered by the same repository exclusions as `.icrules`.
 
 ## 8. Domain model
 
@@ -257,6 +281,9 @@ Each trace step records:
 
 - semantic rule ID and human-readable clause/table reference;
 - input values used;
+- the mathematical formula or table operation used;
+- the formula with actual values and units substituted;
+- the table row, column, and source cell identifiers used by a lookup or interpolation;
 - operation, lookup, interpolation, correction, scaling, maximum selection, or rounding;
 - unrounded and rounded output where applicable;
 - concise reason.
@@ -269,7 +296,7 @@ The following fields can be project defaults and can be overridden by a pair:
 
 - required impulse withstand voltage;
 - fundamental or relevant periodic frequency;
-- insulation type (`basic` or `reinforced`);
+- insulation type (`functional`, `basic`, or `reinforced`);
 - electrical field condition;
 - electrode radius where required for the high-frequency field assessment;
 - altitude;
@@ -292,6 +319,8 @@ Version 1 requires manual pair entry for:
 - frequency when it is not inherited.
 
 The high-frequency periodic peak is determined from the applicable entered periodic peak stresses, with the chosen inputs shown in the trace. A voltage category that is genuinely not applicable must be marked `not applicable` with an engineering justification; blank and not-applicable are distinct states.
+
+Insulation classification belongs to the pair, because it describes the required insulation between two net classes. Functional insulation uses the actual functional voltage stresses entered for that pair and does not receive basic/reinforced scaling. Basic and reinforced pairs follow their applicable protection rules. The classification may be inherited from a project default but remains visibly overridable per pair.
 
 ### 9.3 Conservative defaults and special conditions
 
@@ -320,11 +349,11 @@ Blocking validation errors produce no final distance.
 
 For each pair:
 
-1. Calculate the IEC 60664-1 transient/impulse clearance candidate.
-2. Calculate the IEC 60664-1 steady-state peak, temporary-overvoltage, and recurring-peak candidates.
-3. Apply the rules-package treatment for basic or reinforced insulation to the correct candidate inputs.
-4. Apply the selected field condition and pollution degree.
-5. If the relevant frequency is above 30 kHz, calculate the IEC 60664-4 periodic-voltage candidate using the applicable homogeneous/approximately homogeneous or inhomogeneous method.
+1. For functional insulation, calculate the IEC 60664-1 functional clearance candidates from the maximum impulse, steady-state peak, temporary-overvoltage, and recurring-peak stresses entered for the pair, following the approved mapping to Clause 5.2.4.
+2. For basic or reinforced insulation, calculate the IEC 60664-1 transient/impulse and periodic-voltage candidates and apply the approved Clause 5.2.5 treatment for the selected classification.
+3. Apply the selected field condition and pollution degree.
+4. If the relevant frequency is above 30 kHz, calculate the IEC 60664-4 periodic-voltage candidate using the applicable homogeneous/approximately homogeneous or inhomogeneous method.
+5. For a functional pair above 30 kHz, require an explicitly approved functional-applicability mapping in the combined rules package. Absence of that mapping blocks the pair rather than assuming that a basic/reinforced rule applies.
 6. Retain every candidate and select the largest applicable requirement.
 7. Apply altitude correction when required.
 8. Record required verification or partial-discharge warnings without silently changing the result.
@@ -335,11 +364,13 @@ All iterative high-frequency evaluations have a fixed convergence rule, maximum 
 
 For each pair:
 
-1. Calculate the IEC 60664-1 tracking candidate from long-term RMS voltage, pollution degree, construction type, and material group/CTI.
-2. Apply permitted interpolation, rounding, and the approved basic/reinforced treatment.
-3. If frequency is above 30 kHz, calculate the IEC 60664-4 deterioration candidate from periodic peak voltage, frequency, pollution degree, and applicable material treatment.
-4. Retain all candidates and select the largest applicable requirement.
-5. Enforce final creepage greater than or equal to the associated final clearance.
+1. For functional insulation, calculate the IEC 60664-1 functional tracking candidate from the steady-state working RMS voltage, pollution degree, construction type, and material group/CTI, following the approved mapping to Clause 5.3.4.
+2. For basic or reinforced insulation, calculate the IEC 60664-1 tracking candidate and apply the approved Clause 5.3.5 treatment for the selected classification.
+3. Apply permitted interpolation and rounding.
+4. If frequency is above 30 kHz, calculate the IEC 60664-4 deterioration candidate from periodic peak voltage, frequency, pollution degree, and applicable material treatment.
+5. For a functional pair above 30 kHz, require an explicitly approved functional-applicability mapping in the combined rules package.
+6. Retain all candidates and select the largest applicable requirement.
+7. Enforce final creepage greater than or equal to the associated final clearance.
 
 The trace states which candidate governed and why.
 
@@ -352,6 +383,11 @@ The main navigation is:
 3. **Pair matrix** - coverage overview, bulk pair table, and selected-pair editor.
 4. **Calculation review** - results, traces, warnings, blocking cases, and automatic groups.
 5. **Report** - group splits, metadata, preview, `.tex`, and PDF export.
+
+The standards/rules manager is available independently of a project. It supports both workflows:
+
+- create a rules package from recognized local PDFs, review it, and approve it; or
+- import a colleague's already approved `.icrules` file, validate it, audit all of its contents, and use it without local standard PDFs.
 
 The pair workspace combines:
 
@@ -401,7 +437,16 @@ The pair matrix includes:
 
 The matrix uses repeated headers and spans landscape pages as needed.
 
-Each grouped calculation chapter lists the included pairs, effective characteristics, all calculation candidates, references, transformations, governing selections, corrections, final distances, and warnings.
+Each grouped calculation chapter lists the included pairs, effective characteristics, all calculation candidates, transformations, governing selections, corrections, final distances, and warnings. Every mathematical step includes:
+
+- the symbolic mathematical formula rendered in LaTeX;
+- the same formula with actual values and units substituted;
+- the unrounded result and the final rounded result;
+- for table lookups, the selected table/row/column or bounding interpolation cells;
+- the interpolation or correction equation where applicable;
+- the exact standard number, edition, clause, table, figure, or note reference stored by the rules package.
+
+The report does not reproduce complete licensed tables. It includes only the selected values and references needed to audit the project calculation.
 
 Report generation is deterministic:
 
@@ -441,6 +486,9 @@ Accuracy is treated as a product feature, not only a testing phase.
 - monotonic and cross-table consistency assertions where technically valid;
 - deterministic canonical package generation;
 - corruption and checksum rejection;
+- complete enumeration and audit display of every package table and formula;
+- rejection of unknown declarative operators and any executable content;
+- import and use of an approved package on a machine with no standards PDFs;
 - review and approval state transitions.
 
 ### 15.2 Calculation tests
@@ -448,7 +496,9 @@ Accuracy is treated as a product feature, not only a testing phase.
 - every supported table boundary;
 - values immediately below, at, between, and above boundaries;
 - interpolation and rounding;
-- basic versus reinforced behavior;
+- functional, basic, and reinforced behavior;
+- functional calculations without basic/reinforced scaling;
+- functional high-frequency acceptance or rejection according to the approved applicability mapping;
 - altitude boundaries and interpolation;
 - pollution degree, CTI/material group, and PCB branches;
 - 30 kHz transition and all supported high-frequency regions;
@@ -457,7 +507,7 @@ Accuracy is treated as a product feature, not only a testing phase.
 - creepage floor against clearance;
 - unsupported-range and unsupported-condition failures.
 
-Golden engineering cases store complete expected traces, not only final numbers, and are independently checked against the licensed standards.
+Golden engineering cases store complete expected traces, including rendered formulas, substituted values, table coordinates, and references, not only final numbers. They are independently checked against the licensed standards.
 
 ### 15.3 Property tests
 
@@ -477,7 +527,7 @@ Where technically valid for a fixed set of other inputs:
 - project/ruleset hash mismatch behavior;
 - pair generation when net classes are added or removed;
 - grouping and manual split behavior;
-- LaTeX escaping and stable report snapshots;
+- LaTeX escaping, formula substitution, source-reference rendering, and stable report snapshots;
 - PDF rendering checks for clipped tables, unreadable text, bad page breaks, and missing headers;
 - Windows GUI smoke tests;
 - clean Windows installer test with no preinstalled Python or LaTeX.
@@ -499,22 +549,24 @@ No calculation rule is considered ready until its extracted data has been review
 Version 1 is acceptable when:
 
 1. An engineer can import the two supplied IEC PDFs, review the extraction, and export an approved private `.icrules`.
-2. Another engineer can install that `.icrules` locally without access to the original maintainer workspace.
-3. An engineer can create net classes and the application creates every unique pair exactly once.
-4. Every pair supports the agreed manual inputs and default/override behavior, including frequency and impulse voltage.
-5. Supported pairs produce deterministic clearance, creepage, and complete traces.
-6. Unsupported or incomplete cases cannot produce a misleading final result.
-7. Identical cases group automatically; engineers can split but cannot incorrectly merge groups.
-8. Saving and reopening an `.icproj` reproduces the same inputs and, with the exact rules package and calculation-engine version, the same results.
-9. The generated `.tex` and PDF contain the matrix and grouped detailed calculations without layout defects.
-10. The public repository contains none of the licensed PDFs, private extracted IEC data, `.icrules`, or engineering projects.
+2. Another engineer can install and use that `.icrules` locally without access to the original maintainer workspace or either standard PDF.
+3. An engineer can audit every table cell, formula, parameter, mapping, reference, checksum, and approval record in an installed `.icrules`.
+4. An engineer can create net classes and the application creates every unique pair exactly once.
+5. Every pair supports the agreed manual inputs and default/override behavior, including frequency and impulse voltage.
+6. Functional, basic, and reinforced pairs follow their distinct approved calculation paths.
+7. Supported pairs produce deterministic clearance, creepage, and complete traces.
+8. Unsupported or incomplete cases cannot produce a misleading final result.
+9. Identical cases group automatically; engineers can split but cannot incorrectly merge groups.
+10. Saving and reopening an `.icproj` reproduces the same inputs and, with the exact rules package and calculation-engine version, the same results.
+11. The generated `.tex` and PDF contain the matrix, grouped detailed calculations, symbolic formulas, substituted values, units, and exact standard references without layout defects.
+12. The public repository contains none of the licensed PDFs, private extracted IEC data, `.icrules`, engineering projects, or rules-audit exports.
 
 ## 18. Future extensions
 
 The architecture deliberately leaves room for:
 
 - automatic voltage derivation from net-class waveform models;
-- functional and supplementary insulation;
+- supplementary insulation;
 - solid-insulation and test calculations;
 - IEC 60664-3 coating/potting support;
 - cryptographically signed organizational rules packages;
