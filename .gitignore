@@ -21,6 +21,7 @@ __pycache__/
 /.venv/
 /build/
 /dist/
+/.worktrees/
 
 # Operating-system and editor files
 .DS_Store
