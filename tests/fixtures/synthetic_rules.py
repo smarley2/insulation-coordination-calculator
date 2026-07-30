@@ -663,20 +663,12 @@ def synthetic_hf_rule_package() -> RulePackage:
     )
     altitude = Formula(
         id="synthetic-altitude-correction",
-        expression=Multiply(
-            operands=(
-                Variable(name="clearance_mm"),
-                LinearInterpolate(
-                    table_id="synthetic-altitude-factor",
-                    x=Variable(name="altitude_m"),
-                ),
-            )
+        expression=LinearInterpolate(
+            table_id="synthetic-altitude-factor",
+            x=Variable(name="altitude_m"),
         ),
-        unit="mm",
-        parameter_sets=parameter_set(
-            ("clearance_mm", "mm"),
-            ("altitude_m", "m"),
-        ),
+        unit="1",
+        parameter_sets=parameter_set(("altitude_m", "m")),
         supported_ranges=(
             SupportedRange(
                 variable="altitude_m",
@@ -686,7 +678,7 @@ def synthetic_hf_rule_package() -> RulePackage:
                 source=reference,
             ),
         ),
-        latex="d_{alt,synthetic}=d k(h)",
+        latex="k_{alt,synthetic}=k(h)",
         source=reference,
     )
     hf_creepage = Formula(
