@@ -27,10 +27,14 @@ from insulation_coordination.domain.project import (
     PairVoltages,
 )
 from insulation_coordination.domain.rules import (
+    Compare,
+    LinearInterpolate,
     Literal,
     Lookup,
     Multiply,
+    Parameter,
     RulePackage,
+    Select,
     SupportedRange,
     Variable,
 )
@@ -805,6 +809,276 @@ def test_altitude_applies_after_part1_governing_even_without_part4(
     assert result.trace.used_part4 is False
     assert result.trace.pre_altitude_clearance_mm == Decimal(3)
     assert result.clearance_mm == Decimal("3.3")
+
+
+def test_direct_altitude_interpolation_retains_selected_factor_column_sources(
+    case_factory,
+    synthetic_hf_rules: RulePackage,
+    tmp_path: Path,
+) -> None:
+    factor = next(
+        table for table in synthetic_hf_rules.tables if table.id == "synthetic-altitude-factor"
+    )
+    expanded_factor = factor.model_copy(
+        update={
+            "column_axis": factor.column_axis.model_copy(
+                update={"values": (Decimal(1), Decimal(2))}
+            ),
+            "cells": (
+                *factor.cells,
+                *(
+                    cell.model_copy(
+                        update={
+                            "column": 1,
+                            "value": Decimal(9),
+                            "source": cell.source.model_copy(update={"column": "unused"}),
+                        }
+                    )
+                    for cell in factor.cells
+                ),
+            ),
+        }
+    )
+    rules = _seal_rules(
+        _replace_formula(
+            synthetic_hf_rules.model_copy(
+                update={
+                    "tables": tuple(
+                        expanded_factor if table.id == factor.id else table
+                        for table in synthetic_hf_rules.tables
+                    )
+                }
+            ),
+            "synthetic-altitude-correction",
+            expression=LinearInterpolate(
+                table_id=factor.id,
+                x=Variable(name="altitude_m"),
+                column=Literal(value=Decimal(1)),
+            ),
+        ),
+        tmp_path / "explicit-altitude-factor-column.icrules",
+    )
+
+    result = calculate_pair(
+        case_factory(frequency_hz="100000", altitude_m="3000"),
+        rules,
+    )
+    step = next(
+        step
+        for step in result.trace.steps
+        if step.semantic_rule_id == "iec60664-1:altitude_correction:base=2000m"
+    )
+
+    assert result.clearance_mm == Decimal("13.2")
+    assert step.source_reference == expanded_factor.source
+    assert step.source_cells == ("2000m/1", "4000m/1")
+    assert step.cell_references == (
+        expanded_factor.cells[0].source,
+        expanded_factor.cells[1].source,
+    )
+
+
+def test_composed_altitude_hump_matching_table_rows_is_rejected(
+    case_factory,
+    synthetic_hf_rules: RulePackage,
+    tmp_path: Path,
+) -> None:
+    direct = LinearInterpolate(
+        table_id="synthetic-altitude-factor",
+        x=Variable(name="altitude_m"),
+    )
+    hump = Select(
+        condition=Compare(
+            comparison="eq",
+            left=direct,
+            right=Literal(value=Decimal("1.1")),
+        ),
+        if_true=Literal(value=Decimal("0.5")),
+        if_false=Literal(value=Decimal(1)),
+    )
+    rules = _seal_rules(
+        _replace_formula(
+            synthetic_hf_rules,
+            "synthetic-altitude-correction",
+            expression=Multiply(operands=(direct, hump)),
+        ),
+        tmp_path / "composed-altitude-hump.icrules",
+    )
+
+    with pytest.raises(HighFrequencyCalculationError) as caught:
+        calculate_pair(
+            case_factory(frequency_hz="100000", altitude_m="3000"),
+            rules,
+        )
+
+    assert caught.value.code == "ALTITUDE_RULE_INVALID"
+
+
+def test_altitude_interpolation_requires_direct_altitude_variable(
+    case_factory,
+    synthetic_hf_rules: RulePackage,
+    tmp_path: Path,
+) -> None:
+    rules = _seal_rules(
+        _replace_formula(
+            synthetic_hf_rules,
+            "synthetic-altitude-correction",
+            expression=LinearInterpolate(
+                table_id="synthetic-altitude-factor",
+                x=Multiply(
+                    operands=(
+                        Variable(name="altitude_m"),
+                        Literal(value=Decimal(1)),
+                    )
+                ),
+            ),
+        ),
+        tmp_path / "composed-altitude-variable.icrules",
+    )
+
+    with pytest.raises(HighFrequencyCalculationError) as caught:
+        calculate_pair(
+            case_factory(frequency_hz="100000", altitude_m="3000"),
+            rules,
+        )
+
+    assert caught.value.code == "ALTITUDE_RULE_INVALID"
+
+
+def test_altitude_interpolation_rejects_non_altitude_variable(
+    case_factory,
+    synthetic_hf_rules: RulePackage,
+    tmp_path: Path,
+) -> None:
+    factor = next(
+        table for table in synthetic_hf_rules.tables if table.id == "synthetic-altitude-factor"
+    )
+    height_factor = factor.model_copy(
+        update={
+            "row_axis": factor.row_axis.model_copy(update={"id": "height_m"}),
+            "supported_ranges": tuple(
+                supported.model_copy(update={"variable": "height_m"})
+                for supported in factor.supported_ranges
+            ),
+        }
+    )
+    altitude = next(
+        formula
+        for formula in synthetic_hf_rules.formulas
+        if formula.id == "synthetic-altitude-correction"
+    )
+    rules = _seal_rules(
+        _replace_formula(
+            synthetic_hf_rules.model_copy(
+                update={
+                    "tables": tuple(
+                        height_factor if table.id == factor.id else table
+                        for table in synthetic_hf_rules.tables
+                    )
+                }
+            ),
+            altitude.id,
+            expression=LinearInterpolate(
+                table_id=height_factor.id,
+                x=Variable(name="height_m"),
+            ),
+            parameter_sets=(
+                altitude.parameter_sets[0].model_copy(
+                    update={
+                        "parameters": (
+                            *altitude.parameter_sets[0].parameters,
+                            Parameter(name="height_m", unit="m"),
+                        )
+                    }
+                ),
+            ),
+        ),
+        tmp_path / "wrong-altitude-variable.icrules",
+    )
+
+    with pytest.raises(HighFrequencyCalculationError) as caught:
+        calculate_pair(
+            case_factory(frequency_hz="100000", altitude_m="3000"),
+            rules,
+        )
+
+    assert caught.value.code == "ALTITUDE_RULE_INVALID"
+
+
+def test_altitude_interpolation_rejects_non_altitude_table(
+    case_factory,
+    synthetic_hf_rules: RulePackage,
+    tmp_path: Path,
+) -> None:
+    frequency_factor = next(
+        table for table in synthetic_hf_rules.tables if table.id == "synthetic-hf-frequency-factor"
+    )
+    wrong_table = frequency_factor.model_copy(
+        update={
+            "id": "synthetic-wrong-altitude-factor",
+            "row_axis": frequency_factor.row_axis.model_copy(update={"id": "altitude_m"}),
+            "supported_ranges": tuple(
+                supported.model_copy(update={"variable": "altitude_m"})
+                for supported in frequency_factor.supported_ranges
+            ),
+        }
+    )
+    rules = _seal_rules(
+        _replace_formula(
+            synthetic_hf_rules.model_copy(
+                update={"tables": (*synthetic_hf_rules.tables, wrong_table)}
+            ),
+            "synthetic-altitude-correction",
+            expression=LinearInterpolate(
+                table_id=wrong_table.id,
+                x=Variable(name="altitude_m"),
+            ),
+        ),
+        tmp_path / "wrong-altitude-table.icrules",
+    )
+
+    with pytest.raises(HighFrequencyCalculationError) as caught:
+        calculate_pair(
+            case_factory(frequency_hz="100000", altitude_m="3000"),
+            rules,
+        )
+
+    assert caught.value.code == "ALTITUDE_RULE_INVALID"
+
+
+def test_altitude_interpolation_rejects_composed_column_selector(
+    case_factory,
+    synthetic_hf_rules: RulePackage,
+    tmp_path: Path,
+) -> None:
+    rules = _seal_rules(
+        _replace_formula(
+            synthetic_hf_rules,
+            "synthetic-altitude-correction",
+            expression=LinearInterpolate(
+                table_id="synthetic-altitude-factor",
+                x=Variable(name="altitude_m"),
+                column=Select(
+                    condition=Compare(
+                        comparison="eq",
+                        left=Variable(name="altitude_m"),
+                        right=Variable(name="altitude_m"),
+                    ),
+                    if_true=Literal(value=Decimal(1)),
+                    if_false=Literal(value=Decimal(1)),
+                ),
+            ),
+        ),
+        tmp_path / "composed-altitude-column.icrules",
+    )
+
+    with pytest.raises(HighFrequencyCalculationError) as caught:
+        calculate_pair(
+            case_factory(frequency_hz="100000", altitude_m="3000"),
+            rules,
+        )
+
+    assert caught.value.code == "ALTITUDE_RULE_INVALID"
 
 
 def test_nonmonotonic_approved_altitude_curve_is_rejected_across_supported_domain(
