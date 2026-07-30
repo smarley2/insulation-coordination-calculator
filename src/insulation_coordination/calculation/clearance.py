@@ -10,6 +10,7 @@ from insulation_coordination.domain.quantities import DecimalValue
 from insulation_coordination.domain.rules import CompatibilityMapping, Formula, RulePackage
 from insulation_coordination.domain.trace import Quantity, TraceStep
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_formula
+from insulation_coordination.rules.validation import ValidationResult, validate_rule_package
 
 
 class CalculationError(ValueError):
@@ -30,6 +31,19 @@ class RuleMappingError(CalculationError):
 
 class CalculationRangeError(CalculationError):
     """An input is outside the range supported by its selected rule."""
+
+
+class RulePackageValidationError(CalculationError):
+    """The complete rules package failed its calculation trust gate."""
+
+    def __init__(self, issues: tuple[ValidationResult, ...]) -> None:
+        self.issues = issues
+        detail = "; ".join(f"{issue.code}: {issue.message}" for issue in issues)
+        super().__init__(f"rule package validation failed: {detail}")
+
+    @property
+    def issue_codes(self) -> tuple[str, ...]:
+        return tuple(issue.code for issue in self.issues)
 
 
 class DistanceCandidate(FrozenModel):
@@ -75,6 +89,7 @@ def calculate_clearance_candidates(
     effective: EffectiveCase,
     rules: RulePackage,
 ) -> tuple[DistanceCandidate, ...]:
+    _require_valid_rule_package(rules)
     return _calculate_clearance(effective, rules).candidates
 
 
@@ -196,6 +211,13 @@ def _required[T](value: T | None, field: str) -> T:
     if value is None:
         raise RequiredStressError(f"{field} is required for a Part 1 calculation")
     return value
+
+
+def _require_valid_rule_package(rules: RulePackage) -> None:
+    report = validate_rule_package(rules)
+    issues = tuple(result for result in report.results if not result.passed)
+    if issues:
+        raise RulePackageValidationError(issues)
 
 
 def _select_formula(

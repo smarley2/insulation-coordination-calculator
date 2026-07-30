@@ -214,6 +214,8 @@ def validate_rule_package(package: RulePackage) -> ValidationReport:
         if isinstance(node, Lookup | LinearInterpolate)
     }
     formula_tables_valid = referenced_tables <= set(table_ids)
+    mapping_links_valid = all(mapping.target_rule_id in formula_ids for mapping in package.mappings)
+    mapping_source_ids = [mapping.source_rule_id for mapping in package.mappings]
     for formula in package.formulas:
         for node in _walk_expression(formula.expression):
             if not isinstance(node, LinearInterpolate):
@@ -302,6 +304,16 @@ def validate_rule_package(package: RulePackage) -> ValidationReport:
             "table_references",
             referenced_tables <= set(table_ids),
             "formula table references exist",
+        ),
+        _result(
+            "mapping_links",
+            mapping_links_valid,
+            "compatibility mappings target existing formulas",
+        ),
+        _result(
+            "mapping_routes",
+            len(mapping_source_ids) == len(set(mapping_source_ids)),
+            "compatibility mapping source routes are unique",
         ),
         _result(
             "formula_tables",

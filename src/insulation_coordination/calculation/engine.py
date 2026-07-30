@@ -10,8 +10,10 @@ from insulation_coordination.calculation.clearance import (
     DistanceCandidate,
     RequiredStressError,
     RuleMappingError,
+    RulePackageValidationError,
     UnsupportedCaseError,
     _calculate_clearance,
+    _require_valid_rule_package,
 )
 from insulation_coordination.calculation.creepage import _calculate_creepage
 from insulation_coordination.domain.enums import InsulationType
@@ -21,7 +23,10 @@ from insulation_coordination.domain.rules import Maximum, RulePackage, Variable
 from insulation_coordination.domain.trace import Quantity, TraceStep
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_formula
 
+CALCULATION_ENGINE_VERSION = "part1-1"
+
 __all__ = [
+    "CALCULATION_ENGINE_VERSION",
     "CalculationError",
     "CalculationRangeError",
     "CalculationTrace",
@@ -29,6 +34,7 @@ __all__ = [
     "PairResult",
     "RequiredStressError",
     "RuleMappingError",
+    "RulePackageValidationError",
     "UnsupportedCaseError",
     "calculate_pair",
 ]
@@ -36,6 +42,10 @@ __all__ = [
 
 class CalculationTrace(FrozenModel):
     insulation_type: InsulationType
+    rule_package_id: UUID
+    rule_package_version: str
+    rule_package_sha256: str
+    calculation_engine_version: str
     clearance_candidates: tuple[DistanceCandidate, ...]
     creepage_candidates: tuple[DistanceCandidate, ...]
     omissions: tuple[CandidateOmission, ...]
@@ -69,12 +79,17 @@ class CalculationTrace(FrozenModel):
 class PairResult(FrozenModel):
     pair_id: UUID
     pair_key: str
+    rule_package_id: UUID
+    rule_package_version: str
+    rule_package_sha256: str
+    calculation_engine_version: str
     clearance_mm: DecimalValue
     creepage_mm: DecimalValue
     trace: CalculationTrace
 
 
 def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
+    _require_valid_rule_package(rules)
     kind = effective.insulation_type.value
     if kind is None:
         raise RequiredStressError("insulation_type is required for a Part 1 calculation")
@@ -106,21 +121,27 @@ def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
     steps = (
         *(step for candidate in clearance.candidates for step in candidate.steps),
         clearance_step,
-        *(
-            step
-            for candidate in creepage.candidates
-            if candidate.candidate_id != "clearance_floor"
-            for step in candidate.steps
-        ),
+        *(step for candidate in creepage.candidates for step in candidate.steps),
         creepage_step,
     )
+    rule_package_sha256 = rules.package_sha256
+    if rule_package_sha256 is None:
+        raise CalculationError("validated rule package unexpectedly has no SHA-256 identity")
     return PairResult(
         pair_id=effective.id,
         pair_key=effective.key,
+        rule_package_id=rules.manifest.package_id,
+        rule_package_version=rules.manifest.version,
+        rule_package_sha256=rule_package_sha256,
+        calculation_engine_version=CALCULATION_ENGINE_VERSION,
         clearance_mm=final_clearance,
         creepage_mm=final_creepage,
         trace=CalculationTrace(
             insulation_type=kind,
+            rule_package_id=rules.manifest.package_id,
+            rule_package_version=rules.manifest.version,
+            rule_package_sha256=rule_package_sha256,
+            calculation_engine_version=CALCULATION_ENGINE_VERSION,
             clearance_candidates=clearance.candidates,
             creepage_candidates=creepage.candidates,
             omissions=clearance.omissions + creepage.omissions,

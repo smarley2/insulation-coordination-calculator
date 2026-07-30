@@ -3,18 +3,21 @@ from __future__ import annotations
 from decimal import Decimal
 
 from insulation_coordination.calculation.clearance import (
+    CalculationError,
     CandidateCalculation,
     CandidateOmission,
     DistanceCandidate,
     RequiredStressError,
     _evaluate_candidate,
+    _require_valid_rule_package,
     _required,
     _select_formula,
 )
 from insulation_coordination.domain.enums import Applicability, InsulationType
 from insulation_coordination.domain.project import EffectiveCase
-from insulation_coordination.domain.rules import RulePackage
+from insulation_coordination.domain.rules import RulePackage, Variable
 from insulation_coordination.domain.trace import Quantity
+from insulation_coordination.rules.evaluator import EvaluationError, evaluate_formula
 
 
 def calculate_creepage_candidates(
@@ -22,6 +25,7 @@ def calculate_creepage_candidates(
     final_clearance_mm: Decimal,
     rules: RulePackage,
 ) -> tuple[DistanceCandidate, ...]:
+    _require_valid_rule_package(rules)
     return _calculate_creepage(effective, final_clearance_mm, rules).candidates
 
 
@@ -30,14 +34,7 @@ def _calculate_creepage(
     final_clearance_mm: Decimal,
     rules: RulePackage,
 ) -> CandidateCalculation:
-    floor = DistanceCandidate(
-        candidate_id="clearance_floor",
-        stress_field="final_clearance_mm",
-        stress=Quantity(value=final_clearance_mm, unit="mm"),
-        distance_mm=final_clearance_mm,
-        semantic_rule_id="part1.creepage.clearance_floor",
-        reason="final creepage cannot be less than final clearance",
-    )
+    floor = _clearance_floor_candidate(final_clearance_mm)
     tracking = effective.voltages.long_term_rms_v
     if tracking.applicability is Applicability.BLANK:
         raise RequiredStressError(
@@ -87,3 +84,30 @@ def _calculate_creepage(
         rules=rules,
     )
     return CandidateCalculation(candidates=(calculated, floor), omissions=())
+
+
+def _clearance_floor_candidate(final_clearance_mm: Decimal) -> DistanceCandidate:
+    stress = Quantity(value=final_clearance_mm, unit="mm")
+    try:
+        evaluated = evaluate_formula(
+            Variable(name="final_clearance_mm"),
+            {"final_clearance_mm": stress},
+            {},
+        )
+    except EvaluationError as error:
+        raise CalculationError(f"clearance-floor candidate evaluation failed: {error}") from error
+    step = evaluated.steps[-1].model_copy(
+        update={
+            "semantic_rule_id": "part1.creepage.clearance_floor.candidate",
+            "reason": "final clearance retained as the creepage floor candidate",
+        }
+    )
+    return DistanceCandidate(
+        candidate_id="clearance_floor",
+        stress_field="final_clearance_mm",
+        stress=stress,
+        distance_mm=evaluated.value,
+        semantic_rule_id="part1.creepage.clearance_floor.candidate",
+        steps=(step,),
+        reason=step.reason,
+    )

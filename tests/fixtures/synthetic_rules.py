@@ -204,7 +204,7 @@ def synthetic_rule_package() -> RulePackage:
             CompatibilityMapping(
                 id="synthetic-compatibility",
                 source_rule_id="synthetic-part-a",
-                target_rule_id="synthetic-part-b",
+                target_rule_id="synthetic-formula",
                 approved=True,
                 source=reference,
             ),
