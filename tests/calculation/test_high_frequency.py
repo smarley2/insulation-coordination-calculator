@@ -588,6 +588,12 @@ def test_homogeneous_field_iteration_is_bounded_decimal_and_fully_recorded(
         "iec60664-4:field_iteration:max_iterations",
     } <= set(result.trace.semantic_rule_ids)
     assert result.trace.governing_clearance_candidate_id == "part4_periodic_clearance"
+    assert result.verification_requirements == result.trace.verification_requirements
+    requirement = result.verification_requirements[0]
+    assert requirement.code == "FIELD_CONDITION_CONFIRMATION"
+    assert requirement.semantic_rule_id is not None
+    assert "field=homogeneous" in requirement.semantic_rule_id
+    assert requirement.source_reference is not None
 
 
 def test_failed_radius_criterion_routes_approximately_homogeneous_to_direct_path(

@@ -483,6 +483,37 @@ def test_clearance_floor_candidate_has_evaluator_trace_before_final_maximum(
     assert result.trace.steps[-1].operation == "maximum"
 
 
+def test_printed_wiring_branch_adds_construction_confirmation_advisories(
+    case_factory, synthetic_rules: RulePackage, tmp_path: Path
+) -> None:
+    original = next(mapping for mapping in synthetic_rules.mappings if mapping.id == "basic_creepage")
+    printed = original.model_copy(
+        update={
+            "id": "basic_creepage_printed_wiring",
+            "source_rule_id": original.source_rule_id.replace(
+                "construction=other", "construction=printed_wiring"
+            ),
+        }
+    )
+    rules = _seal_rules(
+        synthetic_rules.model_copy(update={"mappings": (*synthetic_rules.mappings, printed)}),
+        tmp_path / "printed-wiring.icrules",
+    )
+
+    result = calculate_pair(
+        case_factory(construction_type=ConstructionType.PRINTED_WIRING), rules
+    )
+
+    assert [warning.code for warning in result.warnings] == ["PCB_CONSTRUCTION_CONFIRMATION"]
+    assert [item.code for item in result.verification_requirements] == [
+        "PCB_CONSTRUCTION_CONFIRMATION"
+    ]
+    assert result.warnings == result.trace.warnings
+    assert result.verification_requirements == result.trace.verification_requirements
+    assert result.warnings[0].semantic_rule_id is not None
+    assert result.warnings[0].source_reference is not None
+
+
 def test_unsupported_special_assumptions_block_with_actionable_error(
     case_factory, synthetic_rules: RulePackage
 ) -> None:

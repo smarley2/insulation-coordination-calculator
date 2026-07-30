@@ -2,8 +2,14 @@ from decimal import Decimal, localcontext
 from uuid import UUID
 
 import pytest
+from pydantic import ValidationError
 
-from insulation_coordination.calculation.engine import calculate_pair
+from insulation_coordination.calculation.engine import (
+    CalculationWarning,
+    PairResult,
+    VerificationRequirement,
+    calculate_pair,
+)
 from insulation_coordination.calculation.grouping import (
     CalculationGroup,
     GroupingError,
@@ -97,6 +103,50 @@ def test_signature_is_stable_and_excludes_pair_identity(result_factory) -> None:
 
     assert calculation_signature(first) == calculation_signature(second)
     assert len(calculation_signature(first)) == 64
+
+
+def test_default_advisories_are_empty_and_immutable(result_factory) -> None:
+    result = result_factory(pair_id=1)
+
+    assert result.warnings == result.trace.warnings == ()
+    assert result.verification_requirements == result.trace.verification_requirements == ()
+    with pytest.raises(ValidationError):
+        result.warnings = ()
+
+
+def test_warning_only_difference_changes_signature(result_factory) -> None:
+    result = result_factory(pair_id=1)
+    changed = result.model_copy(
+        update={
+            "warnings": (
+                CalculationWarning(code="TEST_WARNING", message="Synthetic warning."),
+            )
+        }
+    )
+
+    assert calculation_signature(changed) != calculation_signature(result)
+
+
+def test_verification_only_difference_changes_signature(result_factory) -> None:
+    result = result_factory(pair_id=1)
+    changed = result.model_copy(
+        update={
+            "verification_requirements": (
+                VerificationRequirement(code="TEST_VERIFICATION", message="Synthetic check."),
+            )
+        }
+    )
+
+    assert calculation_signature(changed) != calculation_signature(result)
+
+
+def test_result_rejects_advisories_that_do_not_match_its_trace(result_factory) -> None:
+    result = result_factory(pair_id=1)
+    document = result.model_dump(mode="python")
+    document["warnings"] = (CalculationWarning(code="TEST_WARNING", message="Synthetic warning."),)
+
+    with pytest.raises(ValidationError, match="warnings must match"):
+        PairResult.model_validate(document)
 
 
 def test_signature_includes_effective_input_provenance_and_not_trace_reconstruction(result_factory) -> None:

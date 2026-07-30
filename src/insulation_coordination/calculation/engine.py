@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Self
 from uuid import UUID
+
+from pydantic import model_validator
 
 from insulation_coordination.calculation.clearance import (
     CalculationError,
@@ -29,7 +32,7 @@ from insulation_coordination.domain.project import (
     PairVoltages,
 )
 from insulation_coordination.domain.quantities import DecimalValue
-from insulation_coordination.domain.rules import Maximum, RulePackage, Variable
+from insulation_coordination.domain.rules import Maximum, RulePackage, SourceReference, Variable
 from insulation_coordination.domain.trace import Quantity, TraceStep
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_formula
 
@@ -40,6 +43,7 @@ __all__ = [
     "CalculationError",
     "CalculationRangeError",
     "CalculationTrace",
+    "CalculationWarning",
     "DistanceCandidate",
     "EffectiveInputSnapshot",
     "PairResult",
@@ -47,8 +51,23 @@ __all__ = [
     "RuleMappingError",
     "RulePackageValidationError",
     "UnsupportedCaseError",
+    "VerificationRequirement",
     "calculate_pair",
 ]
+
+
+class CalculationWarning(FrozenModel):
+    code: str
+    message: str
+    semantic_rule_id: str | None = None
+    source_reference: SourceReference | None = None
+
+
+class VerificationRequirement(FrozenModel):
+    code: str
+    message: str
+    semantic_rule_id: str | None = None
+    source_reference: SourceReference | None = None
 
 
 class CalculationTrace(FrozenModel):
@@ -71,6 +90,8 @@ class CalculationTrace(FrozenModel):
     governing_creepage_candidate_id: str
     governing_creepage_reason: str
     steps: tuple[TraceStep, ...]
+    warnings: tuple[CalculationWarning, ...] = ()
+    verification_requirements: tuple[VerificationRequirement, ...] = ()
 
     @property
     def semantic_rule_ids(self) -> tuple[str, ...]:
@@ -120,6 +141,18 @@ class PairResult(FrozenModel):
     creepage_mm: DecimalValue
     effective_inputs: EffectiveInputSnapshot
     trace: CalculationTrace
+    warnings: tuple[CalculationWarning, ...] = ()
+    verification_requirements: tuple[VerificationRequirement, ...] = ()
+
+    @model_validator(mode="after")
+    def _matches_trace_advisories(self) -> Self:
+        if self.warnings != self.trace.warnings:
+            raise ValueError("result warnings must match trace warnings")
+        if self.verification_requirements != self.trace.verification_requirements:
+            raise ValueError(
+                "result verification requirements must match trace verification requirements"
+            )
+        return self
 
 
 def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
@@ -196,6 +229,12 @@ def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
     rule_package_sha256 = rules.package_sha256
     if rule_package_sha256 is None:
         raise CalculationError("validated rule package unexpectedly has no SHA-256 identity")
+    warnings, verification_requirements = _advisories(
+        effective,
+        clearance_candidates,
+        creepage_candidates,
+        steps,
+    )
     return PairResult(
         pair_id=effective.id,
         pair_key=effective.key,
@@ -206,6 +245,8 @@ def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
         clearance_mm=final_clearance,
         creepage_mm=final_creepage,
         effective_inputs=_snapshot_effective_inputs(effective),
+        warnings=warnings,
+        verification_requirements=verification_requirements,
         trace=CalculationTrace(
             insulation_type=kind,
             rule_package_id=rules.manifest.package_id,
@@ -230,6 +271,8 @@ def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
             governing_creepage_candidate_id=creepage_governing.candidate_id,
             governing_creepage_reason=creepage_step.reason,
             steps=steps,
+            warnings=warnings,
+            verification_requirements=verification_requirements,
         ),
     )
 
@@ -248,6 +291,81 @@ def _snapshot_effective_inputs(effective: EffectiveCase) -> EffectiveInputSnapsh
         cti_or_material_group=effective.cti_or_material_group,
         conventional_construction_assumptions=effective.conventional_construction_assumptions,
     )
+
+
+def _advisories(
+    effective: EffectiveCase,
+    clearance_candidates: tuple[DistanceCandidate, ...],
+    creepage_candidates: tuple[DistanceCandidate, ...],
+    steps: tuple[TraceStep, ...],
+) -> tuple[tuple[CalculationWarning, ...], tuple[VerificationRequirement, ...]]:
+    warnings: list[CalculationWarning] = []
+    requirements: list[VerificationRequirement] = []
+    candidates = (*clearance_candidates, *creepage_candidates)
+
+    field = effective.field_condition.value
+    if field in (FieldCondition.HOMOGENEOUS, FieldCondition.APPROXIMATELY_HOMOGENEOUS):
+        semantic_rule_id, source_reference = _advisory_context(
+            candidates,
+            steps,
+            f"field={field.value}",
+        )
+        requirements.append(
+            VerificationRequirement(
+                code="FIELD_CONDITION_CONFIRMATION",
+                message="Confirm field classification.",
+                semantic_rule_id=semantic_rule_id,
+                source_reference=source_reference,
+            )
+        )
+
+    if effective.construction_type.value is ConstructionType.PRINTED_WIRING:
+        semantic_rule_id, source_reference = _advisory_context(
+            candidates,
+            steps,
+            "construction=printed_wiring",
+        )
+        warnings.append(
+            CalculationWarning(
+                code="PCB_CONSTRUCTION_CONFIRMATION",
+                message="Confirm printed-wiring construction classification.",
+                semantic_rule_id=semantic_rule_id,
+                source_reference=source_reference,
+            )
+        )
+        requirements.append(
+            VerificationRequirement(
+                code="PCB_CONSTRUCTION_CONFIRMATION",
+                message="Confirm printed-wiring construction classification.",
+                semantic_rule_id=semantic_rule_id,
+                source_reference=source_reference,
+            )
+        )
+
+    return tuple(warnings), tuple(requirements)
+
+
+def _advisory_context(
+    candidates: tuple[DistanceCandidate, ...],
+    steps: tuple[TraceStep, ...],
+    marker: str,
+) -> tuple[str | None, SourceReference | None]:
+    for candidate in candidates:
+        if marker in candidate.semantic_rule_id:
+            return candidate.semantic_rule_id, _source_reference(candidate.steps)
+    for step in steps:
+        if marker in step.semantic_rule_id:
+            return step.semantic_rule_id, _source_reference((step,))
+    return None, None
+
+
+def _source_reference(steps: tuple[TraceStep, ...]) -> SourceReference | None:
+    for step in steps:
+        if step.source_reference is not None:
+            return step.source_reference
+        if step.formula_source_reference is not None:
+            return step.formula_source_reference
+    return None
 
 
 def _validate_calculation_scope(effective: EffectiveCase) -> Decimal:

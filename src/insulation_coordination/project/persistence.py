@@ -33,8 +33,10 @@ def migrate_project_document(raw: dict[str, object]) -> dict[str, object]:
         raise ProjectVersionError(f"Project schema {version} is newer than supported version 2")
     document = deepcopy(raw)
     if version == 1:
+        if "group_splits" in document:
+            raise ProjectVersionError("Project schema 1 must not contain group_splits")
         document["schema_version"] = 2
-        document.setdefault("group_splits", [])
+        document["group_splits"] = []
     elif version != PROJECT_SCHEMA_VERSION:
         raise ProjectVersionError(f"Project schema {version} is unsupported")
     return document

@@ -149,6 +149,21 @@ def test_schema_v1_loads_with_empty_group_splits_and_save_writes_v2(
     assert saved["group_splits"] == []
 
 
+def test_schema_v1_with_mislabeled_group_splits_is_rejected_without_rewriting_source(
+    sample_project: Project, tmp_path: Path
+) -> None:
+    document = {"schema_version": 1, **sample_project.model_dump(mode="json")}
+    document["group_splits"] = []
+    original = json.dumps(document)
+    path = tmp_path / "mislabeled-v1.icproj"
+    path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ProjectVersionError, match="group_splits"):
+        load_project(path)
+
+    assert path.read_text(encoding="utf-8") == original
+
+
 def test_project_persists_group_split_metadata(sample_project: Project, tmp_path: Path) -> None:
     split = GroupSplit(signature="a" * 64, pair_ids=(str(sample_project.pairs[0].id),))
     project = sample_project.model_copy(update={"group_splits": (split,)})
