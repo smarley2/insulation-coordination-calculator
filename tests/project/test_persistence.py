@@ -5,6 +5,7 @@ import os
 from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
+from typing import Self
 from unittest.mock import Mock
 from uuid import UUID
 
@@ -22,6 +23,7 @@ from insulation_coordination.domain.project import (
     RulePackageReference,
 )
 from insulation_coordination.project.persistence import (
+    ProjectLoadError,
     ProjectSaveError,
     ProjectVersionError,
     load_project,
@@ -84,14 +86,17 @@ def test_failed_replace_preserves_previous_file(
     sample_project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "drive.icproj"
+    unrelated = tmp_path / "unrelated.tmp"
     path.write_text('{"schema_version":1,"sentinel":true}', encoding="utf-8")
+    unrelated.write_text("do not remove", encoding="utf-8")
     monkeypatch.setattr(os, "replace", Mock(side_effect=OSError("disk error")))
 
     with pytest.raises(ProjectSaveError, match="disk error"):
         save_project_atomic(path, sample_project)
 
     assert '"sentinel":true' in path.read_text(encoding="utf-8")
-    assert list(tmp_path.glob("*.tmp")) == []
+    assert unrelated.read_text(encoding="utf-8") == "do not remove"
+    assert list(tmp_path.glob("*.tmp")) == [unrelated]
 
 
 def test_migration_returns_new_document_without_overwriting_source() -> None:
@@ -119,6 +124,113 @@ def test_load_rejects_future_schema_without_changing_file(tmp_path: Path) -> Non
         load_project(path)
 
     assert path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize("location", ["top_level", "pair"])
+def test_load_rejects_unknown_persisted_fields(
+    sample_project: Project, tmp_path: Path, location: str
+) -> None:
+    path = tmp_path / "unknown.icproj"
+    save_project_atomic(path, sample_project)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    target = document if location == "top_level" else document["pairs"][0]
+    target["misspelled_input"] = "must not be discarded"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ProjectLoadError, match="misspelled_input") as error:
+        load_project(path)
+
+    assert "extra_forbidden" in str(error.value.__cause__)
+
+
+@pytest.mark.parametrize("field", ["package_id", "version"])
+def test_rules_reference_strips_and_rejects_blank_identifiers(field: str) -> None:
+    values = {"package_id": " rules ", "version": " 1 ", "sha256": "a" * 64}
+    assert RulePackageReference(**values).model_dump()[field] == values[field].strip()
+    values[field] = " \t "
+
+    with pytest.raises(ValidationError, match="at least 1 character"):
+        RulePackageReference(**values)
+
+
+def test_temp_creation_failure_preserves_previous_file(
+    sample_project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "drive.icproj"
+    path.write_text("previous", encoding="utf-8")
+    monkeypatch.setattr("tempfile.NamedTemporaryFile", Mock(side_effect=OSError("create error")))
+
+    with pytest.raises(ProjectSaveError, match="create error"):
+        save_project_atomic(path, sample_project)
+
+    assert path.read_text(encoding="utf-8") == "previous"
+
+
+@pytest.mark.parametrize("operation", ["write", "flush"])
+def test_temp_write_or_flush_failure_preserves_previous_file(
+    sample_project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    path = tmp_path / "drive.icproj"
+    path.write_text("previous", encoding="utf-8")
+
+    class FailingTemporaryFile:
+        name = str(tmp_path / "known.tmp")
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def write(self, _: str) -> int:
+            if operation == "write":
+                raise OSError("write error")
+            return 0
+
+        def flush(self) -> None:
+            if operation == "flush":
+                raise OSError("flush error")
+
+        def fileno(self) -> int:
+            return 0
+
+    monkeypatch.setattr("tempfile.NamedTemporaryFile", Mock(return_value=FailingTemporaryFile()))
+
+    with pytest.raises(ProjectSaveError, match=f"{operation} error"):
+        save_project_atomic(path, sample_project)
+
+    assert path.read_text(encoding="utf-8") == "previous"
+
+
+def test_fsync_failure_removes_only_known_temp_and_preserves_previous_file(
+    sample_project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "drive.icproj"
+    unrelated = tmp_path / "unrelated.tmp"
+    path.write_text("previous", encoding="utf-8")
+    unrelated.write_text("do not remove", encoding="utf-8")
+    monkeypatch.setattr(os, "fsync", Mock(side_effect=OSError("sync error")))
+
+    with pytest.raises(ProjectSaveError, match="sync error"):
+        save_project_atomic(path, sample_project)
+
+    assert path.read_text(encoding="utf-8") == "previous"
+    assert unrelated.read_text(encoding="utf-8") == "do not remove"
+    assert list(tmp_path.glob("*.tmp")) == [unrelated]
+
+
+def test_cleanup_failure_does_not_mask_replace_failure(
+    sample_project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "drive.icproj"
+    path.write_text("previous", encoding="utf-8")
+    monkeypatch.setattr(os, "replace", Mock(side_effect=OSError("replace error")))
+    monkeypatch.setattr(Path, "unlink", Mock(side_effect=OSError("cleanup error")))
+
+    with pytest.raises(ProjectSaveError, match="replace error"):
+        save_project_atomic(path, sample_project)
+
+    assert path.read_text(encoding="utf-8") == "previous"
 
 
 def test_project_requires_unique_net_names_and_consistent_pairs(sample_project: Project) -> None:

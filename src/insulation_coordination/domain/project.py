@@ -5,7 +5,7 @@ from itertools import combinations
 from typing import Self
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from insulation_coordination.domain.enums import (
     Applicability,
@@ -18,7 +18,7 @@ from insulation_coordination.domain.quantities import DecimalValue, PositiveDeci
 
 
 class FrozenModel(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class NetClass(FrozenModel):
@@ -107,6 +107,11 @@ class RulePackageReference(FrozenModel):
     package_id: str = Field(min_length=1)
     version: str = Field(min_length=1)
     sha256: str
+
+    @field_validator("package_id", "version", mode="before")
+    @classmethod
+    def _strip_identifier(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def _requires_sha256(self) -> Self:

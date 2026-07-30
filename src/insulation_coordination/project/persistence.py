@@ -6,6 +6,8 @@ import tempfile
 from copy import deepcopy
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from insulation_coordination.domain.project import Project
 
 PROJECT_SCHEMA_VERSION = 1
@@ -17,6 +19,10 @@ class ProjectSaveError(OSError):
 
 class ProjectVersionError(ValueError):
     """A project document uses an unsupported schema version."""
+
+
+class ProjectLoadError(ValueError):
+    """A project file could not be read or validated."""
 
 
 def migrate_project_document(raw: dict[str, object]) -> dict[str, object]:
@@ -31,12 +37,17 @@ def migrate_project_document(raw: dict[str, object]) -> dict[str, object]:
 
 
 def load_project(path: Path) -> Project:
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict):
-        raise TypeError("Project document root must be an object")
-    document = migrate_project_document(raw)
-    document.pop("schema_version")
-    return Project.model_validate(document)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise TypeError("Project document root must be an object")
+        document = migrate_project_document(raw)
+        document.pop("schema_version")
+        return Project.model_validate(document)
+    except ProjectVersionError:
+        raise
+    except (OSError, TypeError, ValidationError, json.JSONDecodeError) as error:
+        raise ProjectLoadError(f"Could not load project {path}: {error}") from error
 
 
 def save_project_atomic(path: Path, project: Project) -> None:
@@ -54,5 +65,8 @@ def save_project_atomic(path: Path, project: Project) -> None:
         os.replace(temporary_path, path)
     except Exception as error:
         if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
         raise ProjectSaveError(str(error)) from error
