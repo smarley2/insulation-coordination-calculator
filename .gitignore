@@ -1,0 +1,26 @@
+# Licensed standards and locally derived IEC rule data
+/standards/
+/private-rules/
+/rule-workspaces/
+*.icrules
+
+# Engineering project files and generated reports
+*.icproj
+/generated-reports/
+
+# Local brainstorming artifacts
+/.superpowers/
+
+# Python and build artifacts
+__pycache__/
+*.py[cod]
+/.pytest_cache/
+/.mypy_cache/
+/.ruff_cache/
+/.venv/
+/build/
+/dist/
+
+# Operating-system and editor files
+.DS_Store
+Thumbs.db
