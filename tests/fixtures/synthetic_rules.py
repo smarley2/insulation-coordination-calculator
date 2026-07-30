@@ -411,6 +411,426 @@ def synthetic_part1_rule_package() -> RulePackage:
     )
 
 
+def synthetic_hf_rule_package() -> RulePackage:
+    base = synthetic_part1_rule_package()
+    reference = SourceReference(
+        standard="SYNTHETIC-PART-4",
+        edition="1",
+        clause="synthetic",
+        table="synthetic-hf-data",
+        row="synthetic row",
+        column="synthetic column",
+        note="Visibly synthetic fixture only; contains no IEC numeric values.",
+    )
+
+    def table(
+        table_id: str,
+        row_id: str,
+        row_unit: str,
+        rows: tuple[str, ...],
+        unit: str,
+        values: tuple[str, ...],
+    ) -> Table:
+        return Table(
+            id=table_id,
+            unit=unit,
+            row_axis=TableAxis(
+                id=row_id,
+                unit=row_unit,
+                values=tuple(Decimal(value) for value in rows),
+            ),
+            column_axis=TableAxis(
+                id=f"{table_id}_branch",
+                unit="1",
+                values=(Decimal(1),),
+            ),
+            cells=tuple(
+                TableCell(
+                    row=index,
+                    column=0,
+                    value=Decimal(value),
+                    unit=unit,
+                    source=reference.model_copy(update={"row": row, "column": "synthetic"}),
+                )
+                for index, (row, value) in enumerate(zip(rows, values, strict=True))
+            ),
+            supported_ranges=(
+                SupportedRange(
+                    variable=row_id,
+                    minimum=Decimal(rows[0]),
+                    maximum=Decimal(rows[-1]),
+                    unit=row_unit,
+                    source=reference,
+                ),
+            ),
+            interpolation="linear" if len(rows) > 1 else "none",
+            source=reference,
+        )
+
+    hf_tables = (
+        table(
+            "synthetic-hf-clearance-stress",
+            "periodic_peak_v",
+            "V",
+            ("100", "600"),
+            "mm",
+            ("1", "6"),
+        ),
+        table(
+            "synthetic-hf-frequency-factor",
+            "frequency_hz",
+            "Hz",
+            ("30000", "100000"),
+            "1",
+            ("1", "2"),
+        ),
+        table(
+            "synthetic-hf-creepage-stress",
+            "periodic_peak_v",
+            "V",
+            ("100", "600"),
+            "mm",
+            ("0.5", "3"),
+        ),
+        table(
+            "synthetic-hf-critical-frequency-scale",
+            "synthetic_constant",
+            "1",
+            ("1",),
+            "Hz",
+            ("10000",),
+        ),
+        table(
+            "synthetic-hf-iteration-tolerance",
+            "synthetic_constant",
+            "1",
+            ("1",),
+            "mm",
+            ("0.2",),
+        ),
+        table(
+            "synthetic-hf-iteration-limit",
+            "synthetic_constant",
+            "1",
+            ("1",),
+            "iterations",
+            ("10",),
+        ),
+        table(
+            "synthetic-altitude-factor",
+            "altitude_m",
+            "m",
+            ("2000", "4000", "6000"),
+            "1",
+            ("1", "1.2", "1.5"),
+        ),
+    )
+
+    def parameter_set(*parameters: tuple[str, str]) -> tuple[ParameterSet, ...]:
+        return (
+            ParameterSet(
+                id="synthetic-default",
+                parameters=tuple(Parameter(name=name, unit=unit) for name, unit in parameters),
+                source=reference,
+            ),
+        )
+
+    hf_distance = Multiply(
+        operands=(
+            LinearInterpolate(
+                table_id="synthetic-hf-clearance-stress",
+                x=Variable(name="periodic_peak_v"),
+            ),
+            LinearInterpolate(
+                table_id="synthetic-hf-frequency-factor",
+                x=Variable(name="frequency_hz"),
+            ),
+        )
+    )
+    direct = Formula(
+        id="synthetic-hf-inhomogeneous-clearance",
+        expression=hf_distance,
+        unit="mm",
+        parameter_sets=parameter_set(
+            ("periodic_peak_v", "V"),
+            ("frequency_hz", "Hz"),
+        ),
+        latex="d_{hf,synthetic}=g(U_p)h(f)",
+        applicability="Synthetic direct inhomogeneous Part 4 route.",
+        source=reference,
+    )
+    homogeneous = Formula(
+        id="synthetic-hf-homogeneous-clearance",
+        expression=Select(
+            condition=Compare(
+                comparison="gt",
+                left=Variable(name="frequency_hz"),
+                right=Variable(name="critical_frequency_hz"),
+            ),
+            if_true=Divide(
+                numerator=Add(
+                    operands=(
+                        Variable(name="clearance_mm"),
+                        hf_distance,
+                    )
+                ),
+                denominator=Literal(value=Decimal(2)),
+            ),
+            if_false=hf_distance,
+        ),
+        unit="mm",
+        parameter_sets=parameter_set(
+            ("periodic_peak_v", "V"),
+            ("frequency_hz", "Hz"),
+            ("critical_frequency_hz", "Hz"),
+            ("clearance_mm", "mm"),
+        ),
+        latex="d_{n+1,synthetic}=q(d_n,U_p,f,f_c)",
+        applicability="Synthetic bounded homogeneous Part 4 route.",
+        source=reference,
+    )
+    critical_frequency = Formula(
+        id="synthetic-hf-critical-frequency",
+        expression=Multiply(
+            operands=(
+                Lookup(
+                    table_id="synthetic-hf-critical-frequency-scale",
+                    row=Literal(value=Decimal(1)),
+                    column=Literal(value=Decimal(1)),
+                ),
+                Divide(
+                    numerator=Variable(name="radius_mm"),
+                    denominator=Variable(name="clearance_mm"),
+                ),
+            )
+        ),
+        unit="Hz",
+        parameter_sets=parameter_set(
+            ("radius_mm", "mm"),
+            ("clearance_mm", "mm"),
+        ),
+        latex="f_{c,synthetic}=k r/d",
+        source=reference,
+    )
+    radius_criterion = Formula(
+        id="synthetic-hf-radius-criterion",
+        expression=Compare(
+            comparison="ge",
+            left=Divide(
+                numerator=Variable(name="radius_mm"),
+                denominator=Variable(name="clearance_mm"),
+            ),
+            right=Literal(value=Decimal("0.5")),
+        ),
+        unit="bool",
+        parameter_sets=parameter_set(
+            ("radius_mm", "mm"),
+            ("clearance_mm", "mm"),
+        ),
+        latex="r/d\\geq k_{synthetic}",
+        source=reference,
+    )
+    functional_applicability = Formula(
+        id="synthetic-hf-functional-applicability",
+        expression=Compare(
+            comparison="eq",
+            left=Literal(value=Decimal(1)),
+            right=Literal(value=Decimal(1)),
+        ),
+        unit="bool",
+        latex="a_{functional,synthetic}=1",
+        source=reference,
+    )
+    tolerance = Formula(
+        id="synthetic-hf-tolerance",
+        expression=Lookup(
+            table_id="synthetic-hf-iteration-tolerance",
+            row=Literal(value=Decimal(1)),
+            column=Literal(value=Decimal(1)),
+        ),
+        unit="mm",
+        source=reference,
+    )
+    iteration_limit = Formula(
+        id="synthetic-hf-iteration-limit",
+        expression=Lookup(
+            table_id="synthetic-hf-iteration-limit",
+            row=Literal(value=Decimal(1)),
+            column=Literal(value=Decimal(1)),
+        ),
+        unit="iterations",
+        source=reference,
+    )
+    altitude = Formula(
+        id="synthetic-altitude-correction",
+        expression=Multiply(
+            operands=(
+                Variable(name="clearance_mm"),
+                LinearInterpolate(
+                    table_id="synthetic-altitude-factor",
+                    x=Variable(name="altitude_m"),
+                ),
+            )
+        ),
+        unit="mm",
+        parameter_sets=parameter_set(
+            ("clearance_mm", "mm"),
+            ("altitude_m", "m"),
+        ),
+        supported_ranges=(
+            SupportedRange(
+                variable="altitude_m",
+                minimum=Decimal(2000),
+                maximum=Decimal(6000),
+                unit="m",
+                source=reference,
+            ),
+        ),
+        latex="d_{alt,synthetic}=d k(h)",
+        source=reference,
+    )
+    hf_creepage = Formula(
+        id="synthetic-hf-creepage",
+        expression=Multiply(
+            operands=(
+                LinearInterpolate(
+                    table_id="synthetic-hf-creepage-stress",
+                    x=Variable(name="periodic_peak_v"),
+                ),
+                LinearInterpolate(
+                    table_id="synthetic-hf-frequency-factor",
+                    x=Variable(name="frequency_hz"),
+                ),
+            )
+        ),
+        unit="mm",
+        parameter_sets=parameter_set(
+            ("periodic_peak_v", "V"),
+            ("frequency_hz", "Hz"),
+        ),
+        latex="l_{hf,synthetic}=p(U_p)h(f)",
+        source=reference,
+    )
+
+    mapping_specs: list[tuple[str, str, str]] = [
+        (
+            "functional_hf_applicability",
+            ("iec60664-4:functional_applicability:stress=periodic_peak_v:frequency=frequency_hz"),
+            functional_applicability.id,
+        ),
+        (
+            "hf_iteration_tolerance",
+            "iec60664-4:field_iteration:tolerance",
+            tolerance.id,
+        ),
+        (
+            "hf_iteration_limit",
+            "iec60664-4:field_iteration:max_iterations",
+            iteration_limit.id,
+        ),
+        (
+            "altitude_correction",
+            "iec60664-1:altitude_correction:base=2000m",
+            altitude.id,
+        ),
+    ]
+    for field in ("homogeneous", "approximately_homogeneous"):
+        mapping_specs.extend(
+            (
+                (
+                    f"hf_critical_frequency_{field}",
+                    f"iec60664-4:critical_frequency:field={field}",
+                    critical_frequency.id,
+                ),
+                (
+                    f"hf_radius_criterion_{field}",
+                    f"iec60664-4:radius_criterion:field={field}",
+                    radius_criterion.id,
+                ),
+            )
+        )
+    for kind in ("functional", "basic", "reinforced"):
+        for field in (
+            "inhomogeneous",
+            "homogeneous",
+            "approximately_homogeneous",
+        ):
+            target = direct.id if field == "inhomogeneous" else homogeneous.id
+            mapping_specs.append(
+                (
+                    f"{kind}_hf_clearance_{field}",
+                    (
+                        f"iec60664-4:clearance:{kind}:stress=periodic_peak_v:"
+                        f"frequency=frequency_hz:field={field}:pollution=2"
+                    ),
+                    target,
+                )
+            )
+        mapping_specs.append(
+            (
+                f"{kind}_hf_creepage",
+                (
+                    f"iec60664-4:creepage:{kind}:stress=periodic_peak_v:"
+                    "frequency=frequency_hz:construction=other:pollution=2:material=I"
+                ),
+                hf_creepage.id,
+            )
+        )
+        part1_clause = "5.2.4" if kind == "functional" else "5.2.5"
+        for field in ("homogeneous", "approximately_homogeneous"):
+            for treatment in ("impulse", "periodic"):
+                target = next(
+                    mapping.target_rule_id
+                    for mapping in base.mappings
+                    if mapping.source_rule_id
+                    == (
+                        f"iec60664-1:{part1_clause}:{kind}_clearance:"
+                        f"candidate={treatment}:field=inhomogeneous:pollution=2"
+                    )
+                )
+                mapping_specs.append(
+                    (
+                        f"{kind}_part1_{treatment}_{field}",
+                        (
+                            f"iec60664-1:{part1_clause}:{kind}_clearance:"
+                            f"candidate={treatment}:field={field}:pollution=2"
+                        ),
+                        target,
+                    )
+                )
+
+    return base.model_copy(
+        update={
+            "tables": (*base.tables, *hf_tables),
+            "formulas": (
+                *base.formulas,
+                direct,
+                homogeneous,
+                critical_frequency,
+                radius_criterion,
+                functional_applicability,
+                tolerance,
+                iteration_limit,
+                altitude,
+                hf_creepage,
+            ),
+            "mappings": (
+                *base.mappings,
+                *(
+                    CompatibilityMapping(
+                        id=mapping_id,
+                        source_rule_id=source_rule_id,
+                        target_rule_id=target_rule_id,
+                        approved=True,
+                        source=reference,
+                    )
+                    for mapping_id, source_rule_id, target_rule_id in mapping_specs
+                ),
+            ),
+        }
+    )
+
+
 @pytest.fixture
 def synthetic_package() -> RulePackage:
     return synthetic_rule_package()

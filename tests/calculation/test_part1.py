@@ -493,10 +493,10 @@ def test_unsupported_special_assumptions_block_with_actionable_error(
         )
 
 
-def test_frequency_above_part1_scope_blocks_at_extension_seam(
+def test_frequency_above_part1_scope_requires_an_approved_part4_mapping(
     case_factory, synthetic_rules: RulePackage
 ) -> None:
-    with pytest.raises(UnsupportedCaseError, match="through 30000 Hz"):
+    with pytest.raises(RuleMappingError, match="part4_periodic_clearance mapping is missing"):
         calculate_pair(case_factory(frequency_hz="30001"), synthetic_rules)
 
 

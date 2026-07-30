@@ -16,6 +16,11 @@ from insulation_coordination.calculation.clearance import (
     _require_valid_rule_package,
 )
 from insulation_coordination.calculation.creepage import _calculate_creepage
+from insulation_coordination.calculation.high_frequency import (
+    FieldIteration,
+    _apply_altitude_correction,
+    _calculate_high_frequency_candidates,
+)
 from insulation_coordination.domain.enums import InsulationType
 from insulation_coordination.domain.project import EffectiveCase, FrozenModel
 from insulation_coordination.domain.quantities import DecimalValue
@@ -23,7 +28,7 @@ from insulation_coordination.domain.rules import Maximum, RulePackage, Variable
 from insulation_coordination.domain.trace import Quantity, TraceStep
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_formula
 
-CALCULATION_ENGINE_VERSION = "part1-1"
+CALCULATION_ENGINE_VERSION = "part1-part4-1"
 
 __all__ = [
     "CALCULATION_ENGINE_VERSION",
@@ -46,6 +51,12 @@ class CalculationTrace(FrozenModel):
     rule_package_version: str
     rule_package_sha256: str
     calculation_engine_version: str
+    used_part4: bool
+    pre_altitude_clearance_mm: DecimalValue
+    altitude_correction_applied: bool
+    hf_iterations: tuple[FieldIteration, ...]
+    hf_iteration_tolerance_mm: DecimalValue | None
+    hf_iteration_max_iterations: int | None
     clearance_candidates: tuple[DistanceCandidate, ...]
     creepage_candidates: tuple[DistanceCandidate, ...]
     omissions: tuple[CandidateOmission, ...]
@@ -93,19 +104,46 @@ def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
     kind = effective.insulation_type.value
     if kind is None:
         raise RequiredStressError("insulation_type is required for a Part 1 calculation")
-    _validate_part1_scope(effective)
+    frequency = _validate_calculation_scope(effective)
 
     clearance = _calculate_clearance(effective, rules)
-    clearance_governing = _governing(clearance.candidates)
-    final_clearance = clearance_governing.distance_mm
+    base_clearance_governing = _governing(clearance.candidates)
+    used_part4 = frequency > Decimal(30000)
+    high_frequency = (
+        _calculate_high_frequency_candidates(
+            effective,
+            base_clearance_governing,
+            rules,
+        )
+        if used_part4
+        else None
+    )
+    clearance_candidates = (
+        clearance.candidates
+        if high_frequency is None
+        else clearance.candidates + high_frequency.clearance_candidates
+    )
+    clearance_governing = _governing(clearance_candidates)
+    pre_altitude_clearance = clearance_governing.distance_mm
     clearance_step = _maximum_step(
-        semantic_rule_id="part1.clearance.maximum",
-        candidates=clearance.candidates,
+        semantic_rule_id="clearance.maximum",
+        candidates=clearance_candidates,
         reason=f"{clearance_governing.candidate_id} governs clearance",
     )
+    altitude = _apply_altitude_correction(
+        effective,
+        pre_altitude_clearance,
+        rules,
+    )
+    final_clearance = altitude.clearance_mm
 
     creepage = _calculate_creepage(effective, final_clearance, rules)
-    creepage_governing = _governing(creepage.candidates)
+    creepage_candidates = (
+        creepage.candidates
+        if high_frequency is None
+        else creepage.candidates + high_frequency.creepage_candidates
+    )
+    creepage_governing = _governing(creepage_candidates)
     final_creepage = creepage_governing.distance_mm
     creepage_reason = (
         "final clearance governs creepage"
@@ -114,14 +152,22 @@ def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
     )
     creepage_step = _maximum_step(
         semantic_rule_id="part1.creepage.clearance_floor",
-        candidates=creepage.candidates,
+        candidates=creepage_candidates,
         reason=creepage_reason,
     )
 
     steps = (
+        *(() if high_frequency is None else high_frequency.applicability_steps),
         *(step for candidate in clearance.candidates for step in candidate.steps),
+        *(() if high_frequency is None else high_frequency.iteration_setting_steps),
+        *(
+            step
+            for candidate in (() if high_frequency is None else high_frequency.clearance_candidates)
+            for step in candidate.steps
+        ),
         clearance_step,
-        *(step for candidate in creepage.candidates for step in candidate.steps),
+        *altitude.steps,
+        *(step for candidate in creepage_candidates for step in candidate.steps),
         creepage_step,
     )
     rule_package_sha256 = rules.package_sha256
@@ -142,8 +188,18 @@ def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
             rule_package_version=rules.manifest.version,
             rule_package_sha256=rule_package_sha256,
             calculation_engine_version=CALCULATION_ENGINE_VERSION,
-            clearance_candidates=clearance.candidates,
-            creepage_candidates=creepage.candidates,
+            used_part4=used_part4,
+            pre_altitude_clearance_mm=pre_altitude_clearance,
+            altitude_correction_applied=altitude.applied,
+            hf_iterations=(() if high_frequency is None else high_frequency.iterations),
+            hf_iteration_tolerance_mm=(
+                None if high_frequency is None else high_frequency.iteration_tolerance_mm
+            ),
+            hf_iteration_max_iterations=(
+                None if high_frequency is None else high_frequency.iteration_max_iterations
+            ),
+            clearance_candidates=clearance_candidates,
+            creepage_candidates=creepage_candidates,
             omissions=clearance.omissions + creepage.omissions,
             governing_clearance_candidate_id=clearance_governing.candidate_id,
             governing_clearance_reason=clearance_step.reason,
@@ -154,16 +210,11 @@ def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
     )
 
 
-def _validate_part1_scope(effective: EffectiveCase) -> None:
+def _validate_calculation_scope(effective: EffectiveCase) -> Decimal:
     frequency = effective.frequency_hz.value
     if frequency is None:
         raise RequiredStressError(
             "frequency_hz is required in canonical Hz for a Part 1 calculation"
-        )
-    if frequency > Decimal(30000):
-        raise UnsupportedCaseError(
-            f"frequency {frequency} Hz is outside the Part 1 scope through 30000 Hz; "
-            "route it through the Task 7 high-frequency extension"
         )
     assumptions = effective.conventional_construction_assumptions.value
     if assumptions:
@@ -171,16 +222,7 @@ def _validate_part1_scope(effective: EffectiveCase) -> None:
             "conventional construction assumption flags are unsupported until an "
             "approved semantic mapping is provided: " + ", ".join(assumptions)
         )
-    if effective.electrode_radius_mm.value is not None:
-        raise UnsupportedCaseError(
-            "electrode-radius field iteration is owned by the Task 7 extension"
-        )
-    altitude = effective.altitude_m.value
-    if altitude not in (None, Decimal(0)):
-        raise UnsupportedCaseError(
-            "altitude correction is owned by the Task 7 extension; the Part 1 "
-            "synthetic engine accepts only the 0 m baseline"
-        )
+    return frequency
 
 
 def _governing(
