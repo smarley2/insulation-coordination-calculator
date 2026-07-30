@@ -17,6 +17,7 @@ from insulation_coordination.domain.rules import (
     Literal,
     Lookup,
     Maximum,
+    Minimum,
     Multiply,
     Round,
     Select,
@@ -155,6 +156,193 @@ def test_maximum_trace_identifies_governing_candidate() -> None:
     assert result.steps[-1].reason == "impulse candidate governs"
 
 
+@pytest.mark.parametrize(
+    ("expression", "value", "symbolic", "substituted"),
+    [
+        (
+            Multiply(
+                operands=(
+                    Add(
+                        operands=(
+                            Literal(value=Decimal(1)),
+                            Literal(value=Decimal(2)),
+                        )
+                    ),
+                    Literal(value=Decimal(3)),
+                )
+            ),
+            Decimal(9),
+            r"(1 + 2) \times 3",
+            "(1 1 + 2 1) × 3 1",
+        ),
+        (
+            Add(
+                operands=(
+                    Literal(value=Decimal(1)),
+                    Add(
+                        operands=(
+                            Literal(value=Decimal(2)),
+                            Literal(value=Decimal(3)),
+                        )
+                    ),
+                )
+            ),
+            Decimal(6),
+            "1 + (2 + 3)",
+            "1 1 + (2 1 + 3 1)",
+        ),
+        (
+            Divide(
+                numerator=Add(
+                    operands=(
+                        Literal(value=Decimal(8)),
+                        Literal(value=Decimal(4)),
+                    )
+                ),
+                denominator=Multiply(
+                    operands=(
+                        Literal(value=Decimal(2)),
+                        Literal(value=Decimal(3)),
+                    )
+                ),
+            ),
+            Decimal(2),
+            r"\frac{8 + 4}{2 \times 3}",
+            "(8 1 + 4 1) / (2 1 × 3 1)",
+        ),
+        (
+            Compare(
+                comparison="gt",
+                left=Multiply(
+                    operands=(
+                        Add(
+                            operands=(
+                                Literal(value=Decimal(1)),
+                                Literal(value=Decimal(2)),
+                            )
+                        ),
+                        Literal(value=Decimal(3)),
+                    )
+                ),
+                right=Add(
+                    operands=(
+                        Literal(value=Decimal(4)),
+                        Literal(value=Decimal(4)),
+                    )
+                ),
+            ),
+            Decimal(1),
+            r"(1 + 2) \times 3 > 4 + 4",
+            "(1 1 + 2 1) × 3 1 > 4 1 + 4 1",
+        ),
+        (
+            Select(
+                condition=Compare(
+                    comparison="lt",
+                    left=Literal(value=Decimal(1)),
+                    right=Literal(value=Decimal(2)),
+                ),
+                if_true=Divide(
+                    numerator=Add(
+                        operands=(
+                            Literal(value=Decimal(3)),
+                            Literal(value=Decimal(1)),
+                        )
+                    ),
+                    denominator=Literal(value=Decimal(2)),
+                ),
+                if_false=Multiply(
+                    operands=(
+                        Literal(value=Decimal(5)),
+                        Literal(value=Decimal(2)),
+                    )
+                ),
+            ),
+            Decimal(2),
+            r"\operatorname{select}(1 < 2, \frac{3 + 1}{2}, 5 \times 2)",
+            "select(1 1 < 2 1, (3 1 + 1 1) / 2 1, 5 1 × 2 1)",
+        ),
+    ],
+)
+def test_nested_trace_rendering_preserves_the_evaluated_tree(
+    expression: object,
+    value: Decimal,
+    symbolic: str,
+    substituted: str,
+) -> None:
+    result = evaluate_formula(expression, {}, {})
+
+    assert result.value == value
+    assert result.steps[-1].symbolic == symbolic
+    assert result.steps[-1].substituted == substituted
+
+
+@pytest.mark.parametrize(
+    ("expression", "reason"),
+    [
+        (
+            Maximum(
+                operands=(
+                    Add(
+                        operands=(
+                            Literal(value=Decimal(2)),
+                            Literal(value=Decimal(3)),
+                        )
+                    ),
+                    Literal(value=Decimal(4)),
+                )
+            ),
+            "candidate 1 governs",
+        ),
+        (
+            Maximum(
+                operands=(
+                    Add(
+                        operands=(
+                            Literal(value=Decimal(2)),
+                            Literal(value=Decimal(3)),
+                        )
+                    ),
+                    Literal(value=Decimal(5)),
+                )
+            ),
+            "candidate 1 governs",
+        ),
+        (
+            Minimum(
+                operands=(
+                    Divide(
+                        numerator=Literal(value=Decimal(2)),
+                        denominator=Literal(value=Decimal(2)),
+                    ),
+                    Literal(value=Decimal(2)),
+                )
+            ),
+            "candidate 1 sets the minimum",
+        ),
+        (
+            Minimum(
+                operands=(
+                    Literal(value=Decimal(2)),
+                    Divide(
+                        numerator=Literal(value=Decimal(2)),
+                        denominator=Literal(value=Decimal(2)),
+                    ),
+                )
+            ),
+            "candidate 2 sets the minimum",
+        ),
+    ],
+)
+def test_extreme_reason_uses_operand_position_and_first_equal_tie(
+    expression: object,
+    reason: str,
+) -> None:
+    result = evaluate_formula(expression, {}, {})
+
+    assert result.steps[-1].reason == reason
+
+
 def test_every_evaluated_node_has_an_ordered_immutable_complete_trace() -> None:
     formula = _formula(
         Add(
@@ -206,6 +394,73 @@ def test_lookup_requires_exact_axis_units_and_records_selected_cell(
     assert result.value == Decimal("1.00")
     assert result.steps[-1].source_cells == ("100V/1",)
     assert result.steps[-1].source_reference == synthetic_table.cells[0].source
+
+
+def test_lookup_trace_preserves_nested_row_and_column_expressions(
+    synthetic_table: Table,
+) -> None:
+    expression = Lookup(
+        table_id="creepage",
+        row=Add(
+            operands=(
+                Variable(name="base"),
+                Variable(name="offset"),
+            )
+        ),
+        column=Add(
+            operands=(
+                Literal(value=Decimal(0)),
+                Literal(value=Decimal(1)),
+            )
+        ),
+    )
+
+    result = evaluate_formula(
+        expression,
+        {
+            "base": Quantity(value=Decimal(40), unit="V"),
+            "offset": Quantity(value=Decimal(60), unit="V"),
+        },
+        {"creepage": synthetic_table},
+    )
+    step = result.steps[-1]
+
+    assert step.symbolic == r"\operatorname{lookup}_{creepage}(base + offset, 0 + 1)"
+    assert step.substituted == ("lookup creepage at row 40 V + 60 V, column 0 1 + 1 1")
+
+
+def test_interpolation_trace_preserves_nested_x_and_column_expressions(
+    synthetic_table: Table,
+) -> None:
+    expression = LinearInterpolate(
+        table_id="creepage",
+        x=Add(
+            operands=(
+                Variable(name="base"),
+                Variable(name="offset"),
+            )
+        ),
+        column=Add(
+            operands=(
+                Literal(value=Decimal(0)),
+                Literal(value=Decimal(1)),
+            )
+        ),
+    )
+
+    result = evaluate_formula(
+        expression,
+        {
+            "base": Quantity(value=Decimal(50), unit="V"),
+            "offset": Quantity(value=Decimal(100), unit="V"),
+        },
+        {"creepage": synthetic_table},
+    )
+    step = result.steps[-1]
+
+    assert step.symbolic == "y = y_0 + (x-x_0)(y_1-y_0)/(x_1-x_0)"
+    assert "(50 V + 100 V)" in step.substituted
+    assert "column 0 1 + 1 1" in step.substituted
 
 
 @pytest.mark.parametrize(
@@ -409,6 +664,110 @@ def test_table_operations_reject_values_outside_declared_supported_range(
             ),
             {"voltage": Quantity(value=Decimal(175), unit="V")},
             {"creepage": table},
+        )
+
+
+@pytest.mark.parametrize(
+    "supported",
+    [
+        SupportedRange(
+            variable="voltgae",
+            minimum=Decimal(100),
+            maximum=Decimal(200),
+            unit="V",
+            source=_source(),
+        ),
+        SupportedRange(
+            variable="voltage",
+            minimum=Decimal(100),
+            maximum=Decimal(200),
+            unit="kV",
+            source=_source(),
+        ),
+    ],
+)
+def test_table_revalidation_rejects_unlinked_or_unit_mismatched_ranges(
+    synthetic_table: Table,
+    supported: SupportedRange,
+) -> None:
+    table = synthetic_table.model_copy(update={"supported_ranges": (supported,)})
+
+    with pytest.raises(EvaluationError, match="invalid tables"):
+        evaluate_formula(
+            LinearInterpolate(
+                table_id="creepage",
+                x=Variable(name="voltage"),
+            ),
+            {"voltage": Quantity(value=Decimal(150), unit="V")},
+            {"creepage": table},
+        )
+
+
+def test_table_revalidation_accepts_linked_row_and_column_ranges(
+    synthetic_table: Table,
+) -> None:
+    table = synthetic_table.model_copy(
+        update={
+            "supported_ranges": (
+                SupportedRange(
+                    variable="voltage",
+                    minimum=Decimal(100),
+                    maximum=Decimal(200),
+                    unit="V",
+                    source=_source(),
+                ),
+                SupportedRange(
+                    variable="category",
+                    minimum=Decimal(1),
+                    maximum=Decimal(1),
+                    unit="1",
+                    source=_source(),
+                ),
+            )
+        }
+    )
+
+    interpolated = evaluate_formula(
+        LinearInterpolate(
+            table_id="creepage",
+            x=Variable(name="voltage"),
+        ),
+        {"voltage": Quantity(value=Decimal(150), unit="V")},
+        {"creepage": table},
+    )
+    looked_up = evaluate_formula(
+        Lookup(
+            table_id="creepage",
+            row=Variable(name="voltage"),
+            column=Literal(value=Decimal(1)),
+        ),
+        {"voltage": Quantity(value=Decimal(100), unit="V")},
+        {"creepage": table},
+    )
+
+    assert interpolated.value == Decimal("1.50")
+    assert looked_up.value == Decimal("1.00")
+
+
+def test_table_revalidation_rejects_duplicate_axis_ids(
+    synthetic_table: Table,
+) -> None:
+    ambiguous = synthetic_table.model_copy(
+        update={
+            "column_axis": synthetic_table.column_axis.model_copy(
+                update={"id": synthetic_table.row_axis.id}
+            )
+        }
+    )
+
+    with pytest.raises(EvaluationError, match="distinct axis IDs"):
+        evaluate_formula(
+            LinearInterpolate(
+                table_id="creepage",
+                x=Variable(name="voltage"),
+            ),
+            {"voltage": Quantity(value=Decimal(150), unit="V")},
+            {"creepage": ambiguous},
         )
 
 

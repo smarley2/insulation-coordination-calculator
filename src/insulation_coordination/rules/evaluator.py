@@ -52,6 +52,10 @@ from insulation_coordination.domain.trace import EvaluatedValue, Quantity, Trace
 DEFAULT_DECIMAL_PRECISION = 34
 _BOOLEAN_UNIT = "bool"
 _DIMENSIONLESS = "1"
+_COMPARE_PRECEDENCE = 10
+_ADD_PRECEDENCE = 20
+_MULTIPLY_PRECEDENCE = 30
+_ATOM_PRECEDENCE = 100
 _ROUNDING_MODES = {
     "ROUND_CEILING": ROUND_CEILING,
     "ROUND_DOWN": ROUND_DOWN,
@@ -81,6 +85,10 @@ class _Result:
     quantity: Quantity
     steps: tuple[TraceStep, ...]
     symbolic: str
+    substituted: str
+    symbolic_precedence: int
+    substituted_precedence: int
+    operation: str
     label: str
 
 
@@ -161,9 +169,27 @@ class _Evaluator:
             expression,
             quantity,
             children,
-            symbolic=" + ".join(child.symbolic for child in children),
-            substituted=" + ".join(_display(child.quantity) for child in children),
+            symbolic=" + ".join(
+                _render_child(
+                    child,
+                    "symbolic",
+                    _ADD_PRECEDENCE,
+                    group_equal=index > 0,
+                )
+                for index, child in enumerate(children)
+            ),
+            substituted=" + ".join(
+                _render_child(
+                    child,
+                    "substituted",
+                    _ADD_PRECEDENCE,
+                    group_equal=index > 0,
+                )
+                for index, child in enumerate(children)
+            ),
             reason="sum evaluated",
+            symbolic_precedence=_ADD_PRECEDENCE,
+            substituted_precedence=_ADD_PRECEDENCE,
         )
 
     def _multiply(self, expression: Multiply) -> _Result:
@@ -176,9 +202,27 @@ class _Evaluator:
             expression,
             quantity,
             children,
-            symbolic=r" \times ".join(child.symbolic for child in children),
-            substituted=" × ".join(_display(child.quantity) for child in children),
+            symbolic=r" \times ".join(
+                _render_child(
+                    child,
+                    "symbolic",
+                    _MULTIPLY_PRECEDENCE,
+                    group_equal=index > 0,
+                )
+                for index, child in enumerate(children)
+            ),
+            substituted=" × ".join(
+                _render_child(
+                    child,
+                    "substituted",
+                    _MULTIPLY_PRECEDENCE,
+                    group_equal=index > 0,
+                )
+                for index, child in enumerate(children)
+            ),
             reason="product evaluated",
+            symbolic_precedence=_MULTIPLY_PRECEDENCE,
+            substituted_precedence=_MULTIPLY_PRECEDENCE,
         )
 
     def _divide(self, expression: Divide) -> _Result:
@@ -201,8 +245,13 @@ class _Evaluator:
             quantity,
             (numerator, denominator),
             symbolic=rf"\frac{{{numerator.symbolic}}}{{{denominator.symbolic}}}",
-            substituted=f"{_display(numerator.quantity)} / {_display(denominator.quantity)}",
+            substituted=(
+                f"{_render_child(numerator, 'substituted', _MULTIPLY_PRECEDENCE)} / "
+                f"{_render_child(denominator, 'substituted', _MULTIPLY_PRECEDENCE, group_equal=True)}"
+            ),
             reason="quotient evaluated",
+            symbolic_precedence=_ATOM_PRECEDENCE,
+            substituted_precedence=_MULTIPLY_PRECEDENCE,
         )
 
     def _compare(self, expression: Compare) -> _Result:
@@ -227,9 +276,19 @@ class _Evaluator:
             expression,
             quantity,
             (left, right),
-            symbolic=f"{left.symbolic} {symbol} {right.symbolic}",
-            substituted=f"{_display(left.quantity)} {symbol} {_display(right.quantity)}",
+            symbolic=(
+                f"{_render_child(left, 'symbolic', _COMPARE_PRECEDENCE, group_equal=True)} "
+                f"{symbol} "
+                f"{_render_child(right, 'symbolic', _COMPARE_PRECEDENCE, group_equal=True)}"
+            ),
+            substituted=(
+                f"{_render_child(left, 'substituted', _COMPARE_PRECEDENCE, group_equal=True)} "
+                f"{symbol} "
+                f"{_render_child(right, 'substituted', _COMPARE_PRECEDENCE, group_equal=True)}"
+            ),
             reason=f"comparison is {str(matched).lower()}",
+            symbolic_precedence=_COMPARE_PRECEDENCE,
+            substituted_precedence=_COMPARE_PRECEDENCE,
         )
 
     def _select(self, expression: Select) -> _Result:
@@ -249,8 +308,7 @@ class _Evaluator:
             (condition, if_true, if_false),
             symbolic=rf"\operatorname{{select}}({condition.symbolic}, {if_true.symbolic}, {if_false.symbolic})",
             substituted=(
-                f"select({_display(condition.quantity)}, "
-                f"{_display(if_true.quantity)}, {_display(if_false.quantity)})"
+                f"select({condition.substituted}, {if_true.substituted}, {if_false.substituted})"
             ),
             reason=f"{'true' if selected is if_true else 'false'} branch selected",
             label=selected.label,
@@ -262,18 +320,25 @@ class _Evaluator:
         unit = _compatible_unit(children, "minimum" if minimum else "maximum")
         chooser = min if minimum else max
         target = chooser(child.quantity.value for child in children)
-        winner = next(child for child in children if child.quantity.value == target)
+        winner_index, winner = next(
+            (index, child) for index, child in enumerate(children) if child.quantity.value == target
+        )
         quantity = _quantity(target, unit)
         operation = "min" if minimum else "max"
-        reason = f"{winner.label} {'sets the minimum' if minimum else 'governs'}"
+        winner_label = (
+            winner.label
+            if isinstance(expression.operands[winner_index], Variable)
+            else f"candidate {winner_index + 1}"
+        )
+        reason = f"{winner_label} {'sets the minimum' if minimum else 'governs'}"
         return self._result(
             expression,
             quantity,
             children,
             symbolic=rf"\{operation}({', '.join(child.symbolic for child in children)})",
-            substituted=f"{operation}({', '.join(_display(child.quantity) for child in children)})",
+            substituted=f"{operation}({', '.join(child.substituted for child in children)})",
             reason=reason,
-            label=winner.label,
+            label=winner_label,
         )
 
     def _round(self, expression: Round) -> _Result:
@@ -290,7 +355,7 @@ class _Evaluator:
             quantity,
             (child,),
             symbolic=rf"\operatorname{{round}}({child.symbolic}, {expression.places})",
-            substituted=f"round({_display(child.quantity)}, {expression.places})",
+            substituted=f"round({child.substituted}, {expression.places})",
             reason=f"rounded to {expression.places} places using {expression.mode}",
             unrounded=child.quantity.value,
             rounded=rounded,
@@ -313,10 +378,12 @@ class _Evaluator:
             expression,
             quantity,
             (row, column),
-            symbolic=rf"\operatorname{{lookup}}_{{{table.id}}}(r, c)",
+            symbolic=(
+                rf"\operatorname{{lookup}}_{{{table.id}}}"
+                f"({row.symbolic}, {column.symbolic})"
+            ),
             substituted=(
-                f"lookup {table.id} at row {_display(row.quantity)}, "
-                f"column {_display(column.quantity)}"
+                f"lookup {table.id} at row {row.substituted}, column {column.substituted}"
             ),
             reason="exact table cell selected",
             source=cell.source,
@@ -347,10 +414,10 @@ class _Evaluator:
             children: tuple[_Result, ...] = (x,)
         else:
             _axis_input(column.quantity, table.column_axis, "column")
-            _supported_range(table, table.column_axis, column.quantity.value)
             column_index = _exact_axis_index(table.column_axis, column.quantity.value)
             column_quantity = column.quantity
             children = (x, column)
+        _supported_range(table, table.column_axis, column_quantity.value)
         lower_index, upper_index = _bounds(table.row_axis, x.quantity.value)
         lower = _cell(table, lower_index, column_index)
         upper = _cell(table, upper_index, column_index)
@@ -378,13 +445,16 @@ class _Evaluator:
                 rounding=_ROUNDING_MODES[table.rounding_mode],
             )
         quantity = _quantity(rounded, table.unit)
+        x_substituted = (
+            f"({x.substituted})" if x.substituted_precedence < _ATOM_PRECEDENCE else x.substituted
+        )
         substituted = (
-            f"{lower.value} {table.unit} + ({_display(x.quantity)} - "
+            f"{lower.value} {table.unit} + ({x_substituted} - "
             f"{_coordinate(x0, table.row_axis.unit)})"
             f"({upper.value} {table.unit} - {lower.value} {table.unit})"
             f"/({_coordinate(x1, table.row_axis.unit)} - "
             f"{_coordinate(x0, table.row_axis.unit)}), "
-            f"column {_display(column_quantity)}"
+            f"column {column.substituted if column is not None else _display(column_quantity)}"
         )
         return self._result(
             expression,
@@ -432,6 +502,8 @@ class _Evaluator:
         unrounded: Decimal | None = None,
         rounded: Decimal | None = None,
         label: str | None = None,
+        symbolic_precedence: int = _ATOM_PRECEDENCE,
+        substituted_precedence: int = _ATOM_PRECEDENCE,
     ) -> _Result:
         step = TraceStep(
             semantic_rule_id=(
@@ -461,6 +533,10 @@ class _Evaluator:
             quantity=quantity,
             steps=tuple(item for child in children for item in child.steps) + (step,),
             symbolic=symbolic,
+            substituted=substituted,
+            symbolic_precedence=symbolic_precedence,
+            substituted_precedence=substituted_precedence,
+            operation=expression.op,
             label=label or f"candidate {len(children) or 1}",
         )
 
@@ -568,9 +644,9 @@ def _validated_tables(tables: Mapping[str, Table]) -> dict[str, Table]:
         for table_id, table in tables.items():
             if not isinstance(table_id, str) or not isinstance(table, Table):
                 raise TypeError("tables must map string IDs to Table values")
-            validated[table_id] = Table.model_validate(
-                table.model_dump(mode="python", warnings=False)
-            )
+            normalized = Table.model_validate(table.model_dump(mode="python", warnings=False))
+            _validate_table_range_links(normalized)
+            validated[table_id] = normalized
     except (
         AttributeError,
         DecimalException,
@@ -637,6 +713,26 @@ def _interpolation_cell_id(
     if len(table.column_axis.values) == 1:
         return row
     return f"{row}/{_coordinate(column_value, table.column_axis.unit)}"
+
+
+def _render_child(
+    child: _Result,
+    field: str,
+    parent_precedence: int,
+    *,
+    group_equal: bool = False,
+) -> str:
+    if field == "symbolic":
+        text = child.symbolic
+        precedence = child.symbolic_precedence
+    elif field == "substituted":
+        text = child.substituted
+        precedence = child.substituted_precedence
+    else:
+        raise ValueError(f"unknown rendered field {field!r}")
+    if precedence < parent_precedence or (group_equal and precedence == parent_precedence):
+        return f"({text})"
+    return text
 
 
 def _require_numeric(results: tuple[_Result, ...]) -> None:
@@ -734,3 +830,28 @@ def _supported_range(table: Table, axis: TableAxis, value: Decimal) -> None:
         )
     if not any(supported.minimum <= value <= supported.maximum for supported in ranges):
         raise EvaluationError(f"axis {axis.id!r} key {value} is outside its supported range")
+
+
+def _validate_table_range_links(table: Table) -> None:
+    if table.row_axis.id == table.column_axis.id:
+        raise ValueError(f"table {table.id!r} must have distinct axis IDs")
+    axes = {
+        table.row_axis.id: table.row_axis,
+        table.column_axis.id: table.column_axis,
+    }
+    for supported in table.supported_ranges:
+        axis = axes.get(supported.variable)
+        if axis is None:
+            raise ValueError(
+                f"table {table.id!r} supported range {supported.variable!r} "
+                "is not linked to an axis"
+            )
+        if supported.unit != axis.unit:
+            raise ValueError(
+                f"table {table.id!r} supported range unit {supported.unit!r} "
+                f"does not match axis {axis.id!r} unit {axis.unit!r}"
+            )
+        if supported.minimum < min(axis.values) or supported.maximum > max(axis.values):
+            raise ValueError(
+                f"table {table.id!r} supported range for {axis.id!r} exceeds the axis bounds"
+            )
