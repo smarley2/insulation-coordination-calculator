@@ -5,7 +5,14 @@ from hypothesis import given
 from hypothesis import strategies as st
 from pydantic import ValidationError
 
-from insulation_coordination.domain.project import NetClass, PairCase
+from insulation_coordination.domain.project import (
+    NetClass,
+    PairCase,
+    Project,
+    ProjectDefaults,
+    ProjectMetadata,
+    RulePackageReference,
+)
 from insulation_coordination.project.pairs import canonical_pair_key, reconcile_pairs
 
 
@@ -54,3 +61,24 @@ def test_pair_reconciliation_has_one_unique_pair_per_unordered_combination(ids: 
     for pair in pairs:
         assert canonical_pair_key(pair.net_a, pair.net_b) == pair.key
         assert canonical_pair_key(pair.net_b, pair.net_a) == pair.key
+
+
+def test_project_rejects_duplicate_pair_ids_even_for_distinct_net_pairs() -> None:
+    classes = tuple(NetClass(id=UUID(int=index), name=f"N{index}") for index in (1, 2, 3))
+    pairs = list(reconcile_pairs(classes, ()))
+    pairs[1] = pairs[1].model_copy(update={"id": pairs[0].id})
+
+    with pytest.raises(ValidationError, match="Pair IDs must be unique"):
+        Project(
+            id=UUID(int=10),
+            metadata=ProjectMetadata(title="Synthetic"),
+            application_version="test",
+            required_rules=RulePackageReference(
+                package_id="synthetic",
+                version="1",
+                sha256="a" * 64,
+            ),
+            defaults=ProjectDefaults(),
+            net_classes=classes,
+            pairs=tuple(pairs),
+        )

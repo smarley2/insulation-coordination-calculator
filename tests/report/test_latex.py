@@ -3,10 +3,22 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-from insulation_coordination.calculation.grouping import calculation_signature
-from insulation_coordination.domain.rules import SourceReference
+from insulation_coordination.calculation.engine import (
+    CalculationWarning,
+    VerificationRequirement,
+    calculate_pair,
+)
+from insulation_coordination.calculation.grouping import calculation_signature, group_results
+from insulation_coordination.domain.project import RulePackageReference
+from insulation_coordination.domain.rules import Round, SourceReference
+from insulation_coordination.project.resolver import resolve_effective_case
 from insulation_coordination.report.latex import render_latex
-from insulation_coordination.report.model import ReportBuildError, build_report_model
+from insulation_coordination.report.model import (
+    ReportBuildError,
+    TrustedFormulaLatex,
+    build_report_model,
+)
+from insulation_coordination.rules.archive import load_rule_package, write_rule_package
 
 
 @pytest.fixture
@@ -82,6 +94,17 @@ def test_report_rejects_missing_extra_duplicate_and_stale_results(report_inputs)
         )
 
 
+def test_report_defensively_rejects_unchecked_duplicate_project_pair_ids(
+    report_inputs,
+) -> None:
+    project, results, groups, rules = report_inputs
+    pair = project.pairs[0]
+    unchecked = project.model_copy(update={"pairs": (pair, pair.model_copy())})
+
+    with pytest.raises(ReportBuildError, match="duplicate pair ID in project"):
+        build_report_model(unchecked, results, groups, rules)
+
+
 def test_report_rejects_rule_engine_hash_and_group_mismatches(report_inputs) -> None:
     project, results, groups, rules = report_inputs
     result = results[0]
@@ -133,6 +156,8 @@ def test_matrix_and_group_chapter_snapshot_all_audit_fields(report_model) -> Non
     assert row.creepage_mm == calculation.creepage_mm
     assert calculation.clearance_candidates
     assert calculation.creepage_candidates
+    assert len(calculation.stresses) == 4
+    assert {stress.provenance for stress in calculation.stresses} == {"pair_input"}
     assert calculation.steps
     assert all(step.source_reference is not None for step in calculation.steps)
     assert {step.symbolic_latex.origin for step in calculation.steps} == {
@@ -140,6 +165,45 @@ def test_matrix_and_group_chapter_snapshot_all_audit_fields(report_model) -> Non
         "engine",
     }
     assert {step.substituted_latex.origin for step in calculation.steps} == {"engine"}
+
+
+def test_group_chapter_renders_all_voltage_states_and_pair_linked_advisories(
+    report_model,
+) -> None:
+    calculation = report_model.groups[0].calculations[0]
+    changed_calculation = calculation.model_copy(
+        update={
+            "warnings": (
+                CalculationWarning(code="PAIR_WARNING", message="Synthetic pair warning."),
+            ),
+            "verification_requirements": (
+                VerificationRequirement(
+                    code="PAIR_CHECK",
+                    message="Synthetic pair verification.",
+                ),
+            ),
+        }
+    )
+    changed_group = report_model.groups[0].model_copy(
+        update={"calculations": (changed_calculation,)}
+    )
+    changed_model = report_model.model_copy(update={"groups": (changed_group,)})
+
+    grouped_tex = render_latex(changed_model).split(r"\section{Grouped Calculations}", 1)[1]
+
+    assert r"\paragraph{Effective voltage stresses.}" in grouped_tex
+    assert "long-term RMS" in grouped_tex
+    assert "steady-state peak" in grouped_tex
+    assert "recurring peak" in grouped_tex
+    assert "temporary overvoltage peak" in grouped_tex
+    assert "not\\_applicable" in grouped_tex
+    assert "No recurring peak." in grouped_tex
+    assert "pair\\_input" in grouped_tex
+    assert f"Affected pair ID: {calculation.pair_id}" in grouped_tex
+    assert "PAIR\\_WARNING" in grouped_tex
+    assert "Synthetic pair warning." in grouped_tex
+    assert "PAIR\\_CHECK" in grouped_tex
+    assert "Synthetic pair verification." in grouped_tex
 
 
 def test_report_formats_every_exact_source_locator(report_model) -> None:
@@ -211,3 +275,113 @@ def test_report_rejects_internally_mismatched_results_and_tampered_rules(
     )
     with pytest.raises(ReportBuildError, match="failed validation"):
         build_report_model(project, results, groups, tampered_rules)
+
+
+@pytest.mark.parametrize("tamper", ["candidate", "step", "omitted_step"])
+def test_report_recomputes_and_rejects_complete_but_tampered_trace(
+    report_inputs,
+    tamper: str,
+) -> None:
+    project, results, groups, rules = report_inputs
+    result = results[0]
+    trace = result.trace
+    if tamper == "candidate":
+        non_governing_index = next(
+            index
+            for index, candidate in enumerate(trace.clearance_candidates)
+            if candidate.candidate_id != trace.governing_clearance_candidate_id
+        )
+        candidates = list(trace.clearance_candidates)
+        candidates[non_governing_index] = candidates[non_governing_index].model_copy(
+            update={"reason": "tampered but internally non-governing"}
+        )
+        changed_trace = trace.model_copy(update={"clearance_candidates": tuple(candidates)})
+    elif tamper == "step":
+        changed_step = trace.steps[0].model_copy(update={"reason": "tampered trace step"})
+        changed_trace = trace.model_copy(update={"steps": (changed_step, *trace.steps[1:])})
+    else:
+        changed_trace = trace.model_copy(update={"steps": trace.steps[:-1]})
+    changed_result = result.model_copy(update={"trace": changed_trace})
+    changed_group = groups[0].model_copy(
+        update={"signature": calculation_signature(changed_result)}
+    )
+
+    with pytest.raises(ReportBuildError, match="authoritative recalculation"):
+        build_report_model(project, (changed_result,), (changed_group,), rules)
+
+
+@pytest.mark.parametrize("origin", ["approved_rules", "engine"])
+@pytest.mark.parametrize("command", ["input", "include", "write", "catcode"])
+def test_trusted_formula_type_rejects_dangerous_commands(
+    origin: str,
+    command: str,
+) -> None:
+    with pytest.raises(ValidationError, match="unsafe math LaTeX"):
+        TrustedFormulaLatex(latex=rf"x + \{command}{{payload}}", origin=origin)
+
+
+@pytest.mark.parametrize("latex", ["x % comment", "x\n+y", r"x + \unknown{y}"])
+def test_trusted_formula_type_rejects_comments_controls_and_unknown_commands(
+    latex: str,
+) -> None:
+    with pytest.raises(ValidationError, match="unsafe math LaTeX"):
+        TrustedFormulaLatex(latex=latex, origin="engine")
+
+
+def test_trusted_formula_type_allows_commands_used_by_approved_rules() -> None:
+    latex = r"r/d\geq k_{synthetic}"
+
+    formula = TrustedFormulaLatex(latex=latex, origin="approved_rules")
+
+    assert formula.latex == latex
+
+
+def test_report_rejects_dangerous_formula_from_otherwise_valid_approved_package(
+    report_inputs,
+    tmp_path,
+) -> None:
+    project, _, _, rules = report_inputs
+    unsafe_source = rules.model_copy(
+        update={
+            "formulas": tuple(
+                formula.model_copy(
+                    update={
+                        "expression": Round(
+                            value=formula.expression,
+                            places=2,
+                            mode="ROUND_HALF_UP",
+                        ),
+                        "latex": r"d = \input{payload}",
+                    }
+                )
+                for formula in rules.formulas
+            ),
+            "checksums": {},
+            "package_sha256": None,
+        }
+    )
+    rules_path = tmp_path / "unsafe-formula.icrules"
+    write_rule_package(rules_path, unsafe_source)
+    unsafe_rules = load_rule_package(rules_path)
+    assert unsafe_rules.package_sha256 is not None
+    unsafe_project = project.model_copy(
+        update={
+            "required_rules": RulePackageReference(
+                package_id=str(unsafe_rules.manifest.package_id),
+                version=unsafe_rules.manifest.version,
+                sha256=unsafe_rules.package_sha256,
+            )
+        }
+    )
+    unsafe_result = calculate_pair(
+        resolve_effective_case(unsafe_project.defaults, unsafe_project.pairs[0]),
+        unsafe_rules,
+    )
+
+    with pytest.raises(ReportBuildError, match="unsafe math LaTeX"):
+        build_report_model(
+            unsafe_project,
+            (unsafe_result,),
+            group_results((unsafe_result,), ()),
+            unsafe_rules,
+        )

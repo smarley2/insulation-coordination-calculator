@@ -9,13 +9,17 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Literal
 
+from pydantic import ValidationError, field_validator
+
 from insulation_coordination.calculation.clearance import CandidateOmission, DistanceCandidate
 from insulation_coordination.calculation.engine import (
     CALCULATION_ENGINE_VERSION,
+    CalculationError,
     CalculationWarning,
     EffectiveInputSnapshot,
     PairResult,
     VerificationRequirement,
+    calculate_pair,
 )
 from insulation_coordination.calculation.grouping import CalculationGroup, calculation_signature
 from insulation_coordination.calculation.high_frequency import FieldIteration
@@ -25,6 +29,7 @@ from insulation_coordination.domain.project import (
     FrozenModel,
     NetClass,
     PairCase,
+    PairVoltages,
     Project,
     ProjectDefaults,
     ProjectMetadata,
@@ -54,11 +59,18 @@ class ReportStress(FrozenModel):
     applicability: str
     value_v: Decimal | None
     justification: str | None
+    provenance: Literal["pair_input"]
 
 
 class TrustedFormulaLatex(FrozenModel):
     latex: str
     origin: Literal["engine", "approved_rules"]
+
+    @field_validator("latex")
+    @classmethod
+    def _safe_math_latex(cls, value: str) -> str:
+        _validate_math_latex(value)
+        return value
 
 
 class ReportStep(FrozenModel):
@@ -113,6 +125,7 @@ class PairCalculationReport(FrozenModel):
     pair_key: str
     result_sha256: str
     effective_inputs: EffectiveInputSnapshot
+    stresses: tuple[ReportStress, ...]
     clearance_candidates: tuple[DistanceCandidate, ...]
     creepage_candidates: tuple[DistanceCandidate, ...]
     omissions: tuple[CandidateOmission, ...]
@@ -195,6 +208,8 @@ def build_report_model(
         raise ReportBuildError("project rules package pin does not match the supplied rules package")
 
     project_pair_ids = tuple(str(pair.id) for pair in project.pairs)
+    if len(project_pair_ids) != len(set(project_pair_ids)):
+        raise ReportBuildError("duplicate pair ID in project")
     result_pair_ids = tuple(str(result.pair_id) for result in results)
     if len(result_pair_ids) != len(set(result_pair_ids)):
         raise ReportBuildError("duplicate pair result")
@@ -208,24 +223,33 @@ def build_report_model(
             detail.append("extra pair results: " + ", ".join(sorted(extra)))
         raise ReportBuildError("; ".join(detail))
 
-    result_by_pair = {str(result.pair_id): result for result in results}
+    supplied_by_pair = {str(result.pair_id): result for result in results}
     pair_by_id = {str(pair.id): pair for pair in project.pairs}
+    authoritative_by_pair: dict[str, PairResult] = {}
     for pair_id in project_pair_ids:
         pair = pair_by_id[pair_id]
-        result = result_by_pair[pair_id]
         expected_effective = resolve_effective_case(project.defaults, pair)
-        if result.pair_key != pair.key:
-            raise ReportBuildError(f"pair {pair_id} result key does not match the project")
-        if result.effective_inputs != _effective_snapshot(expected_effective):
+        supplied = supplied_by_pair[pair_id]
+        if supplied.effective_inputs != _effective_snapshot(expected_effective):
             raise ReportBuildError(f"pair {pair_id} effective input snapshot is stale")
-        _validate_result(result, rules_identity)
+        _validate_result(supplied, rules_identity)
+        try:
+            authoritative = calculate_pair(expected_effective, rules)
+        except CalculationError as error:
+            raise ReportBuildError(f"pair {pair_id} is blocked: {error}") from error
+        if supplied != authoritative:
+            raise ReportBuildError(
+                f"pair {pair_id} result does not match authoritative recalculation"
+            )
+        _validate_result(authoritative, rules_identity)
+        authoritative_by_pair[pair_id] = authoritative
 
-    group_by_pair = _validate_groups(groups, result_by_pair, project_pair_ids)
+    group_by_pair = _validate_groups(groups, authoritative_by_pair, project_pair_ids)
     net_names = {str(net.id): net.name for net in project.net_classes}
     matrix_rows = tuple(
         _matrix_row(
             pair_by_id[pair_id],
-            result_by_pair[pair_id],
+            authoritative_by_pair[pair_id],
             group_by_pair[pair_id],
             net_names,
         )
@@ -239,7 +263,7 @@ def build_report_model(
                 pair_id for pair_id in project_pair_ids if pair_id in set(group.pair_ids)
             ),
             calculations=tuple(
-                _calculation(result_by_pair[pair_id])
+                _calculation(authoritative_by_pair[pair_id])
                 for pair_id in project_pair_ids
                 if pair_id in set(group.pair_ids)
             ),
@@ -249,7 +273,7 @@ def build_report_model(
             key=lambda item: min(project_pair_ids.index(pair_id) for pair_id in item.pair_ids),
         )
     )
-    ordered_results = tuple(result_by_pair[pair_id] for pair_id in project_pair_ids)
+    ordered_results = tuple(authoritative_by_pair[pair_id] for pair_id in project_pair_ids)
     return ReportModel(
         project_id=str(project.id),
         project_sha256=_project_hash(project),
@@ -391,23 +415,7 @@ def _matrix_row(
         result_sha256=calculation_signature(result),
         net_a=net_names[str(pair.net_a)],
         net_b=net_names[str(pair.net_b)],
-        stresses=tuple(
-            ReportStress(
-                name=name,
-                applicability=voltage.applicability.value,
-                value_v=voltage.value,
-                justification=voltage.justification,
-            )
-            for name, voltage in (
-                ("long-term RMS", effective.voltages.long_term_rms_v),
-                ("steady-state peak", effective.voltages.steady_state_peak_v),
-                ("recurring peak", effective.voltages.recurring_peak_v),
-                (
-                    "temporary overvoltage peak",
-                    effective.voltages.temporary_overvoltage_peak_v,
-                ),
-            )
-        ),
+        stresses=_report_stresses(effective.voltages),
         frequency=_report_effective(effective.frequency_hz),
         impulse=_report_effective(effective.impulse_v),
         insulation_type=_enum_text(effective.insulation_type.value),
@@ -451,6 +459,7 @@ def _calculation(result: PairResult) -> PairCalculationReport:
         pair_key=result.pair_key,
         result_sha256=calculation_signature(result),
         effective_inputs=result.effective_inputs.model_copy(deep=True),
+        stresses=_report_stresses(result.effective_inputs.voltages),
         clearance_candidates=tuple(
             candidate.model_copy(deep=True) for candidate in result.trace.clearance_candidates
         ),
@@ -492,37 +501,42 @@ def _candidate_source(
 
 def _report_step(step: TraceStep, fallback_source: SourceReference | None) -> ReportStep:
     source = step.source_reference or fallback_source
-    return ReportStep(
-        semantic_rule_id=step.semantic_rule_id,
-        operation=step.operation,
-        symbolic_latex=TrustedFormulaLatex(
-            latex=_symbolic_latex(step),
-            origin=(
-                "approved_rules"
-                if step.formula_source_reference is not None
-                and step.operation != "linear_interpolate"
-                else "engine"
+    try:
+        return ReportStep(
+            semantic_rule_id=step.semantic_rule_id,
+            operation=step.operation,
+            symbolic_latex=TrustedFormulaLatex(
+                latex=_symbolic_latex(step),
+                origin=(
+                    "approved_rules"
+                    if step.formula_source_reference is not None
+                    and step.operation != "linear_interpolate"
+                    else "engine"
+                ),
             ),
-        ),
-        substituted_latex=TrustedFormulaLatex(
-            latex=_substituted_latex(step.substituted),
-            origin="engine",
-        ),
-        inputs=tuple(item.model_copy(deep=True) for item in step.inputs),
-        source_reference=(None if source is None else source.model_copy(deep=True)),
-        formula_source_reference=(
-            None
-            if step.formula_source_reference is None
-            else step.formula_source_reference.model_copy(deep=True)
-        ),
-        source_cells=step.source_cells,
-        cell_references=tuple(item.model_copy(deep=True) for item in step.cell_references),
-        applicability=step.applicability,
-        output=step.output.model_copy(deep=True),
-        unrounded_value=step.unrounded_value,
-        rounded_value=step.rounded_value,
-        reason=step.reason,
-    )
+            substituted_latex=TrustedFormulaLatex(
+                latex=_substituted_latex(step.substituted),
+                origin="engine",
+            ),
+            inputs=tuple(item.model_copy(deep=True) for item in step.inputs),
+            source_reference=(None if source is None else source.model_copy(deep=True)),
+            formula_source_reference=(
+                None
+                if step.formula_source_reference is None
+                else step.formula_source_reference.model_copy(deep=True)
+            ),
+            source_cells=step.source_cells,
+            cell_references=tuple(item.model_copy(deep=True) for item in step.cell_references),
+            applicability=step.applicability,
+            output=step.output.model_copy(deep=True),
+            unrounded_value=step.unrounded_value,
+            rounded_value=step.rounded_value,
+            reason=step.reason,
+        )
+    except ValidationError as error:
+        raise ReportBuildError(
+            f"unsafe math LaTeX in trace step {step.semantic_rule_id!r}: {error}"
+        ) from error
 
 
 _ENGINE_IDENTIFIER = re.compile(r"(?<![\\\w])([A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+)")
@@ -540,6 +554,66 @@ def _symbolic_latex(step: TraceStep) -> str:
 
 
 _QUANTITY = re.compile(r"(?<![\w.])(-?\d+(?:\.\d+)?) ?([A-Za-z][A-Za-z0-9*/^-]*)")
+_ALLOWED_MATH_COMMANDS = frozenset(
+    {
+        "frac",
+        "ge",
+        "geq",
+        "le",
+        "left",
+        "max",
+        "min",
+        "ne",
+        "operatorname",
+        "mathrm",
+        "right",
+        "times",
+    }
+)
+_ALLOWED_MATH_ESCAPES = frozenset({",", "_", "%", "&", "{", "}"})
+
+
+def _validate_math_latex(value: str) -> None:
+    if not value or not value.isascii():
+        raise ValueError("unsafe math LaTeX: value must be non-empty ASCII")
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError("unsafe math LaTeX: control characters are forbidden")
+    if any(character in "$#~`" for character in value):
+        raise ValueError("unsafe math LaTeX: unsafe math token")
+
+    depth = 0
+    index = 0
+    while index < len(value):
+        character = value[index]
+        if character == "\\":
+            index += 1
+            if index == len(value):
+                raise ValueError("unsafe math LaTeX: trailing escape")
+            if value[index].isalpha():
+                end = index + 1
+                while end < len(value) and value[end].isalpha():
+                    end += 1
+                command = value[index:end]
+                if command not in _ALLOWED_MATH_COMMANDS:
+                    raise ValueError(f"unsafe math LaTeX: command {command!r} is forbidden")
+                index = end
+                continue
+            escape = value[index]
+            if escape not in _ALLOWED_MATH_ESCAPES:
+                raise ValueError(f"unsafe math LaTeX: escape {escape!r} is forbidden")
+        elif character == "%":
+            raise ValueError("unsafe math LaTeX: comments are forbidden")
+        elif character == "&":
+            raise ValueError("unsafe math LaTeX: alignment tokens are forbidden")
+        elif character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth < 0:
+                raise ValueError("unsafe math LaTeX: unbalanced braces")
+        index += 1
+    if depth:
+        raise ValueError("unsafe math LaTeX: unbalanced braces")
 
 
 def _substituted_latex(value: str) -> str:
@@ -566,6 +640,27 @@ def _latex_unit(value: str) -> str:
 
 def _report_effective(value: EffectiveValue[Decimal | None]) -> ReportEffectiveValue:
     return ReportEffectiveValue(value=value.value, provenance=value.provenance.value)
+
+
+def _report_stresses(voltages: PairVoltages) -> tuple[ReportStress, ...]:
+    return tuple(
+        ReportStress(
+            name=name,
+            applicability=voltage.applicability.value,
+            value_v=voltage.value,
+            justification=voltage.justification,
+            provenance="pair_input",
+        )
+        for name, voltage in (
+            ("long-term RMS", voltages.long_term_rms_v),
+            ("steady-state peak", voltages.steady_state_peak_v),
+            ("recurring peak", voltages.recurring_peak_v),
+            (
+                "temporary overvoltage peak",
+                voltages.temporary_overvoltage_peak_v,
+            ),
+        )
+    )
 
 
 def _enum_text(value: StrEnum | None) -> str:

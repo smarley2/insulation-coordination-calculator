@@ -163,6 +163,22 @@ construction {{ calculation.effective_inputs.construction_type.value|value }}
 CTI or material group {{ calculation.effective_inputs.cti_or_material_group.value|value }}
 ({{ calculation.effective_inputs.cti_or_material_group.provenance|value }}).
 
+\paragraph{Effective voltage stresses.}
+\begin{longtable}{@{}p{38mm}p{29mm}p{24mm}p{27mm}p{42mm}@{}}
+\toprule
+Stress & Applicability & Value & Provenance & Justification \\
+\midrule
+\endhead
+{% for stress in calculation.stresses %}
+{{ stress.name|tex }} &
+{{ stress.applicability|tex }} &
+{% if stress.value_v is none %}-{% else %}{{ stress.value_v|value }} V{% endif %} &
+{{ stress.provenance|tex }} &
+{{ stress.justification|value }} \\
+{% endfor %}
+\bottomrule
+\end{longtable}
+
 \paragraph{Clearance candidates.}
 \begin{longtable}{@{}p{32mm}p{31mm}p{25mm}p{72mm}@{}}
 \toprule
@@ -250,6 +266,35 @@ Clearance: {{ calculation.governing_clearance_candidate_id|tex }} -
 Creepage: {{ calculation.governing_creepage_candidate_id|tex }} -
 {{ calculation.governing_creepage_reason|tex }}. Final creepage:
 \textbf{ {{- calculation.creepage_mm|value }} mm}.
+
+\paragraph{Pair-linked advisories.}
+Affected pair ID: {{ calculation.pair_id|tex }}.
+
+\textbf{Warnings:}
+{% if calculation.warnings %}
+\begin{itemize}
+{% for warning in calculation.warnings %}
+\item \textbf{ {{- warning.code|tex -}} }: {{ warning.message|tex }}
+{% if warning.semantic_rule_id %} ({{ warning.semantic_rule_id|tex }}){% endif %}
+{% if warning.source_reference %}; {{ warning.source_reference|reference }}{% endif %}
+{% endfor %}
+\end{itemize}
+{% else %}
+None.
+{% endif %}
+
+\textbf{Verification requirements:}
+{% if calculation.verification_requirements %}
+\begin{itemize}
+{% for requirement in calculation.verification_requirements %}
+\item \textbf{ {{- requirement.code|tex -}} }: {{ requirement.message|tex }}
+{% if requirement.semantic_rule_id %} ({{ requirement.semantic_rule_id|tex }}){% endif %}
+{% if requirement.source_reference %}; {{ requirement.source_reference|reference }}{% endif %}
+{% endfor %}
+\end{itemize}
+{% else %}
+None.
+{% endif %}
 
 {% endfor %}
 {% endfor %}

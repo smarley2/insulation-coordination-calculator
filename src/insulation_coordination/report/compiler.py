@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import shutil
+import stat
 import subprocess
+import tempfile
 from pathlib import Path
 
 from pypdf import PdfReader
@@ -26,67 +29,37 @@ class CompileResult(FrozenModel):
 
 
 def compile_pdf(tex_path: Path, output_path: Path, tectonic: Path) -> CompileResult:
-    """Compile one LaTeX file offline and retain captured diagnostics."""
+    """Compile one LaTeX file in an isolated offline workspace."""
     tex = _input_file(tex_path, ".tex", "LaTeX source")
     executable = _input_file(tectonic, None, "Tectonic executable")
-    output = output_path.expanduser().resolve()
-    if output.suffix.lower() != ".pdf":
-        raise CompileError("PDF output path must have a .pdf suffix")
-    if output == tex:
-        raise CompileError("LaTeX source and PDF output paths must differ")
+    output = _output_leaf(output_path, ".pdf", "PDF output")
+    log_path = output.with_suffix(".compile.log")
+    _reject_unsafe_leaf(output, "PDF output")
+    _reject_unsafe_leaf(log_path, "compiler log")
+    if output == tex or log_path == tex or executable in {output, log_path}:
+        raise CompileError("compiler, source, output, and log paths must be distinct")
     if not os.access(executable, os.X_OK):
         raise CompileError("Tectonic executable is not executable")
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    produced = output.parent / f"{tex.stem}.pdf"
-    log_path = output.with_suffix(".compile.log")
-    if executable in {output, produced, log_path} or tex == log_path:
-        raise CompileError("compiler, source, output, and log paths must be distinct")
-    for stale in {output, produced}:
-        stale.unlink(missing_ok=True)
-
-    try:
-        completed = subprocess.run(
-            [
-                str(executable),
-                "--offline",
-                "--outdir",
-                str(output.parent),
-                str(tex),
-            ],
-            shell=False,
-            timeout=120,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        returncode = completed.returncode
-        stdout = completed.stdout
-        stderr = completed.stderr
-    except subprocess.TimeoutExpired as error:
-        returncode = None
-        stdout = _stream_text(error.stdout)
-        stderr = _stream_text(error.stderr) + "Tectonic timed out after 120 seconds\n"
-    except OSError as error:
-        returncode = None
-        stdout = ""
-        stderr = f"Could not execute Tectonic: {error}\n"
-
-    pdf_path: Path | None = None
-    success = False
-    if returncode == 0:
-        problem = _pdf_problem(produced)
-        if problem is None:
-            if produced != output:
-                produced.replace(output)
-            pdf_path = output
-            success = True
-        else:
-            stderr += problem + "\n"
-            produced.unlink(missing_ok=True)
-    else:
-        produced.unlink(missing_ok=True)
-    _write_log(log_path, returncode, stdout, stderr)
+    with tempfile.TemporaryDirectory(prefix=".icc-tectonic-", dir=output.parent) as temporary:
+        outdir = Path(temporary)
+        produced = outdir / f"{tex.stem}.pdf"
+        returncode, stdout, stderr = _run_tectonic(executable, outdir, tex)
+        pdf_path: Path | None = None
+        success = False
+        if returncode == 0:
+            problem = _pdf_problem(produced)
+            if problem is None:
+                try:
+                    _atomic_copy(produced, output)
+                except OSError as error:
+                    stderr += f"Could not promote compiled PDF: {error}\n"
+                else:
+                    pdf_path = output
+                    success = True
+            else:
+                stderr += problem + "\n"
+        _write_log(log_path, returncode, stdout, stderr)
     return CompileResult(
         success=success,
         returncode=returncode,
@@ -97,13 +70,69 @@ def compile_pdf(tex_path: Path, output_path: Path, tectonic: Path) -> CompileRes
     )
 
 
+def _run_tectonic(executable: Path, outdir: Path, tex: Path) -> tuple[int | None, str, str]:
+    try:
+        completed = subprocess.run(
+            [
+                str(executable),
+                "--offline",
+                "--outdir",
+                str(outdir),
+                str(tex),
+            ],
+            shell=False,
+            timeout=120,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return completed.returncode, completed.stdout, completed.stderr
+    except subprocess.TimeoutExpired as error:
+        return (
+            None,
+            _stream_text(error.stdout),
+            _stream_text(error.stderr) + "Tectonic timed out after 120 seconds\n",
+        )
+    except OSError as error:
+        return None, "", f"Could not execute Tectonic: {error}\n"
+
+
 def _input_file(path: Path, suffix: str | None, label: str) -> Path:
-    resolved = path.expanduser().resolve()
+    try:
+        resolved = path.expanduser().resolve(strict=True)
+    except OSError as error:
+        raise CompileError(f"{label} does not exist or is unsafe: {error}") from error
     if suffix is not None and resolved.suffix.lower() != suffix:
         raise CompileError(f"{label} path must have a {suffix} suffix")
     if not resolved.is_file():
         raise CompileError(f"{label} does not exist or is not a file")
     return resolved
+
+
+def _output_leaf(path: Path, suffix: str, label: str) -> Path:
+    expanded = path.expanduser()
+    if expanded.suffix.lower() != suffix:
+        raise CompileError(f"{label} path must have a {suffix} suffix")
+    try:
+        parent = expanded.parent.resolve(strict=True)
+    except OSError as error:
+        raise CompileError(f"{label} parent does not exist or is unsafe: {error}") from error
+    if not parent.is_dir():
+        raise CompileError(f"{label} parent is not a directory")
+    return parent / expanded.name
+
+
+def _reject_unsafe_leaf(path: Path, label: str) -> None:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise CompileError(f"{label} leaf cannot be inspected safely: {error}") from error
+    if stat.S_ISLNK(mode):
+        raise CompileError(f"{label} leaf must not be a symlink")
+    if not stat.S_ISREG(mode):
+        raise CompileError(f"{label} leaf must be absent or a regular file")
 
 
 def _pdf_problem(path: Path) -> str | None:
@@ -119,6 +148,24 @@ def _pdf_problem(path: Path) -> str | None:
     return None
 
 
+def _atomic_copy(source: Path, destination: Path) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+        dir=destination.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as target, source.open("rb") as source_stream:
+            shutil.copyfileobj(source_stream, target)
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temporary, destination)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def _stream_text(value: str | bytes | None) -> str:
     if value is None:
         return ""
@@ -126,7 +173,20 @@ def _stream_text(value: str | bytes | None) -> str:
 
 
 def _write_log(path: Path, returncode: int | None, stdout: str, stderr: str) -> None:
-    path.write_text(
-        f"returncode: {returncode}\nstdout:\n{stdout}\nstderr:\n{stderr}",
-        encoding="utf-8",
+    content = f"returncode: {returncode}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        text=True,
     )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise

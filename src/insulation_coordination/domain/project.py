@@ -195,6 +195,9 @@ class Project(FrozenModel):
             raise ValueError("Net-class IDs must be unique")
         if len(net_names) != len(set(net_names)):
             raise ValueError("Net-class names must be unique")
+        pair_ids = [pair.id for pair in self.pairs]
+        if len(pair_ids) != len(set(pair_ids)):
+            raise ValueError("Pair IDs must be unique")
 
         expected = {
             _canonical_pair_key(left, right) for left, right in combinations(net_ids, 2)
