@@ -1,0 +1,58 @@
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+from copy import deepcopy
+from pathlib import Path
+
+from insulation_coordination.domain.project import Project
+
+PROJECT_SCHEMA_VERSION = 1
+
+
+class ProjectSaveError(OSError):
+    """A project file could not be safely replaced."""
+
+
+class ProjectVersionError(ValueError):
+    """A project document uses an unsupported schema version."""
+
+
+def migrate_project_document(raw: dict[str, object]) -> dict[str, object]:
+    version = raw.get("schema_version")
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise ProjectVersionError("Project schema_version must be an integer")
+    if version > PROJECT_SCHEMA_VERSION:
+        raise ProjectVersionError(f"Project schema {version} is newer than supported version 1")
+    if version != PROJECT_SCHEMA_VERSION:
+        raise ProjectVersionError(f"Project schema {version} is unsupported")
+    return deepcopy(raw)
+
+
+def load_project(path: Path) -> Project:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise TypeError("Project document root must be an object")
+    document = migrate_project_document(raw)
+    document.pop("schema_version")
+    return Project.model_validate(document)
+
+
+def save_project_atomic(path: Path, project: Project) -> None:
+    document = {"schema_version": PROJECT_SCHEMA_VERSION, **project.model_dump(mode="json")}
+    content = json.dumps(document, ensure_ascii=False, sort_keys=True) + "\n"
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, suffix=".tmp", delete=False
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            temporary.write(content)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_path, path)
+    except Exception as error:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise ProjectSaveError(str(error)) from error

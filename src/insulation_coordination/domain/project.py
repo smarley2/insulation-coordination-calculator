@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from itertools import combinations
 from typing import Self
 from uuid import UUID, uuid4
 
@@ -101,6 +103,28 @@ class ProjectDefaults(FrozenModel):
     conventional_construction_assumptions: tuple[str, ...] | None = None
 
 
+class RulePackageReference(FrozenModel):
+    package_id: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+    sha256: str
+
+    @model_validator(mode="after")
+    def _requires_sha256(self) -> Self:
+        if re.fullmatch(r"[0-9a-f]{64}", self.sha256) is None:
+            raise ValueError("Rule-package SHA-256 must be 64 lowercase hexadecimal characters")
+        return self
+
+
+class ProjectMetadata(FrozenModel):
+    title: str
+    customer: str = ""
+    document_number: str = ""
+    revision: str = ""
+    author: str = ""
+    checker: str = ""
+    approver: str = ""
+
+
 class PairCase(FrozenModel):
     id: UUID = Field(default_factory=uuid4)
     key: str = Field(min_length=1)
@@ -132,6 +156,35 @@ class PairCase(FrozenModel):
         return self
 
 
+class Project(FrozenModel):
+    id: UUID
+    metadata: ProjectMetadata
+    application_version: str
+    required_rules: RulePackageReference
+    defaults: ProjectDefaults
+    net_classes: tuple[NetClass, ...]
+    pairs: tuple[PairCase, ...]
+
+    @model_validator(mode="after")
+    def _requires_consistent_pairs(self) -> Self:
+        net_ids = [net_class.id for net_class in self.net_classes]
+        net_names = [net_class.name for net_class in self.net_classes]
+        if len(net_ids) != len(set(net_ids)):
+            raise ValueError("Net-class IDs must be unique")
+        if len(net_names) != len(set(net_names)):
+            raise ValueError("Net-class names must be unique")
+
+        expected = {
+            _canonical_pair_key(left, right) for left, right in combinations(net_ids, 2)
+        }
+        actual = {_canonical_pair_key(pair.net_a, pair.net_b) for pair in self.pairs}
+        if any(pair.key != _canonical_pair_key(pair.net_a, pair.net_b) for pair in self.pairs):
+            raise ValueError("Pair keys must be canonical")
+        if len(actual) != len(self.pairs) or actual != expected:
+            raise ValueError("Pairs must reconcile exactly to the net classes")
+        return self
+
+
 class EffectiveCase(FrozenModel):
     id: UUID
     key: str
@@ -148,3 +201,8 @@ class EffectiveCase(FrozenModel):
     construction_type: EffectiveValue[ConstructionType | None]
     cti_or_material_group: EffectiveValue[str | None]
     conventional_construction_assumptions: EffectiveValue[tuple[str, ...] | None]
+
+
+def _canonical_pair_key(left: UUID, right: UUID) -> str:
+    first, second = sorted((str(left), str(right)))
+    return f"{first}::{second}"
