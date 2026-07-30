@@ -145,19 +145,22 @@ class Maximum(FrozenModel):
     operands: tuple[Expression, ...] = Field(min_length=1)
 
 
+RoundingMode = TypingLiteral[
+    "ROUND_CEILING",
+    "ROUND_DOWN",
+    "ROUND_FLOOR",
+    "ROUND_HALF_DOWN",
+    "ROUND_HALF_EVEN",
+    "ROUND_HALF_UP",
+    "ROUND_UP",
+]
+
+
 class Round(FrozenModel):
     op: TypingLiteral["round"] = "round"
     value: Expression
-    places: int
-    mode: TypingLiteral[
-        "ROUND_CEILING",
-        "ROUND_DOWN",
-        "ROUND_FLOOR",
-        "ROUND_HALF_DOWN",
-        "ROUND_HALF_EVEN",
-        "ROUND_HALF_UP",
-        "ROUND_UP",
-    ]
+    places: int = Field(strict=True)
+    mode: RoundingMode
 
 
 class Lookup(FrozenModel):
@@ -260,14 +263,22 @@ class Table(FrozenModel):
     cells: tuple[TableCell, ...]
     supported_ranges: tuple[SupportedRange, ...] = ()
     interpolation: TypingLiteral["none", "linear"] = "none"
-    rounding_places: int | None = None
+    rounding_places: int | None = Field(default=None, strict=True)
+    rounding_mode: RoundingMode | None = None
     source: SourceReference
+
+    @model_validator(mode="after")
+    def _complete_rounding_declaration(self) -> Self:
+        if (self.rounding_places is None) != (self.rounding_mode is None):
+            raise ValueError("Table rounding places and mode must be declared together")
+        return self
 
 
 class Formula(FrozenModel):
     id: Identifier
     expression: Expression
     unit: Identifier
+    precision: int = Field(default=34, ge=16, le=100, strict=True)
     parameter_sets: tuple[ParameterSet, ...] = ()
     supported_ranges: tuple[SupportedRange, ...] = ()
     latex: LatexText = ""

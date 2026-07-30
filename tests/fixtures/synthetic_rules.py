@@ -96,6 +96,7 @@ def synthetic_rule_package() -> RulePackage:
         supported_ranges=(table_range,),
         interpolation="linear",
         rounding_places=2,
+        rounding_mode="ROUND_HALF_UP",
         source=reference,
     )
     expression = Select(
