@@ -32,6 +32,7 @@ from insulation_coordination.domain.project import (
 )
 from insulation_coordination.domain.rules import RulePackage
 from insulation_coordination.rules.archive import load_rule_package, write_rule_package
+from insulation_coordination.rules.validation import validate_rule_package
 
 
 def _seal_rules(rules: RulePackage, path: Path) -> RulePackage:
@@ -40,6 +41,66 @@ def _seal_rules(rules: RulePackage, path: Path) -> RulePackage:
         rules.model_copy(update={"checksums": {}, "package_sha256": None}),
     )
     return load_rule_package(path)
+
+
+def _with_nonfinite_axis(rules: RulePackage, value: Decimal) -> RulePackage:
+    table = rules.tables[0]
+    axis = table.row_axis.model_copy(
+        update={"values": (value, *table.row_axis.values[1:])}
+    )
+    return rules.model_copy(
+        update={
+            "tables": (
+                table.model_copy(update={"row_axis": axis}),
+                *rules.tables[1:],
+            )
+        }
+    )
+
+
+def _with_nonfinite_cell(rules: RulePackage, value: Decimal) -> RulePackage:
+    table = rules.tables[0]
+    cell = table.cells[0].model_copy(update={"value": value})
+    return rules.model_copy(
+        update={
+            "tables": (
+                table.model_copy(update={"cells": (cell, *table.cells[1:])}),
+                *rules.tables[1:],
+            )
+        }
+    )
+
+
+def _with_nonfinite_range(rules: RulePackage, value: Decimal) -> RulePackage:
+    table = rules.tables[0]
+    supported = table.supported_ranges[0].model_copy(update={"minimum": value})
+    return rules.model_copy(
+        update={
+            "tables": (
+                table.model_copy(
+                    update={
+                        "supported_ranges": (
+                            supported,
+                            *table.supported_ranges[1:],
+                        )
+                    }
+                ),
+                *rules.tables[1:],
+            )
+        }
+    )
+
+
+def _with_nonfinite_formula_literal(
+    rules: RulePackage,
+    value: Decimal,
+) -> RulePackage:
+    formula = rules.formulas[0].model_copy(
+        update={"expression": {"op": "literal", "value": value}}
+    )
+    return rules.model_copy(
+        update={"formulas": (formula, *rules.formulas[1:])}
+    )
 
 
 @pytest.fixture
@@ -248,6 +309,46 @@ def test_missing_approval_record_or_checksum_blocks_at_rule_trust_gate(
 
     assert "approval_record" in approval_error.value.issue_codes
     assert "checksums" in checksum_error.value.issue_codes
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        _with_nonfinite_axis,
+        _with_nonfinite_cell,
+        _with_nonfinite_range,
+        _with_nonfinite_formula_literal,
+    ],
+    ids=("axis", "cell", "range", "formula-literal"),
+)
+@pytest.mark.parametrize("value", [Decimal("NaN"), Decimal("Infinity")])
+def test_nonfinite_rule_values_are_total_validation_failures_at_all_entries(
+    mutate,
+    value: Decimal,
+    case_factory,
+    synthetic_rules: RulePackage,
+) -> None:
+    invalid = mutate(synthetic_rules, value)
+
+    report = validate_rule_package(invalid)
+
+    assert report.is_valid is False
+    structure = next(
+        result for result in report.results if result.code == "package_structure"
+    )
+    assert structure.passed is False
+    assert "invalid structure" in structure.message
+
+    case = case_factory()
+    entries = (
+        lambda: calculate_pair(case, invalid),
+        lambda: calculate_clearance_candidates(case, invalid),
+        lambda: calculate_creepage_candidates(case, Decimal(3), invalid),
+    )
+    for entry in entries:
+        with pytest.raises(RulePackageValidationError) as caught:
+            entry()
+        assert "package_structure" in caught.value.issue_codes
 
 
 def test_functional_path_does_not_apply_reinforced_scaling(

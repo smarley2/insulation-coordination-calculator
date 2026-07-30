@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 from itertools import pairwise
 
 from pydantic import computed_field
@@ -55,6 +55,34 @@ class ValidationReport(FrozenModel):
 
 def _result(code: str, passed: bool, message: str) -> ValidationResult:
     return ValidationResult(code=code, passed=passed, message=message)
+
+
+def _package_structure_failure() -> ValidationReport:
+    return ValidationReport(
+        results=(
+            _result(
+                "package_structure",
+                False,
+                "rule package has invalid structure or non-finite numeric content",
+            ),
+        )
+    )
+
+
+def _finite_decimals(value: object) -> bool:
+    if isinstance(value, Decimal):
+        return value.is_finite()
+    if isinstance(value, dict):
+        return all(_finite_decimals(item) for item in value.values())
+    if isinstance(value, list | tuple):
+        return all(_finite_decimals(item) for item in value)
+    return True
+
+
+def _revalidate_package(package: RulePackage) -> RulePackage:
+    raw = package.model_dump(mode="python", warnings=False)
+    raw["package_sha256"] = package.package_sha256
+    return RulePackage.model_validate(raw)
 
 
 def _expression_children(expression: Expression) -> tuple[Expression, ...]:
@@ -139,6 +167,23 @@ def _table_range_linked(table: Table, supported_range: SupportedRange) -> bool:
 
 
 def validate_rule_package(package: RulePackage) -> ValidationReport:
+    try:
+        package = _revalidate_package(package)
+        if not _finite_decimals(package.model_dump(mode="python", warnings=False)):
+            return _package_structure_failure()
+        return _validate_rule_package(package)
+    except (
+        AttributeError,
+        DecimalException,
+        OverflowError,
+        RecursionError,
+        TypeError,
+        ValueError,
+    ):
+        return _package_structure_failure()
+
+
+def _validate_rule_package(package: RulePackage) -> ValidationReport:
     table_ids = [table.id for table in package.tables]
     formula_ids = [formula.id for formula in package.formulas]
     mapping_ids = [mapping.id for mapping in package.mappings]
