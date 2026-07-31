@@ -209,6 +209,10 @@ class Project(FrozenModel):
             raise ValueError("Pairs must reconcile exactly to the net classes")
         return self
 
+    @property
+    def net_class_names(self) -> tuple[str, ...]:
+        return tuple(net_class.name for net_class in self.net_classes)
+
 
 class EffectiveCase(FrozenModel):
     id: UUID
