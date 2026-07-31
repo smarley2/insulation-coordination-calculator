@@ -128,8 +128,11 @@ class ReportPage(QWidget):
             raise RuntimeError("Report generation requires a project and rules")
         if self._blocking:
             raise RuntimeError(self.blocking_summary)
-        if self._tectonic is None:
-            raise RuntimeError("No offline Tectonic executable configured")
+        tectonic = self._tectonic or find_tectonic()
+        if tectonic is None:
+            raise RuntimeError(
+                "No Tectonic executable found: pass a path or install Tectonic on PATH"
+            )
         try:
             model = build_report_model(
                 self._project,
@@ -141,7 +144,7 @@ class ReportPage(QWidget):
             raise RuntimeError(str(error)) from error
         tex = destination / f"{self._basename()}.tex"
         tex.write_text(render_latex(model), encoding="utf-8")
-        result = compile_pdf(tex, destination / f"{self._basename()}.pdf", self._tectonic)
+        result = compile_pdf(tex, destination / f"{self._basename()}.pdf", tectonic)
         return ReportOutput(
             tex_path=tex,
             pdf_path=result.pdf_path,
@@ -212,3 +215,31 @@ class ReportPage(QWidget):
         self._artifacts_label.setText(
             f"{output.tex_path.name} → {output.pdf_path.name if output.pdf_path else '(no PDF)'}"
         )
+
+
+def find_tectonic() -> Path | None:
+    """Locate a bundled Tectonic first, then a system installation on PATH."""
+    import shutil
+
+    bundled = _bundled_tectonic()
+    if bundled is not None:
+        return bundled
+    found = shutil.which("tectonic")
+    return Path(found) if found else None
+
+
+def _bundled_tectonic() -> Path | None:
+    import sys
+    from pathlib import Path as _Path
+
+    candidates: list[Path] = []
+    if getattr(sys, "frozen", False):
+        base = _Path(getattr(sys, "_MEIPASS", _Path(sys.executable).parent))
+        candidates.extend(
+            (
+                base / "tectonic",
+                base / "tectonic.exe",
+                base / "tectonic" / "tectonic",
+            )
+        )
+    return next((candidate for candidate in candidates if candidate.is_file()), None)

@@ -1,6 +1,8 @@
 \documentclass[10pt]{article}
 \usepackage[a4paper,margin=18mm]{geometry}
 \usepackage{amsmath}
+\usepackage{lmodern}
+\providecommand{\newline}{\\}
 \usepackage{array}
 \usepackage{booktabs}
 \usepackage{fancyhdr}
@@ -108,7 +110,7 @@ Pair ID & Nets & Stresses and applicability & Impulse / frequency & Insulation &
 \texttt{ {{- row.pair_id|tex -}} } &
 {{ row.net_a|tex }} / {{ row.net_b|tex }} &
 {% for stress in row.stresses -%}
-{{ stress.name|tex }}: {{ stress.applicability|tex }}{% if stress.value_v is not none %}, {{ stress.value_v|value }} V{% endif %}{% if stress.justification %} ({{ stress.justification|tex }}){% endif %}{% if not loop.last %}\newline{% endif %}
+{{ stress.name|tex }}: {{ stress.applicability|tex }}{% if stress.value_v is not none %}, {{ stress.value_v|value }} V{% endif %}{% if stress.justification %} ({{ stress.justification|tex }}){% endif %}{% if not loop.last %}\\{% endif %}
 {%- endfor %} &
 {{ row.impulse.value|value }} V ({{ row.impulse.provenance|tex }})\newline
 {{ row.frequency.value|value }} Hz ({{ row.frequency.provenance|tex }}) &

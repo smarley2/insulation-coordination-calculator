@@ -83,7 +83,7 @@ def _run_tectonic(executable: Path, outdir: Path, tex: Path) -> tuple[int | None
         completed = subprocess.run(
             [
                 str(executable),
-                "--offline",
+                _offline_flag(executable),
                 "--outdir",
                 str(outdir),
                 str(tex),
@@ -198,3 +198,20 @@ def _write_log(path: Path, returncode: int | None, stdout: str, stderr: str) -> 
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def _offline_flag(executable: Path) -> str:
+    """Tectonic 0.15 uses --offline; newer versions renamed it to --only-cached."""
+    try:
+        completed = subprocess.run(
+            [str(executable), "--help"],
+            shell=False,
+            timeout=10,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        help_text = completed.stdout + completed.stderr
+    except OSError:
+        return "--offline"
+    return "--only-cached" if "--only-cached" in help_text else "--offline"
