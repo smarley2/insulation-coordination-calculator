@@ -1,0 +1,8 @@
+{
+  "tectonic_version": "pinned-0.15.0",
+  "licence": "MIT",
+  "bundle_sha256": "replace-at-release",
+  "executable_sha256": "replace-at-release",
+  "offline": true,
+  "platforms": ["windows-x86_64", "macos-aarch64"]
+}
