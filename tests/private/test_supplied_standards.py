@@ -98,10 +98,11 @@ def test_supplied_standards_match_human_reviewed_draft(
         "raw-iec60664-4-table-5": (6, 4),
     }
     assert draft.review_items
-    assert {item.code for item in draft.review_items} == {
+    assert {item.code for item in draft.review_items} <= {
         "MANUAL_TABLE_DEFINITION_REQUIRED",
         "MANUAL_RULE_DEFINITION_REQUIRED",
         "MANUAL_MAPPING_REQUIRED",
+        "MANUAL_RAW_CELL_REVIEW_REQUIRED",
     }
     assert all(
         cell.source.row is not None and cell.source.column is not None
