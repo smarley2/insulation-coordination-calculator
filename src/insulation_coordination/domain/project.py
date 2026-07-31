@@ -213,6 +213,12 @@ class Project(FrozenModel):
     def net_class_names(self) -> tuple[str, ...]:
         return tuple(net_class.name for net_class in self.net_classes)
 
+    def pair_by_id(self, pair_id: UUID) -> PairCase | None:
+        for pair in self.pairs:
+            if pair.id == pair_id:
+                return pair
+        return None
+
 
 class EffectiveCase(FrozenModel):
     id: UUID
