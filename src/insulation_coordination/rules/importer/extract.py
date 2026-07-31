@@ -1,19 +1,21 @@
 from __future__ import annotations
 
-import base64
-import binascii
 import hashlib
-import json
 import re
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Literal
 from uuid import uuid4
 
 import pdfplumber
-from pydantic import Field, ValidationError, model_validator
+from pdfminer.pdfexceptions import PDFException
+from pdfminer.psparser import PSException
+from pydantic import Field, model_validator
 from pypdf import PdfReader
+from pypdf._page import PageObject
+from pypdf._text_extraction import mult
+from pypdf.errors import PyPdfError
 
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import (
@@ -23,6 +25,7 @@ from insulation_coordination.domain.rules import (
     DraftRulePackage,
     Formula,
     Manifest,
+    NotesText,
     SourceDocument,
     SourceReference,
     Table,
@@ -39,9 +42,6 @@ from insulation_coordination.rules.importer.identify import (
 
 IMPORTER_VERSION = "iec-pdf-1"
 _REQUIRED_RECIPES = {"iec60664-1-2020", "iec60664-4-2005"}
-_SYNTHETIC_BEGIN = "ICC-SYNTHETIC-RULES-BEGIN"
-_SYNTHETIC_END = "ICC-SYNTHETIC-RULES-END"
-_MAX_EXTRACTED_PAYLOAD_BYTES = 32 * 1024 * 1024
 
 __all__ = [
     "ExtractionError",
@@ -66,18 +66,34 @@ class ImportReviewItem(FrozenModel):
         "MANUAL_TABLE_DEFINITION_REQUIRED",
         "MANUAL_RULE_DEFINITION_REQUIRED",
         "MANUAL_MAPPING_REQUIRED",
+        "MANUAL_RAW_CELL_REVIEW_REQUIRED",
     ]
     semantic_id: str
-    kind: Literal["table", "formula", "mapping"]
+    kind: Literal["table", "formula", "mapping", "raw_cell"]
     source: SourceReference
+    expected_contract: NotesText
+
+    @property
+    def sha256(self) -> str:
+        payload = self.model_dump(mode="json", warnings=False)
+        return hashlib.sha256(_canonical_json(payload)).hexdigest()
+
+
+class ImportReviewResolution(FrozenModel):
+    review_item_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    actor: str
+    recorded_at: datetime
+    notes: NotesText
 
 
 class RawGridCell(FrozenModel):
     row: int = Field(ge=0)
     column: int = Field(ge=0)
-    value: Decimal
-    qualifier: Literal["<", ">", "≤", "≥"] | None = None
-    suffix: str | None = Field(default=None, max_length=16)
+    raw_text: str = Field(max_length=2_000)
+    value: Decimal | None = None
+    qualifier: str | None = Field(default=None, max_length=8)
+    suffix: str | None = Field(default=None, max_length=32)
+    parse_status: Literal["blank", "text", "numeric", "ambiguous_numeric"]
     source: SourceReference
 
 
@@ -104,13 +120,9 @@ class RawGrid(FrozenModel):
 
 class ImportedRuleDraft(DraftRulePackage):
     review_items: tuple[ImportReviewItem, ...] = ()
+    review_resolutions: tuple[ImportReviewResolution, ...] = ()
     raw_grids: tuple[RawGrid, ...] = ()
-
-
-class _Payload(TypedDict):
-    tables: list[object]
-    formulas: list[object]
-    mappings: list[object]
+    source_identities: tuple[StandardIdentity, ...]
 
 
 def _content_digest(
@@ -119,13 +131,25 @@ def _content_digest(
     mappings: tuple[CompatibilityMapping, ...],
     review_items: tuple[ImportReviewItem, ...] = (),
     raw_grids: tuple[RawGrid, ...] = (),
+    source_documents: tuple[SourceDocument, ...] = (),
+    source_identities: tuple[StandardIdentity, ...] = (),
+    review_resolutions: tuple[ImportReviewResolution, ...] = (),
 ) -> str:
     payload = {
         "tables": [item.model_dump(mode="json") for item in tables],
         "formulas": [item.model_dump(mode="json") for item in formulas],
         "mappings": [item.model_dump(mode="json") for item in mappings],
         "review_items": [item.model_dump(mode="json") for item in review_items],
+        "review_resolutions": [
+            item.model_dump(mode="json") for item in review_resolutions
+        ],
         "raw_grids": [item.model_dump(mode="json") for item in raw_grids],
+        "source_documents": [
+            item.model_dump(mode="json") for item in source_documents
+        ],
+        "source_identities": [
+            item.model_dump(mode="json") for item in source_identities
+        ],
     }
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
 
@@ -139,145 +163,48 @@ def _recipe(identity: StandardIdentity) -> StandardRecipe:
     return matches[0]
 
 
-def _synthetic_payload(path: Path) -> _Payload | None:
-    try:
-        reader = PdfReader(path)
-        metadata = {str(key): str(value) for key, value in (reader.metadata or {}).items()}
-        if metadata.get("/ICC-Synthetic", "").casefold() != "true":
-            return None
-        text = "\n".join(page.extract_text() or "" for page in reader.pages)
-        match = re.search(
-            rf"{_SYNTHETIC_BEGIN}\s+([A-Za-z0-9+/=\s]+?)\s+{_SYNTHETIC_END}",
-            text,
-        )
-        if match is None:
-            raise ExtractionError("synthetic PDF has no unambiguous rule payload")
-        encoded = re.sub(r"\s+", "", match.group(1))
-        decoded = base64.b64decode(encoded, validate=True)
-        if len(decoded) > _MAX_EXTRACTED_PAYLOAD_BYTES:
-            raise ExtractionError("synthetic extraction payload exceeds the size limit")
-        value = json.loads(decoded)
-        if not isinstance(value, dict) or set(value) != {
-            "tables",
-            "formulas",
-            "mappings",
-        }:
-            raise ExtractionError("synthetic extraction payload has an invalid shape")
-        if not all(
-            isinstance(value[key], list)
-            for key in ("tables", "formulas", "mappings")
-        ):
-            raise ExtractionError("synthetic extraction payload collections must be arrays")
-        return _Payload(
-            tables=value["tables"],
-            formulas=value["formulas"],
-            mappings=value["mappings"],
-        )
-    except ExtractionError:
-        raise
-    except (
-        OSError,
-        EOFError,
-        UnicodeDecodeError,
-        binascii.Error,
-        json.JSONDecodeError,
-        TypeError,
-        ValueError,
-    ) as error:
-        raise ExtractionError("synthetic extraction payload could not be decoded") from error
-
-
-def _references(item: Table | Formula | CompatibilityMapping) -> tuple[SourceReference, ...]:
-    if isinstance(item, Table):
-        return (
-            item.source,
-            *(cell.source for cell in item.cells),
-            *(supported.source for supported in item.supported_ranges),
-        )
-    if isinstance(item, Formula):
-        return (
-            item.source,
-            *(parameter_set.source for parameter_set in item.parameter_sets),
-            *(supported.source for supported in item.supported_ranges),
-        )
-    return (item.source,)
-
-
-def _require_exact_sources(
-    items: tuple[Table | Formula | CompatibilityMapping, ...],
-    identity: StandardIdentity,
-) -> None:
-    if any(
-        source.standard != identity.standard or source.edition != identity.edition
-        for item in items
-        for source in _references(item)
-    ):
-        raise ExtractionError("extracted record source does not match its recognized PDF")
-
-
 _NUMERIC_CELL = re.compile(
-    r"^\s*([<>≤≥]?)\s*([0-9]+(?:[.,][0-9]+)?)\s*([a-zA-Z*]*)\s*$"
+    r"^\s*(<=|>=|<|>|≤|≥)?\s*([0-9]+(?:[.,][0-9]+)?)\s*(\S*)\s*$"
 )
 
 
 def _numeric_token(
     value: str | None,
-) -> tuple[Decimal, Literal["<", ">", "≤", "≥"] | None, str | None] | None:
+) -> tuple[Decimal, str | None, str | None] | None:
     if value is None:
         return None
     match = _NUMERIC_CELL.fullmatch(value.replace("\n", " "))
     if match is None:
         return None
-    qualifier_text = match.group(1)
-    qualifier: Literal["<", ">", "≤", "≥"] | None = (
-        qualifier_text if qualifier_text else None  # type: ignore[assignment]
-    )
+    qualifier = match.group(1) or None
     suffix = match.group(3) or None
     return Decimal(match.group(2).replace(",", ".")), qualifier, suffix
 
 
-def _largest_numeric_rectangle(
-    raw: list[list[str | None]],
-) -> tuple[int, int, int, int]:
-    rows = len(raw)
-    columns = max((len(row) for row in raw), default=0)
-    values = [
-        [
-            _numeric_token(raw[row][column]) if column < len(raw[row]) else None
-            for column in range(columns)
-        ]
-        for row in range(rows)
-    ]
-    best_score: tuple[int, int, int] | None = None
-    best_regions: list[tuple[int, int, int, int]] = []
-    for row_start in range(rows):
-        for row_end in range(row_start + 1, rows + 1):
-            for column_start in range(columns):
-                for column_end in range(column_start + 1, columns + 1):
-                    if not all(
-                        values[row][column] is not None
-                        for row in range(row_start, row_end)
-                        for column in range(column_start, column_end)
-                    ):
-                        continue
-                    height = row_end - row_start
-                    width = column_end - column_start
-                    score = (
-                        height * width,
-                        height,
-                        width,
-                    )
-                    region = (row_start, row_end, column_start, column_end)
-                    if best_score is None or score > best_score:
-                        best_score = score
-                        best_regions = [region]
-                    elif score == best_score:
-                        best_regions.append(region)
-    if best_score is None:
-        raise ExtractionError("anchored table has no unambiguous numeric rectangle")
-    if len(best_regions) != 1:
-        raise ExtractionError("anchored table has ambiguous numeric rectangles")
-    return best_regions[0]
+def _parsed_cell(
+    value: str | None,
+    *,
+    allowed_suffixes: tuple[str, ...],
+) -> tuple[str, Decimal | None, str | None, str | None, str]:
+    raw_text = "" if value is None else value
+    if len(raw_text) > 2_000:
+        raise ExtractionError("raw table cell exceeds the fidelity size limit")
+    if not raw_text.strip():
+        return raw_text, None, None, None, "blank"
+    token = _numeric_token(raw_text)
+    if token is None:
+        return raw_text, None, None, None, "text"
+    number, qualifier, suffix = token
+    ambiguous = qualifier in {"<=", ">="} or (
+        suffix is not None and suffix not in allowed_suffixes
+    )
+    return (
+        raw_text,
+        number,
+        qualifier,
+        suffix,
+        "ambiguous_numeric" if ambiguous else "numeric",
+    )
 
 
 def _source(
@@ -302,15 +229,56 @@ def _source(
     )
 
 
+def _anchor_boxes(
+    page: PageObject,
+    *,
+    anchor_text: str,
+) -> tuple[dict[str, float], ...]:
+    matches: list[dict[str, float]] = []
+    page_height = float(page.mediabox.height)
+    normalized_anchor = re.sub(r"\s+", " ", anchor_text).strip().casefold()
+
+    def visitor(
+        text: str,
+        current_matrix: list[float],
+        text_matrix: list[float],
+        _font: object,
+        font_size: float,
+    ) -> None:
+        normalized_text = re.sub(r"\s+", " ", text).strip().casefold()
+        if normalized_anchor not in normalized_text:
+            return
+        matrix = mult(text_matrix, current_matrix)
+        height = max(
+            1.0,
+            abs(font_size * current_matrix[3]),
+            abs(text_matrix[3]),
+        )
+        x0 = float(matrix[4])
+        bottom = page_height - float(matrix[5]) + height * 0.25
+        top = bottom - height * 1.25
+        width = max(height, len(normalized_text) * height * 0.5)
+        matches.append(
+            {
+                "x0": x0,
+                "x1": x0 + width,
+                "top": top,
+                "bottom": bottom,
+            }
+        )
+
+    page.extract_text(visitor_text=visitor)
+    return tuple(matches)
+
+
 def _extract_layout_table(
     page: pdfplumber.page.Page,
-    anchor_text: str,
+    anchor_page: PageObject,
     identity: StandardIdentity,
     spec: TableAuditSpec,
-) -> RawGrid:
-    page_text = re.sub(r"\s+", " ", anchor_text).casefold()
-    anchor = f"table {spec.source_table}".casefold()
-    if anchor not in page_text:
+) -> tuple[RawGrid, tuple[ImportReviewItem, ...]]:
+    anchors = _anchor_boxes(anchor_page, anchor_text=spec.title_anchor)
+    if not anchors:
         raise ExtractionError(
             f"layout anchor is missing for {spec.semantic_id}; extraction refused"
         )
@@ -319,10 +287,32 @@ def _extract_layout_table(
         raw = found.extract()
         shape = (len(raw), max((len(row) for row in raw), default=0))
         bbox_matches = all(
-            abs(float(actual) - expected) <= 1.0
+            abs(float(actual) - expected) <= spec.bbox_tolerance
             for actual, expected in zip(found.bbox, spec.expected_bbox, strict=True)
         )
-        if shape == (spec.expected_raw_rows, spec.expected_raw_columns) and bbox_matches:
+        spatially_bound = any(
+            found.bbox[1] >= anchor["bottom"]
+            and found.bbox[1] - anchor["bottom"] <= spec.anchor_max_vertical_gap
+            and max(
+                0.0,
+                min(found.bbox[2], anchor["x1"])
+                - max(found.bbox[0], anchor["x0"]),
+            )
+            / max(
+                1.0,
+                min(
+                    found.bbox[2] - found.bbox[0],
+                    anchor["x1"] - anchor["x0"],
+                ),
+            )
+            >= spec.anchor_min_x_overlap
+            for anchor in anchors
+        )
+        if (
+            shape == (spec.expected_raw_rows, spec.expected_raw_columns)
+            and bbox_matches
+            and spatially_bound
+        ):
             matching.append(found)
     if len(matching) != 1:
         raise ExtractionError(
@@ -335,36 +325,68 @@ def _extract_layout_table(
         clause=spec.clause,
         table=spec.source_table,
     )
-    cells = tuple(
-        RawGridCell(
-            row=row,
-            column=column,
-            value=token[0],
-            qualifier=token[1],
-            suffix=token[2],
-            source=_source(
-                identity,
-                page_number=spec.page_number,
-                clause=spec.clause,
-                table=spec.source_table,
-                row=f"grid row {row + 1}",
-                column=f"grid column {column + 1}",
-            ),
-        )
-        for row in range(spec.expected_raw_rows)
-        for column in range(spec.expected_raw_columns)
-        if (token := _numeric_token(raw[row][column])) is not None
-    )
-    if not cells:
-        raise ExtractionError(f"anchored table has no numeric cells for {spec.semantic_id}")
-    return RawGrid(
+    cells: list[RawGridCell] = []
+    for row in range(spec.expected_raw_rows):
+        for column in range(spec.expected_raw_columns):
+            raw_text, value, qualifier, suffix, parse_status = _parsed_cell(
+                raw[row][column],
+                allowed_suffixes=spec.allowed_suffixes,
+            )
+            cells.append(
+                RawGridCell(
+                    row=row,
+                    column=column,
+                    raw_text=raw_text,
+                    value=value,
+                    qualifier=qualifier,
+                    suffix=suffix,
+                    parse_status=parse_status,  # type: ignore[arg-type]
+                    source=_source(
+                        identity,
+                        page_number=spec.page_number,
+                        clause=spec.clause,
+                        table=spec.source_table,
+                        row=f"grid row {row + 1}",
+                        column=f"grid column {column + 1}",
+                    ),
+                )
+            )
+    grid = RawGrid(
         id=f"raw-{spec.semantic_id}",
         rows=spec.expected_raw_rows,
         columns=spec.expected_raw_columns,
         target_unit=spec.target_unit,
-        cells=cells,
+        cells=tuple(cells),
         source=table_source,
     )
+    if spec.data_strategy == "rectangle":
+        if spec.data_row_start is None or spec.data_column_start is None:
+            raise ExtractionError("rectangle data contract has no starting coordinate")
+        data_coordinates = {
+            (spec.data_row_start + row, spec.data_column_start + column)
+            for row in range(spec.expected_data_rows)
+            for column in range(spec.expected_data_columns)
+        }
+    else:
+        numeric = tuple(cell for cell in cells if cell.value is not None)
+        if len(numeric) != spec.expected_data_rows * spec.expected_data_columns:
+            raise ExtractionError(
+                f"layout data dimensions do not match for {spec.semantic_id}"
+            )
+        data_coordinates = {(cell.row, cell.column) for cell in numeric}
+    reviews = tuple(
+        ImportReviewItem(
+            code="MANUAL_RAW_CELL_REVIEW_REQUIRED",
+            semantic_id=f"{grid.id}:{cell.row}:{cell.column}",
+            kind="raw_cell",
+            source=cell.source,
+            expected_contract=f"raw-cell:{spec.semantic_id}:numeric",
+        )
+        for cell in cells
+        if (cell.row, cell.column) in data_coordinates
+        and cell.parse_status != "numeric"
+    )
+    return grid, reviews
 
 
 def _manual_review_items(
@@ -382,6 +404,10 @@ def _manual_review_items(
                 clause=spec.clause,
                 table=spec.source_table,
             ),
+            expected_contract=(
+                f"table:{spec.semantic_id}:"
+                f"{hashlib.sha256(_canonical_json(spec.model_dump(mode='json'))).hexdigest()}"
+            ),
         )
         for spec in recipe.tables
     )
@@ -397,13 +423,17 @@ def _manual_review_items(
                 table=spec.table,
                 figure=spec.figure,
             ),
+            expected_contract=(
+                f"formula:{spec.semantic_id}:"
+                f"{hashlib.sha256(_canonical_json(spec.model_dump(mode='json'))).hexdigest()}"
+            ),
         )
         for spec in recipe.formulas
     )
     mapping_items = tuple(
         ImportReviewItem(
             code="MANUAL_MAPPING_REQUIRED",
-            semantic_id=spec.semantic_route,
+            semantic_id=spec.id,
             kind="mapping",
             source=_source(
                 identity,
@@ -411,6 +441,10 @@ def _manual_review_items(
                 clause=spec.clause,
                 table=spec.table,
                 figure=spec.figure,
+            ),
+            expected_contract=(
+                f"mapping:{spec.id}:"
+                f"{hashlib.sha256(_canonical_json(spec.model_dump(mode='json'))).hexdigest()}"
             ),
         )
         for spec in recipe.mappings
@@ -426,10 +460,10 @@ def _extract_real_layout(
     try:
         anchor_reader = PdfReader(path)
         with pdfplumber.open(path) as pdf:
-            grids = tuple(
+            extracted = tuple(
                 _extract_layout_table(
                     pdf.pages[spec.page_number - 1],
-                    anchor_reader.pages[spec.page_number - 1].extract_text() or "",
+                    anchor_reader.pages[spec.page_number - 1],
                     identity,
                     spec,
                 )
@@ -441,11 +475,16 @@ def _extract_real_layout(
         OSError,
         EOFError,
         IndexError,
+        PDFException,
+        PyPdfError,
+        PSException,
         TypeError,
         ValueError,
     ) as error:
         raise ExtractionError("recognized PDF layout could not be extracted") from error
-    return grids, _manual_review_items(identity, recipe)
+    grids = tuple(grid for grid, _ in extracted)
+    raw_reviews = tuple(item for _, reviews in extracted for item in reviews)
+    return grids, (*_manual_review_items(identity, recipe), *raw_reviews)
 
 
 def _extract_one(
@@ -458,23 +497,8 @@ def _extract_one(
     tuple[RawGrid, ...],
 ]:
     recipe = _recipe(identity)
-    payload = _synthetic_payload(path)
-    if payload is None:
-        grids, review_items = _extract_real_layout(path, identity, recipe)
-        return (), (), (), review_items, grids
-    try:
-        tables = tuple(Table.model_validate(item) for item in payload["tables"])
-        formulas = tuple(Formula.model_validate(item) for item in payload["formulas"])
-        mappings = tuple(
-            CompatibilityMapping.model_validate(item).model_copy(
-                update={"approved": False}
-            )
-            for item in payload["mappings"]
-        )
-    except (TypeError, ValidationError, ValueError) as error:
-        raise ExtractionError("extracted rule payload is structurally invalid") from error
-    _require_exact_sources((*tables, *formulas, *mappings), identity)
-    return tables, formulas, mappings, (), ()
+    grids, review_items = _extract_real_layout(path, identity, recipe)
+    return (), (), (), review_items, grids
 
 
 def _require_unique_ids(
@@ -551,13 +575,32 @@ def extract_draft(paths: tuple[Path, ...]) -> ImportedRuleDraft:
             f"content:{_content_digest(tables, formulas, mappings, review_items, raw_grids)}",
         )
     )
+    ordered_identities = tuple(
+        identity
+        for _, identity in sorted(identified, key=lambda pair: pair[1].recipe_id)
+    )
     sources = tuple(
         SourceDocument(
             standard=identity.standard,
             edition=identity.edition,
             sha256=identity.sha256,
         )
-        for _, identity in sorted(identified, key=lambda pair: pair[1].recipe_id)
+        for identity in ordered_identities
+    )
+    content_digest = _content_digest(
+        tables,
+        formulas,
+        mappings,
+        review_items,
+        raw_grids,
+        sources,
+        ordered_identities,
+    )
+    records = tuple(
+        record.model_copy(update={"notes": f"content:{content_digest}"})
+        if record.notes.startswith("content:")
+        else record
+        for record in records
     )
     return ImportedRuleDraft(
         manifest=Manifest(
@@ -577,4 +620,5 @@ def extract_draft(paths: tuple[Path, ...]) -> ImportedRuleDraft:
         mappings=mappings,
         review_items=review_items,
         raw_grids=raw_grids,
+        source_identities=ordered_identities,
     )

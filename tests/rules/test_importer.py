@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import base64
-import json
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from pdfminer.pdfdocument import PDFSyntaxError
 from pypdf import PdfWriter
 from pypdf.generic import (
     DecodedStreamObject,
@@ -12,8 +12,22 @@ from pypdf.generic import (
     NameObject,
 )
 
-from insulation_coordination.domain.rules import DraftRulePackage
+from insulation_coordination.domain.rules import (
+    CompatibilityMapping,
+    DraftRulePackage,
+    Formula,
+    LinearInterpolate,
+    Literal,
+    Parameter,
+    ParameterSet,
+    SourceReference,
+    Table,
+    TableAxis,
+    TableCell,
+    Variable,
+)
 from insulation_coordination.rules.archive import load_rule_package, write_rule_package
+from insulation_coordination.rules.importer import recipes as recipe_registry
 from insulation_coordination.rules.importer.approval import (
     ApprovalError,
     approve_draft,
@@ -22,19 +36,25 @@ from insulation_coordination.rules.importer.approval import (
 from insulation_coordination.rules.importer.extract import (
     ExtractionError,
     ImportedRuleDraft,
-    ImportReviewItem,
-    _content_digest,
-    _largest_numeric_rectangle,
     extract_draft,
 )
 from insulation_coordination.rules.importer.identify import (
     AmbiguousStandardError,
+    FormulaAuditSpec,
+    MappingAuditSpec,
+    StandardRecipe,
+    TableAuditSpec,
     UnsupportedStandardError,
     identify_standard,
 )
-from tests.fixtures.synthetic_rules import (
-    synthetic_hf_rule_package,
-    synthetic_part1_rule_package,
+
+_PAGE_WIDTH = 612
+_PAGE_HEIGHT = 792
+_TABLE_BBOX = (72.0, 192.0, 252.0, 312.0)
+_CELLS = (
+    ("axis", "10", "20"),
+    ("1", "1.1", "1.2"),
+    ("2", "2.1", "2.2"),
 )
 
 
@@ -44,16 +64,56 @@ def _pdf_string(value: str) -> bytes:
     )
 
 
-def create_pdf(
+def _text_command(x: float, y: float, value: str) -> bytes:
+    return (
+        f"BT /F1 9 Tf {x:.1f} {y:.1f} Td (".encode()
+        + _pdf_string(value)
+        + b") Tj ET"
+    )
+
+
+def _table_commands(
+    bbox: tuple[float, float, float, float],
+    cells: tuple[tuple[str, ...], ...],
+) -> list[bytes]:
+    x0, top, x1, bottom = bbox
+    rows = len(cells)
+    columns = len(cells[0])
+    pdf_top = _PAGE_HEIGHT - top
+    pdf_bottom = _PAGE_HEIGHT - bottom
+    row_height = (pdf_top - pdf_bottom) / rows
+    column_width = (x1 - x0) / columns
+    commands = [b"0.7 w"]
+    for column in range(columns + 1):
+        x = x0 + column * column_width
+        commands.append(
+            f"{x:.1f} {pdf_bottom:.1f} m {x:.1f} {pdf_top:.1f} l S".encode()
+        )
+    for row in range(rows + 1):
+        y = pdf_bottom + row * row_height
+        commands.append(f"{x0:.1f} {y:.1f} m {x1:.1f} {y:.1f} l S".encode())
+    for row, values in enumerate(cells):
+        for column, value in enumerate(values):
+            x = x0 + column * column_width + 5
+            y = pdf_top - (row + 1) * row_height + row_height / 2 - 3
+            commands.append(_text_command(x, y, value))
+    return commands
+
+
+def create_geometry_pdf(
     path: Path,
     *,
-    title: str,
-    lines: tuple[str, ...],
-    payload: dict[str, object] | None = None,
+    standard: str,
+    edition: str,
+    edition_anchor: str,
+    topic_anchor: str,
+    table_anchor: str,
+    cells: tuple[tuple[str, ...], ...] = _CELLS,
     metadata: dict[str, str] | None = None,
+    second_table: bool = False,
 ) -> None:
     writer = PdfWriter()
-    page = writer.add_blank_page(width=612, height=792)
+    page = writer.add_blank_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
     page[NameObject("/Resources")] = DictionaryObject(
         {
             NameObject("/Font"): DictionaryObject(
@@ -69,214 +129,337 @@ def create_pdf(
             )
         }
     )
-    stream = DecodedStreamObject()
-    commands = [b"BT /F1 10 Tf 72 720 Td"]
-    for index, line in enumerate(lines):
-        if index:
-            commands.append(b"0 -16 Td")
-        commands.append(b"(" + _pdf_string(line) + b") Tj")
-    if payload is not None:
-        encoded = base64.b64encode(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        ).decode()
+    commands = [
+        _text_command(72, 750, standard),
+        _text_command(72, 734, edition_anchor),
+        _text_command(72, 718, topic_anchor),
+        _text_command(72, 616, table_anchor),
+        *_table_commands(_TABLE_BBOX, cells),
+    ]
+    if second_table:
+        second_bbox = (300.0, 192.0, 480.0, 312.0)
         commands.extend(
             (
-                b"0 -16 Td",
-                b"(ICC-SYNTHETIC-RULES-BEGIN) Tj",
-                b"0 -16 Td",
-                b"(" + encoded.encode() + b") Tj",
-                b"0 -16 Td",
-                b"(ICC-SYNTHETIC-RULES-END) Tj",
+                _text_command(300, 616, table_anchor),
+                *_table_commands(second_bbox, cells),
             )
         )
-    commands.append(b"ET")
+    stream = DecodedStreamObject()
     stream.set_data(b"\n".join(commands))
     page[NameObject("/Contents")] = writer._add_object(stream)
     writer.add_metadata(
-        {"/Title": title, "/ICC-Synthetic": "true", **(metadata or {})}
+        {
+            "/Title": f"{standard}:{edition} synthetic geometry fixture",
+            "/ICC-Synthetic": "true",
+            **(metadata or {}),
+        }
     )
     with path.open("wb") as target:
         writer.write(target)
 
 
-@pytest.fixture
-def synthetic_part1_pdf(tmp_path: Path) -> Path:
-    path = tmp_path / "part1.pdf"
-    create_pdf(
-        path,
-        title="IEC 60664-1:2020 synthetic extraction fixture",
-        lines=(
-            "IEC 60664-1",
-            "Edition 3.0 2020-05",
-            "low-voltage supply systems",
+def _test_recipes() -> tuple[StandardRecipe, StandardRecipe]:
+    def recipe(
+        *,
+        recipe_id: str,
+        standard: str,
+        edition: str,
+        edition_anchor: str,
+        topic_anchor: str,
+        table_id: str,
+        table_name: str,
+        formula_id: str,
+        mapping_id: str,
+        route: str,
+    ) -> StandardRecipe:
+        return StandardRecipe(
+            id=recipe_id,
+            standard=standard,
+            edition=edition,
+            expected_page_count=1,
+            metadata_identity_fields=("/Title", "/Subject", "/Keywords"),
+            metadata_identity_anchors=(standard, edition),
+            identity_anchors=(standard, edition_anchor, topic_anchor),
+            tables=(
+                TableAuditSpec(
+                    semantic_id=table_id,
+                    source_table=table_name,
+                    title_anchor=f"Table {table_name}",
+                    page_number=1,
+                    clause="SYNTHETIC",
+                    target_unit="mm",
+                    expected_raw_rows=3,
+                    expected_raw_columns=3,
+                    expected_bbox=_TABLE_BBOX,
+                    bbox_tolerance=1.0,
+                    anchor_max_vertical_gap=24.0,
+                    anchor_min_x_overlap=0.5,
+                    data_strategy="rectangle",
+                    data_row_start=1,
+                    data_column_start=1,
+                    expected_data_rows=2,
+                    expected_data_columns=2,
+                    row_axis_id="stress",
+                    row_axis_unit="V",
+                    column_axis_id="branch",
+                    column_axis_unit="1",
+                    assertions=(
+                        "complete_grid",
+                        "strictly_increasing_axes",
+                        "raw_value_correspondence",
+                    ),
+                ),
+            ),
+            formulas=(
+                FormulaAuditSpec(
+                    semantic_id=formula_id,
+                    unit="mm",
+                    variables=("stress",),
+                    expression_shape=(
+                        f"linear_interpolate:{table_id}"
+                        "(variable:stress,literal)"
+                    ),
+                    page_number=1,
+                    clause="SYNTHETIC",
+                    table=table_name,
+                ),
+            ),
+            mappings=(
+                MappingAuditSpec(
+                    id=mapping_id,
+                    semantic_route=route,
+                    target_rule_id=formula_id,
+                    family="synthetic",
+                    page_number=1,
+                    clause="SYNTHETIC",
+                    table=table_name,
+                ),
+            ),
+        )
+
+    return (
+        recipe(
+            recipe_id="iec60664-1-2020",
+            standard="IEC 60664-1",
+            edition="2020",
+            edition_anchor="Edition 3.0 2020-05",
+            topic_anchor="synthetic low-voltage geometry",
+            table_id="synthetic-part1-table",
+            table_name="S1",
+            formula_id="synthetic-part1-formula",
+            mapping_id="synthetic-part1-mapping",
+            route="synthetic:part1",
+        ),
+        recipe(
+            recipe_id="iec60664-4-2005",
+            standard="IEC 60664-4",
+            edition="2005",
+            edition_anchor="first edition 2005",
+            topic_anchor="synthetic high-frequency geometry",
+            table_id="synthetic-part4-table",
+            table_name="S4",
+            formula_id="synthetic-part4-formula",
+            mapping_id="synthetic-part4-mapping",
+            route="synthetic:part4",
         ),
     )
-    return path
 
 
-def _replace_source_identity(
-    value: object, *, standard: str, edition: str
-) -> object:
-    if isinstance(value, dict):
-        changed = {
-            key: _replace_source_identity(item, standard=standard, edition=edition)
-            for key, item in value.items()
-        }
-        if "standard" in changed and "edition" in changed:
-            changed["standard"] = standard
-            changed["edition"] = edition
-        return changed
-    if isinstance(value, list):
-        return [
-            _replace_source_identity(item, standard=standard, edition=edition)
-            for item in value
-        ]
-    return value
-
-
-def _payload(
-    *,
-    tables: object,
-    formulas: object,
-    mappings: object,
-    standard: str,
-    edition: str,
-) -> dict[str, object]:
-    return _replace_source_identity(
-        {"tables": tables, "formulas": formulas, "mappings": mappings},
-        standard=standard,
-        edition=edition,
-    )
+@pytest.fixture(autouse=True)
+def injected_recipes(monkeypatch: pytest.MonkeyPatch) -> tuple[StandardRecipe, ...]:
+    recipes = _test_recipes()
+    monkeypatch.setattr(recipe_registry, "RECIPES", recipes)
+    return recipes
 
 
 @pytest.fixture
 def supported_pdfs(tmp_path: Path) -> tuple[Path, Path]:
-    part1_package = synthetic_part1_rule_package()
-    complete_package = synthetic_hf_rule_package()
-    part1_table_count = len(part1_package.tables)
-    part1_formula_count = len(part1_package.formulas)
-    part1_mapping_count = len(part1_package.mappings)
     part1 = tmp_path / "part1.pdf"
     part4 = tmp_path / "part4.pdf"
-    create_pdf(
+    create_geometry_pdf(
         part1,
-        title="IEC 60664-1:2020 synthetic extraction fixture",
-        lines=(
-            "IEC 60664-1",
-            "Edition 3.0 2020-05",
-            "low-voltage supply systems",
-        ),
-        payload=_payload(
-            tables=[
-                item.model_dump(mode="json") for item in part1_package.tables
-            ],
-            formulas=[
-                item.model_dump(mode="json") for item in part1_package.formulas
-            ],
-            mappings=[
-                item.model_dump(mode="json") for item in part1_package.mappings
-            ],
-            standard="IEC 60664-1",
-            edition="2020",
-        ),
+        standard="IEC 60664-1",
+        edition="2020",
+        edition_anchor="Edition 3.0 2020-05",
+        topic_anchor="synthetic low-voltage geometry",
+        table_anchor="Table S1",
     )
-    create_pdf(
+    create_geometry_pdf(
         part4,
-        title="IEC 60664-4:2005 synthetic extraction fixture",
-        lines=(
-            "IEC 60664-4",
-            "first edition 2005",
-            "high-frequency voltage stress",
-        ),
-        payload=_payload(
-            tables=[
-                item.model_dump(mode="json")
-                for item in complete_package.tables[part1_table_count:]
-            ],
-            formulas=[
-                item.model_dump(mode="json")
-                for item in complete_package.formulas[part1_formula_count:]
-            ],
-            mappings=[
-                item.model_dump(mode="json")
-                for item in complete_package.mappings[part1_mapping_count:]
-            ],
-            standard="IEC 60664-4",
-            edition="2005",
-        ),
+        standard="IEC 60664-4",
+        edition="2005",
+        edition_anchor="first edition 2005",
+        topic_anchor="synthetic high-frequency geometry",
+        table_anchor="Table S4",
     )
     return part1, part4
 
 
-def test_identifies_supported_synthetic_document(synthetic_part1_pdf: Path) -> None:
-    identity = identify_standard(synthetic_part1_pdf)
+def _source_for(recipe: StandardRecipe) -> SourceReference:
+    spec = recipe.tables[0]
+    return SourceReference(
+        standard=recipe.standard,
+        edition=recipe.edition,
+        clause=spec.clause,
+        table=spec.source_table,
+        note=f"PDF page {spec.page_number}",
+    )
+
+
+def _reviewed_content(
+    draft: ImportedRuleDraft,
+    recipes: tuple[StandardRecipe, ...],
+) -> tuple[
+    tuple[Table, ...],
+    tuple[Formula, ...],
+    tuple[CompatibilityMapping, ...],
+]:
+    grids = {grid.id: grid for grid in draft.raw_grids}
+    tables: list[Table] = []
+    formulas: list[Formula] = []
+    mappings: list[CompatibilityMapping] = []
+    for recipe in recipes:
+        table_spec = recipe.tables[0]
+        formula_spec = recipe.formulas[0]
+        mapping_spec = recipe.mappings[0]
+        grid = grids[f"raw-{table_spec.semantic_id}"]
+        raw_cells = {(cell.row, cell.column): cell for cell in grid.cells}
+        source = _source_for(recipe)
+        table = Table(
+            id=table_spec.semantic_id,
+            unit=table_spec.target_unit,
+            row_axis=TableAxis(
+                id=table_spec.row_axis_id,
+                unit=table_spec.row_axis_unit,
+                values=(Decimal(1), Decimal(2)),
+            ),
+            column_axis=TableAxis(
+                id=table_spec.column_axis_id,
+                unit=table_spec.column_axis_unit,
+                values=(Decimal(10), Decimal(20)),
+            ),
+            cells=tuple(
+                TableCell(
+                    row=row,
+                    column=column,
+                    value=raw_cells[(row + 1, column + 1)].value,
+                    unit=table_spec.target_unit,
+                    source=raw_cells[(row + 1, column + 1)].source,
+                )
+                for row in range(2)
+                for column in range(2)
+            ),
+            interpolation="linear",
+            source=source,
+        )
+        formula = Formula(
+            id=formula_spec.semantic_id,
+            expression=LinearInterpolate(
+                table_id=table.id,
+                x=Variable(name=table_spec.row_axis_id),
+                column=Literal(value=Decimal(10)),
+            ),
+            unit=formula_spec.unit,
+            parameter_sets=(
+                ParameterSet(
+                    id="reviewed",
+                    parameters=(
+                        Parameter(name=table_spec.row_axis_id, unit="V"),
+                    ),
+                    source=source,
+                ),
+            ),
+            source=source,
+        )
+        mapping = CompatibilityMapping(
+            id=mapping_spec.id,
+            source_rule_id=mapping_spec.semantic_route,
+            target_rule_id=mapping_spec.target_rule_id,
+            approved=False,
+            source=source,
+        )
+        tables.append(table)
+        formulas.append(formula)
+        mappings.append(mapping)
+    return tuple(tables), tuple(formulas), tuple(mappings)
+
+
+def _review_all(
+    draft: ImportedRuleDraft,
+    recipes: tuple[StandardRecipe, ...],
+) -> ImportedRuleDraft:
+    tables, formulas, mappings = _reviewed_content(draft, recipes)
+    changed = draft.model_copy(
+        update={"tables": tables, "formulas": formulas, "mappings": mappings}
+    )
+    return record_correction(
+        draft,
+        changed,
+        actor="Synthetic Reviewer",
+        notes="Reviewed generated geometry and semantic contracts.",
+        resolve=draft.review_items,
+    )
+
+
+def test_identifies_supported_document_from_recipe_specific_evidence(
+    supported_pdfs: tuple[Path, Path],
+) -> None:
+    identity = identify_standard(supported_pdfs[0])
 
     assert identity.standard == "IEC 60664-1"
     assert identity.edition == "2020"
+    assert identity.page_count == 1
     assert len(identity.sha256) == 64
 
 
 def test_unknown_document_is_rejected(tmp_path: Path) -> None:
     path = tmp_path / "unknown.pdf"
-    create_pdf(path, title="Unrelated", lines=("Unrelated document",))
-
-    with pytest.raises(UnsupportedStandardError):
-        identify_standard(path)
-
-
-def test_metadata_and_all_independent_anchors_are_required(tmp_path: Path) -> None:
-    missing_anchor = tmp_path / "missing-anchor.pdf"
-    create_pdf(
-        missing_anchor,
-        title="IEC 60664-1:2020 synthetic extraction fixture",
-        lines=("IEC 60664-1", "Edition 3.0 2020-05"),
-    )
-    unsupported_edition = tmp_path / "unsupported-edition.pdf"
-    create_pdf(
-        unsupported_edition,
-        title="IEC 60664-1:2007 synthetic extraction fixture",
-        lines=(
-            "IEC 60664-1",
-            "Edition 2.0 2007",
-            "low-voltage supply systems",
-        ),
-    )
-
-    with pytest.raises(UnsupportedStandardError):
-        identify_standard(missing_anchor)
-    with pytest.raises(UnsupportedStandardError):
-        identify_standard(unsupported_edition)
-
-
-def test_document_matching_two_recipes_is_rejected_as_ambiguous(tmp_path: Path) -> None:
-    path = tmp_path / "ambiguous.pdf"
-    create_pdf(
+    create_geometry_pdf(
         path,
-        title="IEC 60664-1:2020 IEC 60664-4:2005 synthetic fixture",
-        lines=(
-            "IEC 60664-1",
-            "Edition 3.0 2020-05",
-            "low-voltage supply systems",
-            "IEC 60664-4",
-            "first edition",
-            "high-frequency voltage stress",
-        ),
+        standard="UNKNOWN",
+        edition="1",
+        edition_anchor="unknown edition",
+        topic_anchor="unrelated",
+        table_anchor="Table X",
     )
 
-    with pytest.raises(AmbiguousStandardError):
+    with pytest.raises(UnsupportedStandardError):
         identify_standard(path)
 
 
-def test_contradictory_standard_metadata_is_rejected(tmp_path: Path) -> None:
+def test_generic_metadata_cannot_replace_recipe_specific_identity(tmp_path: Path) -> None:
+    path = tmp_path / "generic-metadata.pdf"
+    create_geometry_pdf(
+        path,
+        standard="IEC 60664-1",
+        edition="2020",
+        edition_anchor="Edition 3.0 2020-05",
+        topic_anchor="synthetic low-voltage geometry",
+        table_anchor="Table S1",
+        metadata={
+            "/Title": "Generic document",
+            "/CreationDate": "D:20260731",
+            "/Producer": "Generic producer",
+        },
+    )
+    writer = PdfWriter(clone_from=path)
+    writer.add_blank_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
+    with path.open("wb") as target:
+        writer.write(target)
+
+    with pytest.raises(UnsupportedStandardError):
+        identify_standard(path)
+
+
+def test_contradictory_metadata_and_body_are_rejected(tmp_path: Path) -> None:
     path = tmp_path / "contradictory.pdf"
-    create_pdf(
+    create_geometry_pdf(
         path,
-        title="IEC 60664-1:2020 synthetic extraction fixture",
-        lines=(
-            "IEC 60664-1",
-            "Edition 3.0 2020-05",
-            "low-voltage supply systems",
-        ),
+        standard="IEC 60664-1",
+        edition="2020",
+        edition_anchor="Edition 3.0 2020-05",
+        topic_anchor="synthetic low-voltage geometry",
+        table_anchor="Table S1",
         metadata={"/Subject": "IEC 60664-4:2005"},
     )
 
@@ -284,86 +467,190 @@ def test_contradictory_standard_metadata_is_rejected(tmp_path: Path) -> None:
         identify_standard(path)
 
 
-def test_metadata_claiming_an_unsupported_edition_is_rejected(tmp_path: Path) -> None:
-    path = tmp_path / "contradictory-edition.pdf"
-    create_pdf(
+def test_document_matching_two_recipes_is_rejected_as_ambiguous(tmp_path: Path) -> None:
+    path = tmp_path / "ambiguous.pdf"
+    create_geometry_pdf(
         path,
-        title="Synthetic extraction fixture",
-        lines=(
-            "IEC 60664-1",
-            "Edition 3.0 2020-05",
-            "low-voltage supply systems",
+        standard="IEC 60664-1 IEC 60664-4",
+        edition="2020 2005",
+        edition_anchor="Edition 3.0 2020-05 first edition 2005",
+        topic_anchor=(
+            "synthetic low-voltage geometry synthetic high-frequency geometry"
         ),
-        metadata={
-            "/Subject": "IEC 60664-1:2019",
-            "/CreationDate": "D:20260731",
-            "/Producer": "Synthetic fixture",
-        },
+        table_anchor="Table S1",
     )
 
-    with pytest.raises(UnsupportedStandardError):
+    with pytest.raises(AmbiguousStandardError):
         identify_standard(path)
 
 
-def test_equally_plausible_numeric_grid_regions_are_rejected() -> None:
-    raw = [
-        ["1", None, "2"],
-        ["3", None, "4"],
-    ]
-
-    with pytest.raises(ExtractionError, match="ambiguous"):
-        _largest_numeric_rectangle(raw)
-
-
-def test_extracts_combined_content_into_an_unusable_audited_draft(
+def test_metadata_marker_cannot_embed_or_auto_approve_rule_content(
     supported_pdfs: tuple[Path, Path],
 ) -> None:
     draft = extract_draft(supported_pdfs)
 
-    assert draft.manifest.approved is False
-    assert draft.manifest.compatible is False
-    assert draft.review_items == ()
-    assert {source.standard for source in draft.manifest.source_documents} == {
-        "IEC 60664-1",
-        "IEC 60664-4",
-    }
-    assert len(draft.tables) == 16
-    assert len(draft.formulas) == 18
-    assert len(draft.mappings) > 20
-    assert all(mapping.approved is False for mapping in draft.mappings)
-    extraction_notes = {
-        record.notes
-        for record in draft.manifest.approval_records
-        if record.action == "extraction"
-    }
-    assert {f"table:{table.id}" for table in draft.tables} <= extraction_notes
-    assert {f"formula:{formula.id}" for formula in draft.formulas} <= extraction_notes
-    assert {f"mapping:{mapping.id}" for mapping in draft.mappings} <= extraction_notes
-    serialized = draft.model_dump_json().encode()
-    assert b"%PDF" not in serialized
-    assert b"ICC-SYNTHETIC-RULES-BEGIN" not in serialized
+    assert draft.tables == ()
+    assert draft.formulas == ()
+    assert draft.mappings == ()
+    assert draft.review_items
+    with pytest.raises(ApprovalError, match="manual review"):
+        approve_draft(draft, approver="Reviewer", notes="No bypass")
 
 
-def test_pending_manual_review_item_blocks_approval(
+def test_real_geometry_extracts_every_raw_cell_and_pending_contract(
     supported_pdfs: tuple[Path, Path],
 ) -> None:
     draft = extract_draft(supported_pdfs)
-    content = draft.model_dump(mode="python")
-    content.pop("review_items")
-    pending = ImportedRuleDraft(
-        **content,
-        review_items=(
-            ImportReviewItem(
-                code="MANUAL_RULE_DEFINITION_REQUIRED",
-                semantic_id="synthetic-pending-rule",
-                kind="formula",
-                source=draft.formulas[0].source,
-            ),
+
+    assert len(draft.raw_grids) == 2
+    assert all((grid.rows, grid.columns) == (3, 3) for grid in draft.raw_grids)
+    assert all(len(grid.cells) == 9 for grid in draft.raw_grids)
+    assert all(
+        len({(cell.row, cell.column) for cell in grid.cells}) == 9
+        for grid in draft.raw_grids
+    )
+    assert all(cell.raw_text is not None for grid in draft.raw_grids for cell in grid.cells)
+    assert {item.kind for item in draft.review_items} == {
+        "table",
+        "formula",
+        "mapping",
+    }
+    assert all(item.expected_contract for item in draft.review_items)
+
+
+def test_unknown_compound_numeric_token_is_preserved_and_flagged(
+    tmp_path: Path,
+) -> None:
+    part1 = tmp_path / "part1.pdf"
+    part4 = tmp_path / "part4.pdf"
+    compound_cells = (
+        ("axis", "10", "20"),
+        ("1", "<= 1.2zz", "1.3"),
+        ("2", "2.1", "2.2"),
+    )
+    create_geometry_pdf(
+        part1,
+        standard="IEC 60664-1",
+        edition="2020",
+        edition_anchor="Edition 3.0 2020-05",
+        topic_anchor="synthetic low-voltage geometry",
+        table_anchor="Table S1",
+        cells=compound_cells,
+    )
+    create_geometry_pdf(
+        part4,
+        standard="IEC 60664-4",
+        edition="2005",
+        edition_anchor="first edition 2005",
+        topic_anchor="synthetic high-frequency geometry",
+        table_anchor="Table S4",
+    )
+
+    draft = extract_draft((part1, part4))
+
+    cell = next(
+        cell
+        for grid in draft.raw_grids
+        if grid.id == "raw-synthetic-part1-table"
+        for cell in grid.cells
+        if (cell.row, cell.column) == (1, 1)
+    )
+    assert cell.raw_text == "<= 1.2zz"
+    assert cell.value == Decimal("1.2")
+    assert cell.qualifier == "<="
+    assert cell.suffix == "zz"
+    assert cell.parse_status == "ambiguous_numeric"
+    assert any(
+        item.code == "MANUAL_RAW_CELL_REVIEW_REQUIRED"
+        and item.semantic_id == "raw-synthetic-part1-table:1:1"
+        for item in draft.review_items
+    )
+
+
+def test_two_equally_valid_anchor_table_regions_are_rejected(
+    tmp_path: Path,
+    injected_recipes: tuple[StandardRecipe, ...],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    part1 = tmp_path / "part1.pdf"
+    part4 = tmp_path / "part4.pdf"
+    create_geometry_pdf(
+        part1,
+        standard="IEC 60664-1",
+        edition="2020",
+        edition_anchor="Edition 3.0 2020-05",
+        topic_anchor="synthetic low-voltage geometry",
+        table_anchor="Table S1",
+        second_table=True,
+    )
+    create_geometry_pdf(
+        part4,
+        standard="IEC 60664-4",
+        edition="2005",
+        edition_anchor="first edition 2005",
+        topic_anchor="synthetic high-frequency geometry",
+        table_anchor="Table S4",
+    )
+    part1_recipe = injected_recipes[0]
+    spec = part1_recipe.tables[0]
+    ambiguous_spec = spec.model_copy(
+        update={
+            "expected_bbox": (186.0, 192.0, 366.0, 312.0),
+            "bbox_tolerance": 120.0,
+        }
+    )
+    monkeypatch.setattr(
+        recipe_registry,
+        "RECIPES",
+        (
+            part1_recipe.model_copy(update={"tables": (ambiguous_spec,)}),
+            injected_recipes[1],
         ),
     )
 
-    with pytest.raises(ApprovalError, match="manual review"):
-        approve_draft(pending, approver="Reviewer", notes="Cannot bypass review")
+    with pytest.raises(ExtractionError, match="ambiguous"):
+        extract_draft((part1, part4))
+
+
+def test_missing_or_duplicate_supported_part_is_rejected(
+    supported_pdfs: tuple[Path, Path],
+) -> None:
+    part1, part4 = supported_pdfs
+
+    with pytest.raises(ExtractionError, match="exactly one"):
+        extract_draft((part1,))
+    with pytest.raises(ExtractionError, match="duplicate"):
+        extract_draft((part1, part1, part4))
+
+
+def test_review_inventory_and_locators_are_immutable(
+    supported_pdfs: tuple[Path, Path],
+) -> None:
+    draft = extract_draft(supported_pdfs)
+    item = draft.review_items[0]
+    rewritten = item.model_copy(
+        update={"source": item.source.model_copy(update={"note": "rewritten locator"})}
+    )
+    changed = draft.model_copy(
+        update={"review_items": (rewritten, *draft.review_items[1:])}
+    )
+
+    with pytest.raises(ApprovalError, match="review"):
+        record_correction(
+            draft,
+            changed,
+            actor="Reviewer",
+            notes="Cannot rewrite the locator",
+            resolve=(rewritten,),
+        )
+    with pytest.raises(ApprovalError, match="review"):
+        record_correction(
+            draft,
+            draft.model_copy(update={"review_items": draft.review_items[1:]}),
+            actor="Reviewer",
+            notes="Cannot delete inventory",
+            resolve=(item,),
+        )
 
 
 def test_import_review_cannot_be_erased_by_plain_draft_conversion(
@@ -388,179 +675,254 @@ def test_import_review_cannot_be_erased_by_plain_draft_conversion(
         )
 
 
-def test_review_item_requires_matching_typed_content_before_resolution(
+def test_recorded_resolution_uses_original_full_review_item_digest(
     supported_pdfs: tuple[Path, Path],
+    injected_recipes: tuple[StandardRecipe, ...],
 ) -> None:
     draft = extract_draft(supported_pdfs)
-    pending = draft.model_copy(
-        update={
-            "review_items": (
-                ImportReviewItem(
-                    code="MANUAL_RULE_DEFINITION_REQUIRED",
-                    semantic_id="required-formula-id",
-                    kind="formula",
-                    source=draft.formulas[0].source,
-                ),
-            )
-        }
-    )
-    pending_digest = _content_digest(
-        pending.tables,
-        pending.formulas,
-        pending.mappings,
-        pending.review_items,
-    )
-    pending = pending.model_copy(
-        update={
-            "manifest": pending.manifest.model_copy(
-                update={
-                    "approval_records": tuple(
-                        record.model_copy(update={"notes": f"content:{pending_digest}"})
-                        if record.notes.startswith("content:")
-                        else record
-                        for record in pending.manifest.approval_records
-                    )
-                }
-            )
-        }
-    )
-    table = pending.tables[0]
-    unrelated = pending.model_copy(
-        update={
-            "review_items": (),
-            "tables": (
-                table.model_copy(
-                    update={
-                        "cells": (
-                            table.cells[0].model_copy(
-                                update={"value": table.cells[0].value + 1}
-                            ),
-                            *table.cells[1:],
-                        )
-                    }
-                ),
-                *pending.tables[1:],
-            ),
-        }
+    corrected = _review_all(draft, injected_recipes)
+
+    assert corrected.review_items == draft.review_items
+    assert len(corrected.review_resolutions) == len(draft.review_items)
+    assert {
+        resolution.review_item_sha256
+        for resolution in corrected.review_resolutions
+    } == {item.sha256 for item in draft.review_items}
+    assert all(
+        resolution.actor == "Synthetic Reviewer"
+        for resolution in corrected.review_resolutions
     )
 
-    with pytest.raises(ApprovalError, match="review resolution"):
-        record_correction(
-            pending,
-            unrelated,
-            actor="Reviewer",
-            notes="Unrelated content must not resolve a formula review",
-        )
 
-
-def test_missing_or_duplicate_supported_part_is_rejected(
+def test_correction_audits_every_changed_or_deleted_semantic_item(
     supported_pdfs: tuple[Path, Path],
-) -> None:
-    part1, part4 = supported_pdfs
-
-    with pytest.raises(ExtractionError, match="exactly one"):
-        extract_draft((part1,))
-    with pytest.raises(ExtractionError, match="duplicate"):
-        extract_draft((part1, part1, part4))
-
-
-def test_manual_correction_returns_new_draft_and_appends_immutable_audit(
-    supported_pdfs: tuple[Path, Path],
+    injected_recipes: tuple[StandardRecipe, ...],
 ) -> None:
     draft = extract_draft(supported_pdfs)
-    table = draft.tables[0]
-    corrected_table = table.model_copy(
-        update={
-            "cells": (
-                table.cells[0].model_copy(update={"value": table.cells[0].value + 1}),
-                *table.cells[1:],
-            )
-        }
-    )
-    corrected_content = draft.model_copy(
-        update={"tables": (corrected_table, *draft.tables[1:])}
-    )
+    corrected = _review_all(draft, injected_recipes)
+    changed = corrected.model_copy(update={"tables": corrected.tables[1:]})
 
-    corrected = record_correction(
-        draft,
-        corrected_content,
-        actor="Synthetic Reviewer",
-        notes=f"table:{table.id}:cell:0:0",
-    )
-
-    assert draft.tables[0].cells[0].value != corrected.tables[0].cells[0].value
-    assert (
-        corrected.manifest.approval_records[:-2]
-        == draft.manifest.approval_records
-    )
-    assert corrected.manifest.approval_records[-2].notes == f"table:{table.id}"
-    assert corrected.manifest.approval_records[-1].action == "correction"
-
-
-def test_deleted_content_receives_an_item_level_correction_audit(
-    supported_pdfs: tuple[Path, Path],
-) -> None:
-    draft = extract_draft(supported_pdfs)
-    removed = draft.tables[0]
-    changed = draft.model_copy(update={"tables": draft.tables[1:]})
-
-    corrected = record_correction(
-        draft,
-        changed,
-        actor="Synthetic Reviewer",
-        notes="Remove a reviewed synthetic table",
-    )
-
-    assert corrected.manifest.approval_records[-2].notes == f"table:{removed.id}"
-
-
-def test_unlogged_content_change_cannot_be_approved(
-    supported_pdfs: tuple[Path, Path],
-) -> None:
-    draft = extract_draft(supported_pdfs)
-    table = draft.tables[0]
-    changed = draft.model_copy(
-        update={
-            "tables": (
-                table.model_copy(
-                    update={
-                        "cells": (
-                            table.cells[0].model_copy(
-                                update={"value": table.cells[0].value + 1}
-                            ),
-                            *table.cells[1:],
-                        )
-                    }
-                ),
-                *draft.tables[1:],
-            )
-        }
-    )
-    corrected = record_correction(
-        draft,
-        changed,
-        actor="Synthetic Reviewer",
-        notes=f"table:{table.id}:cell:0:0",
-    )
-
-    with pytest.raises(ApprovalError, match="unlogged"):
-        approve_draft(changed, approver="Reviewer", notes="Must reject")
-    assert approve_draft(
+    deleted = record_correction(
         corrected,
-        approver="Reviewer",
-        notes="Logged synthetic correction reviewed.",
-    ).manifest.approved
+        changed,
+        actor="Synthetic Reviewer",
+        notes="Delete one reviewed table.",
+    )
+
+    notes = {
+        record.notes
+        for record in deleted.manifest.approval_records
+        if record.action == "correction"
+    }
+    assert f"table:{corrected.tables[0].id}" in notes
 
 
-def test_approval_runs_full_validation_and_archive_no_longer_needs_pdfs(
-    supported_pdfs: tuple[Path, Path], tmp_path: Path
+def _mutate_source_state(
+    draft: ImportedRuleDraft,
+    mutation: str,
+) -> ImportedRuleDraft:
+    sources = draft.manifest.source_documents
+    identities = draft.source_identities
+    if mutation == "one_hash":
+        changed_sources = (
+            sources[0].model_copy(update={"sha256": "0" * 64}),
+            sources[1],
+        )
+        return draft.model_copy(
+            update={
+                "manifest": draft.manifest.model_copy(
+                    update={"source_documents": changed_sources}
+                )
+            }
+        )
+    if mutation == "both_hashes":
+        changed_sources = tuple(
+            source.model_copy(update={"sha256": "0" * 64})
+            for source in sources
+        )
+        changed_identities = tuple(
+            identity.model_copy(update={"sha256": "0" * 64})
+            for identity in identities
+        )
+        return draft.model_copy(
+            update={
+                "manifest": draft.manifest.model_copy(
+                    update={"source_documents": changed_sources}
+                ),
+                "source_identities": changed_identities,
+            }
+        )
+    if mutation == "edition":
+        changed_sources = (
+            sources[0].model_copy(update={"edition": "2019"}),
+            sources[1],
+        )
+        changed_identities = (
+            identities[0].model_copy(update={"edition": "2019"}),
+            identities[1],
+        )
+        return draft.model_copy(
+            update={
+                "manifest": draft.manifest.model_copy(
+                    update={"source_documents": changed_sources}
+                ),
+                "source_identities": changed_identities,
+            }
+        )
+    if mutation == "layout":
+        changed_identities = (
+            identities[0].model_copy(update={"recipe_id": "other-layout"}),
+            identities[1],
+        )
+        return draft.model_copy(update={"source_identities": changed_identities})
+    if mutation == "reordered":
+        return draft.model_copy(
+            update={
+                "manifest": draft.manifest.model_copy(
+                    update={"source_documents": tuple(reversed(sources))}
+                ),
+                "source_identities": tuple(reversed(identities)),
+            }
+        )
+    return draft.model_copy(
+        update={
+            "manifest": draft.manifest.model_copy(
+                update={"source_documents": sources[:1]}
+            ),
+            "source_identities": identities[:1],
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("one_hash", "both_hashes", "edition", "layout", "reordered", "missing"),
+)
+def test_source_identity_mutation_breaks_the_immutable_genesis(
+    supported_pdfs: tuple[Path, Path],
+    injected_recipes: tuple[StandardRecipe, ...],
+    mutation: str,
 ) -> None:
-    draft = extract_draft(supported_pdfs)
+    corrected = _review_all(extract_draft(supported_pdfs), injected_recipes)
+    changed = _mutate_source_state(corrected, mutation)
+
+    with pytest.raises(ApprovalError, match="source|audit|logged|genesis"):
+        approve_draft(changed, approver="Reviewer", notes="Reject source mutation")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("extra_table", "missing_formula", "wrong_formula", "wrong_mapping", "extra_mapping"),
+)
+def test_approval_requires_exact_recipe_content_sets_and_shapes(
+    supported_pdfs: tuple[Path, Path],
+    injected_recipes: tuple[StandardRecipe, ...],
+    mutation: str,
+) -> None:
+    corrected = _review_all(extract_draft(supported_pdfs), injected_recipes)
+    if mutation == "extra_table":
+        changed = corrected.model_copy(
+            update={
+                "tables": (
+                    *corrected.tables,
+                    corrected.tables[0].model_copy(update={"id": "extra-table"}),
+                )
+            }
+        )
+    elif mutation == "missing_formula":
+        changed = corrected.model_copy(update={"formulas": corrected.formulas[1:]})
+    elif mutation == "wrong_formula":
+        changed = corrected.model_copy(
+            update={
+                "formulas": (
+                    corrected.formulas[0].model_copy(
+                        update={"expression": Literal(value=Decimal(1))}
+                    ),
+                    *corrected.formulas[1:],
+                )
+            }
+        )
+    elif mutation == "wrong_mapping":
+        changed = corrected.model_copy(
+            update={
+                "mappings": (
+                    corrected.mappings[0].model_copy(
+                        update={"target_rule_id": corrected.formulas[1].id}
+                    ),
+                    *corrected.mappings[1:],
+                )
+            }
+        )
+    else:
+        changed = corrected.model_copy(
+            update={
+                "mappings": (
+                    *corrected.mappings,
+                    corrected.mappings[0].model_copy(
+                        update={
+                            "id": "extra-mapping",
+                            "source_rule_id": "synthetic:extra",
+                        }
+                    ),
+                )
+            }
+        )
+    changed = record_correction(
+        corrected,
+        changed,
+        actor="Synthetic Reviewer",
+        notes=f"Logged invalid mutation {mutation}.",
+    )
+
+    with pytest.raises(ApprovalError, match="recipe|semantic|mapping|content"):
+        approve_draft(changed, approver="Reviewer", notes="Must be exact")
+
+
+def test_typed_table_cells_must_correspond_to_reviewed_raw_grid(
+    supported_pdfs: tuple[Path, Path],
+    injected_recipes: tuple[StandardRecipe, ...],
+) -> None:
+    corrected = _review_all(extract_draft(supported_pdfs), injected_recipes)
+    table = corrected.tables[0]
+    changed = corrected.model_copy(
+        update={
+            "tables": (
+                table.model_copy(
+                    update={
+                        "cells": (
+                            table.cells[0].model_copy(
+                                update={"value": table.cells[0].value + 1}
+                            ),
+                            *table.cells[1:],
+                        )
+                    }
+                ),
+                *corrected.tables[1:],
+            )
+        }
+    )
+    changed = record_correction(
+        corrected,
+        changed,
+        actor="Synthetic Reviewer",
+        notes="Logged but invalid raw mismatch.",
+    )
+
+    with pytest.raises(ApprovalError, match="raw|recipe|semantic"):
+        approve_draft(changed, approver="Reviewer", notes="Must correspond")
+
+
+def test_approval_and_archive_are_independent_of_source_pdfs(
+    supported_pdfs: tuple[Path, Path],
+    injected_recipes: tuple[StandardRecipe, ...],
+    tmp_path: Path,
+) -> None:
+    corrected = _review_all(extract_draft(supported_pdfs), injected_recipes)
 
     approved = approve_draft(
-        draft,
+        corrected,
         approver="Synthetic Reviewer",
-        notes="All synthetic extraction checks reviewed.",
+        notes="All generated geometry and contracts reviewed.",
     )
     archive = tmp_path / "approved.icrules"
     write_rule_package(archive, approved)
@@ -571,62 +933,30 @@ def test_approval_runs_full_validation_and_archive_no_longer_needs_pdfs(
     assert loaded.manifest.approved is True
     assert loaded.manifest.compatible is True
     assert all(mapping.approved for mapping in loaded.mappings)
-    assert loaded.manifest.approval_records[-1].action == "approval"
 
 
-def test_approval_cannot_bypass_failed_table_audit(
-    supported_pdfs: tuple[Path, Path],
+def test_malformed_pdf_is_normalized_to_stable_identification_error(
+    tmp_path: Path,
 ) -> None:
-    draft = extract_draft(supported_pdfs)
-    incomplete = draft.model_copy(
-        update={
-            "tables": (
-                draft.tables[0].model_copy(
-                    update={"cells": draft.tables[0].cells[:-1]}
-                ),
-                *draft.tables[1:],
-            )
-        }
+    path = tmp_path / "malformed.pdf"
+    path.write_bytes(b"%PDF-1.7\nmalformed")
+
+    with pytest.raises(UnsupportedStandardError, match="could not be read"):
+        identify_standard(path)
+
+
+def test_pdfplumber_parser_error_is_normalized_at_extract_boundary(
+    supported_pdfs: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_open(*_args: object, **_kwargs: object) -> None:
+        raise PDFSyntaxError("sensitive parser detail")
+
+    monkeypatch.setattr(
+        "insulation_coordination.rules.importer.extract.pdfplumber.open",
+        fail_open,
     )
 
-    with pytest.raises(ApprovalError, match="table_cells"):
-        approve_draft(incomplete, approver="Reviewer", notes="Must not bypass")
-
-
-def test_approval_rejects_deleted_audit_and_missing_part4_mapping(
-    supported_pdfs: tuple[Path, Path],
-) -> None:
-    draft = extract_draft(supported_pdfs)
-    missing_audit = draft.model_copy(
-        update={
-            "manifest": draft.manifest.model_copy(
-                update={
-                    "approval_records": draft.manifest.approval_records[1:]
-                }
-            )
-        }
-    )
-    missing_mapping = draft.model_copy(
-        update={
-            "mappings": tuple(
-                mapping
-                for mapping in draft.mappings
-                if not mapping.source_rule_id.startswith("iec60664-4:")
-            )
-        }
-    )
-
-    with pytest.raises(ApprovalError, match="incomplete"):
-        approve_draft(missing_audit, approver="Reviewer", notes="No bypass")
-    with pytest.raises(ApprovalError, match="exact compatibility"):
-        approve_draft(missing_mapping, approver="Reviewer", notes="No bypass")
-
-
-def test_approval_requires_every_declared_compatibility_route(
-    supported_pdfs: tuple[Path, Path],
-) -> None:
-    draft = extract_draft(supported_pdfs)
-    incomplete = draft.model_copy(update={"mappings": draft.mappings[:-1]})
-
-    with pytest.raises(ApprovalError, match="exact compatibility"):
-        approve_draft(incomplete, approver="Reviewer", notes="No partial family")
+    with pytest.raises(ExtractionError) as captured:
+        extract_draft(supported_pdfs)
+    assert "sensitive parser detail" not in str(captured.value)
