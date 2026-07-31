@@ -8,11 +8,15 @@ import stat
 import subprocess
 import tempfile
 from pathlib import Path
+from threading import Lock
 
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
 from insulation_coordination.domain.project import FrozenModel
+
+# ponytail: global lock; use per-destination locks if compile throughput matters.
+_COMPILE_LOCK = Lock()
 
 
 class CompileError(ValueError):
@@ -34,32 +38,36 @@ def compile_pdf(tex_path: Path, output_path: Path, tectonic: Path) -> CompileRes
     executable = _input_file(tectonic, None, "Tectonic executable")
     output = _output_leaf(output_path, ".pdf", "PDF output")
     log_path = output.with_suffix(".compile.log")
-    _reject_unsafe_leaf(output, "PDF output")
-    _reject_unsafe_leaf(log_path, "compiler log")
     if output == tex or log_path == tex or executable in {output, log_path}:
         raise CompileError("compiler, source, output, and log paths must be distinct")
     if not os.access(executable, os.X_OK):
         raise CompileError("Tectonic executable is not executable")
 
-    with tempfile.TemporaryDirectory(prefix=".icc-tectonic-", dir=output.parent) as temporary:
-        outdir = Path(temporary)
-        produced = outdir / f"{tex.stem}.pdf"
-        returncode, stdout, stderr = _run_tectonic(executable, outdir, tex)
-        pdf_path: Path | None = None
-        success = False
-        if returncode == 0:
-            problem = _pdf_problem(produced)
-            if problem is None:
-                try:
-                    _atomic_copy(produced, output)
-                except OSError as error:
-                    stderr += f"Could not promote compiled PDF: {error}\n"
+    with _COMPILE_LOCK:
+        _reject_unsafe_leaf(output, "PDF output")
+        _reject_unsafe_leaf(log_path, "compiler log")
+        output.unlink(missing_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=".icc-tectonic-", dir=output.parent
+        ) as temporary:
+            outdir = Path(temporary)
+            produced = outdir / f"{tex.stem}.pdf"
+            returncode, stdout, stderr = _run_tectonic(executable, outdir, tex)
+            pdf_path: Path | None = None
+            success = False
+            if returncode == 0:
+                problem = _pdf_problem(produced)
+                if problem is None:
+                    try:
+                        _atomic_copy(produced, output)
+                    except OSError as error:
+                        stderr += f"Could not promote compiled PDF: {error}\n"
+                    else:
+                        pdf_path = output
+                        success = True
                 else:
-                    pdf_path = output
-                    success = True
-            else:
-                stderr += problem + "\n"
-        _write_log(log_path, returncode, stdout, stderr)
+                    stderr += problem + "\n"
+            _write_log(log_path, returncode, stdout, stderr)
     return CompileResult(
         success=success,
         returncode=returncode,

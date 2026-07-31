@@ -578,6 +578,8 @@ def _validate_math_latex(value: str) -> None:
         raise ValueError("unsafe math LaTeX: value must be non-empty ASCII")
     if any(ord(character) < 32 or ord(character) == 127 for character in value):
         raise ValueError("unsafe math LaTeX: control characters are forbidden")
+    if "^^" in value:
+        raise ValueError("unsafe math LaTeX: character-code escapes are forbidden")
     if any(character in "$#~`" for character in value):
         raise ValueError("unsafe math LaTeX: unsafe math token")
 

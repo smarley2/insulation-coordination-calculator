@@ -15,6 +15,7 @@ from insulation_coordination.project.resolver import resolve_effective_case
 from insulation_coordination.report.latex import render_latex
 from insulation_coordination.report.model import (
     ReportBuildError,
+    ReportStep,
     TrustedFormulaLatex,
     build_report_model,
 )
@@ -334,6 +335,58 @@ def test_trusted_formula_type_allows_commands_used_by_approved_rules() -> None:
     formula = TrustedFormulaLatex(latex=latex, origin="approved_rules")
 
     assert formula.latex == latex
+
+
+@pytest.mark.parametrize("field", ["symbolic_latex", "substituted_latex"])
+@pytest.mark.parametrize(
+    "latex",
+    [
+        "^^5cinput{payload}",
+        "^^5Cinput{payload}",
+        "^^5c^^69nput{payload}",
+        "^^5Cin^^70ut{payload}",
+    ],
+)
+def test_report_step_rejects_tex_character_code_command_construction(
+    report_model,
+    field: str,
+    latex: str,
+) -> None:
+    step_data = report_model.groups[0].calculations[0].steps[0].model_dump(mode="python")
+    step_data[field] = {
+        "latex": latex,
+        "origin": "approved_rules" if field == "symbolic_latex" else "engine",
+    }
+
+    with pytest.raises(ValidationError, match="unsafe math LaTeX"):
+        ReportStep.model_validate(step_data)
+
+
+def test_report_renders_single_caret_superscripts_and_allowed_commands(report_model) -> None:
+    calculation = report_model.groups[0].calculations[0]
+    step = calculation.steps[0].model_copy(
+        update={
+            "symbolic_latex": TrustedFormulaLatex(
+                latex=r"x^{2}\geq y",
+                origin="approved_rules",
+            ),
+            "substituted_latex": TrustedFormulaLatex(
+                latex=r"2^{2}\,\mathrm{V}",
+                origin="engine",
+            ),
+        }
+    )
+    changed_calculation = calculation.model_copy(
+        update={"steps": (step, *calculation.steps[1:])}
+    )
+    changed_group = report_model.groups[0].model_copy(
+        update={"calculations": (changed_calculation,)}
+    )
+
+    tex = render_latex(report_model.model_copy(update={"groups": (changed_group,)}))
+
+    assert r"x^{2}\geq y" in tex
+    assert r"2^{2}\,\mathrm{V}" in tex
 
 
 def test_report_rejects_dangerous_formula_from_otherwise_valid_approved_package(

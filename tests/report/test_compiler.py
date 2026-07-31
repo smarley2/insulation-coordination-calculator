@@ -1,14 +1,21 @@
 import shutil
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
 
 from insulation_coordination.report.compiler import CompileError, compile_pdf
 
 
-def _fake_tectonic(path: Path, *, exit_code: int = 0, produce_pdf: bool = True) -> Path:
+def _fake_tectonic(
+    path: Path,
+    *,
+    exit_code: int = 0,
+    produce_pdf: bool = True,
+    valid_pdf: bool = True,
+) -> Path:
     script = f"""#!/usr/bin/env python3
 from pathlib import Path
 import sys
@@ -19,10 +26,14 @@ print("synthetic compiler diagnostic", file=sys.stderr)
 if {produce_pdf!r}:
     outdir = Path(sys.argv[sys.argv.index("--outdir") + 1])
     tex = Path(sys.argv[-1])
-    writer = PdfWriter()
-    writer.add_blank_page(width=612, height=792)
-    with (outdir / (tex.stem + ".pdf")).open("wb") as stream:
-        writer.write(stream)
+    output = outdir / (tex.stem + ".pdf")
+    if {valid_pdf!r}:
+        writer = PdfWriter()
+        writer.add_blank_page(width=612, height=792)
+        with output.open("wb") as stream:
+            writer.write(stream)
+    else:
+        output.write_bytes(b"not a PDF")
 raise SystemExit({exit_code})
 """
     path.write_text(script, encoding="utf-8")
@@ -106,6 +117,50 @@ def test_compile_pdf_rejects_success_without_a_valid_pdf(tmp_path: Path) -> None
 
     assert result.success is False
     assert "did not produce" in result.stderr
+    assert result.log_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_returncode"),
+    [
+        ("nonzero", 7),
+        ("timeout", None),
+        ("missing", 0),
+        ("invalid", 0),
+    ],
+)
+def test_failed_compile_removes_preexisting_regular_pdf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    expected_returncode: int | None,
+) -> None:
+    tex = tmp_path / "source.tex"
+    tex.write_text("source remains", encoding="utf-8")
+    output = tmp_path / "output.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    with output.open("wb") as stream:
+        writer.write(stream)
+    tectonic = _fake_tectonic(
+        tmp_path / "fake-tectonic",
+        exit_code=7 if failure == "nonzero" else 0,
+        produce_pdf=failure not in {"missing", "timeout"},
+        valid_pdf=failure != "invalid",
+    )
+    if failure == "timeout":
+        def raise_timeout(*_args: object, **_kwargs: object) -> None:
+            raise subprocess.TimeoutExpired(cmd="fake-tectonic", timeout=120)
+
+        monkeypatch.setattr(subprocess, "run", raise_timeout)
+
+    result = compile_pdf(tex, output, tectonic)
+
+    assert result.success is False
+    assert result.returncode == expected_returncode
+    assert result.pdf_path is None
+    assert not output.exists()
+    assert tex.read_text(encoding="utf-8") == "source remains"
     assert result.log_path.exists()
 
 
