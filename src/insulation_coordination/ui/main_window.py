@@ -6,9 +6,11 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFileDialog,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QPushButton,
     QStackedWidget,
     QStatusBar,
     QVBoxLayout,
@@ -16,12 +18,15 @@ from PySide6.QtWidgets import (
 )
 
 from insulation_coordination.domain.project import Project
+from insulation_coordination.domain.rules import RulePackage
 from insulation_coordination.project.persistence import (
     ProjectLoadError,
     load_project,
     save_project_atomic,
 )
+from insulation_coordination.ui.pair_editor import PairPage
 from insulation_coordination.ui.project_pages import ProjectPage
+from insulation_coordination.ui.report_page import ReportPage
 
 
 class MainWindow(QMainWindow):
@@ -29,29 +34,52 @@ class MainWindow(QMainWindow):
 
     project_changed = Signal(object)
 
+    _PAGES = ("Project", "Pairs", "Report")
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Insulation Coordination Calculator")
-        self.resize(900, 600)
+        self.resize(1000, 700)
 
         self._project: Project | None = None
+        self._rules: RulePackage | None = None
         self._dirty = False
+        self._current_page = 0
 
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
 
+        self._nav_buttons: dict[str, QPushButton] = {}
+        nav_layout = QHBoxLayout()
+        for index, name in enumerate(self._PAGES):
+            button = QPushButton(name)
+            button.setCheckable(True)
+            button.clicked.connect(lambda _checked, i=index: self._show_page(i))
+            nav_layout.addWidget(button)
+            self._nav_buttons[name] = button
+        layout.addLayout(nav_layout)
+
         self._stack = QStackedWidget()
         layout.addWidget(self._stack)
 
         self._project_page = ProjectPage()
-        self._project_page.project_changed.connect(self._on_project_page_changed)
+        self._project_page.project_changed.connect(self._on_project_changed)
         self._stack.addWidget(self._project_page)
+
+        self._pair_page = PairPage()
+        self._pair_page.project_changed.connect(self._on_project_changed)
+        self._pair_page.rules_changed.connect(self._on_rules_changed)
+        self._stack.addWidget(self._pair_page)
+
+        self._report_page = ReportPage()
+        self._stack.addWidget(self._report_page)
 
         self.setStatusBar(QStatusBar())
         self.statusBar().addWidget(QLabel("Ready"))
 
         self._build_menu()
+        self._show_page(0)
         self._update_actions()
 
     @property
@@ -61,6 +89,10 @@ class MainWindow(QMainWindow):
     @property
     def is_dirty(self) -> bool:
         return self._dirty
+
+    @property
+    def rules(self) -> RulePackage | None:
+        return self._rules
 
     def open_project(self, path: Path) -> None:
         try:
@@ -74,8 +106,20 @@ class MainWindow(QMainWindow):
         self._project = project
         self._dirty = False
         self._project_page.load_project(project)
+        self._pair_page.load_project(project)
+        self._report_page.load_project(project)
         self.statusBar().showMessage(f"Project: {project.metadata.title}")
         self._update_actions()
+
+    def load_rules(self, rules: RulePackage) -> None:
+        self._rules = rules
+        self._pair_page.load_rules(rules)
+        self._report_page.load_rules(rules)
+        self.statusBar().showMessage("Rules package loaded")
+        self._update_actions()
+
+    def _on_rules_changed(self, rules: RulePackage) -> None:
+        self.load_rules(rules)
 
     def save_project(self, path: Path) -> None:
         if self._project is None:
@@ -85,12 +129,20 @@ class MainWindow(QMainWindow):
         self._project_page.mark_saved()
         self._update_actions()
 
-    def _on_project_page_changed(self, project: Project) -> None:
+    def _on_project_changed(self, project: Project) -> None:
         self._project = project
         self._dirty = True
         self.statusBar().showMessage(f"Project: {project.metadata.title} *")
         self.project_changed.emit(project)
+        self._pair_page.load_project(project)
+        self._report_page.load_project(project)
         self._update_actions()
+
+    def _show_page(self, index: int) -> None:
+        self._current_page = index
+        self._stack.setCurrentIndex(index)
+        for name, button in self._nav_buttons.items():
+            button.setChecked(name == self._PAGES[index])
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -124,6 +176,14 @@ class MainWindow(QMainWindow):
         self._rules_manager_action.triggered.connect(self._open_rules_manager)
         rules_menu.addAction(self._rules_manager_action)
 
+        self._import_icrules_action = QAction("&Import approved .icrules…", self)
+        self._import_icrules_action.triggered.connect(self._on_import_icrules)
+        rules_menu.addAction(self._import_icrules_action)
+
+        self._extract_pdf_action = QAction("&Extract draft from IEC PDFs…", self)
+        self._extract_pdf_action.triggered.connect(self._on_extract_pdf)
+        rules_menu.addAction(self._extract_pdf_action)
+
         file_menu.addSeparator()
 
         quit_action = QAction("&Quit", self)
@@ -140,6 +200,51 @@ class MainWindow(QMainWindow):
         from insulation_coordination.ui.rules_manager import RulesManagerWindow
 
         window = RulesManagerWindow()
+        self._rules_manager_window = window
+        window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        window.show()
+
+    def _on_import_icrules(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Approved Rules", "", "Rules Archive (*.icrules)"
+        )
+        if not path:
+            return
+        from insulation_coordination.domain.rules import RulePackageError
+        from insulation_coordination.rules.archive import load_rule_package
+
+        try:
+            rules = load_rule_package(Path(path))
+        except RulePackageError as error:
+            QMessageBox.critical(self, "Import Rules", str(error))
+            return
+        self.load_rules(rules)
+        QMessageBox.information(
+            self,
+            "Rules Imported",
+            f"Rules package {rules.manifest.package_id} v{rules.manifest.version} loaded.",
+        )
+
+    def _on_extract_pdf(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select IEC 60664-1 and 60664-4 PDFs",
+            "",
+            "PDF files (*.pdf)",
+        )
+        if not paths:
+            return
+        from insulation_coordination.rules.importer.extract import ExtractionError, extract_draft
+
+        try:
+            draft = extract_draft(tuple(Path(path) for path in paths))
+        except ExtractionError as error:
+            QMessageBox.critical(self, "Extract Draft", str(error))
+            return
+        from insulation_coordination.ui.rules_manager import RulesManagerWindow
+
+        window = RulesManagerWindow()
+        window.set_draft(draft)
         self._rules_manager_window = window
         window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         window.show()
@@ -204,6 +309,7 @@ class MainWindow(QMainWindow):
         if self._dirty and not self._confirm_discard():
             return
         self._project = None
+        self._rules = None
         self._dirty = False
         self.statusBar().showMessage("Ready")
         self._update_actions()

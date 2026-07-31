@@ -292,6 +292,7 @@ class PairPage(QWidget):
     """Full pair-editing page: matrix + list + editor + calculation review."""
 
     project_changed = Signal(object)
+    rules_changed = Signal(object)
 
     def __init__(self) -> None:
         super().__init__()
