@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -119,6 +119,13 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        rules_menu = self.menuBar().addMenu("&Rules")
+        self._rules_manager_action = QAction("Rules &Manager…", self)
+        self._rules_manager_action.triggered.connect(self._open_rules_manager)
+        rules_menu.addAction(self._rules_manager_action)
+
+        file_menu.addSeparator()
+
         quit_action = QAction("&Quit", self)
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
@@ -128,6 +135,14 @@ class MainWindow(QMainWindow):
         self._save_action.setEnabled(has_project and self._dirty)
         self._save_as_action.setEnabled(has_project)
         self._close_action.setEnabled(has_project)
+
+    def _open_rules_manager(self) -> None:
+        from insulation_coordination.ui.rules_manager import RulesManagerWindow
+
+        window = RulesManagerWindow()
+        self._rules_manager_window = window
+        window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        window.show()
 
     def _on_new(self) -> None:
         if self._dirty and not self._confirm_discard():

@@ -303,6 +303,10 @@ class RulePackage(FrozenModel):
     checksums: dict[str, str] = Field(default_factory=dict)
     package_sha256: str | None = Field(default=None, exclude=True)
 
+    @property
+    def total_cell_count(self) -> int:
+        return sum(len(table.cells) for table in self.tables)
+
     @classmethod
     def model_validate(
         cls,
