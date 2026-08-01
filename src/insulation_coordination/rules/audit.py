@@ -31,6 +31,7 @@ from insulation_coordination.domain.rules import (
     SupportedRange,
     Table,
     TableCell,
+    TableSelect,
 )
 from insulation_coordination.rules.validation import ValidationReport, validate_rule_package
 
@@ -155,6 +156,8 @@ def _children(expression: Expression) -> tuple[Expression, ...]:
             if expression.column is None
             else (expression.x, expression.column)
         )
+    if isinstance(expression, TableSelect):
+        return (expression.row, expression.column)
     return ()
 
 

@@ -57,11 +57,13 @@ def synthetic_rule_package() -> RulePackage:
             id="voltage",
             unit="V",
             values=(Decimal(0), Decimal(20)),
+            labels=("voltage-0", "voltage-20"),
         ),
         column_axis=TableAxis(
             id="category",
             unit="1",
             values=(Decimal(1), Decimal(2)),
+            labels=("category-1", "category-2"),
         ),
         cells=(
             TableCell(
@@ -236,8 +238,14 @@ def synthetic_part1_rule_package() -> RulePackage:
                 id="stress_v",
                 unit="V",
                 values=(Decimal(100), maximum_stress),
+                labels=("stress-low", "stress-high"),
             ),
-            column_axis=TableAxis(id="synthetic_branch", unit="1", values=(Decimal(1),)),
+            column_axis=TableAxis(
+                id="synthetic_branch",
+                unit="1",
+                values=(Decimal(1),),
+                labels=("synthetic-branch",),
+            ),
             cells=(
                 TableCell(
                     row=0,
@@ -438,11 +446,13 @@ def synthetic_hf_rule_package() -> RulePackage:
                 id=row_id,
                 unit=row_unit,
                 values=tuple(Decimal(value) for value in rows),
+                labels=tuple(f"{row_id}-{index}" for index in range(len(rows))),
             ),
             column_axis=TableAxis(
                 id=f"{table_id}_branch",
                 unit="1",
                 values=(Decimal(1),),
+                labels=(f"{table_id}-branch",),
             ),
             cells=tuple(
                 TableCell(

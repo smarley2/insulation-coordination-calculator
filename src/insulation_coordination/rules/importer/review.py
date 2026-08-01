@@ -62,18 +62,19 @@ def _table_from_spec(
         if spec.data_row_start is None or spec.data_column_start is None:
             raise ValueError(f"recipe rectangle has no source coordinate for {spec.semantic_id}")
         coordinates = (
-            (spec.data_row_start + row, spec.data_column_start + column)
+            (row, column, spec.data_row_start + row, spec.data_column_start + column)
             for row in range(spec.expected_data_rows)
             for column in range(spec.expected_data_columns)
         )
     else:
-        coordinates = ((cell.row, cell.column) for cell in grid.cells if cell.value is not None)
+        coordinates = (
+            (index // spec.expected_data_columns, index % spec.expected_data_columns, cell.row, cell.column)
+            for index, cell in enumerate(cell for cell in grid.cells if cell.value is not None)
+        )
     raw = {(cell.row, cell.column): cell for cell in grid.cells}
     cells: list[TableCell] = []
-    row_values: list[Decimal] = []
-    column_values: list[Decimal] = []
-    for row, column in coordinates:
-        cell = raw[(row, column)]
+    for row, column, raw_row, raw_column in coordinates:
+        cell = raw[(raw_row, raw_column)]
         if cell.value is None:
             raise ValueError(f"raw grid missing numeric value for {spec.semantic_id}")
         cells.append(
@@ -85,22 +86,22 @@ def _table_from_spec(
                 source=cell.source,
             )
         )
-        if len(row_values) < spec.expected_data_rows:
-            row_values.append(cell.value)
-        if not column_values:
-            column_values.append(cell.value)
+    row_values = tuple(Decimal(index + 1) for index in range(spec.expected_data_rows))
+    column_values = tuple(Decimal(index + 1) for index in range(spec.expected_data_columns))
     return Table(
         id=spec.semantic_id,
         unit=spec.target_unit,
         row_axis=TableAxis(
             id=spec.row_axis_id,
             unit=spec.row_axis_unit,
-            values=tuple(row_values),
+            values=row_values,
+            labels=tuple(f"row-{index + 1}" for index in range(len(row_values))),
         ),
         column_axis=TableAxis(
             id=spec.column_axis_id,
             unit=spec.column_axis_unit,
-            values=tuple(column_values),
+            values=column_values,
+            labels=tuple(f"column-{index + 1}" for index in range(len(column_values))),
         ),
         cells=tuple(cells),
         interpolation="linear",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
+from itertools import pairwise
 from typing import Annotated, Any, Self
 from typing import Literal as TypingLiteral
 from uuid import UUID
@@ -177,6 +178,18 @@ class LinearInterpolate(FrozenModel):
     column: Expression | None = None
 
 
+AxisSelectionMode = TypingLiteral["exact", "ceiling", "linear"]
+
+
+class TableSelect(FrozenModel):
+    op: TypingLiteral["table_select"] = "table_select"
+    table_id: Identifier
+    row: Expression
+    column: Expression
+    row_mode: AxisSelectionMode = "exact"
+    column_mode: AxisSelectionMode = "exact"
+
+
 Expression = Annotated[
     Literal
     | Variable
@@ -189,7 +202,8 @@ Expression = Annotated[
     | Maximum
     | Round
     | Lookup
-    | LinearInterpolate,
+    | LinearInterpolate
+    | TableSelect,
     Field(discriminator="op"),
 ]
 
@@ -204,6 +218,7 @@ for _recursive_node in (
     Round,
     Lookup,
     LinearInterpolate,
+    TableSelect,
 ):
     _recursive_node.model_rebuild(_types_namespace={"Expression": Expression})
 
@@ -245,6 +260,17 @@ class TableAxis(FrozenModel):
     id: Identifier
     unit: Identifier
     values: tuple[DecimalValue, ...] = Field(min_length=1)
+    labels: tuple[Identifier, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _labels_match_ordered_values(self) -> Self:
+        if len(self.labels) != len(self.values):
+            raise ValueError("Axis labels must match axis values")
+        if len(set(self.labels)) != len(self.labels):
+            raise ValueError("Axis labels must be unique")
+        if any(left >= right for left, right in pairwise(self.values)):
+            raise ValueError("Axis values must be strictly increasing")
+        return self
 
 
 class TableCell(FrozenModel):
@@ -260,7 +286,7 @@ class Table(FrozenModel):
     unit: Identifier
     row_axis: TableAxis
     column_axis: TableAxis
-    cells: tuple[TableCell, ...]
+    cells: tuple[TableCell, ...] = Field(min_length=1)
     supported_ranges: tuple[SupportedRange, ...] = ()
     interpolation: TypingLiteral["none", "linear"] = "none"
     rounding_places: int | None = Field(default=None, strict=True)
@@ -271,6 +297,17 @@ class Table(FrozenModel):
     def _complete_rounding_declaration(self) -> Self:
         if (self.rounding_places is None) != (self.rounding_mode is None):
             raise ValueError("Table rounding places and mode must be declared together")
+        coordinates = {(cell.row, cell.column) for cell in self.cells}
+        if len(coordinates) != len(self.cells):
+            raise ValueError("Table cell coordinates must be unique")
+        if any(
+            cell.row >= len(self.row_axis.values)
+            or cell.column >= len(self.column_axis.values)
+            for cell in self.cells
+        ):
+            raise ValueError("Table cell coordinates must be inside the declared axes")
+        if any(cell.unit != self.unit for cell in self.cells):
+            raise ValueError("Table cell units must match the table unit")
         return self
 
 

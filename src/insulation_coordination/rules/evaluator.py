@@ -45,6 +45,7 @@ from insulation_coordination.domain.rules import (
     Table,
     TableAxis,
     TableCell,
+    TableSelect,
     Variable,
 )
 from insulation_coordination.domain.trace import EvaluatedValue, Quantity, TraceStep
@@ -130,6 +131,8 @@ class _Evaluator:
             return self._lookup(expression)
         if isinstance(expression, LinearInterpolate):
             return self._interpolate(expression)
+        if isinstance(expression, TableSelect):
+            return self._table_select(expression)
         raise EvaluationError(f"unsupported typed expression {type(expression).__name__}")
 
     def _literal(self, expression: Literal) -> _Result:
@@ -512,6 +515,78 @@ class _Evaluator:
             ),
         )
 
+    def _table_select(self, expression: TableSelect) -> _Result:
+        row = self.evaluate(expression.row)
+        column = self.evaluate(expression.column)
+        table = self._table(expression.table_id)
+        _axis_input(row.quantity, table.row_axis, "row")
+        _axis_input(column.quantity, table.column_axis, "column")
+        _supported_range(table, table.row_axis, row.quantity.value)
+        _supported_range(table, table.column_axis, column.quantity.value)
+        if (
+            "linear" in (expression.row_mode, expression.column_mode)
+            and table.interpolation != "linear"
+        ):
+            raise EvaluationError(
+                f"table {table.id!r} does not permit linear interpolation"
+            )
+        row_weights = _axis_weights(
+            table.row_axis,
+            row.quantity.value,
+            expression.row_mode,
+        )
+        column_weights = _axis_weights(
+            table.column_axis,
+            column.quantity.value,
+            expression.column_mode,
+        )
+        selected = tuple(
+            (
+                _cell(table, row_index, column_index),
+                row_weight * column_weight,
+                row_index,
+                column_index,
+            )
+            for row_index, row_weight in row_weights
+            for column_index, column_weight in column_weights
+        )
+        unrounded = sum(
+            (cell.value * weight for cell, weight, _, _ in selected),
+            Decimal(0),
+        )
+        rounded = unrounded
+        if table.rounding_places is not None and table.rounding_mode is not None:
+            rounded = unrounded.quantize(
+                Decimal(1).scaleb(-table.rounding_places),
+                rounding=_ROUNDING_MODES[table.rounding_mode],
+            )
+        cells = tuple(cell for cell, _, _, _ in selected)
+        source_cells = tuple(
+            f"{table.row_axis.labels[row_index]}/{table.column_axis.labels[column_index]}"
+            for _, _, row_index, column_index in selected
+        )
+        mode = f"{expression.row_mode}/{expression.column_mode}"
+        symbolic = (
+            rf"\operatorname{{table\_select}}_{{{table.id}}}"
+            f"({row.embedded_symbolic}, {column.embedded_symbolic})"
+        )
+        return self._result(
+            expression,
+            _quantity(rounded, table.unit),
+            (row, column),
+            symbolic=symbolic,
+            substituted=(
+                f"select {table.id} at row {row.embedded_substituted}, "
+                f"column {column.embedded_substituted} using {mode}"
+            ),
+            reason=f"table selected using {mode} axis modes",
+            source=cells[0].source if len(cells) == 1 else table.source,
+            source_cells=source_cells,
+            cell_references=tuple(cell.source for cell in cells),
+            unrounded=unrounded,
+            rounded=rounded if table.rounding_mode is not None else None,
+        )
+
     def _table(self, table_id: str) -> Table:
         table = self.tables.get(table_id)
         if not isinstance(table, Table) or table.id != table_id:
@@ -824,6 +899,31 @@ def _exact_axis_index(axis: TableAxis, value: Decimal) -> int:
     raise EvaluationError(f"axis {axis.id!r} key {value} is absent")
 
 
+def _axis_weights(
+    axis: TableAxis,
+    value: Decimal,
+    mode: str,
+) -> tuple[tuple[int, Decimal], ...]:
+    if mode == "exact":
+        return ((_exact_axis_index(axis, value), Decimal(1)),)
+    if value < axis.values[0] or value > axis.values[-1]:
+        raise EvaluationError(f"axis {axis.id!r} key {value} is outside its range")
+    if mode == "ceiling":
+        return ((bisect_left(axis.values, value), Decimal(1)),)
+    if mode != "linear":
+        raise EvaluationError(f"axis {axis.id!r} has unsupported selection mode {mode!r}")
+    exact = bisect_left(axis.values, value)
+    if exact < len(axis.values) and axis.values[exact] == value:
+        return ((exact, Decimal(1)),)
+    lower, upper = _bounds(axis, value)
+    span = axis.values[upper] - axis.values[lower]
+    upper_weight = (value - axis.values[lower]) / span
+    return (
+        (lower, Decimal(1) - upper_weight),
+        (upper, upper_weight),
+    )
+
+
 def _bounds(axis: TableAxis, value: Decimal) -> tuple[int, int]:
     values = axis.values
     if len(values) < 2:
@@ -844,9 +944,10 @@ def _bounds(axis: TableAxis, value: Decimal) -> tuple[int, int]:
 
 def _cell(table: Table, row: int, column: int) -> TableCell:
     matches = tuple(cell for cell in table.cells if cell.row == row and cell.column == column)
+    if not matches:
+        raise EvaluationError(f"table {table.id!r} has no cell ({row}, {column})")
     if len(matches) != 1:
-        state = "absent" if not matches else "ambiguous"
-        raise EvaluationError(f"table {table.id!r} cell ({row}, {column}) is {state}")
+        raise EvaluationError(f"table {table.id!r} cell ({row}, {column}) is ambiguous")
     cell = matches[0]
     if cell.unit != table.unit:
         raise EvaluationError(

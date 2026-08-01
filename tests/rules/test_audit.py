@@ -143,6 +143,17 @@ def test_validation_rejects_unapproved_or_incompatible_packages(
     assert validate_rule_package(incompatible).is_valid is False
 
 
+def test_validation_accepts_a_sparse_table_with_unique_in_bounds_cells(
+    synthetic_package: RulePackage,
+) -> None:
+    table = synthetic_package.tables[0]
+    sparse = synthetic_package.model_copy(
+        update={"tables": (table.model_copy(update={"cells": table.cells[:-1]}),)}
+    )
+
+    assert _result(validate_rule_package(sparse), "table_cells").passed is True
+
+
 def test_validation_recomputes_package_digest_and_audit_reflects_tampering(
     synthetic_package: RulePackage, tmp_path: Path
 ) -> None:
@@ -286,7 +297,7 @@ def test_validation_rejects_ambiguous_interpolation_and_non_unique_axes(
     )
 
     assert _result(validate_rule_package(ambiguous), "formula_tables").passed is False
-    assert _result(validate_rule_package(duplicate_axis), "table_axes").passed is False
+    assert _result(validate_rule_package(duplicate_axis), "package_structure").passed is False
 
 
 @pytest.mark.parametrize(

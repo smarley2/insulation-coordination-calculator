@@ -331,11 +331,13 @@ def _reviewed_content(
                 id=table_spec.row_axis_id,
                 unit=table_spec.row_axis_unit,
                 values=(Decimal(1), Decimal(2)),
+                labels=("row-1", "row-2"),
             ),
             column_axis=TableAxis(
                 id=table_spec.column_axis_id,
                 unit=table_spec.column_axis_unit,
                 values=(Decimal(10), Decimal(20)),
+                labels=("column-10", "column-20"),
             ),
             cells=tuple(
                 TableCell(

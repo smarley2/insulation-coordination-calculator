@@ -27,6 +27,7 @@ from insulation_coordination.domain.rules import (
     SourceReference,
     SupportedRange,
     Table,
+    TableSelect,
     Variable,
 )
 from insulation_coordination.rules.archive import (
@@ -104,6 +105,8 @@ def _expression_children(expression: Expression) -> tuple[Expression, ...]:
             if expression.column is None
             else (expression.x, expression.column)
         )
+    if isinstance(expression, TableSelect):
+        return (expression.row, expression.column)
     return ()
 
 
@@ -202,15 +205,14 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         and all(_SHA256.fullmatch(value) is not None for value in package.checksums.values())
         and package.checksums == expected_checksums
     )
-    complete_tables = all(
-        {(cell.row, cell.column) for cell in table.cells}
-        == {
-            (row, column)
-            for row in range(len(table.row_axis.values))
-            for column in range(len(table.column_axis.values))
-        }
-        and len(table.cells)
-        == len(table.row_axis.values) * len(table.column_axis.values)
+    valid_table_cells = all(
+        bool(table.cells)
+        and len({(cell.row, cell.column) for cell in table.cells}) == len(table.cells)
+        and all(
+            cell.row < len(table.row_axis.values)
+            and cell.column < len(table.column_axis.values)
+            for cell in table.cells
+        )
         and all(cell.unit == table.unit for cell in table.cells)
         for table in package.tables
     )
@@ -256,7 +258,7 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         node.table_id
         for formula in package.formulas
         for node in _walk_expression(formula.expression)
-        if isinstance(node, Lookup | LinearInterpolate)
+        if isinstance(node, Lookup | LinearInterpolate | TableSelect)
     }
     formula_tables_valid = referenced_tables <= set(table_ids)
     mapping_links_valid = all(mapping.target_rule_id in formula_ids for mapping in package.mappings)
@@ -264,6 +266,25 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
     for formula in package.formulas:
         for node in _walk_expression(formula.expression):
             if not isinstance(node, LinearInterpolate):
+                if not isinstance(node, TableSelect):
+                    continue
+                table = tables_by_id.get(node.table_id)
+                if table is None:
+                    continue
+                formula_tables_valid = formula_tables_valid and (
+                    (
+                        "linear" not in (node.row_mode, node.column_mode)
+                        or table.interpolation == "linear"
+                    )
+                    and (
+                        not isinstance(node.row, Variable)
+                        or node.row.name == table.row_axis.id
+                    )
+                    and (
+                        not isinstance(node.column, Variable)
+                        or node.column.name == table.column_axis.id
+                    )
+                )
                 continue
             table = tables_by_id.get(node.table_id)
             if table is None:
@@ -333,7 +354,7 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
             and len(mapping_ids) == len(set(mapping_ids)),
             "semantic IDs are unique",
         ),
-        _result("table_cells", complete_tables, "table cells are complete and referenced"),
+        _result("table_cells", valid_table_cells, "table cells are unique and in bounds"),
         _result("table_axes", table_axes_valid, "table axes are unique and monotonic"),
         _result(
             "formula_parameters",

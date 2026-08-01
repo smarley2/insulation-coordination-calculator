@@ -26,6 +26,7 @@ from insulation_coordination.domain.rules import (
     Table,
     TableAxis,
     TableCell,
+    TableSelect,
     Variable,
 )
 from insulation_coordination.domain.trace import Quantity
@@ -49,8 +50,18 @@ def synthetic_table() -> Table:
     return Table(
         id="creepage",
         unit="mm",
-        row_axis=TableAxis(id="voltage", unit="V", values=(Decimal(100), Decimal(200))),
-        column_axis=TableAxis(id="category", unit="1", values=(Decimal(1),)),
+        row_axis=TableAxis(
+            id="voltage",
+            unit="V",
+            values=(Decimal(100), Decimal(200)),
+            labels=("100-v", "200-v"),
+        ),
+        column_axis=TableAxis(
+            id="category",
+            unit="1",
+            values=(Decimal(1),),
+            labels=("category-1",),
+        ),
         cells=(
             TableCell(
                 row=0,
@@ -84,6 +95,142 @@ def _formula(expression: object, *, precision: int = 34, unit: str = "1") -> For
         applicability="synthetic applicability",
         source=_source(),
     )
+
+
+@pytest.fixture
+def semantic_sparse_table() -> Table:
+    return Table(
+        id="semantic-distance",
+        unit="mm",
+        row_axis=TableAxis(
+            id="stress_v",
+            unit="V",
+            values=(Decimal(100), Decimal(200)),
+            labels=("stress-100", "stress-200"),
+        ),
+        column_axis=TableAxis(
+            id="pollution_code",
+            unit="1",
+            values=(Decimal(1), Decimal(2)),
+            labels=("pollution-1", "pollution-2"),
+        ),
+        cells=(
+            TableCell(
+                row=0,
+                column=0,
+                value=Decimal("1.0"),
+                unit="mm",
+                source=_source(row="stress-100", column="pollution-1"),
+            ),
+            TableCell(
+                row=1,
+                column=0,
+                value=Decimal("2.0"),
+                unit="mm",
+                source=_source(row="stress-200", column="pollution-1"),
+            ),
+            TableCell(
+                row=1,
+                column=1,
+                value=Decimal("3.0"),
+                unit="mm",
+                source=_source(row="stress-200", column="pollution-2"),
+            ),
+        ),
+        interpolation="linear",
+        source=_source(),
+    )
+
+
+def test_table_select_uses_independent_ceiling_and_exact_axis_modes(
+    semantic_sparse_table: Table,
+) -> None:
+    result = evaluate_formula(
+        _formula(
+            TableSelect(
+                table_id=semantic_sparse_table.id,
+                row=Variable(name="stress_v"),
+                column=Variable(name="pollution_code"),
+                row_mode="ceiling",
+                column_mode="exact",
+            ),
+            unit="mm",
+        ),
+        {
+            "stress_v": Quantity(value=Decimal(150), unit="V"),
+            "pollution_code": Quantity(value=Decimal(1), unit="1"),
+        },
+        {semantic_sparse_table.id: semantic_sparse_table},
+    )
+
+    assert result.value == Decimal("2.0")
+    assert result.steps[-1].source_cells == ("stress-200/pollution-1",)
+    assert result.steps[-1].source_reference == semantic_sparse_table.cells[1].source
+
+
+def test_table_select_interpolates_one_axis_and_records_bounding_sources(
+    semantic_sparse_table: Table,
+) -> None:
+    result = evaluate_formula(
+        _formula(
+            TableSelect(
+                table_id=semantic_sparse_table.id,
+                row=Variable(name="stress_v"),
+                column=Variable(name="pollution_code"),
+                row_mode="linear",
+                column_mode="exact",
+            ),
+            unit="mm",
+        ),
+        {
+            "stress_v": Quantity(value=Decimal(150), unit="V"),
+            "pollution_code": Quantity(value=Decimal(1), unit="1"),
+        },
+        {semantic_sparse_table.id: semantic_sparse_table},
+    )
+
+    assert result.value == Decimal("1.5")
+    assert result.steps[-1].source_cells == (
+        "stress-100/pollution-1",
+        "stress-200/pollution-1",
+    )
+    assert result.steps[-1].cell_references == (
+        semantic_sparse_table.cells[0].source,
+        semantic_sparse_table.cells[1].source,
+    )
+
+
+def test_table_select_rejects_a_missing_sparse_coordinate(
+    semantic_sparse_table: Table,
+) -> None:
+    with pytest.raises(EvaluationError, match="has no cell"):
+        evaluate_formula(
+            _formula(
+                TableSelect(
+                    table_id=semantic_sparse_table.id,
+                    row=Variable(name="stress_v"),
+                    column=Variable(name="pollution_code"),
+                    row_mode="exact",
+                    column_mode="exact",
+                ),
+                unit="mm",
+            ),
+            {
+                "stress_v": Quantity(value=Decimal(100), unit="V"),
+                "pollution_code": Quantity(value=Decimal(2), unit="1"),
+            },
+            {semantic_sparse_table.id: semantic_sparse_table},
+        )
+
+
+def test_table_axis_requires_one_unique_label_per_coordinate() -> None:
+    with pytest.raises(ValidationError, match="labels"):
+        TableAxis(
+            id="stress_v",
+            unit="V",
+            values=(Decimal(100), Decimal(200)),
+            labels=("same", "same"),
+        )
 
 
 def test_formula_precision_controls_decimal_arithmetic() -> None:
@@ -737,7 +884,7 @@ def test_lookup_rejects_ambiguous_keys(synthetic_table: Table) -> None:
         }
     )
 
-    with pytest.raises(EvaluationError, match="ambiguous"):
+    with pytest.raises(EvaluationError, match="strictly increasing"):
         evaluate_formula(
             Lookup(
                 table_id="creepage",
@@ -1021,8 +1168,14 @@ def test_interpolation_returns_nontrivial_upper_endpoint_exactly() -> None:
             id="x",
             unit="V",
             values=(Decimal("0.123456789012345678901234567890123"), upper_x),
+            labels=("lower", "upper"),
         ),
-        column_axis=TableAxis(id="column", unit="1", values=(Decimal(1),)),
+        column_axis=TableAxis(
+            id="column",
+            unit="1",
+            values=(Decimal(1),),
+            labels=("column-1",),
+        ),
         cells=(
             TableCell(
                 row=0,
@@ -1094,7 +1247,10 @@ def test_multicolumn_interpolation_records_formula_and_bounding_cell_sources(
         unit="mm",
     )
     column_axis = synthetic_table.column_axis.model_copy(
-        update={"values": (Decimal(1), Decimal(2))}
+        update={
+            "values": (Decimal(1), Decimal(2)),
+            "labels": ("category-1", "category-2"),
+        }
     )
     second_column = (
         TableCell(
@@ -1187,8 +1343,18 @@ def test_interpolation_returns_endpoints_exactly(
     table = Table(
         id="property-table",
         unit="mm",
-        row_axis=TableAxis(id="x", unit="V", values=(Decimal(0), Decimal(1))),
-        column_axis=TableAxis(id="column", unit="1", values=(Decimal(1),)),
+        row_axis=TableAxis(
+            id="x",
+            unit="V",
+            values=(Decimal(0), Decimal(1)),
+            labels=("lower", "upper"),
+        ),
+        column_axis=TableAxis(
+            id="column",
+            unit="1",
+            values=(Decimal(1),),
+            labels=("column-1",),
+        ),
         cells=(
             TableCell(
                 row=0,

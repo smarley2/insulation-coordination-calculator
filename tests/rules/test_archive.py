@@ -222,20 +222,27 @@ def test_existing_package_digest_must_match_rewritten_archive(
         write_rule_package(tmp_path / "other.icrules", inconsistent)
 
 
-def test_structurally_invalid_package_cannot_become_usable(
+def test_duplicate_table_cell_cannot_become_usable(
     synthetic_package: RulePackage, tmp_path: Path
 ) -> None:
     table = synthetic_package.tables[0]
-    incomplete = synthetic_package.model_copy(
+    duplicate = synthetic_package.model_copy(
         update={
             "tables": (
-                table.model_copy(update={"cells": table.cells[:-1]}),
+                table.model_copy(
+                    update={
+                        "cells": (
+                            *table.cells[:-1],
+                            table.cells[-1].model_copy(update={"row": 0, "column": 0}),
+                        )
+                    }
+                ),
             )
         }
     )
 
-    with pytest.raises(RulePackageError, match="validation"):
-        write_rule_package(tmp_path / "incomplete.icrules", incomplete)
+    with pytest.raises(RulePackageError, match="invalid rule package"):
+        write_rule_package(tmp_path / "duplicate.icrules", duplicate)
 
 
 def test_archive_boundary_revalidates_model_copy_updates(
