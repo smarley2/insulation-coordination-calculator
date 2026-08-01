@@ -4,6 +4,7 @@ from enum import StrEnum
 class InsulationType(StrEnum):
     FUNCTIONAL = "functional"
     BASIC = "basic"
+    SUPPLEMENTARY = "supplementary"
     REINFORCED = "reinforced"
 
 

@@ -4,10 +4,21 @@ from decimal import Decimal
 
 from pydantic import field_validator
 
-from insulation_coordination.domain.enums import Applicability, InsulationType, Provenance
+from insulation_coordination.domain.enums import (
+    Applicability,
+    FieldCondition,
+    InsulationType,
+    Provenance,
+)
 from insulation_coordination.domain.project import EffectiveCase, FrozenModel, PairVoltage
 from insulation_coordination.domain.quantities import DecimalValue
-from insulation_coordination.domain.rules import CompatibilityMapping, Formula, RulePackage
+from insulation_coordination.domain.rules import (
+    CompatibilityMapping,
+    Formula,
+    RulePackage,
+    SourceReference,
+    TableSelect,
+)
 from insulation_coordination.domain.trace import Quantity, TraceStep
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_formula
 from insulation_coordination.rules.validation import ValidationResult, validate_rule_package
@@ -50,11 +61,14 @@ class DistanceCandidate(FrozenModel):
     candidate_id: str
     stress_field: str
     stress: Quantity
+    treated_stress: Quantity | None = None
     distance_mm: DecimalValue
     semantic_rule_id: str
     mapping_id: str | None = None
     formula_id: str | None = None
     provenance: Provenance | None = None
+    selection_mode: str = ""
+    branch_label: str | None = None
     steps: tuple[TraceStep, ...] = ()
     reason: str
 
@@ -97,41 +111,221 @@ def _calculate_clearance(
     effective: EffectiveCase,
     rules: RulePackage,
 ) -> CandidateCalculation:
-    kind = _required(effective.insulation_type.value, "insulation_type")
-    field = _required(effective.field_condition.value, "field_condition")
-    pollution = _required(effective.pollution_degree.value, "pollution_degree")
-    impulse = _required_stress(effective.impulse_v.value, "impulse_v")
     manual, omissions = _manual_stresses(effective)
-    clause = "5.2.4" if kind is InsulationType.FUNCTIONAL else "5.2.5"
     candidates = (
-        _evaluate_clearance_candidate(
-            candidate_id="impulse",
-            stress_field="impulse_v",
-            stress=impulse,
-            treatment="impulse",
-            clause=clause,
-            kind=kind,
-            field=field.value,
-            pollution=pollution,
-            rules=rules,
-            provenance=effective.impulse_v.provenance,
-        ),
+        select_f2_impulse_clearance(effective, rules),
         *(
-            _evaluate_clearance_candidate(
+            select_f8_periodic_clearance(
+                effective,
+                rules,
                 candidate_id=candidate_id,
                 stress_field=stress_field,
                 stress=stress,
-                treatment="periodic",
-                clause=clause,
-                kind=kind,
-                field=field.value,
-                pollution=pollution,
-                rules=rules,
             )
             for candidate_id, stress_field, stress in manual
         ),
     )
     return CandidateCalculation(candidates=candidates, omissions=omissions)
+
+
+_PREFERRED_IMPULSE_V = tuple(
+    Decimal(value)
+    for value in (330, 500, 800, 1500, 2500, 4000, 6000, 8000, 12000)
+)
+
+
+def apply_reinforced_stress_treatment(
+    stress_v: Decimal,
+    *,
+    kind: InsulationType,
+    treatment: str,
+    source: SourceReference | None = None,
+) -> tuple[Decimal, TraceStep | None]:
+    """Apply Clause 5.2.5 treatment before selecting F.2 or F.8."""
+    if kind is not InsulationType.REINFORCED:
+        return stress_v, None
+    if treatment == "impulse" and stress_v in _PREFERRED_IMPULSE_V:
+        index = _PREFERRED_IMPULSE_V.index(stress_v)
+        if index + 1 >= len(_PREFERRED_IMPULSE_V):
+            raise CalculationRangeError(
+                "reinforced impulse stress has no next preferred IEC impulse level"
+            )
+        treated = _PREFERRED_IMPULSE_V[index + 1]
+        reason = "reinforced impulse uses the next preferred impulse withstand level"
+    else:
+        treated = stress_v * Decimal("1.6")
+        reason = f"reinforced {treatment} stress uses 160% of the basic requirement"
+    step = TraceStep(
+        semantic_rule_id=f"iec60664-1:5.2.5:reinforced_stress_treatment:{treatment}",
+        operation="reinforced_stress_treatment",
+        symbolic="U_treated = next_preferred(U) or 1.6 × U",
+        substituted=f"{stress_v} V → {treated} V",
+        inputs=(Quantity(value=stress_v, unit="V"),),
+        source_reference=source,
+        output=Quantity(value=treated, unit="V"),
+        unrounded_value=treated,
+        reason=reason,
+    )
+    return treated, step
+
+
+def select_f2_impulse_clearance(
+    effective: EffectiveCase,
+    rules: RulePackage,
+) -> DistanceCandidate:
+    kind = _required(effective.insulation_type.value, "insulation_type")
+    field = _required(effective.field_condition.value, "field_condition")
+    pollution = _required(effective.pollution_degree.value, "pollution_degree")
+    stress = _required_stress(effective.impulse_v.value, "impulse_v")
+    return _select_part1_clearance(
+        candidate_id="impulse",
+        stress_field="impulse_v",
+        stress=stress,
+        treatment="impulse",
+        kind=kind,
+        field=field,
+        pollution=pollution,
+        rules=rules,
+        provenance=effective.impulse_v.provenance,
+    )
+
+
+def select_f8_periodic_clearance(
+    effective: EffectiveCase,
+    rules: RulePackage,
+    *,
+    candidate_id: str,
+    stress_field: str,
+    stress: Decimal,
+) -> DistanceCandidate:
+    kind = _required(effective.insulation_type.value, "insulation_type")
+    field = _required(effective.field_condition.value, "field_condition")
+    pollution = _required(effective.pollution_degree.value, "pollution_degree")
+    return _select_part1_clearance(
+        candidate_id=candidate_id,
+        stress_field=stress_field,
+        stress=stress,
+        treatment="periodic",
+        kind=kind,
+        field=field,
+        pollution=pollution,
+        rules=rules,
+    )
+
+
+def _select_part1_clearance(
+    *,
+    candidate_id: str,
+    stress_field: str,
+    stress: Decimal,
+    treatment: str,
+    kind: InsulationType,
+    field: FieldCondition,
+    pollution: int,
+    rules: RulePackage,
+    provenance: Provenance | None = None,
+) -> DistanceCandidate:
+    clause = "5.2.4" if kind is InsulationType.FUNCTIONAL else "5.2.5"
+    semantic_rule_id = (
+        f"iec60664-1:{clause}:{kind.value}_clearance:"
+        f"candidate={treatment}:field={field.value}:pollution={pollution}"
+    )
+    mapping, formula = _select_formula(
+        rules,
+        semantic_rule_id,
+        route_label=f"{kind.value}_clearance_{treatment}",
+    )
+    if not isinstance(formula.expression, TableSelect):
+        return _evaluate_candidate(
+            candidate_id=candidate_id,
+            stress_field=stress_field,
+            stress=stress,
+            semantic_rule_id=semantic_rule_id,
+            mapping_id=mapping.id,
+            formula=formula,
+            rules=rules,
+            provenance=provenance,
+        )
+    treated, treatment_step = apply_reinforced_stress_treatment(
+        stress,
+        kind=kind,
+        treatment=treatment,
+        source=mapping.source,
+    )
+    branch_label = _clearance_branch_label(
+        treatment=treatment,
+        field=field,
+        pollution=pollution,
+    )
+    table = next(
+        (item for item in rules.tables if item.id == formula.expression.table_id),
+        None,
+    )
+    if table is None:
+        raise RuleMappingError(f"formula {formula.id!r} references a missing clearance table")
+    if table.row_axis.unit != "kV":
+        raise RuleMappingError(
+            f"clearance table {table.id!r} row axis must use canonical 'kV'"
+        )
+    try:
+        column_index = table.column_axis.labels.index(branch_label)
+    except ValueError as error:
+        raise RuleMappingError(
+            f"clearance table {table.id!r} has no semantic branch {branch_label!r}"
+        ) from error
+    variables = {
+        table.row_axis.id: Quantity(value=treated / Decimal(1000), unit="kV"),
+        table.column_axis.id: Quantity(
+            value=table.column_axis.values[column_index],
+            unit=table.column_axis.unit,
+        ),
+    }
+    try:
+        evaluated = evaluate_formula(
+            formula,
+            variables,
+            {item.id: item for item in rules.tables},
+        )
+    except EvaluationError as error:
+        message = f"{candidate_id} candidate using formula {formula.id!r} failed: {error}"
+        if "outside" in str(error) or "has no cell" in str(error):
+            raise CalculationRangeError(message) from error
+        raise CalculationError(message) from error
+    if evaluated.value < 0:
+        raise CalculationError(
+            f"{candidate_id} formula {formula.id!r} returned a negative distance"
+        )
+    steps = (
+        *((treatment_step,) if treatment_step is not None else ()),
+        *evaluated.steps,
+    )
+    return DistanceCandidate(
+        candidate_id=candidate_id,
+        stress_field=stress_field,
+        stress=Quantity(value=stress, unit="V"),
+        treated_stress=Quantity(value=treated, unit="V"),
+        distance_mm=evaluated.value,
+        semantic_rule_id=semantic_rule_id,
+        mapping_id=mapping.id,
+        formula_id=formula.id,
+        provenance=provenance,
+        selection_mode=f"{formula.expression.row_mode}/{formula.expression.column_mode}",
+        branch_label=branch_label,
+        steps=steps,
+        reason=steps[-1].reason,
+    )
+
+
+def _clearance_branch_label(
+    *,
+    treatment: str,
+    field: FieldCondition,
+    pollution: int,
+) -> str:
+    case = "case_a" if field is FieldCondition.INHOMOGENEOUS else "case_b"
+    if treatment == "impulse":
+        return f"{case}_pd{pollution}_mm"
+    return f"{case}_mm"
 
 
 def _evaluate_clearance_candidate(
@@ -284,6 +478,7 @@ def _evaluate_candidate(
         candidate_id=candidate_id,
         stress_field=stress_field,
         stress=Quantity(value=stress, unit="V"),
+        treated_stress=Quantity(value=stress, unit="V"),
         distance_mm=evaluated.value,
         semantic_rule_id=semantic_rule_id,
         mapping_id=mapping_id,

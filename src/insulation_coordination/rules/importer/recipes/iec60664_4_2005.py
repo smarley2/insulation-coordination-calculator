@@ -76,7 +76,7 @@ def _mapping_specs() -> tuple[MappingAuditSpec, ...]:
             figure="Equation (2)",
         ),
     ]
-    for kind in ("functional", "basic", "reinforced"):
+    for kind in ("functional", "basic", "supplementary", "reinforced"):
         mappings.extend(
             (
                 MappingAuditSpec(

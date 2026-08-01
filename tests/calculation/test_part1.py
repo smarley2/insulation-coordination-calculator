@@ -5,7 +5,11 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-from insulation_coordination.calculation.clearance import calculate_clearance_candidates
+from insulation_coordination.calculation.clearance import (
+    calculate_clearance_candidates,
+    select_f2_impulse_clearance,
+    select_f8_periodic_clearance,
+)
 from insulation_coordination.calculation.creepage import calculate_creepage_candidates
 from insulation_coordination.calculation.engine import (
     CALCULATION_ENGINE_VERSION,
@@ -398,6 +402,148 @@ def test_clearance_routes_impulse_and_periodic_stresses_independently(
         result.trace.clearance_candidates[0].formula_id
         != result.trace.clearance_candidates[1].formula_id
     )
+
+
+def test_annex_g_uses_f2_and_f8_with_semantic_source_cells(
+    case_factory,
+    semantic_annex_g_rules: RulePackage,
+) -> None:
+    candidates = calculate_clearance_candidates(case_factory(), semantic_annex_g_rules)
+
+    assert {candidate.candidate_id for candidate in candidates} == {
+        "impulse",
+        "steady_state_peak",
+        "temporary_overvoltage_peak",
+        "recurring_peak",
+    }
+    impulse = candidates[0]
+    assert impulse.formula_id == "iec60664-1:f2-clearance"
+    assert impulse.selection_mode == "ceiling/exact"
+    assert impulse.branch_label == "case_a_pd2_mm"
+    assert impulse.steps[-1].source_cells == (
+        "impulse_withstand_kv-1.0/case_a_pd2_mm",
+    )
+    assert all(
+        candidate.formula_id == "iec60664-1:f8-clearance"
+        for candidate in candidates[1:]
+    )
+
+
+def test_reinforced_stress_is_treated_before_f2_and_f8_selection(
+    case_factory,
+    semantic_annex_g_rules: RulePackage,
+) -> None:
+    case = case_factory(kind=InsulationType.REINFORCED, impulse_v="800")
+    candidates = calculate_clearance_candidates(case, semantic_annex_g_rules)
+    by_id = {candidate.candidate_id: candidate for candidate in candidates}
+
+    assert by_id["impulse"].stress.value == Decimal(800)
+    assert by_id["impulse"].treated_stress.value == Decimal(1500)
+    assert by_id["steady_state_peak"].stress.value == Decimal(300)
+    assert by_id["steady_state_peak"].treated_stress.value == Decimal(480)
+    assert by_id["temporary_overvoltage_peak"].treated_stress.value == Decimal(960)
+    assert by_id["recurring_peak"].treated_stress.value == Decimal(640)
+    assert all(
+        candidate.steps[0].operation == "reinforced_stress_treatment"
+        for candidate in candidates
+    )
+
+
+def test_nonpreferred_reinforced_impulse_uses_160_percent(
+    case_factory,
+    semantic_annex_g_rules: RulePackage,
+) -> None:
+    candidate = select_f2_impulse_clearance(
+        case_factory(kind=InsulationType.REINFORCED, impulse_v="900"),
+        semantic_annex_g_rules,
+    )
+
+    assert candidate.treated_stress.value == Decimal(1440)
+
+
+def test_functional_clearance_has_no_reinforced_stress_treatment(
+    case_factory,
+    semantic_annex_g_rules: RulePackage,
+) -> None:
+    candidates = calculate_clearance_candidates(
+        case_factory(kind=InsulationType.FUNCTIONAL),
+        semantic_annex_g_rules,
+    )
+
+    assert all(candidate.treated_stress == candidate.stress for candidate in candidates)
+    assert all(
+        step.operation != "reinforced_stress_treatment"
+        for candidate in candidates
+        for step in candidate.steps
+    )
+
+
+def test_supplementary_clearance_uses_basic_stress_treatment(
+    case_factory,
+    semantic_annex_g_rules: RulePackage,
+) -> None:
+    candidates = calculate_clearance_candidates(
+        case_factory(kind=InsulationType.SUPPLEMENTARY),
+        semantic_annex_g_rules,
+    )
+
+    assert all(candidate.treated_stress == candidate.stress for candidate in candidates)
+    assert all(":5.2.5:supplementary_clearance:" in item.semantic_rule_id for item in candidates)
+
+
+def test_annex_g_field_routes_select_case_a_or_case_b(
+    case_factory,
+    semantic_annex_g_rules: RulePackage,
+) -> None:
+    case_a = select_f8_periodic_clearance(
+        case_factory(field_condition=FieldCondition.INHOMOGENEOUS),
+        semantic_annex_g_rules,
+        candidate_id="steady_state_peak",
+        stress_field="steady_state_peak_v",
+        stress=Decimal(300),
+    )
+    case_b = select_f8_periodic_clearance(
+        case_factory(field_condition=FieldCondition.HOMOGENEOUS),
+        semantic_annex_g_rules,
+        candidate_id="steady_state_peak",
+        stress_field="steady_state_peak_v",
+        stress=Decimal(300),
+    )
+
+    assert case_a.branch_label == "case_a_mm"
+    assert case_b.branch_label == "case_b_mm"
+    assert case_a.distance_mm != case_b.distance_mm
+
+
+def test_annex_g_sparse_missing_combination_blocks_instead_of_selecting_neighbor(
+    case_factory,
+    semantic_annex_g_rules: RulePackage,
+    tmp_path: Path,
+) -> None:
+    table = next(item for item in semantic_annex_g_rules.tables if item.id == "iec60664-1-f2")
+    sparse = table.model_copy(
+        update={
+            "cells": tuple(
+                cell
+                for cell in table.cells
+                if (cell.row, cell.column) != (2, 1)
+            )
+        }
+    )
+    rules = _seal_rules(
+        semantic_annex_g_rules.model_copy(
+            update={
+                "tables": tuple(
+                    sparse if item.id == table.id else item
+                    for item in semantic_annex_g_rules.tables
+                )
+            }
+        ),
+        tmp_path / "sparse-annex-g.icrules",
+    )
+
+    with pytest.raises(CalculationRangeError, match="has no cell"):
+        calculate_clearance_candidates(case_factory(impulse_v="1000"), rules)
 
 
 def test_clearance_pollution_branch_requires_an_exact_approved_mapping(

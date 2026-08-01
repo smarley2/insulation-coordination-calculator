@@ -29,7 +29,7 @@ def _columns(
 
 def _mapping_specs() -> tuple[MappingAuditSpec, ...]:
     mappings: list[MappingAuditSpec] = []
-    for kind in ("functional", "basic", "reinforced"):
+    for kind in ("functional", "basic", "supplementary", "reinforced"):
         clearance_clause = "5.2.4" if kind == "functional" else "5.2.5"
         for candidate, target, table in (
             ("impulse", "iec60664-1:f2-clearance", "F.2"),
