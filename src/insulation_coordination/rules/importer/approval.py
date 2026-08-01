@@ -42,25 +42,20 @@ def _source_matches(actual: SourceReference, expected: SourceReference) -> bool:
     )
 
 
-def _review_resolution_exists(
-    item: ImportReviewItem, changed: ImportedRuleDraft
-) -> bool:
+def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft) -> bool:
     if item.kind == "table":
         return any(
-            table.id == item.semantic_id
-            and _source_matches(table.source, item.source)
+            table.id == item.semantic_id and _source_matches(table.source, item.source)
             for table in changed.tables
         )
     if item.kind == "formula":
         return any(
-            formula.id == item.semantic_id
-            and _source_matches(formula.source, item.source)
+            formula.id == item.semantic_id and _source_matches(formula.source, item.source)
             for formula in changed.formulas
         )
     if item.kind == "mapping":
         return any(
-            mapping.id == item.semantic_id
-            and _source_matches(mapping.source, item.source)
+            mapping.id == item.semantic_id and _source_matches(mapping.source, item.source)
             for mapping in changed.mappings
         )
     return any(
@@ -144,10 +139,7 @@ def _require_valid_review_resolutions(
     recorded_at: datetime,
 ) -> tuple[ImportReviewResolution, ...]:
     inventory = {item.sha256: item for item in original.review_items}
-    existing = {
-        resolution.review_item_sha256
-        for resolution in original.review_resolutions
-    }
+    existing = {resolution.review_item_sha256 for resolution in original.review_resolutions}
     requested = {item.sha256 for item in resolve}
     if (
         len(inventory) != len(original.review_items)
@@ -222,8 +214,7 @@ def record_correction(
     original_reviews = original.review_items
     changed_reviews = changed.review_items
     corrected_mappings = tuple(
-        mapping.model_copy(update={"approved": False})
-        for mapping in changed.mappings
+        mapping.model_copy(update={"approved": False}) for mapping in changed.mappings
     )
     before = _content_digest(
         original.tables,
@@ -294,20 +285,21 @@ def _require_complete_audit(draft: DraftRulePackage) -> None:
     audited = {
         record.notes
         for record in draft.manifest.approval_records
-        if (
-            record.action == "extraction"
-            and record.actor == f"icc-importer/{IMPORTER_VERSION}"
-        )
+        if (record.action == "extraction" and record.actor == f"icc-importer/{IMPORTER_VERSION}")
         or record.action == "correction"
     }
-    required = {
-        note
-        for identity in draft.source_identities
-        for note in (
-            f"identity:{identity.recipe_id}",
-            f"layout:{identity.recipe_id}",
-        )
-    } if isinstance(draft, ImportedRuleDraft) else set()
+    required = (
+        {
+            note
+            for identity in draft.source_identities
+            for note in (
+                f"identity:{identity.recipe_id}",
+                f"layout:{identity.recipe_id}",
+            )
+        }
+        if isinstance(draft, ImportedRuleDraft)
+        else set()
+    )
     required.update(f"table:{table.id}" for table in draft.tables)
     required.update(f"formula:{formula.id}" for formula in draft.formulas)
     required.update(f"mapping:{mapping.id}" for mapping in draft.mappings)
@@ -359,11 +351,7 @@ def _require_compatibility_mapping(draft: DraftRulePackage) -> None:
         raise ApprovalError("compatibility mappings are ambiguous")
     from insulation_coordination.rules.importer.recipes import RECIPES
 
-    required = {
-        spec.semantic_route
-        for recipe in RECIPES
-        for spec in recipe.mappings
-    }
+    required = {spec.semantic_route for recipe in RECIPES for spec in recipe.mappings}
     if set(routes) != required or len(routes) != len(required):
         raise ApprovalError("exact compatibility mapping family is incomplete")
 
@@ -386,9 +374,7 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
     ):
         raise ApprovalError("reviewed content sets do not match exact recipe semantics")
     recipes_by_id = {recipe.id: recipe for recipe in RECIPES}
-    identities_by_recipe = {
-        identity.recipe_id: identity for identity in draft.source_identities
-    }
+    identities_by_recipe = {identity.recipe_id: identity for identity in draft.source_identities}
     for recipe_id, recipe in recipes_by_id.items():
         identity = identities_by_recipe[recipe_id]
         for spec in recipe.tables:
@@ -410,14 +396,11 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
                 or table.column_axis.id != spec.column_axis_id
                 or table.column_axis.unit != spec.column_axis_unit
                 or len(table.column_axis.values) != spec.expected_data_columns
-                or (grid.rows, grid.columns)
-                != (spec.expected_raw_rows, spec.expected_raw_columns)
+                or (grid.rows, grid.columns) != (spec.expected_raw_rows, spec.expected_raw_columns)
                 or grid.target_unit != spec.target_unit
             ):
                 raise ApprovalError("reviewed table violates its exact recipe contract")
-            grid_cells = {
-                (cell.row, cell.column): cell for cell in grid.cells
-            }
+            grid_cells = {(cell.row, cell.column): cell for cell in grid.cells}
             if spec.data_strategy == "rectangle":
                 if spec.data_row_start is None or spec.data_column_start is None:
                     raise ApprovalError("recipe rectangle has no source coordinate")
@@ -432,25 +415,16 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
                     for column in range(spec.expected_data_columns)
                 )
             else:
-                raw_values = tuple(
-                    cell for cell in grid.cells if cell.value is not None
-                )
-            typed_values = tuple(
-                sorted(table.cells, key=lambda cell: (cell.row, cell.column))
-            )
-            if (
-                len(raw_values) != len(typed_values)
-                or any(
-                    raw.value is None
-                    or typed.value != raw.value
-                    or typed.unit != spec.target_unit
-                    or typed.source != raw.source
-                    for typed, raw in zip(typed_values, raw_values, strict=True)
-                )
+                raw_values = tuple(cell for cell in grid.cells if cell.value is not None)
+            typed_values = tuple(sorted(table.cells, key=lambda cell: (cell.row, cell.column)))
+            if len(raw_values) != len(typed_values) or any(
+                raw.value is None
+                or typed.value != raw.value
+                or typed.unit != spec.target_unit
+                or typed.source != raw.source
+                for typed, raw in zip(typed_values, raw_values, strict=True)
             ):
-                raise ApprovalError(
-                    "reviewed table does not correspond to its raw recipe grid"
-                )
+                raise ApprovalError("reviewed table does not correspond to its raw recipe grid")
         for formula_spec in recipe.formulas:
             formula = formulas[formula_spec.semantic_id]
             expected_source = SourceReference(
@@ -530,11 +504,7 @@ def _expression_variables(expression: Expression) -> set[str]:
 
     def collect(node: object) -> set[str]:
         if isinstance(node, dict):
-            names = (
-                {str(node["name"])}
-                if node.get("op") == "variable"
-                else set()
-            )
+            names = {str(node["name"])} if node.get("op") == "variable" else set()
             return names | set().union(*(collect(item) for item in node.values()))
         if isinstance(node, tuple | list):
             return set().union(*(collect(item) for item in node))
@@ -598,7 +568,9 @@ def is_fully_resolved(draft: ImportedRuleDraft) -> bool:
     """True when every manual review item has an associated resolution."""
     resolved = {resolution.review_item_sha256 for resolution in draft.review_resolutions}
     inventory = {item.sha256 for item in draft.review_items}
-    return len(resolved) == len(draft.review_resolutions) == len(inventory) and resolved == inventory
+    return (
+        len(resolved) == len(draft.review_resolutions) == len(inventory) and resolved == inventory
+    )
 
 
 def approve_draft(
@@ -615,10 +587,7 @@ def approve_draft(
         record.action == "approval" for record in draft.manifest.approval_records
     ):
         raise ApprovalError("draft already contains an approval")
-    resolved = {
-        resolution.review_item_sha256
-        for resolution in draft.review_resolutions
-    }
+    resolved = {resolution.review_item_sha256 for resolution in draft.review_resolutions}
     inventory = {item.sha256 for item in draft.review_items}
     if (
         len(resolved) != len(draft.review_resolutions)
@@ -651,10 +620,7 @@ def approve_draft(
         manifest=manifest,
         tables=draft.tables,
         formulas=draft.formulas,
-        mappings=tuple(
-            mapping.model_copy(update={"approved": True})
-            for mapping in draft.mappings
-        ),
+        mappings=tuple(mapping.model_copy(update={"approved": True}) for mapping in draft.mappings),
     )
     try:
         content, checksums = _archive_bytes(candidate)
@@ -668,8 +634,6 @@ def approve_draft(
     except (AttributeError, TypeError, ValueError) as error:
         raise ApprovalError("approved candidate could not be validated") from error
     if not report.is_valid:
-        failures = ", ".join(
-            result.code for result in report.results if not result.passed
-        )
+        failures = ", ".join(result.code for result in report.results if not result.passed)
         raise ApprovalError(f"approval validation failed: {failures}")
     return candidate
