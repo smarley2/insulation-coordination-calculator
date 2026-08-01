@@ -19,6 +19,11 @@ from insulation_coordination.rules.importer.identify import (
     UnsupportedStandardError,
     identify_standard,
 )
+from insulation_coordination.rules.importer.review import (
+    RequiredContentStatus,
+    missing_required_content,
+    required_content_report,
+)
 
 __all__ = [
     "AmbiguousStandardError",
@@ -28,10 +33,13 @@ __all__ = [
     "ImportedRuleDraft",
     "RawGrid",
     "RawGridCell",
+    "RequiredContentStatus",
     "StandardIdentity",
     "UnsupportedStandardError",
     "approve_draft",
     "extract_draft",
     "identify_standard",
+    "missing_required_content",
     "record_correction",
+    "required_content_report",
 ]

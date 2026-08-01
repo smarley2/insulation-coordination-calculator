@@ -68,6 +68,21 @@ def test_draft_requires_review_and_blocks_approve(
     assert rules_manager.can_approve is False
 
 
+def test_build_reviewed_content_unlocks_approval(
+    qtbot, rules_manager, supported_pdfs, injected_recipes
+) -> None:
+    draft = extract_draft(supported_pdfs)
+    rules_manager.set_draft(draft)
+    assert rules_manager.can_approve is False
+
+    from insulation_coordination.rules.importer.review import build_reviewed_draft
+
+    reviewed = build_reviewed_draft(draft, actor="Maintainer", notes="auto review")
+    rules_manager.set_draft(reviewed)
+    assert rules_manager.is_fully_resolved is True
+    assert rules_manager.can_approve is True
+
+
 def test_resolving_all_items_enables_approval(
     qtbot, rules_manager, supported_pdfs, injected_recipes
 ) -> None:

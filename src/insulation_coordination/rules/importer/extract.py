@@ -519,13 +519,20 @@ def extract_draft(paths: tuple[Path, ...]) -> ImportedRuleDraft:
     """Extract recognized sources into a deliberately unusable immutable draft."""
 
     if not paths:
-        raise ExtractionError("exactly one PDF for each supported IEC part is required")
+        raise ExtractionError(
+            "IEC 60664-1 and IEC 60664-4 must be loaded together; no PDFs were selected"
+        )
     identified = tuple((path, identify_standard(path)) for path in paths)
     recipe_ids = tuple(identity.recipe_id for _, identity in identified)
     if len(recipe_ids) != len(set(recipe_ids)):
         raise ExtractionError("duplicate supported IEC part")
     if set(recipe_ids) != _REQUIRED_RECIPES:
-        raise ExtractionError("exactly one PDF for each supported IEC part is required")
+        loaded = {identity.recipe_id for _, identity in identified}
+        missing = sorted(_REQUIRED_RECIPES - loaded)
+        raise ExtractionError(
+            "IEC 60664-1 and IEC 60664-4 must be loaded together; "
+            f"missing required part(s): {', '.join(missing)}"
+        )
 
     tables: tuple[Table, ...] = ()
     formulas: tuple[Formula, ...] = ()

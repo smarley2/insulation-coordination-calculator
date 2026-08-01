@@ -31,6 +31,7 @@ from insulation_coordination.rules.importer import recipes as recipe_registry
 from insulation_coordination.rules.importer.approval import (
     ApprovalError,
     approve_draft,
+    is_fully_resolved,
     record_correction,
 )
 from insulation_coordination.rules.importer.extract import (
@@ -46,6 +47,13 @@ from insulation_coordination.rules.importer.identify import (
     TableAuditSpec,
     UnsupportedStandardError,
     identify_standard,
+)
+from insulation_coordination.rules.importer.review import (
+    build_reviewed_draft,
+    confirm_placeholder_formula,
+    missing_required_content,
+    placeholder_formula_ids,
+    required_content_report,
 )
 
 _PAGE_WIDTH = 612
@@ -617,7 +625,7 @@ def test_missing_or_duplicate_supported_part_is_rejected(
 ) -> None:
     part1, part4 = supported_pdfs
 
-    with pytest.raises(ExtractionError, match="exactly one"):
+    with pytest.raises(ExtractionError, match="must be loaded together"):
         extract_draft((part1,))
     with pytest.raises(ExtractionError, match="duplicate"):
         extract_draft((part1, part1, part4))
@@ -692,6 +700,90 @@ def test_recorded_resolution_uses_original_full_review_item_digest(
         resolution.actor == "Synthetic Reviewer"
         for resolution in corrected.review_resolutions
     )
+
+
+def test_build_reviewed_draft_resolves_every_item(
+    supported_pdfs: tuple[Path, Path],
+    injected_recipes: tuple[StandardRecipe, ...],
+) -> None:
+    draft = extract_draft(supported_pdfs)
+    reviewed = build_reviewed_draft(draft, actor="Maintainer", notes="auto review")
+
+    assert reviewed.review_items == draft.review_items
+    assert len(reviewed.review_resolutions) == len(draft.review_items)
+    assert {
+        resolution.review_item_sha256
+        for resolution in reviewed.review_resolutions
+    } == {item.sha256 for item in draft.review_items}
+    assert is_fully_resolved(reviewed)
+
+
+def test_placeholder_formula_gate_blocks_then_confirmation_unlocks(
+    supported_pdfs: tuple[Path, Path],
+    injected_recipes: tuple[StandardRecipe, ...],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.rules.test_importer import _test_recipes
+
+    recipe1, recipe4 = _test_recipes()
+    placeholder_id = "synthetic-placeholder-formula"
+    placeholder_spec = FormulaAuditSpec(
+        semantic_id=placeholder_id,
+        unit="bool",
+        variables=(),
+        expression_shape="compare(literal,literal)",
+        page_number=1,
+        clause="SYNTHETIC",
+        table="S1",
+    )
+    modified = recipe1.model_copy(
+        update={"formulas": (*recipe1.formulas, placeholder_spec)}
+    )
+    monkeypatch.setattr(recipe_registry, "RECIPES", (modified, recipe4))
+
+    assert placeholder_id in placeholder_formula_ids()
+
+    draft = extract_draft(supported_pdfs)
+    # add the placeholder's review item is present in inventory since recipe includes it
+    reviewed = build_reviewed_draft(draft, actor="Maintainer", notes="auto review")
+    # placeholder formula remains unresolved after build
+    assert not is_fully_resolved(reviewed)
+    pending = [
+        item
+        for item in reviewed.review_items
+        if item.kind == "formula" and item.semantic_id == placeholder_id
+    ]
+    assert pending
+    assert all(item.sha256 not in {r.review_item_sha256 for r in reviewed.review_resolutions} for item in pending)
+
+    confirmed = confirm_placeholder_formula(
+        reviewed,
+        formula_id=placeholder_id,
+        values=(Decimal(2), Decimal(3)),
+        actor="Maintainer",
+        notes="confirmed constants",
+    )
+    assert is_fully_resolved(confirmed)
+
+
+def test_required_content_report_tracks_missing_then_present(
+    supported_pdfs: tuple[Path, Path],
+    injected_recipes: tuple[StandardRecipe, ...],
+) -> None:
+    draft = extract_draft(supported_pdfs)
+    report = required_content_report(draft)
+    # A fresh extraction has review items but no typed content yet.
+    assert report
+    assert all(not item.present for item in report)
+    assert {i.semantic_id for i in missing_required_content(draft)} == {
+        i.semantic_id for i in report
+    }
+
+    reviewed = build_reviewed_draft(draft, actor="Maintainer", notes="auto review")
+    report = required_content_report(reviewed)
+    assert report
+    assert all(item.present for item in report)
+    assert missing_required_content(reviewed) == ()
 
 
 def test_correction_audits_every_changed_or_deleted_semantic_item(
