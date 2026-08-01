@@ -40,6 +40,7 @@ from insulation_coordination.rules.audit import (
     export_inventory_json,
     export_table_csv,
 )
+from insulation_coordination.rules.importer.approval import is_fully_resolved
 from insulation_coordination.rules.importer.extract import ImportedRuleDraft
 
 _SECTIONS = ("Manifest", "Checksums", "Tables", "Formulas", "Mappings", "Validation")
@@ -115,10 +116,11 @@ class RulesManagerWindow(QWidget):
         self._review_list = QListWidget()
         review_layout.addWidget(self._review_list)
         self._review_notes = QLineEdit()
-        self._review_notes.setPlaceholderText("Approval notes (required)")
+        self._review_notes.setPlaceholderText("Resolution / approval notes (required)")
         review_layout.addWidget(self._review_notes)
         self._review_approve_button = QPushButton("Approve reviewed draft…")
         self._review_approve_button.clicked.connect(self._on_review_approve_clicked)
+        self._review_approve_button.setEnabled(False)
         review_layout.addWidget(self._review_approve_button)
         layout.addWidget(review_group)
 
@@ -195,6 +197,53 @@ class RulesManagerWindow(QWidget):
         self.set_package(loaded)
         return ImportResult(destination, loaded)
 
+    # -- Draft review -----------------------------------------------------
+
+    @property
+    def review_count(self) -> int:
+        return len(self._draft.review_items) if self._draft is not None else 0
+
+    @property
+    def resolved_count(self) -> int:
+        if self._draft is None:
+            return 0
+        resolved = {r.review_item_sha256 for r in self._draft.review_resolutions}
+        return len(resolved & {i.sha256 for i in self._draft.review_items})
+
+    @property
+    def is_fully_resolved(self) -> bool:
+        return self._draft is not None and is_fully_resolved(self._draft)
+
+    @property
+    def can_approve(self) -> bool:
+        return self._draft is not None and self.is_fully_resolved
+
+    def _refresh_review(self) -> None:
+        self._review_list.clear()
+        if self._draft is None:
+            self._review_status.setText("No draft loaded. Import a draft package or set one programmatically.")
+            self._review_approve_button.setEnabled(False)
+            return
+        resolved = {r.review_item_sha256 for r in self._draft.review_resolutions}
+        for item in self._draft.review_items:
+            mark = "[x]" if item.sha256 in resolved else "[ ]"
+            self._review_list.addItem(
+                f"{mark} {item.code} {item.semantic_id} — {item.expected_contract}"
+            )
+        self._review_status.setText(
+            f"Manual review items: {self.resolved_count} of {self.review_count} resolved."
+        )
+        self._review_approve_button.setEnabled(self._draft is not None and self.is_fully_resolved)
+
+    def approve_reviewed_draft(self, approver: str, notes: str) -> None:
+        """Approve a fully-resolved draft and switch the manager to the approved package."""
+        if self._draft is None:
+            raise RuntimeError("No draft loaded")
+        from insulation_coordination.rules.importer.approval import approve_draft
+
+        package = approve_draft(self._draft, approver, notes)
+        self.set_package(package)
+
     def set_draft(self, draft: ImportedRuleDraft, sources: Iterable[object] = ()) -> None:
         self._draft = draft
         self._draft_sources = tuple(sources)
@@ -205,19 +254,7 @@ class RulesManagerWindow(QWidget):
         )
         self._approve_button.setEnabled(False)
         self._inventory_button.setEnabled(False)
-        self._review_list.clear()
-        self._review_list.addItem(
-            f"Manual review items: {len(draft.review_items)} "
-            f"of {len(draft.review_items)} resolved"
-        )
-        for item in draft.review_items:
-            self._review_list.addItem(
-                f"{item.code} {item.semantic_id} — {item.expected_contract}"
-            )
-        self._review_status.setText(
-            "Draft loaded. Source page review uses QtPdf when available; "
-            "correct extracted values in the extraction view, then approve."
-        )
+        self._refresh_review()
         self._tree.clear()
         self._apply_search()
 
@@ -282,16 +319,18 @@ class RulesManagerWindow(QWidget):
             QMessageBox.critical(self, "Export Audit Inventory", str(error))
 
     def _on_review_approve_clicked(self) -> None:
-        from insulation_coordination.rules.importer.approval import approve_draft
-
-        if self._draft is None:
+        if self._draft is None or not self.is_fully_resolved:
             return
         try:
-            package = approve_draft(self._draft, "maintainer", self._review_notes.text())
+            self.approve_reviewed_draft("maintainer", self._review_notes.text())
         except ValueError as error:
             QMessageBox.critical(self, "Approve Draft", str(error))
             return
-        self.set_package(package)
+        QMessageBox.information(
+            self,
+            "Draft Approved",
+            "Draft approved and ready to export.",
+        )
 
     def _populate_tree(self) -> None:
         self._tree.clear()
