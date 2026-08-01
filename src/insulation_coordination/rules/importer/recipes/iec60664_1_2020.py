@@ -40,35 +40,37 @@ def _mapping_specs() -> tuple[MappingAuditSpec, ...]:
                 "homogeneous",
                 "approximately_homogeneous",
             ):
-                mappings.append(
-                    MappingAuditSpec(
-                        id=f"iec60664-1-map-{len(mappings) + 1:02d}",
-                        semantic_route=(
-                            f"iec60664-1:{clearance_clause}:{kind}_clearance:"
-                            f"candidate={candidate}:field={field}:pollution=2"
-                        ),
-                        target_rule_id=target,
-                        family="part1-clearance",
-                        page_number=70 if table == "F.2" else 76,
-                        clause="Annex F",
-                        table=table,
+                for pollution in (1, 2):
+                    mappings.append(
+                        MappingAuditSpec(
+                            id=f"iec60664-1-map-{len(mappings) + 1:02d}",
+                            semantic_route=(
+                                f"iec60664-1:{clearance_clause}:{kind}_clearance:"
+                                f"candidate={candidate}:field={field}:pollution={pollution}"
+                            ),
+                            target_rule_id=target,
+                            family="part1-clearance",
+                            page_number=70 if table == "F.2" else 76,
+                            clause="Annex F",
+                            table=table,
+                        )
                     )
-                )
         creepage_clause = "5.3.4" if kind == "functional" else "5.3.5"
-        mappings.append(
-            MappingAuditSpec(
-                id=f"iec60664-1-map-{len(mappings) + 1:02d}",
-                semantic_route=(
-                    f"iec60664-1:{creepage_clause}:{kind}_creepage:"
-                    "construction=printed_wiring:pollution=2"
-                ),
-                target_rule_id="iec60664-1:f5-pcb-creepage",
-                family="part1-creepage",
-                page_number=73,
-                clause="Annex F",
-                table="F.5",
+        for pollution in (1, 2):
+            mappings.append(
+                MappingAuditSpec(
+                    id=f"iec60664-1-map-{len(mappings) + 1:02d}",
+                    semantic_route=(
+                        f"iec60664-1:{creepage_clause}:{kind}_creepage:"
+                        f"construction=printed_wiring:pollution={pollution}"
+                    ),
+                    target_rule_id="iec60664-1:f5-pcb-creepage",
+                    family="part1-creepage",
+                    page_number=73,
+                    clause="Annex F",
+                    table="F.5",
+                )
             )
-        )
     mappings.append(
         MappingAuditSpec(
             id=f"iec60664-1-map-{len(mappings) + 1:02d}",

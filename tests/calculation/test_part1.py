@@ -10,7 +10,10 @@ from insulation_coordination.calculation.clearance import (
     select_f2_impulse_clearance,
     select_f8_periodic_clearance,
 )
-from insulation_coordination.calculation.creepage import calculate_creepage_candidates
+from insulation_coordination.calculation.creepage import (
+    calculate_creepage_candidates,
+    select_f5_pcb_creepage,
+)
 from insulation_coordination.calculation.engine import (
     CALCULATION_ENGINE_VERSION,
     CalculationError,
@@ -748,3 +751,129 @@ def test_not_applicable_long_term_tracking_uses_only_clearance_floor(
         and omission.applicability is Applicability.NOT_APPLICABLE
         for omission in result.trace.omissions
     )
+
+
+@pytest.mark.parametrize(
+    ("pollution", "expected"),
+    ((1, "3.2"), (2, "5.0")),
+)
+def test_f5_selects_only_printed_wiring_pollution_branch(
+    pollution: int,
+    expected: str,
+    case_factory,
+    semantic_annex_g_rules: RulePackage,
+) -> None:
+    candidate = select_f5_pcb_creepage(
+        case_factory(
+            construction_type=ConstructionType.PRINTED_WIRING,
+            pollution_degree=pollution,
+            long_term_rms_v=PairVoltage.applicable(Decimal(1000)),
+        ),
+        semantic_annex_g_rules,
+    )
+
+    assert candidate.distance_mm == Decimal(expected)
+    assert candidate.branch_label == f"pcb_pollution_{pollution}"
+    assert candidate.selection_mode == "linear/exact"
+
+
+def test_f5_interpolates_across_joined_page_boundary(
+    case_factory,
+    semantic_annex_g_rules: RulePackage,
+) -> None:
+    candidate = select_f5_pcb_creepage(
+        case_factory(
+            construction_type=ConstructionType.PRINTED_WIRING,
+            long_term_rms_v=PairVoltage.applicable(Decimal(3600)),
+        ),
+        semantic_annex_g_rules,
+    )
+
+    assert candidate.distance_mm == Decimal(18)
+    assert candidate.steps[-1].source_cells == (
+        "3200/pcb_pollution_2",
+        "4000/pcb_pollution_2",
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    (
+        (InsulationType.FUNCTIONAL, "5.0"),
+        (InsulationType.BASIC, "5.0"),
+        (InsulationType.SUPPLEMENTARY, "5.0"),
+        (InsulationType.REINFORCED, "10.0"),
+    ),
+)
+def test_f5_reinforced_doubles_after_table_selection(
+    kind: InsulationType,
+    expected: str,
+    case_factory,
+    semantic_annex_g_rules: RulePackage,
+) -> None:
+    candidate = select_f5_pcb_creepage(
+        case_factory(
+            kind=kind,
+            construction_type=ConstructionType.PRINTED_WIRING,
+            long_term_rms_v=PairVoltage.applicable(Decimal(1000)),
+        ),
+        semantic_annex_g_rules,
+    )
+
+    assert candidate.distance_mm == Decimal(expected)
+    assert (candidate.steps[-1].operation == "reinforced_creepage_double") is (
+        kind is InsulationType.REINFORCED
+    )
+
+
+@pytest.mark.parametrize(
+    "updates",
+    (
+        {"construction_type": ConstructionType.OTHER},
+        {"pollution_degree": 3, "construction_type": ConstructionType.PRINTED_WIRING},
+        {"material": "unknown", "construction_type": ConstructionType.PRINTED_WIRING},
+        {
+            "assumptions": ("coating_or_potting",),
+            "construction_type": ConstructionType.PRINTED_WIRING,
+        },
+        {
+            "assumptions": ("rib_reduction",),
+            "construction_type": ConstructionType.PRINTED_WIRING,
+        },
+        {
+            "assumptions": ("split_material_or_pollution",),
+            "construction_type": ConstructionType.PRINTED_WIRING,
+        },
+        {
+            "assumptions": ("floating_conductive_part",),
+            "construction_type": ConstructionType.PRINTED_WIRING,
+        },
+        {
+            "assumptions": ("short_duration_reduction",),
+            "construction_type": ConstructionType.PRINTED_WIRING,
+        },
+    ),
+)
+def test_unsupported_pcb_creepage_cases_block_explicitly(
+    updates: dict[str, object],
+    case_factory,
+    semantic_annex_g_rules: RulePackage,
+) -> None:
+    with pytest.raises(UnsupportedCaseError):
+        select_f5_pcb_creepage(case_factory(**updates), semantic_annex_g_rules)
+
+
+@pytest.mark.parametrize("voltage", ("9", "4001"))
+def test_f5_voltage_outside_joined_table_blocks(
+    voltage: str,
+    case_factory,
+    semantic_annex_g_rules: RulePackage,
+) -> None:
+    with pytest.raises(CalculationRangeError):
+        select_f5_pcb_creepage(
+            case_factory(
+                construction_type=ConstructionType.PRINTED_WIRING,
+                long_term_rms_v=PairVoltage.applicable(Decimal(voltage)),
+            ),
+            semantic_annex_g_rules,
+        )

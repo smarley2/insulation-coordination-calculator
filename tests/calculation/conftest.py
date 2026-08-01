@@ -192,6 +192,58 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
         interpolation="linear",
         source=f9_source,
     )
+    f5_source = source.model_copy(update={"table": "F.5"})
+    f5_rows = tuple(map(Decimal, ("10", "100", "1000", "3200", "4000")))
+    f5_values = (
+        ("0.025", "0.040"),
+        ("0.100", "0.160"),
+        ("3.2", "5.0"),
+        ("12.5", "16.0"),
+        ("16.0", "20.0"),
+    )
+    f5 = Table(
+        id="iec60664-1-f5",
+        unit="mm",
+        row_axis=TableAxis(
+            id="rms_voltage_v",
+            unit="V",
+            values=f5_rows,
+            labels=tuple(str(value) for value in f5_rows),
+        ),
+        column_axis=TableAxis(
+            id="pcb_pollution_branch",
+            unit="1",
+            values=(Decimal(1), Decimal(2)),
+            labels=("pcb_pollution_1", "pcb_pollution_2"),
+        ),
+        cells=tuple(
+            TableCell(
+                row=row,
+                column=column,
+                value=Decimal(f5_values[row][column]),
+                unit="mm",
+                source=f5_source.model_copy(
+                    update={
+                        "row": str(f5_rows[row]),
+                        "column": f"pcb_pollution_{column + 1}",
+                    }
+                ),
+            )
+            for row in range(len(f5_rows))
+            for column in range(2)
+        ),
+        supported_ranges=(
+            SupportedRange(
+                variable="rms_voltage_v",
+                minimum=f5_rows[0],
+                maximum=f5_rows[-1],
+                unit="V",
+                source=f5_source,
+            ),
+        ),
+        interpolation="linear",
+        source=f5_source,
+    )
 
     def formula(formula_id: str, table: Table, row_mode: str) -> Formula:
         expression = TableSelect(
@@ -221,14 +273,15 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
     formulas = (
         formula("iec60664-1:f2-clearance", f2, "ceiling"),
         formula("iec60664-1:f8-clearance", f8, "ceiling"),
+        formula("iec60664-1:f5-pcb-creepage", f5, "linear"),
         formula("iec60664-1:a2-altitude-factor", a2, "linear"),
     )
     mappings = tuple(
         CompatibilityMapping(
-            id=f"annex-g-{kind}-{candidate}-{field}",
+            id=f"annex-g-{kind}-{candidate}-{field}-pd{pollution}",
             source_rule_id=(
                 f"iec60664-1:{'5.2.4' if kind == 'functional' else '5.2.5'}:"
-                f"{kind}_clearance:candidate={candidate}:field={field}:pollution=2"
+                f"{kind}_clearance:candidate={candidate}:field={field}:pollution={pollution}"
             ),
             target_rule_id=(
                 "iec60664-1:f2-clearance" if candidate == "impulse" else "iec60664-1:f8-clearance"
@@ -239,6 +292,7 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
         for kind in ("functional", "basic", "supplementary", "reinforced")
         for candidate in ("impulse", "periodic")
         for field in ("inhomogeneous", "homogeneous", "approximately_homogeneous")
+        for pollution in (1, 2)
     )
     retained_tables = tuple(
         item for item in base.tables if not item.id.startswith("synthetic-clearance-")
@@ -249,11 +303,25 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
     retained_mappings = tuple(item for item in base.mappings if "_clearance_" not in item.id)
     candidate = base.model_copy(
         update={
-            "tables": (*retained_tables, f2, f8, f9, a2),
+            "tables": (*retained_tables, f2, f5, f8, f9, a2),
             "formulas": (*retained_formulas, *formulas),
             "mappings": (
                 *retained_mappings,
                 *mappings,
+                *(
+                    CompatibilityMapping(
+                        id=f"annex-h-{kind}-pd{pollution}",
+                        source_rule_id=(
+                            f"iec60664-1:{'5.3.4' if kind == 'functional' else '5.3.5'}:"
+                            f"{kind}_creepage:construction=printed_wiring:pollution={pollution}"
+                        ),
+                        target_rule_id="iec60664-1:f5-pcb-creepage",
+                        approved=True,
+                        source=f5_source,
+                    )
+                    for kind in ("functional", "basic", "supplementary", "reinforced")
+                    for pollution in (1, 2)
+                ),
                 CompatibilityMapping(
                     id="annex-a2-altitude",
                     source_rule_id="iec60664-1:altitude_correction:base=2000m",
@@ -318,6 +386,69 @@ def semantic_part4_rules(
         ),
         interpolation="none",
         source=table_source,
+    )
+    table_2_source = source.model_copy(update={"table": "2", "figure": None})
+    table_2_rows = tuple(map(Decimal, ("0.1", "0.3", "0.5", "0.8", "1.0")))
+    table_2_frequencies = tuple(
+        map(Decimal, ("100000", "200000", "400000", "700000", "1000000", "2000000", "3000000"))
+    )
+    table_2 = Table(
+        id="iec60664-4-table-2",
+        unit="mm",
+        row_axis=TableAxis(
+            id="peak_voltage_kv",
+            unit="kV",
+            values=table_2_rows,
+            labels=tuple(str(value) for value in table_2_rows),
+        ),
+        column_axis=TableAxis(
+            id="frequency_hz",
+            unit="Hz",
+            values=table_2_frequencies,
+            labels=(
+                "30-100 kHz",
+                "200 kHz",
+                "400 kHz",
+                "700 kHz",
+                "1 MHz",
+                "2 MHz",
+                "3 MHz",
+            ),
+        ),
+        cells=tuple(
+            TableCell(
+                row=row,
+                column=column,
+                value=Decimal(row + 1) * Decimal(column + 1),
+                unit="mm",
+                source=table_2_source.model_copy(
+                    update={
+                        "row": str(table_2_rows[row]),
+                        "column": str(table_2_frequencies[column]),
+                    }
+                ),
+            )
+            for row in range(len(table_2_rows))
+            for column in range(len(table_2_frequencies))
+        ),
+        supported_ranges=(
+            SupportedRange(
+                variable="peak_voltage_kv",
+                minimum=table_2_rows[0],
+                maximum=table_2_rows[-1],
+                unit="kV",
+                source=table_2_source,
+            ),
+            SupportedRange(
+                variable="frequency_hz",
+                minimum=table_2_frequencies[0],
+                maximum=table_2_frequencies[-1],
+                unit="Hz",
+                source=table_2_source,
+            ),
+        ),
+        interpolation="linear",
+        source=table_2_source,
     )
 
     def scalar_formula(
@@ -426,22 +557,45 @@ def semantic_part4_rules(
         ),
         source=table_source,
     )
+    table_2_formula = Formula(
+        id="iec60664-4:hf-creepage-table",
+        expression=TableSelect(
+            table_id=table_2.id,
+            row=Variable(name="peak_voltage_kv"),
+            column=Variable(name="frequency_hz"),
+            row_mode="ceiling",
+            column_mode="linear",
+        ),
+        unit="mm",
+        parameter_sets=(
+            ParameterSet(
+                id="part4-table-2-parameters",
+                parameters=(
+                    Parameter(name="peak_voltage_kv", unit="kV"),
+                    Parameter(name="frequency_hz", unit="Hz"),
+                ),
+                source=table_2_source,
+            ),
+        ),
+        source=table_2_source,
+    )
     mappings = tuple(
         CompatibilityMapping(
-            id=f"part4-clearance-{kind}",
+            id=f"part4-clearance-{kind}-pd{pollution}",
             source_rule_id=(
                 f"iec60664-4:clearance:{kind}:stress=periodic_peak_v:"
-                "frequency=frequency_hz:pollution=2"
+                f"frequency=frequency_hz:pollution={pollution}"
             ),
             target_rule_id=clearance.id,
             approved=True,
             source=table_source,
         )
         for kind in ("functional", "basic", "supplementary", "reinforced")
+        for pollution in (1, 2)
     )
     candidate = semantic_annex_g_rules.model_copy(
         update={
-            "tables": (*semantic_annex_g_rules.tables, table_1),
+            "tables": (*semantic_annex_g_rules.tables, table_1, table_2),
             "formulas": (
                 *semantic_annex_g_rules.formulas,
                 critical,
@@ -449,8 +603,26 @@ def semantic_part4_rules(
                 minimum,
                 radius,
                 clearance,
+                table_2_formula,
             ),
-            "mappings": (*semantic_annex_g_rules.mappings, *mappings),
+            "mappings": (
+                *semantic_annex_g_rules.mappings,
+                *mappings,
+                *(
+                    CompatibilityMapping(
+                        id=f"part4-creepage-{kind}-pd{pollution}",
+                        source_rule_id=(
+                            f"iec60664-4:creepage:{kind}:stress=periodic_peak_v:"
+                            f"frequency=frequency_hz:construction=printed_wiring:pollution={pollution}"
+                        ),
+                        target_rule_id=table_2_formula.id,
+                        approved=True,
+                        source=table_2_source,
+                    )
+                    for kind in ("functional", "basic", "supplementary", "reinforced")
+                    for pollution in (1, 2)
+                ),
+            ),
             "checksums": {},
             "package_sha256": None,
         }

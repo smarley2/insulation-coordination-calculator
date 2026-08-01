@@ -77,34 +77,37 @@ def _mapping_specs() -> tuple[MappingAuditSpec, ...]:
         ),
     ]
     for kind in ("functional", "basic", "supplementary", "reinforced"):
-        mappings.extend(
-            (
+        for pollution in (1, 2):
+            mappings.append(
                 MappingAuditSpec(
                     id=f"iec60664-4-map-{len(mappings) + 1:02d}",
                     semantic_route=(
                         f"iec60664-4:clearance:{kind}:stress=periodic_peak_v:"
-                        "frequency=frequency_hz:pollution=2"
+                        f"frequency=frequency_hz:pollution={pollution}"
                     ),
                     target_rule_id="iec60664-4:hf-clearance-table",
                     family="part4-clearance",
                     page_number=29,
                     clause="5",
                     table="1",
-                ),
+                )
+            )
+        for pollution in (1, 2):
+            mappings.append(
                 MappingAuditSpec(
-                    id=f"iec60664-4-map-{len(mappings) + 2:02d}",
+                    id=f"iec60664-4-map-{len(mappings) + 1:02d}",
                     semantic_route=(
                         f"iec60664-4:creepage:{kind}:stress=periodic_peak_v:"
-                        "frequency=frequency_hz:construction=printed_wiring:pollution=2"
+                        "frequency=frequency_hz:construction=printed_wiring:"
+                        f"pollution={pollution}"
                     ),
                     target_rule_id="iec60664-4:hf-creepage-table",
                     family="part4-creepage",
                     page_number=35,
                     clause="5",
                     table="2",
-                ),
+                )
             )
-        )
     return tuple(mappings)
 
 

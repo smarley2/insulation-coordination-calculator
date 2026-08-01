@@ -5,6 +5,7 @@ from itertools import pairwise
 
 from insulation_coordination.calculation.clearance import (
     CalculationError,
+    CalculationRangeError,
     CandidateOmission,
     DistanceCandidate,
     RequiredStressError,
@@ -13,6 +14,7 @@ from insulation_coordination.calculation.clearance import (
     _select_formula,
     select_f8_periodic_clearance,
 )
+from insulation_coordination.calculation.creepage import _validate_pcb_scope
 from insulation_coordination.domain.enums import Applicability, FieldCondition, InsulationType
 from insulation_coordination.domain.project import EffectiveCase, FrozenModel
 from insulation_coordination.domain.quantities import DecimalValue
@@ -89,6 +91,79 @@ class FrequencyFactor(FrozenModel):
     critical_frequency_hz: DecimalValue
     minimum_frequency_hz: DecimalValue
     steps: tuple[TraceStep, ...] = ()
+
+
+def select_part4_table2_creepage(
+    effective: EffectiveCase,
+    rules: RulePackage,
+) -> DistanceCandidate | None:
+    """Select IEC 60664-4 Table 2 and apply its pollution multiplier."""
+    frequency = effective.frequency_hz.value
+    if frequency is None:
+        raise RequiredStressError("frequency_hz is required for Part 4 creepage")
+    if frequency <= Decimal(30000):
+        return None
+    _require_valid_rule_package(rules)
+    _validate_pcb_scope(effective)
+    kind = effective.insulation_type.value
+    pollution = effective.pollution_degree.value
+    if kind is None or pollution is None:
+        raise RequiredStressError("insulation_type and pollution_degree are required")
+    periodic_peak = _periodic_peak(effective)
+    route = _creepage_route(kind, effective)
+    mapping, formula = _select_formula(rules, route, route_label="part4_frequency_creepage")
+    if not isinstance(formula.expression, TableSelect):
+        raise CalculationError("Table 2 creepage formula must use semantic table selection")
+    table = next(
+        (item for item in rules.tables if item.id == formula.expression.table_id),
+        None,
+    )
+    if table is None:
+        raise CalculationError("Table 2 creepage formula references a missing table")
+    selected_frequency = max(frequency, table.column_axis.values[0])
+    try:
+        evaluated = evaluate_formula(
+            formula,
+            {
+                "peak_voltage_kv": Quantity(value=periodic_peak.value / Decimal(1000), unit="kV"),
+                "frequency_hz": Quantity(value=selected_frequency, unit="Hz"),
+            },
+            {item.id: item for item in rules.tables},
+        )
+    except EvaluationError as error:
+        message = f"Table 2 creepage selection failed: {error}"
+        if "outside" in str(error) or "has no cell" in str(error):
+            raise CalculationRangeError(message) from error
+        raise CalculationError(message) from error
+    multiplier = Decimal(1) if pollution == 1 else Decimal("1.2")
+    distance = evaluated.value * multiplier
+    multiplier_step = TraceStep(
+        semantic_rule_id=f"iec60664-4:table-2:pollution-degree-{pollution}-factor",
+        operation="pollution_multiplier",
+        symbolic="d=d_{Table2}k_{pollution}",
+        substituted=f"{evaluated.value} mm * {multiplier} = {distance} mm",
+        inputs=(
+            Quantity(value=evaluated.value, unit="mm"),
+            Quantity(value=multiplier, unit="1"),
+        ),
+        source_reference=table.source,
+        output=Quantity(value=distance, unit="mm"),
+        unrounded_value=distance,
+        reason=f"Table 2 pollution degree {pollution} multiplier applied",
+    )
+    steps = (*periodic_peak.steps, *evaluated.steps, multiplier_step)
+    return DistanceCandidate(
+        candidate_id="part4_frequency_creepage",
+        stress_field="periodic_peak_v",
+        stress=Quantity(value=periodic_peak.value, unit="V"),
+        distance_mm=distance,
+        semantic_rule_id=route,
+        mapping_id=mapping.id,
+        formula_id=formula.id,
+        selection_mode=f"{formula.expression.row_mode}/{formula.expression.column_mode}",
+        steps=steps,
+        reason=multiplier_step.reason,
+    )
 
 
 def calculate_critical_frequency(
@@ -189,18 +264,21 @@ def _calculate_high_frequency_candidates(
         rules,
         periodic_peak=periodic_peak,
     )
-    creepage = _optional_distance_candidate(
-        candidate_id="part4_deterioration",
-        stress_field="periodic_peak_v",
-        stress=periodic_peak.value,
-        semantic_rule_id=_creepage_route(kind, effective),
-        variables={
-            "periodic_peak_v": Quantity(value=periodic_peak.value, unit="V"),
-            "frequency_hz": Quantity(value=frequency, unit="Hz"),
-        },
-        rules=rules,
-        prefix_steps=periodic_peak.steps,
-    )
+    if any(formula.id == "iec60664-4:hf-creepage-table" for formula in rules.formulas):
+        creepage = select_part4_table2_creepage(effective, rules)
+    else:
+        creepage = _optional_distance_candidate(
+            candidate_id="part4_deterioration",
+            stress_field="periodic_peak_v",
+            stress=periodic_peak.value,
+            semantic_rule_id=_creepage_route(kind, effective),
+            variables={
+                "periodic_peak_v": Quantity(value=periodic_peak.value, unit="V"),
+                "frequency_hz": Quantity(value=frequency, unit="Hz"),
+            },
+            rules=rules,
+            prefix_steps=periodic_peak.steps,
+        )
     return HfCandidates(
         clearance_candidates=(assessment.candidate,),
         creepage_candidates=(() if creepage is None else (creepage,)),
@@ -656,16 +734,14 @@ def _clearance_route(
 def _creepage_route(kind: InsulationType, effective: EffectiveCase) -> str:
     construction = effective.construction_type.value
     pollution = effective.pollution_degree.value
-    material = effective.cti_or_material_group.value
-    if construction is None or pollution is None or material is None:
+    if construction is None or pollution is None:
         raise RequiredStressError(
-            "construction_type, pollution_degree, and cti_or_material_group "
-            "are required for Part 4 creepage"
+            "construction_type and pollution_degree are required for Part 4 creepage"
         )
     return (
         f"iec60664-4:creepage:{kind.value}:stress=periodic_peak_v:"
         f"frequency=frequency_hz:construction={construction.value}:"
-        f"pollution={pollution}:material={material}"
+        f"pollution={pollution}"
     )
 
 

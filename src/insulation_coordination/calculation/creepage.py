@@ -4,19 +4,21 @@ from decimal import Decimal
 
 from insulation_coordination.calculation.clearance import (
     CalculationError,
+    CalculationRangeError,
     CandidateCalculation,
     CandidateOmission,
     DistanceCandidate,
     RequiredStressError,
+    UnsupportedCaseError,
     _evaluate_candidate,
     _require_valid_rule_package,
     _required,
     _select_formula,
 )
-from insulation_coordination.domain.enums import Applicability, InsulationType
+from insulation_coordination.domain.enums import Applicability, ConstructionType, InsulationType
 from insulation_coordination.domain.project import EffectiveCase
-from insulation_coordination.domain.rules import RulePackage, Variable
-from insulation_coordination.domain.trace import Quantity
+from insulation_coordination.domain.rules import RulePackage, TableSelect, Variable
+from insulation_coordination.domain.trace import Quantity, TraceStep
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_formula
 
 
@@ -57,6 +59,10 @@ def _calculate_creepage(
     if tracking.value is None:
         raise RequiredStressError("long_term_rms_v is applicable but has no canonical V value")
 
+    if any(formula.id == "iec60664-1:f5-pcb-creepage" for formula in rules.formulas):
+        calculated = select_f5_pcb_creepage(effective, rules)
+        return CandidateCalculation(candidates=(calculated, floor), omissions=())
+
     kind = _required(effective.insulation_type.value, "insulation_type")
     construction = _required(effective.construction_type.value, "construction_type")
     pollution = _required(effective.pollution_degree.value, "pollution_degree")
@@ -84,6 +90,99 @@ def _calculate_creepage(
         rules=rules,
     )
     return CandidateCalculation(candidates=(calculated, floor), omissions=())
+
+
+def select_f5_pcb_creepage(
+    effective: EffectiveCase,
+    rules: RulePackage,
+) -> DistanceCandidate:
+    """Select joined IEC 60664-1 F.5 printed-wiring creepage data."""
+    _require_valid_rule_package(rules)
+    _validate_pcb_scope(effective)
+    tracking = effective.voltages.long_term_rms_v
+    if tracking.applicability is not Applicability.APPLICABLE or tracking.value is None:
+        raise RequiredStressError("long_term_rms_v must be applicable for F.5 selection")
+    kind = _required(effective.insulation_type.value, "insulation_type")
+    pollution = _required(effective.pollution_degree.value, "pollution_degree")
+    clause = "5.3.4" if kind is InsulationType.FUNCTIONAL else "5.3.5"
+    semantic_rule_id = (
+        f"iec60664-1:{clause}:{kind.value}_creepage:"
+        f"construction=printed_wiring:pollution={pollution}"
+    )
+    mapping, formula = _select_formula(
+        rules,
+        semantic_rule_id,
+        route_label=f"{kind.value}_pcb_creepage",
+    )
+    if not isinstance(formula.expression, TableSelect):
+        raise CalculationError("F.5 creepage formula must use semantic table selection")
+    table = next(
+        (item for item in rules.tables if item.id == formula.expression.table_id),
+        None,
+    )
+    if table is None:
+        raise CalculationError("F.5 creepage formula references a missing table")
+    branch_label = f"pcb_pollution_{pollution}"
+    try:
+        column = table.column_axis.labels.index(branch_label)
+        evaluated = evaluate_formula(
+            formula,
+            {
+                "rms_voltage_v": Quantity(value=tracking.value, unit="V"),
+                "pcb_pollution_branch": Quantity(value=table.column_axis.values[column], unit="1"),
+            },
+            {item.id: item for item in rules.tables},
+        )
+    except (ValueError, EvaluationError) as error:
+        message = f"F.5 PCB creepage selection failed: {error}"
+        if "outside" in str(error) or "has no cell" in str(error):
+            raise CalculationRangeError(message) from error
+        raise CalculationError(message) from error
+    distance = evaluated.value
+    steps: tuple[TraceStep, ...] = evaluated.steps
+    if kind is InsulationType.REINFORCED:
+        distance *= Decimal(2)
+        doubled = TraceStep(
+            semantic_rule_id="iec60664-1:5.3.5:reinforced-creepage-double",
+            operation="reinforced_creepage_double",
+            symbolic="d_{reinforced}=2d_{F5}",
+            substituted=f"2 * {evaluated.value} mm = {distance} mm",
+            inputs=(Quantity(value=evaluated.value, unit="mm"),),
+            source_reference=mapping.source,
+            output=Quantity(value=distance, unit="mm"),
+            unrounded_value=distance,
+            reason="reinforced insulation uses twice the F.5 creepage distance",
+        )
+        steps = (*steps, doubled)
+    return DistanceCandidate(
+        candidate_id="long_term_rms_tracking",
+        stress_field="long_term_rms_v",
+        stress=Quantity(value=tracking.value, unit="V"),
+        distance_mm=distance,
+        semantic_rule_id=semantic_rule_id,
+        mapping_id=mapping.id,
+        formula_id=formula.id,
+        selection_mode=f"{formula.expression.row_mode}/{formula.expression.column_mode}",
+        branch_label=branch_label,
+        steps=steps,
+        reason=steps[-1].reason,
+    )
+
+
+def _validate_pcb_scope(effective: EffectiveCase) -> None:
+    if effective.construction_type.value is not ConstructionType.PRINTED_WIRING:
+        raise UnsupportedCaseError("Annex H engine supports printed-wiring construction only")
+    pollution = effective.pollution_degree.value
+    if pollution not in (1, 2):
+        raise UnsupportedCaseError("PCB F.5 supports pollution degree 1 or 2 only")
+    material = effective.cti_or_material_group.value
+    if material not in {"I", "II", "III", "IIIa", "IIIb"}:
+        raise UnsupportedCaseError(f"unsupported CTI/material classification: {material!r}")
+    assumptions = effective.conventional_construction_assumptions.value or ()
+    if assumptions:
+        raise UnsupportedCaseError(
+            "unsupported PCB construction condition: " + ", ".join(assumptions)
+        )
 
 
 def _clearance_floor_candidate(final_clearance_mm: Decimal) -> DistanceCandidate:

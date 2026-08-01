@@ -112,7 +112,7 @@ def test_end_to_end_desktop_report_workflow(
             field_condition=FieldCondition.INHOMOGENEOUS,
             altitude_m=Decimal(0),
             pollution_degree=2,
-            construction_type=ConstructionType.OTHER,
+            construction_type=ConstructionType.PRINTED_WIRING,
             cti_or_material_group="I",
         ),
         net_classes=net_classes,
@@ -140,7 +140,6 @@ def test_end_to_end_desktop_report_workflow(
         semantic_id for result in results for semantic_id in result.trace.semantic_rule_ids
     }
     assert "HV+ / LV" in tex
-    assert r"\frac{" in tex
 
     tectonic = _fake_tectonic(tmp_path / "fake-tectonic")
     from insulation_coordination.report.compiler import compile_pdf

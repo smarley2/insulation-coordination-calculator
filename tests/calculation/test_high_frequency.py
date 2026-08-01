@@ -3,13 +3,17 @@ from uuid import UUID
 
 import pytest
 
-from insulation_coordination.calculation.clearance import calculate_clearance_candidates
+from insulation_coordination.calculation.clearance import (
+    CalculationRangeError,
+    calculate_clearance_candidates,
+)
 from insulation_coordination.calculation.engine import RequiredStressError, calculate_pair
 from insulation_coordination.calculation.high_frequency import (
     HighFrequencyCalculationError,
     calculate_critical_frequency,
     calculate_high_frequency_candidates,
     select_frequency_factor,
+    select_part4_table2_creepage,
 )
 from insulation_coordination.domain.enums import (
     ConstructionType,
@@ -35,7 +39,9 @@ def case_factory():
         field_condition: FieldCondition = FieldCondition.INHOMOGENEOUS,
         electrode_radius_mm: str | None = None,
         altitude_m: str = "0",
-        construction_type: ConstructionType = ConstructionType.OTHER,
+        construction_type: ConstructionType = ConstructionType.PRINTED_WIRING,
+        pollution_degree: int = 2,
+        long_term_rms_v: PairVoltage | None = None,
         steady_state_peak_v: PairVoltage | None = None,
         temporary_overvoltage_peak_v: PairVoltage | None = None,
         recurring_peak_v: PairVoltage | None = None,
@@ -46,7 +52,7 @@ def case_factory():
             net_a=UUID(int=1),
             net_b=UUID(int=2),
             voltages=PairVoltages(
-                long_term_rms_v=PairVoltage.applicable(Decimal(500)),
+                long_term_rms_v=long_term_rms_v or PairVoltage.applicable(Decimal(500)),
                 steady_state_peak_v=steady_state_peak_v or PairVoltage.applicable(Decimal(300)),
                 recurring_peak_v=recurring_peak_v or PairVoltage.applicable(Decimal(400)),
                 temporary_overvoltage_peak_v=temporary_overvoltage_peak_v
@@ -73,7 +79,10 @@ def case_factory():
                 value=Decimal(altitude_m),
                 provenance=Provenance.PROJECT_DEFAULT,
             ),
-            pollution_degree=EffectiveValue(value=2, provenance=Provenance.PROJECT_DEFAULT),
+            pollution_degree=EffectiveValue(
+                value=pollution_degree,
+                provenance=Provenance.PROJECT_DEFAULT,
+            ),
             construction_type=EffectiveValue(
                 value=construction_type,
                 provenance=Provenance.PROJECT_DEFAULT,
@@ -403,3 +412,90 @@ def test_homogeneous_case_b_requires_source_backed_withstand_test(
 
     assert requirement.source_reference is not None
     assert requirement.source_reference.table == "F.8"
+
+
+def test_table2_is_inactive_at_30_khz_and_clamps_first_frequency_band(
+    case_factory,
+    semantic_part4_rules: RulePackage,
+) -> None:
+    boundary = case_factory(
+        frequency_hz="30000",
+        construction_type=ConstructionType.PRINTED_WIRING,
+    )
+    active = case_factory(
+        frequency_hz="60000",
+        construction_type=ConstructionType.PRINTED_WIRING,
+    )
+
+    assert select_part4_table2_creepage(boundary, semantic_part4_rules) is None
+    candidate = select_part4_table2_creepage(active, semantic_part4_rules)
+    assert candidate is not None
+    assert candidate.steps[-2].source_cells == ("0.8/30-100 kHz",)
+
+
+@pytest.mark.parametrize(
+    ("frequency_hz", "pollution", "expected"),
+    (("200000", 1, "6"), ("200000", 2, "7.2"), ("300000", 2, "9.0")),
+)
+def test_table2_frequency_policy_and_pollution_multiplier(
+    frequency_hz: str,
+    pollution: int,
+    expected: str,
+    case_factory,
+    semantic_part4_rules: RulePackage,
+) -> None:
+    candidate = select_part4_table2_creepage(
+        case_factory(
+            frequency_hz=frequency_hz,
+            construction_type=ConstructionType.PRINTED_WIRING,
+            pollution_degree=pollution,
+            temporary_overvoltage_peak_v=PairVoltage.applicable(Decimal(500)),
+            recurring_peak_v=PairVoltage.not_applicable("No recurring peak."),
+        ),
+        semantic_part4_rules,
+    )
+
+    assert candidate is not None
+    assert candidate.distance_mm == Decimal(expected)
+    assert candidate.selection_mode == "ceiling/linear"
+
+
+@pytest.mark.parametrize(
+    ("frequency_hz", "peak_v"),
+    (("3000001", "500"), ("200000", "1001")),
+)
+def test_table2_supported_range_blocks(
+    frequency_hz: str,
+    peak_v: str,
+    case_factory,
+    semantic_part4_rules: RulePackage,
+) -> None:
+    with pytest.raises(CalculationRangeError):
+        select_part4_table2_creepage(
+            case_factory(
+                frequency_hz=frequency_hz,
+                construction_type=ConstructionType.PRINTED_WIRING,
+                temporary_overvoltage_peak_v=PairVoltage.applicable(Decimal(peak_v)),
+                recurring_peak_v=PairVoltage.not_applicable("No recurring peak."),
+            ),
+            semantic_part4_rules,
+        )
+
+
+def test_table2_can_govern_over_f5_and_clearance_floor(
+    case_factory,
+    semantic_part4_rules: RulePackage,
+) -> None:
+    result = calculate_pair(
+        case_factory(
+            frequency_hz="700000",
+            construction_type=ConstructionType.PRINTED_WIRING,
+            long_term_rms_v=PairVoltage.applicable(Decimal(100)),
+            temporary_overvoltage_peak_v=PairVoltage.applicable(Decimal(800)),
+            recurring_peak_v=PairVoltage.not_applicable("No recurring peak."),
+        ),
+        semantic_part4_rules,
+    )
+
+    assert result.trace.governing_creepage_candidate_id == "part4_frequency_creepage"
+    assert result.creepage_mm == Decimal("19.2")
