@@ -32,6 +32,7 @@ from insulation_coordination.domain.rules import (
 )
 from insulation_coordination.rules.archive import _canonical_json
 from insulation_coordination.rules.importer.identify import (
+    EquationAuditSpec,
     FormulaAuditSpec,
     MappingAuditSpec,
     StandardIdentity,
@@ -44,6 +45,8 @@ IMPORTER_VERSION = "iec-pdf-1"
 _REQUIRED_RECIPES = {"iec60664-1-2020", "iec60664-4-2005"}
 
 __all__ = [
+    "EquationAuditSpec",
+    "ExtractedEquation",
     "ExtractionError",
     "FormulaAuditSpec",
     "ImportReviewItem",
@@ -51,9 +54,11 @@ __all__ = [
     "MappingAuditSpec",
     "RawGrid",
     "RawGridCell",
+    "RawGridSegment",
     "StandardRecipe",
     "TableAuditSpec",
     "extract_draft",
+    "parse_data_cell",
 ]
 
 
@@ -86,14 +91,46 @@ class ImportReviewResolution(FrozenModel):
     notes: NotesText
 
 
+class ParsedDataCell(FrozenModel):
+    value: Decimal | None = None
+    qualifier: str | None = Field(default=None, max_length=8)
+    suffix: str | None = Field(default=None, max_length=32)
+    footnotes: tuple[str, ...] = ()
+    parse_status: Literal[
+        "blank",
+        "numeric",
+        "ambiguous_numeric",
+        "non_scalar",
+        "range",
+    ]
+
+
+class RawGridSegment(FrozenModel):
+    page_number: int = Field(ge=1)
+    row_start: int = Field(ge=0)
+    row_count: int = Field(ge=1)
+    source: SourceReference
+
+
 class RawGridCell(FrozenModel):
     row: int = Field(ge=0)
     column: int = Field(ge=0)
     raw_text: str = Field(max_length=2_000)
+    role: Literal["header", "data", "blank", "note", "footnote"]
+    logical_row: int | None = Field(default=None, ge=0)
+    logical_column: str | None = None
     value: Decimal | None = None
     qualifier: str | None = Field(default=None, max_length=8)
     suffix: str | None = Field(default=None, max_length=32)
-    parse_status: Literal["blank", "text", "numeric", "ambiguous_numeric"]
+    footnotes: tuple[str, ...] = ()
+    parse_status: Literal[
+        "blank",
+        "text",
+        "numeric",
+        "ambiguous_numeric",
+        "non_scalar",
+        "range",
+    ]
     source: SourceReference
 
 
@@ -102,6 +139,7 @@ class RawGrid(FrozenModel):
     rows: int = Field(ge=1)
     columns: int = Field(ge=1)
     target_unit: str
+    segments: tuple[RawGridSegment, ...] = Field(min_length=1)
     cells: tuple[RawGridCell, ...]
     source: SourceReference
 
@@ -115,13 +153,38 @@ class RawGrid(FrozenModel):
             for cell in self.cells
         ):
             raise ValueError("raw grid cell coordinate is outside declared dimensions")
+        if tuple(segment.row_start for segment in self.segments) != tuple(
+            sum(item.row_count for item in self.segments[:index])
+            for index in range(len(self.segments))
+        ) or sum(segment.row_count for segment in self.segments) != self.rows:
+            raise ValueError("raw grid segments must cover rows once in order")
+        if any(
+            (cell.logical_row is None or cell.logical_column is None)
+            if cell.role == "data"
+            else (cell.logical_row is not None or cell.logical_column is not None)
+            for cell in self.cells
+        ):
+            raise ValueError("raw grid logical coordinates must belong only to data cells")
         return self
+
+
+class ExtractedEquation(FrozenModel):
+    id: str
+    raw_text: str = Field(max_length=4_000)
+    rendered: str = Field(max_length=4_000)
+    variables: tuple[str, ...]
+    literals: tuple[Decimal, ...]
+    unit: str
+    applicability: str = Field(max_length=1_000)
+    parse_status: Literal["parsed", "review_required"]
+    source: SourceReference
 
 
 class ImportedRuleDraft(DraftRulePackage):
     review_items: tuple[ImportReviewItem, ...] = ()
     review_resolutions: tuple[ImportReviewResolution, ...] = ()
     raw_grids: tuple[RawGrid, ...] = ()
+    extracted_equations: tuple[ExtractedEquation, ...] = ()
     source_identities: tuple[StandardIdentity, ...]
 
 
@@ -134,6 +197,7 @@ def _content_digest(
     source_documents: tuple[SourceDocument, ...] = (),
     source_identities: tuple[StandardIdentity, ...] = (),
     review_resolutions: tuple[ImportReviewResolution, ...] = (),
+    extracted_equations: tuple[ExtractedEquation, ...] = (),
 ) -> str:
     payload = {
         "tables": [item.model_dump(mode="json") for item in tables],
@@ -144,6 +208,9 @@ def _content_digest(
             item.model_dump(mode="json") for item in review_resolutions
         ],
         "raw_grids": [item.model_dump(mode="json") for item in raw_grids],
+        "extracted_equations": [
+            item.model_dump(mode="json") for item in extracted_equations
+        ],
         "source_documents": [
             item.model_dump(mode="json") for item in source_documents
         ],
@@ -164,7 +231,14 @@ def _recipe(identity: StandardIdentity) -> StandardRecipe:
 
 
 _NUMERIC_CELL = re.compile(
-    r"^\s*(<=|>=|<|>|≤|≥)?\s*([0-9]+(?:[.,][0-9]+)?)\s*(\S*)\s*$"
+    r"^\s*(<=|>=|<|>|≤|≥)?\s*"
+    r"((?:[0-9]{1,3}(?:[ \u00a0][0-9]{3})+|[0-9]+)(?:[.,][0-9]+)?)"
+    r"\s*(.*?)\s*$"
+)
+_RANGE_CELL = re.compile(
+    r"^\s*[0-9]+(?:[.,][0-9]+)?\s*(?:to|[-–—])\s*"
+    r"[0-9]+(?:[.,][0-9]+)?\s*$",
+    re.IGNORECASE,
 )
 
 
@@ -178,32 +252,39 @@ def _numeric_token(
         return None
     qualifier = match.group(1) or None
     suffix = match.group(3) or None
-    return Decimal(match.group(2).replace(",", ".")), qualifier, suffix
+    normalized = re.sub(r"[ \u00a0]", "", match.group(2)).replace(",", ".")
+    return Decimal(normalized), qualifier, suffix
 
 
-def _parsed_cell(
+def parse_data_cell(
     value: str | None,
     *,
-    allowed_suffixes: tuple[str, ...],
-) -> tuple[str, Decimal | None, str | None, str | None, str]:
+    allowed_footnotes: tuple[str, ...] = (),
+) -> ParsedDataCell:
     raw_text = "" if value is None else value
     if len(raw_text) > 2_000:
         raise ExtractionError("raw table cell exceeds the fidelity size limit")
     if not raw_text.strip():
-        return raw_text, None, None, None, "blank"
+        return ParsedDataCell(parse_status="blank")
+    if "\n" in raw_text and len(tuple(line for line in raw_text.splitlines() if line.strip())) > 1:
+        return ParsedDataCell(parse_status="non_scalar")
+    if _RANGE_CELL.fullmatch(raw_text):
+        return ParsedDataCell(parse_status="range")
     token = _numeric_token(raw_text)
     if token is None:
-        return raw_text, None, None, None, "text"
+        return ParsedDataCell(parse_status="non_scalar")
     number, qualifier, suffix = token
-    ambiguous = qualifier in {"<=", ">="} or (
-        suffix is not None and suffix not in allowed_suffixes
-    )
-    return (
-        raw_text,
-        number,
-        qualifier,
-        suffix,
-        "ambiguous_numeric" if ambiguous else "numeric",
+    normalized_suffix = (suffix or "").strip()
+    markers = tuple(re.findall(r"[A-Za-z]+", normalized_suffix))
+    footnotes = markers if markers and all(item in allowed_footnotes for item in markers) else ()
+    unknown_suffix = bool(normalized_suffix and not footnotes)
+    ambiguous = qualifier in {"<=", ">="} or unknown_suffix
+    return ParsedDataCell(
+        value=number,
+        qualifier=qualifier,
+        suffix=suffix or None,
+        footnotes=footnotes,
+        parse_status="ambiguous_numeric" if ambiguous else "numeric",
     )
 
 
@@ -325,21 +406,69 @@ def _extract_layout_table(
         clause=spec.clause,
         table=spec.source_table,
     )
+    if spec.data_strategy == "rectangle":
+        if spec.data_row_start is None or spec.data_column_start is None:
+            raise ExtractionError("rectangle data contract has no starting coordinate")
+        data_logical = {
+            (spec.data_row_start + row, spec.data_column_start + column): (row, column)
+            for row in range(spec.expected_data_rows)
+            for column in range(spec.expected_data_columns)
+        }
+    else:
+        numeric_coordinates = tuple(
+            (row, column)
+            for row in range(spec.expected_raw_rows)
+            for column in range(spec.expected_raw_columns)
+            if parse_data_cell(
+                raw[row][column],
+                allowed_footnotes=spec.allowed_suffixes,
+            ).value
+            is not None
+        )
+        if len(numeric_coordinates) != spec.expected_data_rows * spec.expected_data_columns:
+            raise ExtractionError(
+                f"layout data dimensions do not match for {spec.semantic_id}"
+            )
+        data_logical = {
+            coordinate: (
+                index // spec.expected_data_columns,
+                index % spec.expected_data_columns,
+            )
+            for index, coordinate in enumerate(numeric_coordinates)
+        }
+
     cells: list[RawGridCell] = []
     for row in range(spec.expected_raw_rows):
         for column in range(spec.expected_raw_columns):
-            raw_text, value, qualifier, suffix, parse_status = _parsed_cell(
-                raw[row][column],
-                allowed_suffixes=spec.allowed_suffixes,
-            )
+            raw_text = raw[row][column] or ""
+            logical = data_logical.get((row, column))
+            if logical is None:
+                role: Literal["header", "data", "blank", "note", "footnote"] = (
+                    "blank" if not raw_text.strip() else "header"
+                )
+                parsed = None
+                parse_status = "blank" if role == "blank" else "text"
+            else:
+                role = "data"
+                parsed = parse_data_cell(
+                    raw_text,
+                    allowed_footnotes=spec.allowed_suffixes,
+                )
+                parse_status = parsed.parse_status
             cells.append(
                 RawGridCell(
                     row=row,
                     column=column,
                     raw_text=raw_text,
-                    value=value,
-                    qualifier=qualifier,
-                    suffix=suffix,
+                    role=role,
+                    logical_row=None if logical is None else logical[0],
+                    logical_column=(
+                        None if logical is None else f"column-{logical[1] + 1}"
+                    ),
+                    value=None if parsed is None else parsed.value,
+                    qualifier=None if parsed is None else parsed.qualifier,
+                    suffix=None if parsed is None else parsed.suffix,
+                    footnotes=() if parsed is None else parsed.footnotes,
                     parse_status=parse_status,  # type: ignore[arg-type]
                     source=_source(
                         identity,
@@ -356,24 +485,17 @@ def _extract_layout_table(
         rows=spec.expected_raw_rows,
         columns=spec.expected_raw_columns,
         target_unit=spec.target_unit,
+        segments=(
+            RawGridSegment(
+                page_number=spec.page_number,
+                row_start=0,
+                row_count=spec.expected_raw_rows,
+                source=table_source,
+            ),
+        ),
         cells=tuple(cells),
         source=table_source,
     )
-    if spec.data_strategy == "rectangle":
-        if spec.data_row_start is None or spec.data_column_start is None:
-            raise ExtractionError("rectangle data contract has no starting coordinate")
-        data_coordinates = {
-            (spec.data_row_start + row, spec.data_column_start + column)
-            for row in range(spec.expected_data_rows)
-            for column in range(spec.expected_data_columns)
-        }
-    else:
-        numeric = tuple(cell for cell in cells if cell.value is not None)
-        if len(numeric) != spec.expected_data_rows * spec.expected_data_columns:
-            raise ExtractionError(
-                f"layout data dimensions do not match for {spec.semantic_id}"
-            )
-        data_coordinates = {(cell.row, cell.column) for cell in numeric}
     reviews = tuple(
         ImportReviewItem(
             code="MANUAL_RAW_CELL_REVIEW_REQUIRED",
@@ -383,7 +505,7 @@ def _extract_layout_table(
             expected_contract=f"raw-cell:{spec.semantic_id}:numeric",
         )
         for cell in cells
-        if (cell.row, cell.column) in data_coordinates
+        if cell.role == "data"
         and cell.parse_status != "numeric"
     )
     return grid, reviews

@@ -92,6 +92,13 @@ def _changed_tokens(
         for grid_id in sorted(set(before_grids) | set(after_grids))
         if before_grids.get(grid_id) != after_grids.get(grid_id)
     )
+    before_equations = {item.id: item for item in original.extracted_equations}
+    after_equations = {item.id: item for item in changed.extracted_equations}
+    tokens.extend(
+        f"equation:{equation_id}"
+        for equation_id in sorted(set(before_equations) | set(after_equations))
+        if before_equations.get(equation_id) != after_equations.get(equation_id)
+    )
     return tuple(tokens)
 
 
@@ -109,11 +116,13 @@ def _require_safe_raw_grid_correction(
             before.rows,
             before.columns,
             before.target_unit,
+            before.segments,
             before.source,
         ) != (
             after.rows,
             after.columns,
             after.target_unit,
+            after.segments,
             after.source,
         ):
             raise ApprovalError("a correction cannot rewrite raw grid structure")
@@ -124,9 +133,28 @@ def _require_safe_raw_grid_correction(
         if any(
             before_cells[key].raw_text != after_cells[key].raw_text
             or before_cells[key].source != after_cells[key].source
+            or before_cells[key].role != after_cells[key].role
+            or before_cells[key].logical_row != after_cells[key].logical_row
+            or before_cells[key].logical_column != after_cells[key].logical_column
             for key in before_cells
         ):
             raise ApprovalError("a correction cannot rewrite extracted raw text or source")
+
+
+def _require_safe_equation_correction(
+    original: ImportedRuleDraft,
+    changed: ImportedRuleDraft,
+) -> None:
+    before = {equation.id: equation for equation in original.extracted_equations}
+    after = {equation.id: equation for equation in changed.extracted_equations}
+    if set(before) != set(after):
+        raise ApprovalError("a correction cannot add or remove extracted equations")
+    if any(
+        before[equation_id].raw_text != after[equation_id].raw_text
+        or before[equation_id].source != after[equation_id].source
+        for equation_id in before
+    ):
+        raise ApprovalError("a correction cannot rewrite extracted equation text or source")
 
 
 def _require_valid_review_resolutions(
@@ -198,14 +226,17 @@ def record_correction(
     if changed.review_resolutions != original.review_resolutions:
         raise ApprovalError("a correction cannot rewrite review resolutions")
     _require_safe_raw_grid_correction(original, changed)
+    _require_safe_equation_correction(original, changed)
     content_changed = (
         changed.tables,
         changed.formulas,
         changed.mappings,
+        changed.extracted_equations,
     ) != (
         original.tables,
         original.formulas,
         original.mappings,
+        original.extracted_equations,
     )
     raw_changed = changed.raw_grids != original.raw_grids
     if not content_changed and not raw_changed and not resolve:
@@ -225,6 +256,7 @@ def record_correction(
         original.manifest.source_documents,
         original.source_identities,
         original.review_resolutions,
+        original.extracted_equations,
     )
     recorded_at = datetime.now(UTC)
     resolutions = _require_valid_review_resolutions(
@@ -244,6 +276,7 @@ def record_correction(
         changed.manifest.source_documents,
         changed.source_identities,
         resolutions,
+        changed.extracted_equations,
     )
     audit_records = tuple(
         ApprovalRecord(
@@ -277,6 +310,7 @@ def record_correction(
         review_items=changed.review_items,
         review_resolutions=resolutions,
         raw_grids=changed.raw_grids,
+        extracted_equations=changed.extracted_equations,
         source_identities=changed.source_identities,
     )
 
@@ -340,6 +374,7 @@ def _require_logged_content(draft: DraftRulePackage) -> None:
         draft.manifest.source_documents,
         draft.source_identities if isinstance(draft, ImportedRuleDraft) else (),
         draft.review_resolutions if isinstance(draft, ImportedRuleDraft) else (),
+        draft.extracted_equations if isinstance(draft, ImportedRuleDraft) else (),
     )
     if actual != expected:
         raise ApprovalError("draft contains an unlogged content change")

@@ -35,9 +35,12 @@ from insulation_coordination.rules.importer.approval import (
     record_correction,
 )
 from insulation_coordination.rules.importer.extract import (
+    ExtractedEquation,
     ExtractionError,
     ImportedRuleDraft,
+    RawGridSegment,
     extract_draft,
+    parse_data_cell,
 )
 from insulation_coordination.rules.importer.identify import (
     AmbiguousStandardError,
@@ -512,6 +515,153 @@ def test_real_geometry_extracts_every_raw_cell_and_pending_contract(
         "mapping",
     }
     assert all(item.expected_contract for item in draft.review_items)
+
+
+def test_data_cell_parser_normalizes_grouped_thousands_and_footnotes() -> None:
+    parsed = parse_data_cell("1 000 d", allowed_footnotes=("d",))
+
+    assert parsed.value == Decimal(1000)
+    assert parsed.footnotes == ("d",)
+    assert parsed.parse_status == "numeric"
+
+
+def test_data_cell_parser_separates_multiple_footnote_markers() -> None:
+    parsed = parse_data_cell("0,6 a) b)", allowed_footnotes=("a", "b"))
+
+    assert parsed.value == Decimal("0.6")
+    assert parsed.footnotes == ("a", "b")
+    assert parsed.parse_status == "numeric"
+
+
+@pytest.mark.parametrize(
+    ("raw_text", "status"),
+    (
+        ("110\n120\n127", "non_scalar"),
+        ("30 to 60", "range"),
+    ),
+)
+def test_data_cell_parser_does_not_collapse_non_scalar_values(
+    raw_text: str,
+    status: str,
+) -> None:
+    parsed = parse_data_cell(raw_text)
+
+    assert parsed.value is None
+    assert parsed.parse_status == status
+
+
+def test_extraction_assigns_context_roles_and_one_page_segment(
+    supported_pdfs: tuple[Path, Path],
+) -> None:
+    draft = extract_draft(supported_pdfs)
+    grid = draft.raw_grids[0]
+    header_number = next(cell for cell in grid.cells if (cell.row, cell.column) == (0, 1))
+
+    assert grid.segments == (
+        RawGridSegment(
+            page_number=1,
+            row_start=0,
+            row_count=3,
+            source=grid.source,
+        ),
+    )
+    assert header_number.role == "header"
+    assert header_number.value is None
+    assert header_number.logical_row is None
+    assert header_number.logical_column is None
+    assert draft.extracted_equations == ()
+
+
+def test_correction_cannot_rewrite_extracted_equation_text_or_source(
+    supported_pdfs: tuple[Path, Path],
+) -> None:
+    draft = extract_draft(supported_pdfs)
+    equation = ExtractedEquation(
+        id="synthetic-equation",
+        raw_text="f = 1 / d",
+        rendered="f = 1 / d",
+        variables=("f", "d"),
+        literals=(Decimal(1),),
+        unit="Hz",
+        applicability="synthetic",
+        parse_status="parsed",
+        source=SourceReference(
+            standard="SYNTHETIC",
+            edition="1",
+            clause="4.2",
+            figure="Equation (1)",
+        ),
+    )
+    original = draft.model_copy(update={"extracted_equations": (equation,)})
+    rewritten = original.model_copy(
+        update={
+            "extracted_equations": (
+                equation.model_copy(update={"raw_text": "rewritten"}),
+            )
+        }
+    )
+
+    with pytest.raises(ApprovalError, match="equation text or source"):
+        record_correction(
+            original,
+            rewritten,
+            actor="Maintainer",
+            notes="Must not rewrite source",
+        )
+
+
+@pytest.mark.parametrize("field", ("role", "logical_row", "logical_column"))
+def test_correction_cannot_rewrite_raw_cell_semantics(
+    supported_pdfs: tuple[Path, Path],
+    field: str,
+) -> None:
+    draft = extract_draft(supported_pdfs)
+    grid = draft.raw_grids[0]
+    cell_index = 0 if field == "role" else next(
+        index for index, item in enumerate(grid.cells) if item.role == "data"
+    )
+    cell = grid.cells[cell_index]
+    updates = {
+        "role": "note",
+        "logical_row": 99,
+        "logical_column": "rewritten",
+    }
+    changed_cell = cell.model_copy(update={field: updates[field]})
+    changed_grid = grid.model_copy(
+        update={
+            "cells": tuple(
+                changed_cell if index == cell_index else item
+                for index, item in enumerate(grid.cells)
+            )
+        }
+    )
+    changed = draft.model_copy(update={"raw_grids": (changed_grid, *draft.raw_grids[1:])})
+
+    with pytest.raises(ApprovalError, match="raw text or source"):
+        record_correction(
+            draft,
+            changed,
+            actor="Maintainer",
+            notes="Must not rewrite semantics",
+        )
+
+
+def test_correction_cannot_rewrite_raw_grid_segments(
+    supported_pdfs: tuple[Path, Path],
+) -> None:
+    draft = extract_draft(supported_pdfs)
+    grid = draft.raw_grids[0]
+    segment = grid.segments[0].model_copy(update={"page_number": 2})
+    changed_grid = grid.model_copy(update={"segments": (segment,)})
+    changed = draft.model_copy(update={"raw_grids": (changed_grid, *draft.raw_grids[1:])})
+
+    with pytest.raises(ApprovalError, match="raw grid structure"):
+        record_correction(
+            draft,
+            changed,
+            actor="Maintainer",
+            notes="Must not rewrite segments",
+        )
 
 
 def _compound_draft(tmp_path: Path) -> ImportedRuleDraft:

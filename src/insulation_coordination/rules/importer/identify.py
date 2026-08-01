@@ -41,6 +41,31 @@ class StandardIdentity(FrozenModel):
     recipe_id: Identifier
 
 
+class TableSegmentSpec(FrozenModel):
+    id: Identifier
+    page_number: int = Field(ge=1)
+    title_anchor: ReferenceText
+    expected_raw_rows: int = Field(ge=1)
+    expected_raw_columns: int = Field(ge=1)
+    expected_bbox: tuple[float, float, float, float]
+    bbox_tolerance: float = Field(default=1.0, ge=0, le=200)
+    anchor_max_vertical_gap: float = Field(default=80.0, ge=0, le=300)
+    anchor_min_x_overlap: float = Field(default=0.1, ge=0, le=1)
+    logical_row_offset: int = Field(default=0, ge=0)
+    header_rows: tuple[int, ...] = ()
+    data_rows: tuple[int, ...] = ()
+    note_rows: tuple[int, ...] = ()
+    footnote_rows: tuple[int, ...] = ()
+
+
+class TableColumnSpec(FrozenModel):
+    semantic_id: Identifier
+    heading: ReferenceText
+    source_column: int = Field(ge=0)
+    role: Literal["axis", "data", "context"]
+    unit: Identifier
+
+
 class TableAuditSpec(FrozenModel):
     semantic_id: Identifier
     source_table: ReferenceText
@@ -72,9 +97,11 @@ class TableAuditSpec(FrozenModel):
         ],
         ...,
     ]
+    segments: tuple[TableSegmentSpec, ...] = ()
+    columns: tuple[TableColumnSpec, ...] = ()
 
 
-class FormulaAuditSpec(FrozenModel):
+class EquationAuditSpec(FrozenModel):
     semantic_id: Identifier
     unit: Identifier
     variables: tuple[Identifier, ...]
@@ -83,6 +110,11 @@ class FormulaAuditSpec(FrozenModel):
     clause: ReferenceText
     table: ReferenceText | None = None
     figure: ReferenceText | None = None
+    rendered_anchor: ReferenceText | None = None
+    applicability: ReferenceText = "review required"
+
+
+FormulaAuditSpec = EquationAuditSpec
 
 
 class MappingAuditSpec(FrozenModel):
