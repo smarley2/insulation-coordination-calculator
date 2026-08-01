@@ -56,9 +56,7 @@ def injected_recipes(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(recipe_registry, "RECIPES", _test_recipes())
 
 
-def test_draft_requires_review_and_blocks_approve(
-    qtbot, rules_manager, supported_pdfs
-) -> None:
+def test_draft_requires_review_and_blocks_approve(qtbot, rules_manager, supported_pdfs) -> None:
     draft = extract_draft(supported_pdfs)
     rules_manager.set_draft(draft)
     assert rules_manager.review_count == len(draft.review_items)
@@ -112,17 +110,13 @@ def test_partial_resolution_blocks_approval(
 ) -> None:
     original = extract_draft(supported_pdfs)
     reviewed = build_reviewed(original, recipe_registry.RECIPES)
-    partial = reviewed.model_copy(
-        update={"review_resolutions": reviewed.review_resolutions[:-1]}
-    )
+    partial = reviewed.model_copy(update={"review_resolutions": reviewed.review_resolutions[:-1]})
     rules_manager.set_draft(partial)
     assert rules_manager.is_fully_resolved is False
     assert rules_manager.can_approve is False
 
 
-def test_domain_is_fully_resolved_accepts_full_review(
-    supported_pdfs, injected_recipes
-) -> None:
+def test_domain_is_fully_resolved_accepts_full_review(supported_pdfs, injected_recipes) -> None:
     draft = extract_draft(supported_pdfs)
     reviewed = build_reviewed(draft, recipe_registry.RECIPES)
     assert is_fully_resolved(reviewed)

@@ -60,20 +60,14 @@ def _table_from_spec(
     )
     if spec.data_strategy == "rectangle":
         if spec.data_row_start is None or spec.data_column_start is None:
-            raise ValueError(
-                f"recipe rectangle has no source coordinate for {spec.semantic_id}"
-            )
+            raise ValueError(f"recipe rectangle has no source coordinate for {spec.semantic_id}")
         coordinates = (
             (spec.data_row_start + row, spec.data_column_start + column)
             for row in range(spec.expected_data_rows)
             for column in range(spec.expected_data_columns)
         )
     else:
-        coordinates = (
-            (cell.row, cell.column)
-            for cell in grid.cells
-            if cell.value is not None
-        )
+        coordinates = ((cell.row, cell.column) for cell in grid.cells if cell.value is not None)
     raw = {(cell.row, cell.column): cell for cell in grid.cells}
     cells: list[TableCell] = []
     row_values: list[Decimal] = []
@@ -81,9 +75,7 @@ def _table_from_spec(
     for row, column in coordinates:
         cell = raw[(row, column)]
         if cell.value is None:
-            raise ValueError(
-                f"raw grid missing numeric value for {spec.semantic_id}"
-            )
+            raise ValueError(f"raw grid missing numeric value for {spec.semantic_id}")
         cells.append(
             TableCell(
                 row=row,
@@ -145,9 +137,7 @@ def _formula_from_spec(
         parameter_sets=(
             ParameterSet(
                 id="reviewed",
-                parameters=tuple(
-                    Parameter(name=name, unit="1") for name in spec.variables
-                ),
+                parameters=tuple(Parameter(name=name, unit="1") for name in spec.variables),
                 source=source,
             ),
         ),
@@ -159,11 +149,7 @@ def _expression(spec: FormulaAuditSpec, table_id: str) -> RuleExpression:
     """Build an Expression matching the recipe's canonical shape string."""
     raw = spec.expression_shape
     if raw.startswith("linear_interpolate:"):
-        x = (
-            Variable(name=spec.variables[0])
-            if spec.variables
-            else Variable(name="raw_sequence")
-        )
+        x = Variable(name=spec.variables[0]) if spec.variables else Variable(name="raw_sequence")
         return LinearInterpolate(table_id=table_id, x=x)
     if raw.startswith("lookup:") or raw == "lookup":
         return Lookup(
@@ -218,9 +204,7 @@ def unresolved_raw_review_items(
     draft: ImportedRuleDraft,
 ) -> tuple[ImportReviewItem, ...]:
     """Raw-cell review items without an explicit maintainer resolution."""
-    resolved = {
-        resolution.review_item_sha256 for resolution in draft.review_resolutions
-    }
+    resolved = {resolution.review_item_sha256 for resolution in draft.review_resolutions}
     return tuple(
         item
         for item in draft.review_items
@@ -247,9 +231,7 @@ def accept_raw_grid(
     )
     if not pending:
         raise ValueError(f"raw grid {grid_id} has no unresolved raw cells")
-    coordinates = {
-        tuple(map(int, item.semantic_id.rsplit(":", 2)[-2:])) for item in pending
-    }
+    coordinates = {tuple(map(int, item.semantic_id.rsplit(":", 2)[-2:])) for item in pending}
     unexpected = set(corrections) - coordinates
     if unexpected:
         raise ValueError(f"raw grid correction is not flagged: {sorted(unexpected)!r}")
@@ -277,8 +259,7 @@ def accept_raw_grid(
     changed = draft.model_copy(
         update={
             "raw_grids": tuple(
-                changed_grid if item.id == grid_id else item
-                for item in draft.raw_grids
+                changed_grid if item.id == grid_id else item for item in draft.raw_grids
             )
         }
     )
@@ -297,8 +278,11 @@ def build_reviewed_draft(
     actor: str,
     notes: str,
 ) -> ImportedRuleDraft:
-    """Reconstruct typed content and resolve every review item."""
+    """Reconstruct typed content after every raw extraction cell is reviewed."""
     from insulation_coordination.rules.importer.recipes import RECIPES
+
+    if unresolved_raw_review_items(draft):
+        raise ValueError("review extracted table cells first")
 
     identities = {i.recipe_id: i for i in draft.source_identities}
     grids = {g.id: g for g in draft.raw_grids}
@@ -332,7 +316,8 @@ def build_reviewed_draft(
     resolve = tuple(
         item
         for item in draft.review_items
-        if not (item.kind == "formula" and item.semantic_id in placeholders)
+        if item.kind != "raw_cell"
+        and not (item.kind == "formula" and item.semantic_id in placeholders)
     )
     return record_correction(
         draft,
@@ -392,10 +377,7 @@ def required_content_report(draft: ImportedRuleDraft) -> tuple[RequiredContentSt
                 note=f"PDF page {table_spec.page_number}",
             )
             table = table_ids.get(table_spec.semantic_id)
-            present = (
-                table is not None
-                and _matches(table.source, expected)
-            )
+            present = table is not None and _matches(table.source, expected)
             statuses.append(
                 RequiredContentStatus(
                     standard=recipe.standard,
@@ -499,11 +481,17 @@ def _fill_expression_literals(
     if op == "add":
         return Add(operands=tuple(_fill_expression_literals(c, values) for c in expr["operands"]))
     if op == "multiply":
-        return Multiply(operands=tuple(_fill_expression_literals(c, values) for c in expr["operands"]))
+        return Multiply(
+            operands=tuple(_fill_expression_literals(c, values) for c in expr["operands"])
+        )
     if op == "minimum":
-        return Minimum(operands=tuple(_fill_expression_literals(c, values) for c in expr["operands"]))
+        return Minimum(
+            operands=tuple(_fill_expression_literals(c, values) for c in expr["operands"])
+        )
     if op == "maximum":
-        return Maximum(operands=tuple(_fill_expression_literals(c, values) for c in expr["operands"]))
+        return Maximum(
+            operands=tuple(_fill_expression_literals(c, values) for c in expr["operands"])
+        )
     if op == "divide":
         return Divide(
             numerator=_fill_expression_literals(expr["numerator"], values),
@@ -598,11 +586,7 @@ def confirm_placeholder_formula(
     )
     new_formula = formula.model_copy(update={"expression": new_expression})
     changed = draft.model_copy(
-        update={
-            "formulas": tuple(
-                new_formula if f.id == formula_id else f for f in draft.formulas
-            )
-        }
+        update={"formulas": tuple(new_formula if f.id == formula_id else f for f in draft.formulas)}
     )
     item = next(
         (i for i in draft.review_items if i.kind == "formula" and i.semantic_id == formula_id),

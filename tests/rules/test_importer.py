@@ -69,17 +69,11 @@ _CELLS = (
 
 
 def _pdf_string(value: str) -> bytes:
-    return value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)").encode(
-        "latin-1"
-    )
+    return value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)").encode("latin-1")
 
 
 def _text_command(x: float, y: float, value: str) -> bytes:
-    return (
-        f"BT /F1 9 Tf {x:.1f} {y:.1f} Td (".encode()
-        + _pdf_string(value)
-        + b") Tj ET"
-    )
+    return f"BT /F1 9 Tf {x:.1f} {y:.1f} Td (".encode() + _pdf_string(value) + b") Tj ET"
 
 
 def _table_commands(
@@ -96,9 +90,7 @@ def _table_commands(
     commands = [b"0.7 w"]
     for column in range(columns + 1):
         x = x0 + column * column_width
-        commands.append(
-            f"{x:.1f} {pdf_bottom:.1f} m {x:.1f} {pdf_top:.1f} l S".encode()
-        )
+        commands.append(f"{x:.1f} {pdf_bottom:.1f} m {x:.1f} {pdf_top:.1f} l S".encode())
     for row in range(rows + 1):
         y = pdf_bottom + row * row_height
         commands.append(f"{x0:.1f} {y:.1f} m {x1:.1f} {y:.1f} l S".encode())
@@ -225,10 +217,7 @@ def _test_recipes() -> tuple[StandardRecipe, StandardRecipe]:
                     semantic_id=formula_id,
                     unit="mm",
                     variables=("stress",),
-                    expression_shape=(
-                        f"linear_interpolate:{table_id}"
-                        "(variable:stress,literal)"
-                    ),
+                    expression_shape=(f"linear_interpolate:{table_id}(variable:stress,literal)"),
                     page_number=1,
                     clause="SYNTHETIC",
                     table=table_name,
@@ -373,9 +362,7 @@ def _reviewed_content(
             parameter_sets=(
                 ParameterSet(
                     id="reviewed",
-                    parameters=(
-                        Parameter(name=table_spec.row_axis_id, unit="V"),
-                    ),
+                    parameters=(Parameter(name=table_spec.row_axis_id, unit="V"),),
                     source=source,
                 ),
             ),
@@ -484,9 +471,7 @@ def test_document_matching_two_recipes_is_rejected_as_ambiguous(tmp_path: Path) 
         standard="IEC 60664-1 IEC 60664-4",
         edition="2020 2005",
         edition_anchor="Edition 3.0 2020-05 first edition 2005",
-        topic_anchor=(
-            "synthetic low-voltage geometry synthetic high-frequency geometry"
-        ),
+        topic_anchor=("synthetic low-voltage geometry synthetic high-frequency geometry"),
         table_anchor="Table S1",
     )
 
@@ -516,8 +501,7 @@ def test_real_geometry_extracts_every_raw_cell_and_pending_contract(
     assert all((grid.rows, grid.columns) == (3, 3) for grid in draft.raw_grids)
     assert all(len(grid.cells) == 9 for grid in draft.raw_grids)
     assert all(
-        len({(cell.row, cell.column) for cell in grid.cells}) == 9
-        for grid in draft.raw_grids
+        len({(cell.row, cell.column) for cell in grid.cells}) == 9 for grid in draft.raw_grids
     )
     assert all(cell.raw_text is not None for grid in draft.raw_grids for cell in grid.cells)
     assert {item.kind for item in draft.review_items} == {
@@ -586,9 +570,7 @@ def test_accept_raw_grid_resolves_only_selected_grid_and_preserves_raw_text(
 ) -> None:
     draft = _compound_draft(tmp_path)
     pending = unresolved_raw_review_items(draft)
-    assert tuple(item.semantic_id for item in pending) == (
-        "raw-synthetic-part1-table:1:1",
-    )
+    assert tuple(item.semantic_id for item in pending) == ("raw-synthetic-part1-table:1:1",)
     original = next(
         cell
         for grid in draft.raw_grids
@@ -764,9 +746,7 @@ def test_review_inventory_and_locators_are_immutable(
     rewritten = item.model_copy(
         update={"source": item.source.model_copy(update={"note": "rewritten locator"})}
     )
-    changed = draft.model_copy(
-        update={"review_items": (rewritten, *draft.review_items[1:])}
-    )
+    changed = draft.model_copy(update={"review_items": (rewritten, *draft.review_items[1:])})
 
     with pytest.raises(ApprovalError, match="review"):
         record_correction(
@@ -817,13 +797,11 @@ def test_recorded_resolution_uses_original_full_review_item_digest(
 
     assert corrected.review_items == draft.review_items
     assert len(corrected.review_resolutions) == len(draft.review_items)
-    assert {
-        resolution.review_item_sha256
-        for resolution in corrected.review_resolutions
-    } == {item.sha256 for item in draft.review_items}
+    assert {resolution.review_item_sha256 for resolution in corrected.review_resolutions} == {
+        item.sha256 for item in draft.review_items
+    }
     assert all(
-        resolution.actor == "Synthetic Reviewer"
-        for resolution in corrected.review_resolutions
+        resolution.actor == "Synthetic Reviewer" for resolution in corrected.review_resolutions
     )
 
 
@@ -836,11 +814,40 @@ def test_build_reviewed_draft_resolves_every_item(
 
     assert reviewed.review_items == draft.review_items
     assert len(reviewed.review_resolutions) == len(draft.review_items)
-    assert {
-        resolution.review_item_sha256
-        for resolution in reviewed.review_resolutions
-    } == {item.sha256 for item in draft.review_items}
+    assert {resolution.review_item_sha256 for resolution in reviewed.review_resolutions} == {
+        item.sha256 for item in draft.review_items
+    }
     assert is_fully_resolved(reviewed)
+
+
+def test_build_reviewed_draft_requires_raw_grid_acceptance(tmp_path: Path) -> None:
+    draft = _compound_draft(tmp_path)
+
+    with pytest.raises(ValueError, match="review extracted table cells first"):
+        build_reviewed_draft(draft, actor="Maintainer", notes="Build rules")
+
+
+def test_build_reviewed_draft_keeps_explicit_raw_resolution(tmp_path: Path) -> None:
+    draft = _compound_draft(tmp_path)
+    accepted = accept_raw_grid(
+        draft,
+        grid_id="raw-synthetic-part1-table",
+        corrections={},
+        actor="Maintainer",
+        notes="Compared against PDF",
+    )
+
+    reviewed = build_reviewed_draft(
+        accepted,
+        actor="Maintainer",
+        notes="Build typed content",
+    )
+
+    assert is_fully_resolved(reviewed)
+    assert all(item.present for item in required_content_report(reviewed))
+    assert {resolution.review_item_sha256 for resolution in accepted.review_resolutions} <= {
+        resolution.review_item_sha256 for resolution in reviewed.review_resolutions
+    }
 
 
 def test_placeholder_formula_gate_blocks_then_confirmation_unlocks(
@@ -861,9 +868,7 @@ def test_placeholder_formula_gate_blocks_then_confirmation_unlocks(
         clause="SYNTHETIC",
         table="S1",
     )
-    modified = recipe1.model_copy(
-        update={"formulas": (*recipe1.formulas, placeholder_spec)}
-    )
+    modified = recipe1.model_copy(update={"formulas": (*recipe1.formulas, placeholder_spec)})
     monkeypatch.setattr(recipe_registry, "RECIPES", (modified, recipe4))
 
     assert placeholder_id in placeholder_formula_ids()
@@ -879,7 +884,10 @@ def test_placeholder_formula_gate_blocks_then_confirmation_unlocks(
         if item.kind == "formula" and item.semantic_id == placeholder_id
     ]
     assert pending
-    assert all(item.sha256 not in {r.review_item_sha256 for r in reviewed.review_resolutions} for item in pending)
+    assert all(
+        item.sha256 not in {r.review_item_sha256 for r in reviewed.review_resolutions}
+        for item in pending
+    )
 
     confirmed = confirm_placeholder_formula(
         reviewed,
@@ -947,25 +955,19 @@ def _mutate_source_state(
         )
         return draft.model_copy(
             update={
-                "manifest": draft.manifest.model_copy(
-                    update={"source_documents": changed_sources}
-                )
+                "manifest": draft.manifest.model_copy(update={"source_documents": changed_sources})
             }
         )
     if mutation == "both_hashes":
         changed_sources = tuple(
-            source.model_copy(update={"sha256": "0" * 64})
-            for source in sources
+            source.model_copy(update={"sha256": "0" * 64}) for source in sources
         )
         changed_identities = tuple(
-            identity.model_copy(update={"sha256": "0" * 64})
-            for identity in identities
+            identity.model_copy(update={"sha256": "0" * 64}) for identity in identities
         )
         return draft.model_copy(
             update={
-                "manifest": draft.manifest.model_copy(
-                    update={"source_documents": changed_sources}
-                ),
+                "manifest": draft.manifest.model_copy(update={"source_documents": changed_sources}),
                 "source_identities": changed_identities,
             }
         )
@@ -980,9 +982,7 @@ def _mutate_source_state(
         )
         return draft.model_copy(
             update={
-                "manifest": draft.manifest.model_copy(
-                    update={"source_documents": changed_sources}
-                ),
+                "manifest": draft.manifest.model_copy(update={"source_documents": changed_sources}),
                 "source_identities": changed_identities,
             }
         )
@@ -1003,9 +1003,7 @@ def _mutate_source_state(
         )
     return draft.model_copy(
         update={
-            "manifest": draft.manifest.model_copy(
-                update={"source_documents": sources[:1]}
-            ),
+            "manifest": draft.manifest.model_copy(update={"source_documents": sources[:1]}),
             "source_identities": identities[:1],
         }
     )
@@ -1107,9 +1105,7 @@ def test_typed_table_cells_must_correspond_to_reviewed_raw_grid(
                 table.model_copy(
                     update={
                         "cells": (
-                            table.cells[0].model_copy(
-                                update={"value": table.cells[0].value + 1}
-                            ),
+                            table.cells[0].model_copy(update={"value": table.cells[0].value + 1}),
                             *table.cells[1:],
                         )
                     }
