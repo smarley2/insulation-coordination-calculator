@@ -90,6 +90,7 @@ class TableAuditSpec(FrozenModel):
     column_axis_id: Identifier
     column_axis_unit: Identifier
     allowed_suffixes: tuple[str, ...] = ()
+    allowed_qualifiers: tuple[Literal["up_to"], ...] = ()
     assertions: tuple[
         Literal[
             "complete_grid",
@@ -113,6 +114,8 @@ class EquationAuditSpec(FrozenModel):
     figure: ReferenceText | None = None
     rendered_anchor: ReferenceText | None = None
     applicability: ReferenceText = "review required"
+    extract_from_pdf: bool = False
+    expected_bbox: tuple[float, float, float, float] | None = None
 
 
 FormulaAuditSpec = EquationAuditSpec

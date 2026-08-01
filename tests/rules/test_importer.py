@@ -54,6 +54,9 @@ from insulation_coordination.rules.importer.identify import (
 from insulation_coordination.rules.importer.recipes.iec60664_1_2020 import (
     RECIPE as PART1_RECIPE,
 )
+from insulation_coordination.rules.importer.recipes.iec60664_4_2005 import (
+    RECIPE as PART4_RECIPE,
+)
 from insulation_coordination.rules.importer.review import (
     accept_raw_grid,
     build_reviewed_draft,
@@ -99,6 +102,22 @@ def test_part1_recipe_contains_only_required_pcb_source_inventory() -> None:
     assert {
         column.semantic_id for column in tables["iec60664-1-a2"].columns
     } == {"altitude_m", "pressure_kpa", "clearance_factor"}
+
+
+def test_part4_recipe_uses_tables_one_two_and_real_equation_artifacts() -> None:
+    assert {table.semantic_id for table in PART4_RECIPE.tables} == {
+        "iec60664-4-table-1",
+        "iec60664-4-table-2",
+    }
+    extracted = {formula.semantic_id for formula in PART4_RECIPE.formulas if formula.extract_from_pdf}
+    assert extracted == {
+        "iec60664-4-equation-1-critical-frequency",
+        "iec60664-4-equation-2-frequency-factor",
+        "iec60664-4-minimum-frequency",
+        "iec60664-4-radius-criterion",
+    }
+    assert all("iteration" not in formula.semantic_id for formula in PART4_RECIPE.formulas)
+    assert all(mapping.table != "5" for mapping in PART4_RECIPE.mappings)
 
 
 def _pdf_string(value: str) -> bytes:
@@ -559,6 +578,19 @@ def test_data_cell_parser_separates_multiple_footnote_markers() -> None:
     parsed = parse_data_cell("0,6 a) b)", allowed_footnotes=("a", "b"))
 
     assert parsed.value == Decimal("0.6")
+    assert parsed.footnotes == ("a", "b")
+    assert parsed.parse_status == "numeric"
+
+
+def test_data_cell_parser_preserves_allowed_up_to_qualifier() -> None:
+    parsed = parse_data_cell(
+        "Up to 0,6 a) b)",
+        allowed_footnotes=("a", "b"),
+        allowed_qualifiers=("up_to",),
+    )
+
+    assert parsed.value == Decimal("0.6")
+    assert parsed.qualifier == "up_to"
     assert parsed.footnotes == ("a", "b")
     assert parsed.parse_status == "numeric"
 

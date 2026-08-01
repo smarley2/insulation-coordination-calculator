@@ -267,12 +267,17 @@ def parse_data_cell(
     value: str | None,
     *,
     allowed_footnotes: tuple[str, ...] = (),
+    allowed_qualifiers: tuple[str, ...] = (),
 ) -> ParsedDataCell:
     raw_text = "" if value is None else value
     if len(raw_text) > 2_000:
         raise ExtractionError("raw table cell exceeds the fidelity size limit")
     if not raw_text.strip():
         return ParsedDataCell(parse_status="blank")
+    semantic_qualifier = None
+    if "up_to" in allowed_qualifiers and re.match(r"(?i)^\s*up\s+to\s+", raw_text):
+        raw_text = re.sub(r"(?i)^\s*up\s+to\s+", "", raw_text, count=1)
+        semantic_qualifier = "up_to"
     if "\n" in raw_text and len(tuple(line for line in raw_text.splitlines() if line.strip())) > 1:
         return ParsedDataCell(parse_status="non_scalar")
     if _RANGE_CELL.fullmatch(raw_text):
@@ -281,6 +286,7 @@ def parse_data_cell(
     if token is None:
         return ParsedDataCell(parse_status="non_scalar")
     number, qualifier, suffix = token
+    qualifier = semantic_qualifier or qualifier
     normalized_suffix = (suffix or "").strip()
     markers = tuple(re.findall(r"[A-Za-z]+", normalized_suffix))
     footnotes = markers if markers and all(item in allowed_footnotes for item in markers) else ()
@@ -535,6 +541,7 @@ def _extract_layout_table(
                             parsed = parse_data_cell(
                                 raw_text,
                                 allowed_footnotes=spec.allowed_suffixes,
+                                allowed_qualifiers=spec.allowed_qualifiers,
                             )
                         else:
                             role = "blank"
@@ -552,6 +559,7 @@ def _extract_layout_table(
                         parsed = parse_data_cell(
                             raw_text,
                             allowed_footnotes=spec.allowed_suffixes,
+                            allowed_qualifiers=spec.allowed_qualifiers,
                         )
                 parse_status = (
                     parsed.parse_status
@@ -717,6 +725,99 @@ def _extract_real_layout(
     return grids, (*_manual_review_items(identity, recipe), *raw_reviews)
 
 
+def _decimal_literal(value: str) -> Decimal:
+    return Decimal(value.replace(" ", "").replace("\u00a0", "").replace(",", "."))
+
+
+def _extract_equations(
+    path: Path,
+    identity: StandardIdentity,
+    recipe: StandardRecipe,
+) -> tuple[ExtractedEquation, ...]:
+    specs = tuple(spec for spec in recipe.formulas if spec.extract_from_pdf)
+    if not specs:
+        return ()
+    equations: list[ExtractedEquation] = []
+    try:
+        with pdfplumber.open(path) as pdf:
+            for spec in specs:
+                page = pdf.pages[spec.page_number - 1]
+                page_text = page.extract_text() or ""
+                cropped_text = (
+                    page.crop(spec.expected_bbox).extract_text() or ""
+                    if spec.expected_bbox is not None
+                    else page_text
+                )
+                literals: tuple[Decimal, ...]
+                if spec.expression_shape == "critical_frequency_inverse_clearance":
+                    match = re.search(r"(?<!\d)(0[,.]2)(?!\d)", cropped_text)
+                    if match is None or "crit" not in cropped_text or "(1)" not in cropped_text:
+                        raise ExtractionError("IEC 60664-4 Equation (1) could not be verified")
+                    literals = (_decimal_literal(match.group(1)),)
+                    raw_text = cropped_text
+                    rendered = f"f_crit = {literals[0]} / (d / mm) MHz"
+                elif spec.expression_shape == "linear_frequency_factor":
+                    base = re.search(r"(?<!\d)(100)\s*%", cropped_text)
+                    factor = re.search(r"(?<!\d)(25)\s*%", cropped_text)
+                    if base is None or factor is None or "(2)" not in cropped_text:
+                        raise ExtractionError("IEC 60664-4 Equation (2) could not be verified")
+                    literals = (
+                        _decimal_literal(base.group(1)),
+                        _decimal_literal(factor.group(1)),
+                    )
+                    raw_text = cropped_text
+                    rendered = "100% + ((f - f_crit) / (f_min - f_crit)) * 25%"
+                elif spec.expression_shape == "minimum_frequency_statement":
+                    match = re.search(
+                        r"(?im)^.*fmin.*accepted\s+as\s+([0-9]+(?:[,.][0-9]+)?)\s*MHz.*$",
+                        page_text,
+                    )
+                    if match is None:
+                        raise ExtractionError("IEC 60664-4 minimum frequency could not be verified")
+                    literals = (_decimal_literal(match.group(1)),)
+                    raw_text = match.group(0).strip()
+                    rendered = f"f_min = {literals[0]} MHz"
+                elif spec.expression_shape == "radius_to_clearance_criterion":
+                    match = re.search(
+                        r"(?im)^.*radius of curvature.*equal or greater than\s+"
+                        r"([0-9]+(?:[,.][0-9]+)?)\s*%.*$",
+                        page_text,
+                    )
+                    if match is None:
+                        raise ExtractionError("IEC 60664-4 radius criterion could not be verified")
+                    literals = (_decimal_literal(match.group(1)),)
+                    raw_text = match.group(0).strip()
+                    rendered = f"radius / clearance >= {literals[0]}%"
+                else:
+                    raise ExtractionError(
+                        f"unsupported equation extraction contract {spec.expression_shape}"
+                    )
+                equations.append(
+                    ExtractedEquation(
+                        id=spec.semantic_id,
+                        raw_text=raw_text,
+                        rendered=rendered,
+                        variables=spec.variables,
+                        literals=literals,
+                        unit=spec.unit,
+                        applicability=spec.applicability,
+                        parse_status="parsed",
+                        source=_source(
+                            identity,
+                            page_number=spec.page_number,
+                            clause=spec.clause,
+                            table=spec.table,
+                            figure=spec.figure,
+                        ),
+                    )
+                )
+    except ExtractionError:
+        raise
+    except (OSError, IndexError, PDFException, PSException, TypeError, ValueError) as error:
+        raise ExtractionError("recognized PDF equations could not be extracted") from error
+    return tuple(equations)
+
+
 def _extract_one(
     path: Path, identity: StandardIdentity
 ) -> tuple[
@@ -725,10 +826,12 @@ def _extract_one(
     tuple[CompatibilityMapping, ...],
     tuple[ImportReviewItem, ...],
     tuple[RawGrid, ...],
+    tuple[ExtractedEquation, ...],
 ]:
     recipe = _recipe(identity)
     grids, review_items = _extract_real_layout(path, identity, recipe)
-    return (), (), (), review_items, grids
+    equations = _extract_equations(path, identity, recipe)
+    return (), (), (), review_items, grids, equations
 
 
 def _require_unique_ids(
@@ -769,6 +872,7 @@ def extract_draft(paths: tuple[Path, ...]) -> ImportedRuleDraft:
     mappings: tuple[CompatibilityMapping, ...] = ()
     review_items: tuple[ImportReviewItem, ...] = ()
     raw_grids: tuple[RawGrid, ...] = ()
+    extracted_equations: tuple[ExtractedEquation, ...] = ()
     for path, identity in sorted(identified, key=lambda pair: pair[1].recipe_id):
         (
             extracted_tables,
@@ -776,12 +880,14 @@ def extract_draft(paths: tuple[Path, ...]) -> ImportedRuleDraft:
             extracted_mappings,
             extracted_reviews,
             extracted_grids,
+            extracted_source_equations,
         ) = _extract_one(path, identity)
         tables += extracted_tables
         formulas += extracted_formulas
         mappings += extracted_mappings
         review_items += extracted_reviews
         raw_grids += extracted_grids
+        extracted_equations += extracted_source_equations
     _require_unique_ids(tables, formulas, mappings)
 
     recorded_at = datetime.now(UTC)
@@ -805,11 +911,12 @@ def extract_draft(paths: tuple[Path, ...]) -> ImportedRuleDraft:
             *(f"formula:{formula.id}" for formula in formulas),
             *(f"mapping:{mapping.id}" for mapping in mappings),
             *(f"raw-grid:{grid.id}" for grid in raw_grids),
+            *(f"equation:{equation.id}" for equation in extracted_equations),
             *(
                 f"review:{item.code}:{item.semantic_id}"
                 for item in review_items
             ),
-            f"content:{_content_digest(tables, formulas, mappings, review_items, raw_grids)}",
+            f"content:{_content_digest(tables, formulas, mappings, review_items, raw_grids, extracted_equations=extracted_equations)}",
         )
     )
     ordered_identities = tuple(
@@ -832,6 +939,7 @@ def extract_draft(paths: tuple[Path, ...]) -> ImportedRuleDraft:
         raw_grids,
         sources,
         ordered_identities,
+        extracted_equations=extracted_equations,
     )
     records = tuple(
         record.model_copy(update={"notes": f"content:{content_digest}"})
@@ -857,5 +965,6 @@ def extract_draft(paths: tuple[Path, ...]) -> ImportedRuleDraft:
         mappings=mappings,
         review_items=review_items,
         raw_grids=raw_grids,
+        extracted_equations=extracted_equations,
         source_identities=ordered_identities,
     )

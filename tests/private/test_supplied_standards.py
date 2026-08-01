@@ -49,6 +49,7 @@ def _review_digest(draft: DraftRulePackage) -> str:
         "mappings": payload["mappings"],
         "review_items": payload["review_items"],
         "raw_grids": payload["raw_grids"],
+        "extracted_equations": payload["extracted_equations"],
     }
     canonical = json.dumps(
         stable,
@@ -86,7 +87,6 @@ def test_supplied_standards_match_human_reviewed_draft(
         "raw-iec60664-1-a2",
         "raw-iec60664-4-table-1",
         "raw-iec60664-4-table-2",
-        "raw-iec60664-4-table-5",
     }
     assert {
         grid.id: (grid.rows, grid.columns)
@@ -99,7 +99,6 @@ def test_supplied_standards_match_human_reviewed_draft(
         "raw-iec60664-1-a2": (12, 3),
         "raw-iec60664-4-table-1": (10, 2),
         "raw-iec60664-4-table-2": (20, 8),
-        "raw-iec60664-4-table-5": (6, 4),
     }
     assert draft.review_items
     assert {item.code for item in draft.review_items} <= {
@@ -133,6 +132,15 @@ def test_supplied_standards_match_human_reviewed_draft(
         if cell.logical_column == "rms_voltage_v"
     )
     assert any(cell.footnotes for grid in draft.raw_grids for cell in grid.cells)
+    assert {equation.id for equation in draft.extracted_equations} == {
+        "iec60664-4-equation-1-critical-frequency",
+        "iec60664-4-equation-2-frequency-factor",
+        "iec60664-4-minimum-frequency",
+        "iec60664-4-radius-criterion",
+    }
+    assert all(equation.parse_status == "parsed" for equation in draft.extracted_equations)
+    assert all(equation.raw_text and equation.rendered for equation in draft.extracted_equations)
+    assert all(equation.source.clause and equation.source.note for equation in draft.extracted_equations)
     expected_draft_failures = {
         "approval",
         "approval_record",
