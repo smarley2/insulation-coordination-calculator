@@ -455,23 +455,24 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
                 raise ApprovalError("reviewed table violates its exact recipe contract")
             grid_cells = {(cell.row, cell.column): cell for cell in grid.cells}
             if spec.columns:
-                data_ids = tuple(
-                    column.semantic_id for column in spec.columns if column.role == "data"
-                )
-                data_order = {semantic_id: index for index, semantic_id in enumerate(data_ids)}
-                raw_values = tuple(
-                    sorted(
-                        (
-                            cell
-                            for cell in grid.cells
-                            if cell.logical_column in data_order and cell.value is not None
-                        ),
-                        key=lambda cell: (
-                            cell.logical_row,
-                            data_order[cell.logical_column or ""],
-                        ),
-                    )
-                )
+                data_columns = tuple(column for column in spec.columns if column.role == "data")
+                logical = {
+                    (cell.logical_row, cell.logical_column): cell
+                    for cell in grid.cells
+                    if cell.logical_row is not None and cell.logical_column is not None
+                }
+                previous = {}
+                raw_value_list = []
+                for logical_row in sorted({row for row, _ in logical}):
+                    for column in data_columns:
+                        raw = logical.get((logical_row, column.semantic_id))
+                        if raw is not None and raw.value is not None:
+                            previous[column.semantic_id] = raw
+                        elif column.fill_down:
+                            raw = previous.get(column.semantic_id)
+                        if raw is not None and raw.value is not None:
+                            raw_value_list.append(raw)
+                raw_values = tuple(raw_value_list)
             elif spec.data_strategy == "rectangle":
                 if spec.data_row_start is None or spec.data_column_start is None:
                     raise ApprovalError("recipe rectangle has no source coordinate")

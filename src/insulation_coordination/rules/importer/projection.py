@@ -29,6 +29,7 @@ from insulation_coordination.domain.rules import Expression as RuleExpression
 from insulation_coordination.rules.importer.extract import (
     ExtractedEquation,
     RawGrid,
+    RawGridCell,
 )
 from insulation_coordination.rules.importer.identify import (
     FormulaAuditSpec,
@@ -91,9 +92,14 @@ def project_table(
         for index, column in enumerate(data_columns)
     )
     cells: list[TableCell] = []
+    previous_by_column: dict[str, RawGridCell] = {}
     for row_index, logical_row in enumerate(logical_rows):
         for column_index, column in enumerate(data_columns):
             raw = logical.get((logical_row, column.semantic_id))
+            if raw is not None and raw.value is not None:
+                previous_by_column[column.semantic_id] = raw
+            elif column.fill_down:
+                raw = previous_by_column.get(column.semantic_id)
             if raw is None or raw.value is None:
                 continue
             cells.append(

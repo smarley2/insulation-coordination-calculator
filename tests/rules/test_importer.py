@@ -110,6 +110,9 @@ def test_part1_recipe_contains_only_required_pcb_source_inventory() -> None:
         "pressure_kpa",
         "clearance_factor",
     }
+    assert all(
+        column.fill_down for column in tables["iec60664-1-f2"].columns if column.role == "data"
+    )
 
 
 def test_part4_recipe_uses_tables_one_two_and_real_equation_artifacts() -> None:

@@ -133,14 +133,23 @@ RECIPE = StandardRecipe(
                     footnote_rows=(29,),
                 ),
             ),
-            columns=_columns(
-                ("impulse_withstand_kv", "Required impulse withstand voltage", 0, "axis", "kV"),
-                ("case_a_pd1_mm", "Case A pollution degree 1", 1, "data", "mm"),
-                ("case_a_pd2_mm", "Case A pollution degree 2", 2, "data", "mm"),
-                ("case_a_pd3_mm", "Case A pollution degree 3", 3, "data", "mm"),
-                ("case_b_pd1_mm", "Case B pollution degree 1", 4, "data", "mm"),
-                ("case_b_pd2_mm", "Case B pollution degree 2", 5, "data", "mm"),
-                ("case_b_pd3_mm", "Case B pollution degree 3", 6, "data", "mm"),
+            columns=tuple(
+                column.model_copy(update={"fill_down": column.role == "data"})
+                for column in _columns(
+                    (
+                        "impulse_withstand_kv",
+                        "Required impulse withstand voltage",
+                        0,
+                        "axis",
+                        "kV",
+                    ),
+                    ("case_a_pd1_mm", "Case A pollution degree 1", 1, "data", "mm"),
+                    ("case_a_pd2_mm", "Case A pollution degree 2", 2, "data", "mm"),
+                    ("case_a_pd3_mm", "Case A pollution degree 3", 3, "data", "mm"),
+                    ("case_b_pd1_mm", "Case B pollution degree 1", 4, "data", "mm"),
+                    ("case_b_pd2_mm", "Case B pollution degree 2", 5, "data", "mm"),
+                    ("case_b_pd3_mm", "Case B pollution degree 3", 6, "data", "mm"),
+                )
             ),
         ),
         TableAuditSpec(

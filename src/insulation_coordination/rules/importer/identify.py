@@ -68,6 +68,7 @@ class TableColumnSpec(FrozenModel):
     role: Literal["axis", "data", "context"]
     unit: Identifier
     axis_value: Decimal | None = None
+    fill_down: bool = False
 
 
 class TableAuditSpec(FrozenModel):

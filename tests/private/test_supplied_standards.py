@@ -5,11 +5,30 @@ import json
 import logging
 import os
 import re
+from decimal import Decimal
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
+from insulation_coordination.calculation.clearance import calculate_clearance_candidates
+from insulation_coordination.calculation.engine import calculate_pair
+from insulation_coordination.calculation.high_frequency import assess_part4_clearance
+from insulation_coordination.domain.enums import (
+    ConstructionType,
+    FieldCondition,
+    InsulationType,
+)
+from insulation_coordination.domain.project import (
+    PairCase,
+    PairVoltage,
+    PairVoltages,
+    ProjectDefaults,
+)
 from insulation_coordination.domain.rules import DraftRulePackage, RulePackage
+from insulation_coordination.project.resolver import resolve_effective_case
+from insulation_coordination.rules.archive import load_rule_package, write_rule_package
+from insulation_coordination.rules.importer.approval import approve_draft, is_fully_resolved
 from insulation_coordination.rules.importer.extract import ExtractionError, extract_draft
 from insulation_coordination.rules.importer.identify import (
     StandardIdentificationError,
@@ -62,6 +81,62 @@ def _review_digest(draft: DraftRulePackage) -> str:
         separators=(",", ":"),
     ).encode()
     return hashlib.sha256(canonical).hexdigest()
+
+
+def _approve_supplied_package(paths: tuple[Path, Path]) -> RulePackage:
+    reviewed = extract_draft(paths)
+    for grid in reviewed.raw_grids:
+        reviewed = accept_raw_table(
+            reviewed,
+            grid_id=grid.id,
+            corrections={},
+            actor="Private fixture reviewer",
+            notes="Verified against supplied PDF",
+        )
+    reviewed = accept_equation_mapping(
+        reviewed,
+        equation_ids=tuple(item.semantic_id for item in unresolved_equation_items(reviewed)),
+        mapping_ids=tuple(item.semantic_id for item in unresolved_mapping_items(reviewed)),
+        actor="Private fixture reviewer",
+        notes="Verified equations and mappings against supplied PDF",
+    )
+    reviewed = build_reviewed_draft(
+        reviewed,
+        actor="Private fixture reviewer",
+        notes="Projected accepted IEC artifacts",
+    )
+    assert is_fully_resolved(reviewed)
+    return approve_draft(
+        reviewed,
+        approver="Private fixture reviewer",
+        notes="Approved supplied IEC PCB sources",
+    )
+
+
+def _effective_case(*, frequency_hz: int, peak_v: int):
+    defaults = ProjectDefaults(
+        frequency_hz=Decimal(frequency_hz),
+        impulse_v=Decimal(1000),
+        insulation_type=InsulationType.BASIC,
+        field_condition=FieldCondition.INHOMOGENEOUS,
+        altitude_m=Decimal(0),
+        pollution_degree=2,
+        construction_type=ConstructionType.PRINTED_WIRING,
+        cti_or_material_group="I",
+    )
+    pair = PairCase(
+        id=UUID(int=frequency_hz + peak_v),
+        key="private-a::private-b",
+        net_a=UUID(int=1),
+        net_b=UUID(int=2),
+        voltages=PairVoltages(
+            long_term_rms_v=PairVoltage.applicable(Decimal(peak_v)),
+            steady_state_peak_v=PairVoltage.applicable(Decimal(peak_v)),
+            recurring_peak_v=PairVoltage.not_applicable("No recurring peak."),
+            temporary_overvoltage_peak_v=PairVoltage.not_applicable("No temporary overvoltage."),
+        ),
+    )
+    return resolve_effective_case(defaults, pair)
 
 
 def test_supplied_standards_match_human_reviewed_draft(
@@ -175,6 +250,8 @@ def test_supplied_standards_match_human_reviewed_draft(
         "iec60664-4-table-2",
     }
     f5_table = next(table for table in built.tables if table.id == "iec60664-1-f5")
+    f2_table = next(table for table in built.tables if table.id == "iec60664-1-f2")
+    assert len(f2_table.cells) == 26 * 6
     assert len(f5_table.row_axis.values) == 39
     assert f5_table.row_axis.values[-1] == 63_000
     assert all(cell.source.note == "PDF page 73" for cell in f5_table.cells)
@@ -204,3 +281,65 @@ def test_supplied_standards_match_human_reviewed_draft(
     assert draft.raw_grids
     assert len({grid.id for grid in draft.raw_grids}) == len(draft.raw_grids)
     assert _review_digest(draft) == golden, "private extraction differs from reviewed digest"
+
+
+def test_supplied_standards_approve_and_calculate_pcb_annex_gh(
+    tmp_path: Path,
+) -> None:
+    paths, _ = _private_locations()
+    if any(not path.is_file() for path in paths):
+        pytest.skip("licensed IEC PDFs are unavailable")
+    approved = _approve_supplied_package(paths)
+    archive = tmp_path / "reviewed.icrules"
+    write_rule_package(archive, approved)
+    rules = load_rule_package(archive)
+
+    assert validate_rule_package(rules).is_valid
+    part1 = calculate_pair(_effective_case(frequency_hz=50, peak_v=300), rules)
+    low_peak_hf = calculate_pair(_effective_case(frequency_hz=100_000, peak_v=300), rules)
+    high_peak_hf = calculate_pair(_effective_case(frequency_hz=100_000, peak_v=600), rules)
+
+    assert part1.trace.used_part4 is False
+    assert {candidate.formula_id for candidate in part1.trace.clearance_candidates} >= {
+        "iec60664-1:f2-clearance",
+        "iec60664-1:f8-clearance",
+    }
+    assert {candidate.formula_id for candidate in part1.trace.creepage_candidates} >= {
+        "iec60664-1:f5-pcb-creepage"
+    }
+    assert low_peak_hf.trace.hf_iterations[0].critical_frequency_hz != (
+        high_peak_hf.trace.hf_iterations[0].critical_frequency_hz
+    )
+    assert all(
+        result.trace.hf_iterations[0].actual_frequency_hz == 100_000
+        for result in (low_peak_hf, high_peak_hf)
+    )
+    assert any(
+        candidate.formula_id == "iec60664-4:hf-creepage-table"
+        for candidate in high_peak_hf.trace.creepage_candidates
+    )
+
+    table1_case = _effective_case(frequency_hz=4_000_000, peak_v=600)
+    base = max(
+        (
+            candidate
+            for candidate in calculate_clearance_candidates(table1_case, rules)
+            if candidate.candidate_id != "impulse"
+        ),
+        key=lambda candidate: candidate.distance_mm,
+    )
+    table1 = assess_part4_clearance(table1_case, base, rules)
+    assert table1.iterations[-1].selected_route == "inhomogeneous_table_1"
+    source_tables = {
+        reference.table
+        for result in (part1, high_peak_hf)
+        for step in result.trace.steps
+        for reference in (step.source_reference, step.formula_source_reference)
+        if reference is not None
+    }
+    assert {"F.2", "F.5", "F.8", "2"} <= source_tables
+    assert any(
+        step.formula_source_reference is not None
+        and step.formula_source_reference.standard == "IEC 60664-4"
+        for step in table1.iterations[-1].steps
+    )
