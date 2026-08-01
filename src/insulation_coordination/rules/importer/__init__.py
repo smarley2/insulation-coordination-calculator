@@ -27,10 +27,16 @@ from insulation_coordination.rules.importer.identify import (
 )
 from insulation_coordination.rules.importer.review import (
     RequiredContentStatus,
+    accept_equation_mapping,
     accept_raw_grid,
+    accept_raw_table,
+    build_reviewed_draft,
     missing_required_content,
     required_content_report,
+    unresolved_equation_items,
+    unresolved_mapping_items,
     unresolved_raw_review_items,
+    unresolved_table_items,
 )
 
 __all__ = [
@@ -49,13 +55,19 @@ __all__ = [
     "TableColumnSpec",
     "TableSegmentSpec",
     "UnsupportedStandardError",
+    "accept_equation_mapping",
     "accept_raw_grid",
+    "accept_raw_table",
     "approve_draft",
+    "build_reviewed_draft",
     "extract_draft",
     "identify_standard",
     "missing_required_content",
     "parse_data_cell",
     "record_correction",
     "required_content_report",
+    "unresolved_equation_items",
+    "unresolved_mapping_items",
     "unresolved_raw_review_items",
+    "unresolved_table_items",
 ]

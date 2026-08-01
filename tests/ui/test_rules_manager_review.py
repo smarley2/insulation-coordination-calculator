@@ -11,13 +11,13 @@ from insulation_coordination.rules.importer.approval import (
     is_fully_resolved,
 )
 from insulation_coordination.rules.importer.extract import extract_draft
-from insulation_coordination.rules.importer.identify import FormulaAuditSpec
 from insulation_coordination.rules.importer.review import accept_raw_grid
 from insulation_coordination.ui.rules_manager import (
     FormulaConstantDialog,
     RulesManagerWindow,
 )
 from tests.rules.test_importer import (
+    _accept_all_source_artifacts,
     _compound_draft,
     _test_recipes,
     create_geometry_pdf,
@@ -59,7 +59,6 @@ def supported_pdfs(tmp_path: Path) -> tuple[Path, Path]:
 
 @pytest.fixture(autouse=True)
 def injected_recipes(monkeypatch: pytest.MonkeyPatch):
-    from tests.rules.test_importer import _test_recipes
 
     monkeypatch.setattr(recipe_registry, "RECIPES", _test_recipes())
 
@@ -120,39 +119,6 @@ def test_formula_constant_fields_start_empty_and_require_exact_count(
     assert dialog.result() != dialog.DialogCode.Accepted
 
 
-def test_formula_review_stays_disabled_until_placeholder_formula_exists(
-    rules_manager,
-    supported_pdfs,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    recipe1, recipe4 = _test_recipes()
-    placeholder = FormulaAuditSpec(
-        semantic_id="synthetic-placeholder",
-        unit="bool",
-        variables=(),
-        expression_shape="compare(literal,literal)",
-        page_number=1,
-        clause="SYNTHETIC",
-        table="S1",
-    )
-    monkeypatch.setattr(
-        recipe_registry,
-        "RECIPES",
-        (recipe1.model_copy(update={"formulas": (*recipe1.formulas, placeholder)}), recipe4),
-    )
-    draft = extract_draft(supported_pdfs)
-    rules_manager.set_draft(draft)
-
-    assert rules_manager.formula_review_enabled is False
-
-    from insulation_coordination.rules.importer.review import build_reviewed_draft
-
-    reviewed = build_reviewed_draft(draft, actor="Maintainer", notes="Build rules")
-    rules_manager.set_draft(reviewed)
-
-    assert rules_manager.formula_review_enabled is True
-
-
 def test_build_reviewed_content_unlocks_approval(
     qtbot, rules_manager, supported_pdfs, injected_recipes
 ) -> None:
@@ -162,7 +128,8 @@ def test_build_reviewed_content_unlocks_approval(
 
     from insulation_coordination.rules.importer.review import build_reviewed_draft
 
-    reviewed = build_reviewed_draft(draft, actor="Maintainer", notes="auto review")
+    accepted = _accept_all_source_artifacts(draft)
+    reviewed = build_reviewed_draft(accepted, actor="Maintainer", notes="Build rules")
     rules_manager.set_draft(reviewed)
     assert rules_manager.is_fully_resolved is True
     assert rules_manager.can_approve is True

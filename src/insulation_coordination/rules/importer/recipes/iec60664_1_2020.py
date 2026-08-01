@@ -254,7 +254,7 @@ RECIPE = StandardRecipe(
             data_row_start=2,
             data_column_start=0,
             expected_data_rows=33,
-            expected_data_columns=1,
+            expected_data_columns=2,
             row_axis_id="peak_voltage_kv",
             row_axis_unit="kV",
             column_axis_id="partial_discharge_advice",
@@ -272,11 +272,18 @@ RECIPE = StandardRecipe(
                     source_columns=(4, 5),
                     header_rows=(0, 1),
                     data_rows=tuple(range(2, 35)),
+                    context_cells=((2, 5), (26, 5)),
                 ),
             ),
             columns=_columns(
                 ("peak_voltage_kv", "Voltage peak value", 4, "axis", "kV"),
-                ("partial_discharge_advice", "Case A partial-discharge information", 5, "context", "mm"),
+                (
+                    "partial_discharge_advice",
+                    "Case A partial-discharge information",
+                    5,
+                    "data",
+                    "mm",
+                ),
             ),
         ),
         TableAuditSpec(

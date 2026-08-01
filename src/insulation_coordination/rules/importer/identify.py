@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
@@ -57,6 +58,7 @@ class TableSegmentSpec(FrozenModel):
     data_rows: tuple[int, ...] = ()
     note_rows: tuple[int, ...] = ()
     footnote_rows: tuple[int, ...] = ()
+    context_cells: tuple[tuple[int, int], ...] = ()
 
 
 class TableColumnSpec(FrozenModel):
@@ -65,6 +67,7 @@ class TableColumnSpec(FrozenModel):
     source_column: int = Field(ge=0)
     role: Literal["axis", "data", "context"]
     unit: Identifier
+    axis_value: Decimal | None = None
 
 
 class TableAuditSpec(FrozenModel):
@@ -169,8 +172,7 @@ class StandardRecipe(FrozenModel):
         if identifying_claims - {(self.standard, self.edition)}:
             return False
         metadata_identifies_document = all(
-            _normalized(anchor) in metadata_text
-            for anchor in self.metadata_identity_anchors
+            _normalized(anchor) in metadata_text for anchor in self.metadata_identity_anchors
         )
         return (
             metadata_identifies_document or page_count == self.expected_page_count
@@ -196,9 +198,7 @@ def _read_pdf(
             raise UnsupportedStandardError("encrypted standards are not supported")
         if not reader.pages:
             raise UnsupportedStandardError("standard PDF has no pages")
-        page_texts = tuple(
-            page.extract_text() or "" for page in reader.pages[:MAX_IDENTITY_PAGES]
-        )
+        page_texts = tuple(page.extract_text() or "" for page in reader.pages[:MAX_IDENTITY_PAGES])
         text = "\n".join(page_texts)
         metadata = {
             str(key): str(value)

@@ -15,6 +15,13 @@ from insulation_coordination.rules.importer.identify import (
     StandardIdentificationError,
     identify_standard,
 )
+from insulation_coordination.rules.importer.review import (
+    accept_equation_mapping,
+    accept_raw_table,
+    build_reviewed_draft,
+    unresolved_equation_items,
+    unresolved_mapping_items,
+)
 from insulation_coordination.rules.validation import validate_rule_package
 
 pytestmark = pytest.mark.private_standard
@@ -27,12 +34,8 @@ _FILENAMES = (
 
 def _private_locations() -> tuple[tuple[Path, Path], Path]:
     repository = Path(__file__).parents[2]
-    standards = Path(
-        os.environ.get("ICC_PRIVATE_STANDARDS_DIR", repository / "standards")
-    )
-    private_rules = Path(
-        os.environ.get("ICC_PRIVATE_RULES_DIR", repository / "private-rules")
-    )
+    standards = Path(os.environ.get("ICC_PRIVATE_STANDARDS_DIR", repository / "standards"))
+    private_rules = Path(os.environ.get("ICC_PRIVATE_RULES_DIR", repository / "private-rules"))
     return (
         (standards / _FILENAMES[0], standards / _FILENAMES[1]),
         private_rules / "supplied-standards-draft.sha256",
@@ -74,7 +77,9 @@ def test_supplied_standards_match_human_reviewed_draft(
             identities = tuple(identify_standard(path) for path in paths)
             draft = extract_draft(paths)
     except (ExtractionError, StandardIdentificationError):
-        pytest.fail("private standard identification or structural extraction failed", pytrace=False)
+        pytest.fail(
+            "private standard identification or structural extraction failed", pytrace=False
+        )
     assert {(item.standard, item.edition) for item in identities} == {
         ("IEC 60664-1", "2020"),
         ("IEC 60664-4", "2005"),
@@ -88,10 +93,7 @@ def test_supplied_standards_match_human_reviewed_draft(
         "raw-iec60664-4-table-1",
         "raw-iec60664-4-table-2",
     }
-    assert {
-        grid.id: (grid.rows, grid.columns)
-        for grid in draft.raw_grids
-    } == {
+    assert {grid.id: (grid.rows, grid.columns) for grid in draft.raw_grids} == {
         "raw-iec60664-1-f2": (30, 7),
         "raw-iec60664-1-f5": (49, 10),
         "raw-iec60664-1-f8": (35, 3),
@@ -123,8 +125,7 @@ def test_supplied_standards_match_human_reviewed_draft(
     assert all(cell.role in {"header", "data", "blank", "note", "footnote"} for cell in f5.cells)
     assert max(cell.logical_row for cell in f5.cells if cell.logical_row is not None) == 38
     assert any(
-        cell.source.note == "PDF page 74" and cell.logical_row is not None
-        for cell in f5.cells
+        cell.source.note == "PDF page 74" and cell.logical_row is not None for cell in f5.cells
     )
     assert any(
         " " in cell.raw_text.strip() and cell.value is not None
@@ -140,7 +141,45 @@ def test_supplied_standards_match_human_reviewed_draft(
     }
     assert all(equation.parse_status == "parsed" for equation in draft.extracted_equations)
     assert all(equation.raw_text and equation.rendered for equation in draft.extracted_equations)
-    assert all(equation.source.clause and equation.source.note for equation in draft.extracted_equations)
+    assert all(
+        equation.source.clause and equation.source.note for equation in draft.extracted_equations
+    )
+    accepted = draft
+    for grid in draft.raw_grids:
+        accepted = accept_raw_table(
+            accepted,
+            grid_id=grid.id,
+            corrections={},
+            actor="Private fixture reviewer",
+            notes="Verified against supplied PDF",
+        )
+    accepted = accept_equation_mapping(
+        accepted,
+        equation_ids=tuple(item.semantic_id for item in unresolved_equation_items(accepted)),
+        mapping_ids=tuple(item.semantic_id for item in unresolved_mapping_items(accepted)),
+        actor="Private fixture reviewer",
+        notes="Verified equations and mappings against supplied PDF",
+    )
+    built = build_reviewed_draft(
+        accepted,
+        actor="Private fixture reviewer",
+        notes="Projected accepted IEC artifacts",
+    )
+    assert {table.id for table in built.tables} == {
+        "iec60664-1-f2",
+        "iec60664-1-f5",
+        "iec60664-1-f8",
+        "iec60664-1-f9",
+        "iec60664-1-a2",
+        "iec60664-4-table-1",
+        "iec60664-4-table-2",
+    }
+    f5_table = next(table for table in built.tables if table.id == "iec60664-1-f5")
+    assert len(f5_table.row_axis.values) == 39
+    assert f5_table.row_axis.values[-1] == 63_000
+    assert all(cell.source.note == "PDF page 73" for cell in f5_table.cells)
+    assert all(table.row_axis.labels and table.column_axis.labels for table in built.tables)
+    assert all("raw_sequence" not in str(formula.expression) for formula in built.formulas)
     expected_draft_failures = {
         "approval",
         "approval_record",
@@ -155,9 +194,7 @@ def test_supplied_standards_match_human_reviewed_draft(
         mappings=draft.mappings,
     )
     assert {
-        result.code
-        for result in validate_rule_package(package_view).results
-        if not result.passed
+        result.code for result in validate_rule_package(package_view).results if not result.passed
     } <= expected_draft_failures
     if not golden_path.is_file():
         pytest.skip("separately human-reviewed private draft digest is unavailable")

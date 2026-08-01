@@ -828,7 +828,10 @@ def test_direct_altitude_interpolation_retains_selected_factor_column_sources(
     expanded_factor = factor.model_copy(
         update={
             "column_axis": factor.column_axis.model_copy(
-                update={"values": (Decimal(1), Decimal(2))}
+                update={
+                    "values": (Decimal(1), Decimal(2)),
+                    "labels": (*factor.column_axis.labels, "unused-factor-branch"),
+                }
             ),
             "cells": (
                 *factor.cells,

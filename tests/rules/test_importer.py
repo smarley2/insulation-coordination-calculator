@@ -58,13 +58,17 @@ from insulation_coordination.rules.importer.recipes.iec60664_4_2005 import (
     RECIPE as PART4_RECIPE,
 )
 from insulation_coordination.rules.importer.review import (
+    accept_equation_mapping,
     accept_raw_grid,
+    accept_raw_table,
     build_reviewed_draft,
-    confirm_placeholder_formula,
     missing_required_content,
     placeholder_formula_ids,
     required_content_report,
+    unresolved_equation_items,
+    unresolved_mapping_items,
     unresolved_raw_review_items,
+    unresolved_table_items,
 )
 
 _PAGE_WIDTH = 612
@@ -96,12 +100,16 @@ def test_part1_recipe_contains_only_required_pcb_source_inventory() -> None:
         "pcb_pollution_1",
         "pcb_pollution_2",
     )
-    assert {
-        column.semantic_id for column in tables["iec60664-1-f8"].columns
-    } == {"peak_voltage_kv", "case_a_mm", "case_b_mm"}
-    assert {
-        column.semantic_id for column in tables["iec60664-1-a2"].columns
-    } == {"altitude_m", "pressure_kpa", "clearance_factor"}
+    assert {column.semantic_id for column in tables["iec60664-1-f8"].columns} == {
+        "peak_voltage_kv",
+        "case_a_mm",
+        "case_b_mm",
+    }
+    assert {column.semantic_id for column in tables["iec60664-1-a2"].columns} == {
+        "altitude_m",
+        "pressure_kpa",
+        "clearance_factor",
+    }
 
 
 def test_part4_recipe_uses_tables_one_two_and_real_equation_artifacts() -> None:
@@ -109,7 +117,9 @@ def test_part4_recipe_uses_tables_one_two_and_real_equation_artifacts() -> None:
         "iec60664-4-table-1",
         "iec60664-4-table-2",
     }
-    extracted = {formula.semantic_id for formula in PART4_RECIPE.formulas if formula.extract_from_pdf}
+    extracted = {
+        formula.semantic_id for formula in PART4_RECIPE.formulas if formula.extract_from_pdf
+    }
     assert extracted == {
         "iec60664-4-equation-1-critical-frequency",
         "iec60664-4-equation-2-frequency-factor",
@@ -656,11 +666,7 @@ def test_correction_cannot_rewrite_extracted_equation_text_or_source(
     )
     original = draft.model_copy(update={"extracted_equations": (equation,)})
     rewritten = original.model_copy(
-        update={
-            "extracted_equations": (
-                equation.model_copy(update={"raw_text": "rewritten"}),
-            )
-        }
+        update={"extracted_equations": (equation.model_copy(update={"raw_text": "rewritten"}),)}
     )
 
     with pytest.raises(ApprovalError, match="equation text or source"):
@@ -679,8 +685,10 @@ def test_correction_cannot_rewrite_raw_cell_semantics(
 ) -> None:
     draft = extract_draft(supported_pdfs)
     grid = draft.raw_grids[0]
-    cell_index = 0 if field == "role" else next(
-        index for index, item in enumerate(grid.cells) if item.role == "data"
+    cell_index = (
+        0
+        if field == "role"
+        else next(index for index, item in enumerate(grid.cells) if item.role == "data")
     )
     cell = grid.cells[cell_index]
     updates = {
@@ -1019,12 +1027,40 @@ def test_recorded_resolution_uses_original_full_review_item_digest(
     )
 
 
+def _accept_all_source_artifacts(draft: ImportedRuleDraft) -> ImportedRuleDraft:
+    accepted = draft
+    for grid in accepted.raw_grids:
+        if any(
+            item.semantic_id == grid.id.removeprefix("raw-")
+            for item in unresolved_table_items(accepted)
+        ):
+            accepted = accept_raw_table(
+                accepted,
+                grid_id=grid.id,
+                corrections={},
+                actor="Maintainer",
+                notes="Compared semantic table with PDF",
+            )
+    equation_ids = tuple(item.semantic_id for item in unresolved_equation_items(accepted))
+    mapping_ids = tuple(item.semantic_id for item in unresolved_mapping_items(accepted))
+    if equation_ids or mapping_ids:
+        accepted = accept_equation_mapping(
+            accepted,
+            equation_ids=equation_ids,
+            mapping_ids=mapping_ids,
+            actor="Maintainer",
+            notes="Reviewed equations and mappings",
+        )
+    return accepted
+
+
 def test_build_reviewed_draft_resolves_every_item(
     supported_pdfs: tuple[Path, Path],
     injected_recipes: tuple[StandardRecipe, ...],
 ) -> None:
     draft = extract_draft(supported_pdfs)
-    reviewed = build_reviewed_draft(draft, actor="Maintainer", notes="auto review")
+    accepted = _accept_all_source_artifacts(draft)
+    reviewed = build_reviewed_draft(accepted, actor="Maintainer", notes="Build")
 
     assert reviewed.review_items == draft.review_items
     assert len(reviewed.review_resolutions) == len(draft.review_items)
@@ -1034,10 +1070,49 @@ def test_build_reviewed_draft_resolves_every_item(
     assert is_fully_resolved(reviewed)
 
 
+def test_staged_review_requires_tables_then_equations_and_mappings(
+    supported_pdfs: tuple[Path, Path],
+    injected_recipes: tuple[StandardRecipe, ...],
+) -> None:
+    draft = extract_draft(supported_pdfs)
+    assert draft.tables == draft.formulas == draft.mappings == ()
+
+    reviewed = draft
+    for grid in reviewed.raw_grids:
+        reviewed = accept_raw_table(
+            reviewed,
+            grid_id=grid.id,
+            corrections={},
+            actor="Maintainer",
+            notes="Compared semantic table with PDF",
+        )
+
+    assert unresolved_table_items(reviewed) == ()
+    assert unresolved_equation_items(reviewed)
+    assert unresolved_mapping_items(reviewed)
+    with pytest.raises(ValueError, match="Review equations and mappings first"):
+        build_reviewed_draft(reviewed, actor="Maintainer", notes="Build")
+
+    reviewed = accept_equation_mapping(
+        reviewed,
+        equation_ids=tuple(item.semantic_id for item in unresolved_equation_items(reviewed)),
+        mapping_ids=tuple(item.semantic_id for item in unresolved_mapping_items(reviewed)),
+        actor="Maintainer",
+        notes="Reviewed equation and mapping contracts",
+    )
+    built = build_reviewed_draft(reviewed, actor="Maintainer", notes="Build typed rules")
+
+    assert is_fully_resolved(built)
+    assert all(table.row_axis.labels and table.column_axis.labels for table in built.tables)
+    assert "raw_sequence" not in str(
+        tuple(formula.expression.model_dump(mode="json") for formula in built.formulas)
+    )
+
+
 def test_build_reviewed_draft_requires_raw_grid_acceptance(tmp_path: Path) -> None:
     draft = _compound_draft(tmp_path)
 
-    with pytest.raises(ValueError, match="review extracted table cells first"):
+    with pytest.raises(ValueError, match="Review extracted tables first"):
         build_reviewed_draft(draft, actor="Maintainer", notes="Build rules")
 
 
@@ -1051,6 +1126,7 @@ def test_build_reviewed_draft_keeps_explicit_raw_resolution(tmp_path: Path) -> N
         notes="Compared against PDF",
     )
 
+    accepted = _accept_all_source_artifacts(accepted)
     reviewed = build_reviewed_draft(
         accepted,
         actor="Maintainer",
@@ -1064,53 +1140,10 @@ def test_build_reviewed_draft_keeps_explicit_raw_resolution(tmp_path: Path) -> N
     }
 
 
-def test_placeholder_formula_gate_blocks_then_confirmation_unlocks(
-    supported_pdfs: tuple[Path, Path],
-    injected_recipes: tuple[StandardRecipe, ...],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from tests.rules.test_importer import _test_recipes
-
-    recipe1, recipe4 = _test_recipes()
-    placeholder_id = "synthetic-placeholder-formula"
-    placeholder_spec = FormulaAuditSpec(
-        semantic_id=placeholder_id,
-        unit="bool",
-        variables=(),
-        expression_shape="compare(literal,literal)",
-        page_number=1,
-        clause="SYNTHETIC",
-        table="S1",
-    )
-    modified = recipe1.model_copy(update={"formulas": (*recipe1.formulas, placeholder_spec)})
-    monkeypatch.setattr(recipe_registry, "RECIPES", (modified, recipe4))
-
-    assert placeholder_id in placeholder_formula_ids()
-
-    draft = extract_draft(supported_pdfs)
-    # add the placeholder's review item is present in inventory since recipe includes it
-    reviewed = build_reviewed_draft(draft, actor="Maintainer", notes="auto review")
-    # placeholder formula remains unresolved after build
-    assert not is_fully_resolved(reviewed)
-    pending = [
-        item
-        for item in reviewed.review_items
-        if item.kind == "formula" and item.semantic_id == placeholder_id
-    ]
-    assert pending
+def test_corrected_part4_recipe_has_no_placeholder_formula_gate() -> None:
     assert all(
-        item.sha256 not in {r.review_item_sha256 for r in reviewed.review_resolutions}
-        for item in pending
+        formula.semantic_id not in placeholder_formula_ids() for formula in PART4_RECIPE.formulas
     )
-
-    confirmed = confirm_placeholder_formula(
-        reviewed,
-        formula_id=placeholder_id,
-        values=(Decimal(2), Decimal(3)),
-        actor="Maintainer",
-        notes="confirmed constants",
-    )
-    assert is_fully_resolved(confirmed)
 
 
 def test_required_content_report_tracks_missing_then_present(
@@ -1126,7 +1159,8 @@ def test_required_content_report_tracks_missing_then_present(
         i.semantic_id for i in report
     }
 
-    reviewed = build_reviewed_draft(draft, actor="Maintainer", notes="auto review")
+    accepted = _accept_all_source_artifacts(draft)
+    reviewed = build_reviewed_draft(accepted, actor="Maintainer", notes="Build")
     report = required_content_report(reviewed)
     assert report
     assert all(item.present for item in report)

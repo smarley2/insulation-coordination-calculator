@@ -100,11 +100,7 @@ def _expression_children(expression: Expression) -> tuple[Expression, ...]:
     if isinstance(expression, Lookup):
         return (expression.row, expression.column)
     if isinstance(expression, LinearInterpolate):
-        return (
-            (expression.x,)
-            if expression.column is None
-            else (expression.x, expression.column)
-        )
+        return (expression.x,) if expression.column is None else (expression.x, expression.column)
     if isinstance(expression, TableSelect):
         return (expression.row, expression.column)
     return ()
@@ -119,9 +115,7 @@ def _walk_expression(expression: Expression) -> tuple[Expression, ...]:
 
 
 def _strictly_increasing(values: tuple[Decimal, ...]) -> bool:
-    return len(values) == len(set(values)) and all(
-        left < right for left, right in pairwise(values)
-    )
+    return len(values) == len(set(values)) and all(left < right for left, right in pairwise(values))
 
 
 def _record_source_valid(source: SourceReference) -> bool:
@@ -143,14 +137,8 @@ def _range_matches_parameter(
     return any(
         parameter.name == supported_range.variable
         and parameter.unit == supported_range.unit
-        and (
-            parameter.minimum is None
-            or supported_range.minimum >= parameter.minimum
-        )
-        and (
-            parameter.maximum is None
-            or supported_range.maximum <= parameter.maximum
-        )
+        and (parameter.minimum is None or supported_range.minimum >= parameter.minimum)
+        and (parameter.maximum is None or supported_range.maximum <= parameter.maximum)
         for parameter in parameters
     )
 
@@ -209,8 +197,7 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         bool(table.cells)
         and len({(cell.row, cell.column) for cell in table.cells}) == len(table.cells)
         and all(
-            cell.row < len(table.row_axis.values)
-            and cell.column < len(table.column_axis.values)
+            cell.row < len(table.row_axis.values) and cell.column < len(table.column_axis.values)
             for cell in table.cells
         )
         and all(cell.unit == table.unit for cell in table.cells)
@@ -231,26 +218,25 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
     for formula in package.formulas:
         parameter_sets = formula.parameter_sets
         used = {
-            node.name
-            for node in _walk_expression(formula.expression)
-            if isinstance(node, Variable)
+            node.name for node in _walk_expression(formula.expression) if isinstance(node, Variable)
         }
         formula_parameters_valid = formula_parameters_valid and (
             len({item.id for item in parameter_sets}) == len(parameter_sets)
             and (not used or bool(parameter_sets))
             and all(
-                len({parameter.name for parameter in item.parameters})
-                == len(item.parameters)
+                len({parameter.name for parameter in item.parameters}) == len(item.parameters)
                 and used <= {parameter.name for parameter in item.parameters}
                 for item in parameter_sets
             )
         )
-        range_linkage_valid = range_linkage_valid and (
-            not formula.supported_ranges or bool(parameter_sets)
-        ) and all(
-            _range_matches_parameter(supported_range, parameter_set.parameters)
-            for supported_range in formula.supported_ranges
-            for parameter_set in parameter_sets
+        range_linkage_valid = (
+            range_linkage_valid
+            and (not formula.supported_ranges or bool(parameter_sets))
+            and all(
+                _range_matches_parameter(supported_range, parameter_set.parameters)
+                for supported_range in formula.supported_ranges
+                for parameter_set in parameter_sets
+            )
         )
 
     tables_by_id = {table.id: table for table in package.tables}
@@ -276,10 +262,7 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
                         "linear" not in (node.row_mode, node.column_mode)
                         or table.interpolation == "linear"
                     )
-                    and (
-                        not isinstance(node.row, Variable)
-                        or node.row.name == table.row_axis.id
-                    )
+                    and (not isinstance(node.row, Variable) or node.row.name == table.row_axis.id)
                     and (
                         not isinstance(node.column, Variable)
                         or node.column.name == table.column_axis.id
@@ -293,10 +276,7 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
                 table.interpolation == "linear"
                 and len(table.row_axis.values) >= 2
                 and (node.column is not None or len(table.column_axis.values) == 1)
-                and (
-                    not isinstance(node.x, Variable)
-                    or node.x.name == table.row_axis.id
-                )
+                and (not isinstance(node.x, Variable) or node.x.name == table.row_axis.id)
                 and (
                     node.column is None
                     or not isinstance(node.column, Literal)
@@ -304,20 +284,24 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
                 )
             )
 
-    sources_valid = all(
-        _record_source_valid(table.source)
-        and all(_cell_source_valid(cell.source) for cell in table.cells)
-        and all(_record_source_valid(item.source) for item in table.supported_ranges)
-        for table in package.tables
-    ) and all(
-        _record_source_valid(formula.source)
-        and all(
-            _record_source_valid(parameter_set.source)
-            for parameter_set in formula.parameter_sets
+    sources_valid = (
+        all(
+            _record_source_valid(table.source)
+            and all(_cell_source_valid(cell.source) for cell in table.cells)
+            and all(_record_source_valid(item.source) for item in table.supported_ranges)
+            for table in package.tables
         )
-        and all(_record_source_valid(item.source) for item in formula.supported_ranges)
-        for formula in package.formulas
-    ) and all(_record_source_valid(mapping.source) for mapping in package.mappings)
+        and all(
+            _record_source_valid(formula.source)
+            and all(
+                _record_source_valid(parameter_set.source)
+                for parameter_set in formula.parameter_sets
+            )
+            and all(_record_source_valid(item.source) for item in formula.supported_ranges)
+            for formula in package.formulas
+        )
+        and all(_record_source_valid(mapping.source) for mapping in package.mappings)
+    )
     results = (
         _result(
             "schema",
@@ -327,16 +311,12 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         _result("approval", package.manifest.approved, "package is approved"),
         _result(
             "approval_record",
-            any(
-                record.action == "approval"
-                for record in package.manifest.approval_records
-            ),
+            any(record.action == "approval" for record in package.manifest.approval_records),
             "approval record exists",
         ),
         _result(
             "compatibility",
-            package.manifest.compatible
-            and all(mapping.approved for mapping in package.mappings),
+            package.manifest.compatible and all(mapping.approved for mapping in package.mappings),
             "compatibility mappings are approved",
         ),
         _result("checksums", checksums_valid, "member checksums are valid"),

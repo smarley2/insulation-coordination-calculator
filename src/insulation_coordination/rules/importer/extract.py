@@ -149,15 +149,16 @@ class RawGrid(FrozenModel):
         coordinates = tuple((cell.row, cell.column) for cell in self.cells)
         if len(coordinates) != len(set(coordinates)):
             raise ValueError("raw grid cell coordinates must be unique")
-        if any(
-            cell.row >= self.rows or cell.column >= self.columns
-            for cell in self.cells
-        ):
+        if any(cell.row >= self.rows or cell.column >= self.columns for cell in self.cells):
             raise ValueError("raw grid cell coordinate is outside declared dimensions")
-        if tuple(segment.row_start for segment in self.segments) != tuple(
-            sum(item.row_count for item in self.segments[:index])
-            for index in range(len(self.segments))
-        ) or sum(segment.row_count for segment in self.segments) != self.rows:
+        if (
+            tuple(segment.row_start for segment in self.segments)
+            != tuple(
+                sum(item.row_count for item in self.segments[:index])
+                for index in range(len(self.segments))
+            )
+            or sum(segment.row_count for segment in self.segments) != self.rows
+        ):
             raise ValueError("raw grid segments must cover rows once in order")
         if any(
             (
@@ -211,19 +212,11 @@ def _content_digest(
         "formulas": [item.model_dump(mode="json") for item in formulas],
         "mappings": [item.model_dump(mode="json") for item in mappings],
         "review_items": [item.model_dump(mode="json") for item in review_items],
-        "review_resolutions": [
-            item.model_dump(mode="json") for item in review_resolutions
-        ],
+        "review_resolutions": [item.model_dump(mode="json") for item in review_resolutions],
         "raw_grids": [item.model_dump(mode="json") for item in raw_grids],
-        "extracted_equations": [
-            item.model_dump(mode="json") for item in extracted_equations
-        ],
-        "source_documents": [
-            item.model_dump(mode="json") for item in source_documents
-        ],
-        "source_identities": [
-            item.model_dump(mode="json") for item in source_identities
-        ],
+        "extracted_equations": [item.model_dump(mode="json") for item in extracted_equations],
+        "source_documents": [item.model_dump(mode="json") for item in source_documents],
+        "source_identities": [item.model_dump(mode="json") for item in source_identities],
     }
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
 
@@ -392,9 +385,7 @@ def _extract_segment(
 ) -> list[list[str | None]]:
     anchors = _anchor_boxes(anchor_page, anchor_text=segment.title_anchor)
     if not anchors:
-        raise ExtractionError(
-            f"layout anchor is missing for {semantic_id}; extraction refused"
-        )
+        raise ExtractionError(f"layout anchor is missing for {semantic_id}; extraction refused")
     matching = []
     for found in page.find_tables():
         raw = found.extract()
@@ -408,8 +399,7 @@ def _extract_segment(
             and found.bbox[1] - anchor["bottom"] <= segment.anchor_max_vertical_gap
             and max(
                 0.0,
-                min(found.bbox[2], anchor["x1"])
-                - max(found.bbox[0], anchor["x0"]),
+                min(found.bbox[2], anchor["x1"]) - max(found.bbox[0], anchor["x0"]),
             )
             / max(
                 1.0,
@@ -531,6 +521,8 @@ def _extract_layout_table(
                         role = "blank" if not raw_text.strip() else "note"
                     elif physical_row in segment.footnote_rows:
                         role = "blank" if not raw_text.strip() else "footnote"
+                    elif (physical_row, source_column) in segment.context_cells:
+                        role = "blank" if not raw_text.strip() else "note"
                     elif physical_row in data_row_indexes and column_spec.role != "context":
                         logical = (
                             segment.logical_row_offset + data_row_indexes[physical_row],
@@ -601,7 +593,10 @@ def _extract_layout_table(
         logical_columns = {
             column.semantic_id for column in spec.columns if column.role != "context"
         }
-        if len(logical_rows) != spec.expected_data_rows or len(logical_columns) != spec.expected_data_columns:
+        if (
+            len(logical_rows) != spec.expected_data_rows
+            or len(logical_columns) != spec.expected_data_columns
+        ):
             raise ExtractionError(f"semantic data dimensions differ for {spec.semantic_id}")
     grid = RawGrid(
         id=f"raw-{spec.semantic_id}",
@@ -621,8 +616,7 @@ def _extract_layout_table(
             expected_contract=f"raw-cell:{spec.semantic_id}:numeric",
         )
         for cell in cells
-        if cell.role == "data"
-        and cell.parse_status != "numeric"
+        if cell.role == "data" and cell.parse_status != "numeric"
     )
     return grid, reviews
 
@@ -912,16 +906,12 @@ def extract_draft(paths: tuple[Path, ...]) -> ImportedRuleDraft:
             *(f"mapping:{mapping.id}" for mapping in mappings),
             *(f"raw-grid:{grid.id}" for grid in raw_grids),
             *(f"equation:{equation.id}" for equation in extracted_equations),
-            *(
-                f"review:{item.code}:{item.semantic_id}"
-                for item in review_items
-            ),
+            *(f"review:{item.code}:{item.semantic_id}" for item in review_items),
             f"content:{_content_digest(tables, formulas, mappings, review_items, raw_grids, extracted_equations=extracted_equations)}",
         )
     )
     ordered_identities = tuple(
-        identity
-        for _, identity in sorted(identified, key=lambda pair: pair[1].recipe_id)
+        identity for _, identity in sorted(identified, key=lambda pair: pair[1].recipe_id)
     )
     sources = tuple(
         SourceDocument(

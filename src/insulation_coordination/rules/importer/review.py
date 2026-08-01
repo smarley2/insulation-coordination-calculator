@@ -44,6 +44,33 @@ from insulation_coordination.rules.importer.identify import (
     StandardRecipe,
     TableAuditSpec,
 )
+from insulation_coordination.rules.importer.projection import (
+    project_formula,
+    project_mapping,
+    project_table,
+)
+
+
+def _unresolved_items(
+    draft: ImportedRuleDraft,
+    kind: str,
+) -> tuple[ImportReviewItem, ...]:
+    resolved = {resolution.review_item_sha256 for resolution in draft.review_resolutions}
+    return tuple(
+        item for item in draft.review_items if item.kind == kind and item.sha256 not in resolved
+    )
+
+
+def unresolved_table_items(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
+    return _unresolved_items(draft, "table")
+
+
+def unresolved_equation_items(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
+    return _unresolved_items(draft, "formula")
+
+
+def unresolved_mapping_items(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
+    return _unresolved_items(draft, "mapping")
 
 
 def _table_from_spec(
@@ -68,7 +95,12 @@ def _table_from_spec(
         )
     else:
         coordinates = (
-            (index // spec.expected_data_columns, index % spec.expected_data_columns, cell.row, cell.column)
+            (
+                index // spec.expected_data_columns,
+                index % spec.expected_data_columns,
+                cell.row,
+                cell.column,
+            )
             for index, cell in enumerate(cell for cell in grid.cells if cell.value is not None)
         )
     raw = {(cell.row, cell.column): cell for cell in grid.cells}
@@ -213,6 +245,102 @@ def unresolved_raw_review_items(
     )
 
 
+def accept_raw_table(
+    draft: ImportedRuleDraft,
+    *,
+    grid_id: str,
+    corrections: Mapping[tuple[int, int], Decimal],
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Accept one logical table, including any explicitly reviewed data cells."""
+    grid = next((item for item in draft.raw_grids if item.id == grid_id), None)
+    if grid is None:
+        raise ValueError(f"unknown raw grid: {grid_id}")
+    semantic_id = grid_id.removeprefix("raw-")
+    table_items = tuple(
+        item for item in unresolved_table_items(draft) if item.semantic_id == semantic_id
+    )
+    raw_items = tuple(
+        item
+        for item in unresolved_raw_review_items(draft)
+        if item.semantic_id.startswith(f"{grid_id}:")
+    )
+    if not table_items and not raw_items:
+        raise ValueError(f"raw table {grid_id} is already accepted")
+    coordinates = {tuple(map(int, item.semantic_id.rsplit(":", 2)[-2:])) for item in raw_items}
+    unexpected = set(corrections) - coordinates
+    if unexpected:
+        raise ValueError(f"raw grid correction is not flagged: {sorted(unexpected)!r}")
+    changed_cells: list[RawGridCell] = []
+    for cell in grid.cells:
+        coordinate = (cell.row, cell.column)
+        if coordinate not in coordinates:
+            changed_cells.append(cell)
+            continue
+        value = corrections.get(coordinate, cell.value)
+        if value is None or not value.is_finite():
+            raise ValueError(f"raw grid correction must be a finite decimal: {coordinate}")
+        changed_cells.append(
+            cell.model_copy(
+                update={
+                    "value": value,
+                    "qualifier": None,
+                    "suffix": None,
+                    "parse_status": "numeric",
+                }
+            )
+        )
+    changed_grid = grid.model_copy(update={"cells": tuple(changed_cells)})
+    changed = draft.model_copy(
+        update={
+            "raw_grids": tuple(
+                changed_grid if item.id == grid_id else item for item in draft.raw_grids
+            )
+        }
+    )
+    return record_correction(
+        draft,
+        changed,
+        actor=actor.strip(),
+        notes=notes.strip(),
+        resolve=(*table_items, *raw_items),
+    )
+
+
+def accept_equation_mapping(
+    draft: ImportedRuleDraft,
+    *,
+    equation_ids: tuple[str, ...],
+    mapping_ids: tuple[str, ...],
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Accept selected canonical formula/equation and mapping source artifacts."""
+    equations = {item.semantic_id: item for item in unresolved_equation_items(draft)}
+    mappings = {item.semantic_id: item for item in unresolved_mapping_items(draft)}
+    if not equation_ids and not mapping_ids:
+        raise ValueError("select equations or mappings to accept")
+    if set(equation_ids) - set(equations) or set(mapping_ids) - set(mappings):
+        raise ValueError("equation or mapping is unknown or already accepted")
+    extracted = {equation.id: equation for equation in draft.extracted_equations}
+    if any(
+        equation_id in extracted and extracted[equation_id].parse_status != "parsed"
+        for equation_id in equation_ids
+    ):
+        raise ValueError("an equation still requires parsed-field review")
+    resolve = tuple(equations[item] for item in equation_ids) + tuple(
+        mappings[item] for item in mapping_ids
+    )
+    return record_correction(
+        draft,
+        draft,
+        actor=actor.strip(),
+        notes=notes.strip(),
+        resolve=resolve,
+    )
+
+
 def accept_raw_grid(
     draft: ImportedRuleDraft,
     *,
@@ -279,14 +407,17 @@ def build_reviewed_draft(
     actor: str,
     notes: str,
 ) -> ImportedRuleDraft:
-    """Reconstruct typed content after every raw extraction cell is reviewed."""
+    """Project typed content only after every source artifact is accepted."""
     from insulation_coordination.rules.importer.recipes import RECIPES
 
-    if unresolved_raw_review_items(draft):
-        raise ValueError("review extracted table cells first")
+    if unresolved_table_items(draft) or unresolved_raw_review_items(draft):
+        raise ValueError("Review extracted tables first")
+    if unresolved_equation_items(draft) or unresolved_mapping_items(draft):
+        raise ValueError("Review equations and mappings first")
 
     identities = {i.recipe_id: i for i in draft.source_identities}
     grids = {g.id: g for g in draft.raw_grids}
+    equations = {equation.id: equation for equation in draft.extracted_equations}
 
     tables: dict[str, Table] = {}
     formulas: dict[str, Formula] = {}
@@ -295,16 +426,13 @@ def build_reviewed_draft(
     for recipe in RECIPES:
         identity = identities[recipe.id]
         for table_spec in recipe.tables:
-            tables[table_spec.semantic_id] = _table_from_spec(
+            tables[table_spec.semantic_id] = project_table(
                 identity, table_spec, grids[f"raw-{table_spec.semantic_id}"]
             )
         for formula_spec in recipe.formulas:
-            table_id = _table_id_for(recipe, formula_spec)
-            formulas[formula_spec.semantic_id] = _formula_from_spec(
-                identity, formula_spec, table_id
-            )
+            formulas[formula_spec.semantic_id] = project_formula(identity, formula_spec, equations)
         for mapping_spec in recipe.mappings:
-            mappings[mapping_spec.id] = _mapping_from_spec(identity, mapping_spec)
+            mappings[mapping_spec.id] = project_mapping(identity, mapping_spec)
 
     changed = draft.model_copy(
         update={
@@ -313,19 +441,12 @@ def build_reviewed_draft(
             "mappings": tuple(mappings.values()),
         }
     )
-    placeholders = placeholder_formula_ids()
-    resolve = tuple(
-        item
-        for item in draft.review_items
-        if item.kind != "raw_cell"
-        and not (item.kind == "formula" and item.semantic_id in placeholders)
-    )
     return record_correction(
         draft,
         changed,
         actor=actor.strip(),
         notes=notes.strip(),
-        resolve=resolve,
+        resolve=(),
     )
 
 

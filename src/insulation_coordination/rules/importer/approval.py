@@ -20,6 +20,7 @@ from insulation_coordination.rules.importer.extract import (
     ImportReviewResolution,
     _content_digest,
 )
+from insulation_coordination.rules.importer.identify import StandardRecipe
 from insulation_coordination.rules.validation import validate_rule_package
 
 _EXPECTED_DRAFT_FAILURES = {
@@ -45,19 +46,23 @@ def _source_matches(actual: SourceReference, expected: SourceReference) -> bool:
 def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft) -> bool:
     if item.kind == "table":
         return any(
-            table.id == item.semantic_id and _source_matches(table.source, item.source)
-            for table in changed.tables
+            grid.id == f"raw-{item.semantic_id}" and _source_matches(grid.source, item.source)
+            for grid in changed.raw_grids
         )
     if item.kind == "formula":
         return any(
-            formula.id == item.semantic_id and _source_matches(formula.source, item.source)
-            for formula in changed.formulas
+            equation.id == item.semantic_id
+            and equation.parse_status == "parsed"
+            and _source_matches(equation.source, item.source)
+            for equation in changed.extracted_equations
+        ) or any(
+            spec.semantic_id == item.semantic_id
+            for recipe in _recipes()
+            for spec in recipe.formulas
+            if not spec.extract_from_pdf
         )
     if item.kind == "mapping":
-        return any(
-            mapping.id == item.semantic_id and _source_matches(mapping.source, item.source)
-            for mapping in changed.mappings
-        )
+        return any(spec.id == item.semantic_id for recipe in _recipes() for spec in recipe.mappings)
     return any(
         f"{grid.id}:{cell.row}:{cell.column}" == item.semantic_id
         and _source_matches(cell.source, item.source)
@@ -66,6 +71,12 @@ def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft
         for grid in changed.raw_grids
         for cell in grid.cells
     )
+
+
+def _recipes() -> tuple[StandardRecipe, ...]:
+    from insulation_coordination.rules.importer.recipes import RECIPES
+
+    return RECIPES
 
 
 def _changed_tokens(
@@ -337,6 +348,8 @@ def _require_complete_audit(draft: DraftRulePackage) -> None:
     required.update(f"table:{table.id}" for table in draft.tables)
     required.update(f"formula:{formula.id}" for formula in draft.formulas)
     required.update(f"mapping:{mapping.id}" for mapping in draft.mappings)
+    if isinstance(draft, ImportedRuleDraft):
+        required.update(f"equation:{equation.id}" for equation in draft.extracted_equations)
     missing = required - audited
     if missing:
         raise ApprovalError("draft has incomplete extraction, table, formula, or mapping audits")
@@ -422,6 +435,11 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
                 table=spec.source_table,
                 note=f"PDF page {spec.page_number}",
             )
+            typed_column_count = (
+                sum(column.role == "data" for column in spec.columns)
+                if spec.columns
+                else spec.expected_data_columns
+            )
             if (
                 table.unit != spec.target_unit
                 or table.source != expected_source
@@ -430,13 +448,31 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
                 or len(table.row_axis.values) != spec.expected_data_rows
                 or table.column_axis.id != spec.column_axis_id
                 or table.column_axis.unit != spec.column_axis_unit
-                or len(table.column_axis.values) != spec.expected_data_columns
+                or len(table.column_axis.values) != typed_column_count
                 or (grid.rows, grid.columns) != (spec.expected_raw_rows, spec.expected_raw_columns)
                 or grid.target_unit != spec.target_unit
             ):
                 raise ApprovalError("reviewed table violates its exact recipe contract")
             grid_cells = {(cell.row, cell.column): cell for cell in grid.cells}
-            if spec.data_strategy == "rectangle":
+            if spec.columns:
+                data_ids = tuple(
+                    column.semantic_id for column in spec.columns if column.role == "data"
+                )
+                data_order = {semantic_id: index for index, semantic_id in enumerate(data_ids)}
+                raw_values = tuple(
+                    sorted(
+                        (
+                            cell
+                            for cell in grid.cells
+                            if cell.logical_column in data_order and cell.value is not None
+                        ),
+                        key=lambda cell: (
+                            cell.logical_row,
+                            data_order[cell.logical_column or ""],
+                        ),
+                    )
+                )
+            elif spec.data_strategy == "rectangle":
                 if spec.data_row_start is None or spec.data_column_start is None:
                     raise ApprovalError("recipe rectangle has no source coordinate")
                 raw_values = tuple(
@@ -470,11 +506,24 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
                 figure=formula_spec.figure,
                 note=f"PDF page {formula_spec.page_number}",
             )
+            expected_shape = {
+                "critical_frequency_inverse_clearance": "divide(literal,variable:clearance_mm)",
+                "linear_frequency_factor": (
+                    "add(literal,multiply(divide(add(variable:frequency_mhz,"
+                    "multiply(literal,variable:critical_frequency_mhz)),"
+                    "add(variable:minimum_frequency_mhz,multiply(literal,"
+                    "variable:critical_frequency_mhz))),literal))"
+                ),
+                "minimum_frequency_statement": "literal",
+                "radius_to_clearance_criterion": (
+                    "compare(divide(variable:radius_mm,variable:clearance_mm),literal)"
+                ),
+            }.get(formula_spec.expression_shape, formula_spec.expression_shape)
             if (
                 formula.unit != formula_spec.unit
                 or formula.source != expected_source
                 or _expression_variables(formula.expression) != set(formula_spec.variables)
-                or _expression_shape(formula.expression) != formula_spec.expression_shape
+                or _expression_shape(formula.expression) != expected_shape
             ):
                 raise ApprovalError("reviewed formula violates its exact recipe contract")
         for mapping_spec in recipe.mappings:
@@ -529,6 +578,8 @@ def _expression_shape(expression: Expression) -> str:
             if node["column"] is not None:
                 children.append(shape(node["column"]))  # type: ignore[arg-type]
             return f"linear_interpolate:{node['table_id']}({','.join(children)})"
+        if op == "table_select":
+            return f"table_select:{node['table_id']}({node['row_mode']},{node['column_mode']})"
         raise ApprovalError("formula expression has an unsupported recipe shape")
 
     return shape(value)

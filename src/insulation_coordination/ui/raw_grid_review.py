@@ -127,7 +127,10 @@ class RawGridReviewDialog(QDialog):
 
     def _pending_coordinates(self, grid_id: str) -> set[tuple[int, int]]:
         return {
-            tuple(map(int, item.semantic_id.rsplit(":", 2)[-2:]))
+            (
+                int(item.semantic_id.rsplit(":", 2)[-2]),
+                int(item.semantic_id.rsplit(":", 2)[-1]),
+            )
             for item in unresolved_raw_review_items(self._draft)
             if item.semantic_id.startswith(f"{grid_id}:")
         }

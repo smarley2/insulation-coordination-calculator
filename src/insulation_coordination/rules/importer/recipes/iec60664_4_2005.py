@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Literal
 
 from insulation_coordination.rules.importer.identify import (
@@ -24,6 +25,33 @@ def _columns(
             unit=unit,
         )
         for semantic_id, heading, source_column, role, unit in items
+    )
+
+
+def _frequency_columns() -> tuple[TableColumnSpec, ...]:
+    columns = _columns(
+        ("peak_voltage_kv", "Peak voltage", 0, "axis", "kV"),
+        ("frequency_30_100_khz_mm", "30 kHz to 100 kHz", 1, "data", "mm"),
+        ("frequency_200_khz_mm", "Up to 0.2 MHz", 2, "data", "mm"),
+        ("frequency_400_khz_mm", "Up to 0.4 MHz", 3, "data", "mm"),
+        ("frequency_700_khz_mm", "Up to 0.7 MHz", 4, "data", "mm"),
+        ("frequency_1_mhz_mm", "Up to 1 MHz", 5, "data", "mm"),
+        ("frequency_2_mhz_mm", "Up to 2 MHz", 6, "data", "mm"),
+        ("frequency_3_mhz_mm", "Up to 3 MHz", 7, "data", "mm"),
+    )
+    frequencies = (
+        None,
+        Decimal(100_000),
+        Decimal(200_000),
+        Decimal(400_000),
+        Decimal(700_000),
+        Decimal(1_000_000),
+        Decimal(2_000_000),
+        Decimal(3_000_000),
+    )
+    return tuple(
+        column.model_copy(update={"axis_value": frequency})
+        for column, frequency in zip(columns, frequencies, strict=True)
     )
 
 
@@ -151,7 +179,7 @@ RECIPE = StandardRecipe(
             expected_data_columns=8,
             row_axis_id="peak_voltage_kv",
             row_axis_unit="kV",
-            column_axis_id="frequency_branch",
+            column_axis_id="frequency_hz",
             column_axis_unit="Hz",
             allowed_suffixes=("a", "b"),
             assertions=("strictly_increasing_axes", "raw_value_correspondence"),
@@ -168,24 +196,15 @@ RECIPE = StandardRecipe(
                     footnote_rows=(19,),
                 ),
             ),
-            columns=_columns(
-                ("peak_voltage_kv", "Peak voltage", 0, "axis", "kV"),
-                ("frequency_30_100_khz_mm", "30 kHz to 100 kHz", 1, "data", "mm"),
-                ("frequency_200_khz_mm", "Up to 0.2 MHz", 2, "data", "mm"),
-                ("frequency_400_khz_mm", "Up to 0.4 MHz", 3, "data", "mm"),
-                ("frequency_700_khz_mm", "Up to 0.7 MHz", 4, "data", "mm"),
-                ("frequency_1_mhz_mm", "Up to 1 MHz", 5, "data", "mm"),
-                ("frequency_2_mhz_mm", "Up to 2 MHz", 6, "data", "mm"),
-                ("frequency_3_mhz_mm", "Up to 3 MHz", 7, "data", "mm"),
-            ),
+            columns=_frequency_columns(),
         ),
     ),
     formulas=(
         FormulaAuditSpec(
             semantic_id="iec60664-4:hf-clearance-table",
             unit="mm",
-            variables=("peak_voltage_kv",),
-            expression_shape="linear_interpolate:iec60664-4-table-1(variable:peak_voltage_kv)",
+            variables=("peak_voltage_kv", "clearance_branch"),
+            expression_shape="table_select:iec60664-4-table-1(ceiling,exact)",
             page_number=29,
             clause="5",
             table="1",
@@ -194,10 +213,7 @@ RECIPE = StandardRecipe(
             semantic_id="iec60664-4:hf-creepage-table",
             unit="mm",
             variables=("peak_voltage_kv", "frequency_hz"),
-            expression_shape=(
-                "linear_interpolate:iec60664-4-table-2(variable:peak_voltage_kv,"
-                "variable:frequency_hz)"
-            ),
+            expression_shape="table_select:iec60664-4-table-2(ceiling,linear)",
             page_number=35,
             clause="5",
             table="2",
@@ -233,16 +249,18 @@ RECIPE = StandardRecipe(
             expression_shape="minimum_frequency_statement",
             page_number=21,
             clause="4.3.1",
+            figure="Figure A.1",
             extract_from_pdf=True,
             applicability="Equation (2) upper frequency reference",
         ),
         FormulaAuditSpec(
             semantic_id="iec60664-4-radius-criterion",
-            unit="percent",
+            unit="bool",
             variables=("radius_mm", "clearance_mm"),
             expression_shape="radius_to_clearance_criterion",
             page_number=21,
             clause="4.3.1",
+            figure="Radius criterion",
             extract_from_pdf=True,
             applicability="approximately homogeneous field classification",
         ),
