@@ -49,9 +49,7 @@ def _seal_rules(rules: RulePackage, path: Path) -> RulePackage:
 
 def _with_nonfinite_axis(rules: RulePackage, value: Decimal) -> RulePackage:
     table = rules.tables[0]
-    axis = table.row_axis.model_copy(
-        update={"values": (value, *table.row_axis.values[1:])}
-    )
+    axis = table.row_axis.model_copy(update={"values": (value, *table.row_axis.values[1:])})
     return rules.model_copy(
         update={
             "tables": (
@@ -99,12 +97,8 @@ def _with_nonfinite_formula_literal(
     rules: RulePackage,
     value: Decimal,
 ) -> RulePackage:
-    formula = rules.formulas[0].model_copy(
-        update={"expression": {"op": "literal", "value": value}}
-    )
-    return rules.model_copy(
-        update={"formulas": (formula, *rules.formulas[1:])}
-    )
+    formula = rules.formulas[0].model_copy(update={"expression": {"op": "literal", "value": value}})
+    return rules.model_copy(update={"formulas": (formula, *rules.formulas[1:])})
 
 
 @pytest.fixture
@@ -337,9 +331,7 @@ def test_nonfinite_rule_values_are_total_validation_failures_at_all_entries(
     report = validate_rule_package(invalid)
 
     assert report.is_valid is False
-    structure = next(
-        result for result in report.results if result.code == "package_structure"
-    )
+    structure = next(result for result in report.results if result.code == "package_structure")
     assert structure.passed is False
     assert "invalid structure" in structure.message
 
@@ -420,13 +412,8 @@ def test_annex_g_uses_f2_and_f8_with_semantic_source_cells(
     assert impulse.formula_id == "iec60664-1:f2-clearance"
     assert impulse.selection_mode == "ceiling/exact"
     assert impulse.branch_label == "case_a_pd2_mm"
-    assert impulse.steps[-1].source_cells == (
-        "impulse_withstand_kv-1.0/case_a_pd2_mm",
-    )
-    assert all(
-        candidate.formula_id == "iec60664-1:f8-clearance"
-        for candidate in candidates[1:]
-    )
+    assert impulse.steps[-1].source_cells == ("impulse_withstand_kv-1.0/case_a_pd2_mm",)
+    assert all(candidate.formula_id == "iec60664-1:f8-clearance" for candidate in candidates[1:])
 
 
 def test_reinforced_stress_is_treated_before_f2_and_f8_selection(
@@ -444,8 +431,7 @@ def test_reinforced_stress_is_treated_before_f2_and_f8_selection(
     assert by_id["temporary_overvoltage_peak"].treated_stress.value == Decimal(960)
     assert by_id["recurring_peak"].treated_stress.value == Decimal(640)
     assert all(
-        candidate.steps[0].operation == "reinforced_stress_treatment"
-        for candidate in candidates
+        candidate.steps[0].operation == "reinforced_stress_treatment" for candidate in candidates
     )
 
 
@@ -522,13 +508,7 @@ def test_annex_g_sparse_missing_combination_blocks_instead_of_selecting_neighbor
 ) -> None:
     table = next(item for item in semantic_annex_g_rules.tables if item.id == "iec60664-1-f2")
     sparse = table.model_copy(
-        update={
-            "cells": tuple(
-                cell
-                for cell in table.cells
-                if (cell.row, cell.column) != (2, 1)
-            )
-        }
+        update={"cells": tuple(cell for cell in table.cells if (cell.row, cell.column) != (2, 1))}
     )
     rules = _seal_rules(
         semantic_annex_g_rules.model_copy(
@@ -632,7 +612,9 @@ def test_clearance_floor_candidate_has_evaluator_trace_before_final_maximum(
 def test_printed_wiring_branch_adds_construction_confirmation_advisories(
     case_factory, synthetic_rules: RulePackage, tmp_path: Path
 ) -> None:
-    original = next(mapping for mapping in synthetic_rules.mappings if mapping.id == "basic_creepage")
+    original = next(
+        mapping for mapping in synthetic_rules.mappings if mapping.id == "basic_creepage"
+    )
     printed = original.model_copy(
         update={
             "id": "basic_creepage_printed_wiring",
@@ -646,9 +628,7 @@ def test_printed_wiring_branch_adds_construction_confirmation_advisories(
         tmp_path / "printed-wiring.icrules",
     )
 
-    result = calculate_pair(
-        case_factory(construction_type=ConstructionType.PRINTED_WIRING), rules
-    )
+    result = calculate_pair(case_factory(construction_type=ConstructionType.PRINTED_WIRING), rules)
 
     assert [warning.code for warning in result.warnings] == ["PCB_CONSTRUCTION_CONFIRMATION"]
     assert [item.code for item in result.verification_requirements] == [
@@ -673,7 +653,7 @@ def test_unsupported_special_assumptions_block_with_actionable_error(
 def test_frequency_above_part1_scope_requires_an_approved_part4_mapping(
     case_factory, synthetic_rules: RulePackage
 ) -> None:
-    with pytest.raises(RuleMappingError, match="part4_periodic_clearance mapping is missing"):
+    with pytest.raises(RuleMappingError, match="critical-frequency.*must exist exactly once"):
         calculate_pair(case_factory(frequency_hz="30001"), synthetic_rules)
 
 

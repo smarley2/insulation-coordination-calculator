@@ -5,8 +5,13 @@ from pathlib import Path
 import pytest
 
 from insulation_coordination.domain.rules import (
+    Add,
+    Compare,
     CompatibilityMapping,
+    Divide,
     Formula,
+    Literal,
+    Multiply,
     Parameter,
     ParameterSet,
     RulePackage,
@@ -67,9 +72,7 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
                     column=column_index,
                     value=Decimal(row_index + 1) + Decimal(column_index + 1) / Decimal(10),
                     unit="mm",
-                    source=source.model_copy(
-                        update={"row": str(row_value), "column": label}
-                    ),
+                    source=source.model_copy(update={"row": str(row_value), "column": label}),
                 )
                 for row_index, row_value in enumerate(rows)
                 for column_index, label in enumerate(labels)
@@ -146,9 +149,7 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
                 f"{kind}_clearance:candidate={candidate}:field={field}:pollution=2"
             ),
             target_rule_id=(
-                "iec60664-1:f2-clearance"
-                if candidate == "impulse"
-                else "iec60664-1:f8-clearance"
+                "iec60664-1:f2-clearance" if candidate == "impulse" else "iec60664-1:f8-clearance"
             ),
             approved=True,
             source=source,
@@ -163,9 +164,7 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
     retained_formulas = tuple(
         item for item in base.formulas if not item.id.startswith("synthetic-clearance-")
     )
-    retained_mappings = tuple(
-        item for item in base.mappings if "_clearance_" not in item.id
-    )
+    retained_mappings = tuple(item for item in base.mappings if "_clearance_" not in item.id)
     candidate = base.model_copy(
         update={
             "tables": (*retained_tables, f2, f8),
@@ -176,5 +175,194 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
         }
     )
     path = tmp_path / "synthetic-annex-g.icrules"
+    write_rule_package(path, candidate)
+    return load_rule_package(path)
+
+
+@pytest.fixture
+def semantic_part4_rules(
+    tmp_path: Path,
+    semantic_annex_g_rules: RulePackage,
+) -> RulePackage:
+    source = semantic_annex_g_rules.tables[0].source.model_copy(
+        update={"table": None, "figure": "Equation"}
+    )
+    table_source = source.model_copy(update={"table": "1", "figure": None})
+    table_1 = Table(
+        id="iec60664-4-table-1",
+        unit="mm",
+        row_axis=TableAxis(
+            id="peak_voltage_kv",
+            unit="kV",
+            values=tuple(map(Decimal, ("0.5", "0.8", "1.0", "1.6"))),
+            labels=("0.5", "0.8", "1.0", "1.6"),
+        ),
+        column_axis=TableAxis(
+            id="clearance_branch",
+            unit="1",
+            values=(Decimal(1),),
+            labels=("inhomogeneous_mm",),
+        ),
+        cells=tuple(
+            TableCell(
+                row=index,
+                column=0,
+                value=value,
+                unit="mm",
+                source=table_source.model_copy(update={"row": label, "column": "clearance"}),
+            )
+            for index, (label, value) in enumerate(
+                zip(("0.5", "0.8", "1.0", "1.6"), map(Decimal, ("1", "2", "3", "5")), strict=True)
+            )
+        ),
+        supported_ranges=(
+            SupportedRange(
+                variable="peak_voltage_kv",
+                minimum=Decimal("0.5"),
+                maximum=Decimal("1.6"),
+                unit="kV",
+                source=table_source,
+            ),
+        ),
+        interpolation="none",
+        source=table_source,
+    )
+
+    def scalar_formula(
+        formula_id: str,
+        expression: object,
+        unit: str,
+        parameters: tuple[str, ...],
+    ) -> Formula:
+        return Formula(
+            id=formula_id,
+            expression=expression,
+            unit=unit,
+            parameter_sets=(
+                ParameterSet(
+                    id=f"{formula_id}-parameters",
+                    parameters=tuple(Parameter(name=name, unit="1") for name in parameters),
+                    source=source,
+                ),
+            ),
+            source=source,
+        )
+
+    critical = scalar_formula(
+        "iec60664-4-equation-1-critical-frequency",
+        Divide(numerator=Literal(value=Decimal("0.2")), denominator=Variable(name="clearance_mm")),
+        "MHz",
+        ("clearance_mm",),
+    )
+    factor = scalar_formula(
+        "iec60664-4-equation-2-frequency-factor",
+        Add(
+            operands=(
+                Literal(value=Decimal(100)),
+                Multiply(
+                    operands=(
+                        Divide(
+                            numerator=Add(
+                                operands=(
+                                    Variable(name="frequency_mhz"),
+                                    Multiply(
+                                        operands=(
+                                            Literal(value=Decimal(-1)),
+                                            Variable(name="critical_frequency_mhz"),
+                                        )
+                                    ),
+                                )
+                            ),
+                            denominator=Add(
+                                operands=(
+                                    Variable(name="minimum_frequency_mhz"),
+                                    Multiply(
+                                        operands=(
+                                            Literal(value=Decimal(-1)),
+                                            Variable(name="critical_frequency_mhz"),
+                                        )
+                                    ),
+                                )
+                            ),
+                        ),
+                        Literal(value=Decimal(25)),
+                    )
+                ),
+            )
+        ),
+        "percent",
+        ("frequency_mhz", "critical_frequency_mhz", "minimum_frequency_mhz"),
+    )
+    minimum = scalar_formula(
+        "iec60664-4-minimum-frequency",
+        Literal(value=Decimal(3)),
+        "MHz",
+        (),
+    )
+    radius = scalar_formula(
+        "iec60664-4-radius-criterion",
+        Compare(
+            comparison="ge",
+            left=Divide(
+                numerator=Variable(name="radius_mm"),
+                denominator=Variable(name="clearance_mm"),
+            ),
+            right=Literal(value=Decimal("0.2")),
+        ),
+        "bool",
+        ("radius_mm", "clearance_mm"),
+    )
+    clearance = Formula(
+        id="iec60664-4:hf-clearance-table",
+        expression=TableSelect(
+            table_id=table_1.id,
+            row=Variable(name="peak_voltage_kv"),
+            column=Variable(name="clearance_branch"),
+            row_mode="ceiling",
+            column_mode="exact",
+        ),
+        unit="mm",
+        parameter_sets=(
+            ParameterSet(
+                id="part4-table-1-parameters",
+                parameters=(
+                    Parameter(name="peak_voltage_kv", unit="kV"),
+                    Parameter(name="clearance_branch", unit="1"),
+                ),
+                source=table_source,
+            ),
+        ),
+        source=table_source,
+    )
+    mappings = tuple(
+        CompatibilityMapping(
+            id=f"part4-clearance-{kind}",
+            source_rule_id=(
+                f"iec60664-4:clearance:{kind}:stress=periodic_peak_v:"
+                "frequency=frequency_hz:pollution=2"
+            ),
+            target_rule_id=clearance.id,
+            approved=True,
+            source=table_source,
+        )
+        for kind in ("functional", "basic", "supplementary", "reinforced")
+    )
+    candidate = semantic_annex_g_rules.model_copy(
+        update={
+            "tables": (*semantic_annex_g_rules.tables, table_1),
+            "formulas": (
+                *semantic_annex_g_rules.formulas,
+                critical,
+                factor,
+                minimum,
+                radius,
+                clearance,
+            ),
+            "mappings": (*semantic_annex_g_rules.mappings, *mappings),
+            "checksums": {},
+            "package_sha256": None,
+        }
+    )
+    path = tmp_path / "synthetic-part4.icrules"
     write_rule_package(path, candidate)
     return load_rule_package(path)

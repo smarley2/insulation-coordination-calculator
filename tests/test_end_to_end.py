@@ -30,8 +30,7 @@ from insulation_coordination.project.persistence import load_project, save_proje
 from insulation_coordination.project.resolver import resolve_effective_case
 from insulation_coordination.report.latex import render_latex
 from insulation_coordination.report.model import build_report_model
-from insulation_coordination.rules.archive import load_rule_package, write_rule_package
-from tests.fixtures.synthetic_rules import synthetic_hf_rule_package
+from tests.calculation.conftest import semantic_annex_g_rules, semantic_part4_rules
 
 
 def _fake_tectonic(path: Path) -> tuple[str, str]:
@@ -55,23 +54,23 @@ def _uuid(seed: int) -> UUID:
     return UUID(int=seed)
 
 
-def test_end_to_end_desktop_report_workflow(tmp_path: Path) -> None:
-    rules_path = tmp_path / "synthetic.icrules"
-    write_rule_package(rules_path, synthetic_hf_rule_package())
-    rules = load_rule_package(rules_path)
+def test_end_to_end_desktop_report_workflow(
+    tmp_path: Path,
+) -> None:
+    part1_rules = semantic_annex_g_rules.__wrapped__(tmp_path)
+    rules = semantic_part4_rules.__wrapped__(tmp_path, part1_rules)
     assert rules.package_sha256 is not None
 
     net_classes = tuple(
-        NetClass(id=_uuid(i + 1), name=name)
-        for i, name in enumerate(("HV+", "HV-", "PE", "LV"))
+        NetClass(id=_uuid(i + 1), name=name) for i, name in enumerate(("HV+", "HV-", "PE", "LV"))
     )
     pair_specs = (
-        (1, 2, InsulationType.FUNCTIONAL, Decimal(150), Decimal(150)),
+        (1, 2, InsulationType.FUNCTIONAL, Decimal(150), Decimal(300)),
         (1, 3, InsulationType.BASIC, Decimal(300), Decimal(300)),
         (2, 3, InsulationType.REINFORCED, Decimal(500), Decimal(500)),
-        (1, 4, InsulationType.FUNCTIONAL, Decimal(100000), Decimal(150)),
-        (2, 4, InsulationType.BASIC, Decimal(100000), Decimal(300)),
-        (3, 4, InsulationType.REINFORCED, Decimal(100000), Decimal(500)),
+        (1, 4, InsulationType.FUNCTIONAL, Decimal(60000), Decimal(300)),
+        (2, 4, InsulationType.BASIC, Decimal(60000), Decimal(300)),
+        (3, 4, InsulationType.REINFORCED, Decimal(60000), Decimal(500)),
     )
     pairs = tuple(
         PairCase(
@@ -137,7 +136,9 @@ def test_end_to_end_desktop_report_workflow(tmp_path: Path) -> None:
 
     assert "E2E-001" in tex
     assert "SYNTHETIC-PART-1:1" in tex
-    assert "SYNTHETIC-PART-4:1" in tex
+    assert "iec60664-4-equation-1-critical-frequency" in {
+        semantic_id for result in results for semantic_id in result.trace.semantic_rule_ids
+    }
     assert "HV+ / LV" in tex
     assert r"\frac{" in tex
 

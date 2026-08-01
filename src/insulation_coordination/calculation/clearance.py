@@ -129,8 +129,7 @@ def _calculate_clearance(
 
 
 _PREFERRED_IMPULSE_V = tuple(
-    Decimal(value)
-    for value in (330, 500, 800, 1500, 2500, 4000, 6000, 8000, 12000)
+    Decimal(value) for value in (330, 500, 800, 1500, 2500, 4000, 6000, 8000, 12000)
 )
 
 
@@ -158,8 +157,8 @@ def apply_reinforced_stress_treatment(
     step = TraceStep(
         semantic_rule_id=f"iec60664-1:5.2.5:reinforced_stress_treatment:{treatment}",
         operation="reinforced_stress_treatment",
-        symbolic="U_treated = next_preferred(U) or 1.6 × U",
-        substituted=f"{stress_v} V → {treated} V",
+        symbolic="U_{treated}=U_{next}; U_{treated}=1.6U",
+        substituted=f"{stress_v} V = {treated} V",
         inputs=(Quantity(value=stress_v, unit="V"),),
         source_reference=source,
         output=Quantity(value=treated, unit="V"),
@@ -264,9 +263,7 @@ def _select_part1_clearance(
     if table is None:
         raise RuleMappingError(f"formula {formula.id!r} references a missing clearance table")
     if table.row_axis.unit != "kV":
-        raise RuleMappingError(
-            f"clearance table {table.id!r} row axis must use canonical 'kV'"
-        )
+        raise RuleMappingError(f"clearance table {table.id!r} row axis must use canonical 'kV'")
     try:
         column_index = table.column_axis.labels.index(branch_label)
     except ValueError as error:

@@ -80,8 +80,6 @@ class CalculationTrace(FrozenModel):
     pre_altitude_clearance_mm: DecimalValue
     altitude_correction_applied: bool
     hf_iterations: tuple[FieldIteration, ...]
-    hf_iteration_tolerance_mm: DecimalValue | None
-    hf_iteration_max_iterations: int | None
     clearance_candidates: tuple[DistanceCandidate, ...]
     creepage_candidates: tuple[DistanceCandidate, ...]
     omissions: tuple[CandidateOmission, ...]
@@ -163,12 +161,16 @@ def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
     frequency = _validate_calculation_scope(effective)
 
     clearance = _calculate_clearance(effective, rules)
-    base_clearance_governing = _governing(clearance.candidates)
+    base_periodic_governing = _governing(
+        tuple(
+            candidate for candidate in clearance.candidates if candidate.candidate_id != "impulse"
+        )
+    )
     used_part4 = frequency > Decimal(30000)
     high_frequency = (
         _calculate_high_frequency_candidates(
             effective,
-            base_clearance_governing,
+            base_periodic_governing,
             rules,
         )
         if used_part4
@@ -215,7 +217,6 @@ def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
     steps = (
         *(() if high_frequency is None else high_frequency.applicability_steps),
         *(step for candidate in clearance.candidates for step in candidate.steps),
-        *(() if high_frequency is None else high_frequency.iteration_setting_steps),
         *(
             step
             for candidate in (() if high_frequency is None else high_frequency.clearance_candidates)
@@ -257,12 +258,6 @@ def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
             pre_altitude_clearance_mm=pre_altitude_clearance,
             altitude_correction_applied=altitude.applied,
             hf_iterations=(() if high_frequency is None else high_frequency.iterations),
-            hf_iteration_tolerance_mm=(
-                None if high_frequency is None else high_frequency.iteration_tolerance_mm
-            ),
-            hf_iteration_max_iterations=(
-                None if high_frequency is None else high_frequency.iteration_max_iterations
-            ),
             clearance_candidates=clearance_candidates,
             creepage_candidates=creepage_candidates,
             omissions=clearance.omissions + creepage.omissions,
