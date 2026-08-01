@@ -146,3 +146,32 @@ def test_main_window_open_save(qtbot, tmp_path):
     path = tmp_path / "window.icproj"
     window.save_project(path)
     assert path.exists()
+
+
+def test_main_window_reports_unsupported_pdf_without_crashing(qtbot, monkeypatch) -> None:
+    from insulation_coordination.rules.importer.identify import UnsupportedStandardError
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    messages: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        "insulation_coordination.ui.main_window.QFileDialog.getOpenFileNames",
+        lambda *_args, **_kwargs: (["unsupported.pdf"], "PDF files (*.pdf)"),
+    )
+
+    def reject(_paths):
+        raise UnsupportedStandardError("PDF is not a recognized supported IEC edition")
+
+    monkeypatch.setattr(
+        "insulation_coordination.rules.importer.extract.extract_draft",
+        reject,
+    )
+    monkeypatch.setattr(
+        "insulation_coordination.ui.main_window.QMessageBox.critical",
+        lambda _parent, title, message: messages.append((title, message)),
+    )
+
+    window._on_extract_pdf()
+
+    assert messages == [("Extract Draft", "PDF is not a recognized supported IEC edition")]

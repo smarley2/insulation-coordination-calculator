@@ -48,7 +48,9 @@ PDFs.
 
 Required-content and manual-review counts measure different things. Required content
 counts one expected table, formula, or mapping. Manual review counts every approval
-item, including ambiguous raw cells. Therefore the totals should not be equal.
+item, including ambiguous raw cells. Therefore the totals are not required to
+match; they may be equal when every semantic artifact has exactly one review
+item.
 
 F.5 is displayed as one logical table joined from PDF pages 73 and 74. Raw display
 text remains visible, including grouped thousands, ranges, qualifiers, and footnotes.

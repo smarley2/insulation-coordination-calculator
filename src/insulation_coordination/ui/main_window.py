@@ -236,10 +236,11 @@ class MainWindow(QMainWindow):
         if not paths:
             return
         from insulation_coordination.rules.importer.extract import ExtractionError, extract_draft
+        from insulation_coordination.rules.importer.identify import StandardIdentificationError
 
         try:
             draft = extract_draft(tuple(Path(path) for path in paths))
-        except ExtractionError as error:
+        except (ExtractionError, StandardIdentificationError) as error:
             QMessageBox.critical(self, "Extract Draft", str(error))
             return
         from insulation_coordination.ui.rules_manager import RulesManagerWindow
