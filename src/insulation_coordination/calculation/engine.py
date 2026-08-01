@@ -21,10 +21,15 @@ from insulation_coordination.calculation.clearance import (
 from insulation_coordination.calculation.creepage import _calculate_creepage
 from insulation_coordination.calculation.high_frequency import (
     FieldIteration,
-    _apply_altitude_correction,
     _calculate_high_frequency_candidates,
+    apply_a2_altitude_correction,
 )
-from insulation_coordination.domain.enums import ConstructionType, FieldCondition, InsulationType
+from insulation_coordination.domain.enums import (
+    Applicability,
+    ConstructionType,
+    FieldCondition,
+    InsulationType,
+)
 from insulation_coordination.domain.project import (
     EffectiveCase,
     EffectiveValue,
@@ -188,7 +193,7 @@ def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
         candidates=clearance_candidates,
         reason=f"{clearance_governing.candidate_id} governs clearance",
     )
-    altitude = _apply_altitude_correction(
+    altitude = apply_a2_altitude_correction(
         effective,
         pre_altitude_clearance,
         rules,
@@ -235,6 +240,7 @@ def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
         clearance_candidates,
         creepage_candidates,
         steps,
+        rules,
     )
     return PairResult(
         pair_id=effective.id,
@@ -293,6 +299,7 @@ def _advisories(
     clearance_candidates: tuple[DistanceCandidate, ...],
     creepage_candidates: tuple[DistanceCandidate, ...],
     steps: tuple[TraceStep, ...],
+    rules: RulePackage,
 ) -> tuple[tuple[CalculationWarning, ...], tuple[VerificationRequirement, ...]]:
     warnings: list[CalculationWarning] = []
     requirements: list[VerificationRequirement] = []
@@ -311,6 +318,59 @@ def _advisories(
                 message="Confirm field classification.",
                 semantic_rule_id=semantic_rule_id,
                 source_reference=source_reference,
+            )
+        )
+
+    if field is FieldCondition.HOMOGENEOUS:
+        f8_candidate = next(
+            (
+                candidate
+                for candidate in clearance_candidates
+                if candidate.formula_id == "iec60664-1:f8-clearance"
+            ),
+            None,
+        )
+        requirements.append(
+            VerificationRequirement(
+                code="WITHSTAND_TEST_REQUIRED",
+                message="Case B homogeneous-field clearance requires withstand-test verification.",
+                semantic_rule_id="iec60664-1:f8-withstand-test",
+                source_reference=(
+                    None if f8_candidate is None else _source_reference(f8_candidate.steps)
+                ),
+            )
+        )
+
+    periodic_pd_stresses = tuple(
+        voltage.value
+        for voltage in (
+            effective.voltages.steady_state_peak_v,
+            effective.voltages.recurring_peak_v,
+        )
+        if voltage.applicability is Applicability.APPLICABLE and voltage.value is not None
+    )
+    if (
+        field is FieldCondition.INHOMOGENEOUS
+        and periodic_pd_stresses
+        and max(periodic_pd_stresses) >= Decimal(2500)
+    ):
+        f9 = next((table for table in rules.tables if table.id == "iec60664-1-f9"), None)
+        warning = CalculationWarning(
+            code="PARTIAL_DISCHARGE_REVIEW",
+            message=(
+                "At 2.5 kV peak and above, F.8 may not provide corona-free operation; "
+                "review F.9 clearance or improve field distribution."
+            ),
+            semantic_rule_id="iec60664-1:f9-partial-discharge-advice",
+            source_reference=None if f9 is None else f9.source,
+        )
+        warnings.append(warning)
+        requirements.append(
+            VerificationRequirement(
+                code=warning.code,
+                message=warning.message,
+                semantic_rule_id=warning.semantic_rule_id,
+                source_reference=warning.source_reference,
             )
         )
 

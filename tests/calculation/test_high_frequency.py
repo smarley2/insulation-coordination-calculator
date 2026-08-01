@@ -35,6 +35,7 @@ def case_factory():
         field_condition: FieldCondition = FieldCondition.INHOMOGENEOUS,
         electrode_radius_mm: str | None = None,
         altitude_m: str = "0",
+        construction_type: ConstructionType = ConstructionType.OTHER,
         steady_state_peak_v: PairVoltage | None = None,
         temporary_overvoltage_peak_v: PairVoltage | None = None,
         recurring_peak_v: PairVoltage | None = None,
@@ -74,7 +75,7 @@ def case_factory():
             ),
             pollution_degree=EffectiveValue(value=2, provenance=Provenance.PROJECT_DEFAULT),
             construction_type=EffectiveValue(
-                value=ConstructionType.OTHER,
+                value=construction_type,
                 provenance=Provenance.PROJECT_DEFAULT,
             ),
             cti_or_material_group=EffectiveValue(
@@ -309,3 +310,96 @@ def test_engine_trace_has_pair_decisions_and_no_fabricated_iteration_settings(
     assert iteration.factor_percent == Decimal(100)
     assert not hasattr(result.trace, "hf_iteration_tolerance_mm")
     assert not hasattr(result.trace, "hf_iteration_max_iterations")
+
+
+@pytest.mark.parametrize(
+    ("altitude_m", "factor", "applied"),
+    (("0", "1", False), ("2000", "1", False), ("2500", "1.05", True), ("4000", "1.2", True)),
+)
+def test_a2_altitude_applies_after_clearance_maximum(
+    altitude_m: str,
+    factor: str,
+    applied: bool,
+    case_factory,
+    semantic_part4_rules: RulePackage,
+) -> None:
+    result = calculate_pair(
+        case_factory(frequency_hz="30000", altitude_m=altitude_m),
+        semantic_part4_rules,
+    )
+
+    assert result.clearance_mm == result.trace.pre_altitude_clearance_mm * Decimal(factor)
+    assert result.trace.altitude_correction_applied is applied
+    if applied:
+        step = next(
+            item
+            for item in result.trace.steps
+            if item.semantic_rule_id == "iec60664-1:altitude_correction:base=2000m"
+        )
+        assert (
+            step.source_cells == ("2000/clearance_factor", "3000/clearance_factor")
+            or altitude_m == "4000"
+        )
+    else:
+        step = next(
+            item
+            for item in result.trace.steps
+            if item.semantic_rule_id == "iec60664-1:a2-altitude-not-applied"
+        )
+        assert "at or below 2000 m" in step.reason
+
+
+def test_a2_altitude_outside_reviewed_range_blocks(
+    case_factory,
+    semantic_part4_rules: RulePackage,
+) -> None:
+    with pytest.raises(HighFrequencyCalculationError) as caught:
+        calculate_pair(
+            case_factory(frequency_hz="30000", altitude_m="4000.1"),
+            semantic_part4_rules,
+        )
+
+    assert caught.value.code == "ALTITUDE_OUT_OF_RANGE"
+
+
+def test_f9_partial_discharge_is_source_backed_advice_not_clearance_candidate(
+    case_factory,
+    semantic_part4_rules: RulePackage,
+) -> None:
+    result = calculate_pair(
+        case_factory(
+            frequency_hz="30000",
+            steady_state_peak_v=PairVoltage.applicable(Decimal(3000)),
+            temporary_overvoltage_peak_v=PairVoltage.not_applicable("No TOV."),
+            recurring_peak_v=PairVoltage.not_applicable("No recurring peak."),
+        ),
+        semantic_part4_rules,
+    )
+    warning = next(item for item in result.warnings if item.code == "PARTIAL_DISCHARGE_REVIEW")
+
+    assert result.clearance_mm == result.trace.pre_altitude_clearance_mm
+    assert all(
+        candidate.formula_id != "iec60664-1-f9" for candidate in result.trace.clearance_candidates
+    )
+    assert warning.semantic_rule_id == "iec60664-1:f9-partial-discharge-advice"
+    assert warning.source_reference is not None
+    assert warning.source_reference.table == "F.9"
+
+
+def test_homogeneous_case_b_requires_source_backed_withstand_test(
+    case_factory,
+    semantic_part4_rules: RulePackage,
+) -> None:
+    result = calculate_pair(
+        case_factory(
+            frequency_hz="30000",
+            field_condition=FieldCondition.HOMOGENEOUS,
+        ),
+        semantic_part4_rules,
+    )
+    requirement = next(
+        item for item in result.verification_requirements if item.code == "WITHSTAND_TEST_REQUIRED"
+    )
+
+    assert requirement.source_reference is not None
+    assert requirement.source_reference.table == "F.8"

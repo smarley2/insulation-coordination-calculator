@@ -18,12 +18,11 @@ from insulation_coordination.domain.project import EffectiveCase, FrozenModel
 from insulation_coordination.domain.quantities import DecimalValue
 from insulation_coordination.domain.rules import (
     Formula,
-    LinearInterpolate,
-    Literal,
     Maximum,
     Multiply,
     RulePackage,
     Table,
+    TableSelect,
     Variable,
 )
 from insulation_coordination.domain.trace import EvaluatedValue, Quantity, TraceStep
@@ -369,7 +368,7 @@ def _part4_pass(
     return candidate, factor.branch, factor.percent, radius_ratio, steps
 
 
-def _apply_altitude_correction(
+def apply_a2_altitude_correction(
     effective: EffectiveCase,
     clearance_mm: Decimal,
     rules: RulePackage,
@@ -383,7 +382,28 @@ def _apply_altitude_correction(
             f"altitude {altitude} m is outside the supported range",
         )
     if altitude <= Decimal(2000):
-        return AltitudeResult(clearance_mm=clearance_mm, applied=False)
+        source = next(
+            (
+                mapping.source
+                for mapping in rules.mappings
+                if mapping.source_rule_id == "iec60664-1:altitude_correction:base=2000m"
+            ),
+            None,
+        )
+        if source is None:
+            return AltitudeResult(clearance_mm=clearance_mm, applied=False)
+        step = TraceStep(
+            semantic_rule_id="iec60664-1:a2-altitude-not-applied",
+            operation="altitude_boundary",
+            symbolic="k_{A2}=1",
+            substituted=f"h={altitude} m <= 2000 m",
+            inputs=(Quantity(value=altitude, unit="m"),),
+            source_reference=source,
+            output=Quantity(value=clearance_mm, unit="mm"),
+            unrounded_value=clearance_mm,
+            reason="altitude is at or below 2000 m; no A.2 factor applies",
+        )
+        return AltitudeResult(clearance_mm=clearance_mm, applied=False, steps=(step,))
     route = "iec60664-1:altitude_correction:base=2000m"
     try:
         mapping, formula = _select_formula(
@@ -391,10 +411,13 @@ def _apply_altitude_correction(
             route,
             route_label="altitude correction",
         )
-        _validate_altitude_factor_rule(formula, rules)
+        _, column_value = _validate_a2_altitude_rule(formula, rules)
         evaluated_factor = _evaluate(
             formula,
-            {"altitude_m": Quantity(value=altitude, unit="m")},
+            {
+                "altitude_m": Quantity(value=altitude, unit="m"),
+                "clearance_factor": Quantity(value=column_value, unit="1"),
+            },
             rules,
             "altitude correction factor",
         )
@@ -452,32 +475,32 @@ def _apply_altitude_correction(
     return AltitudeResult(clearance_mm=corrected, applied=True, steps=steps)
 
 
-def _validate_altitude_factor_rule(formula: Formula, rules: RulePackage) -> None:
-    ranges = tuple(
-        supported for supported in formula.supported_ranges if supported.variable == "altitude_m"
-    )
-    if (
-        formula.unit != "1"
-        or len(formula.supported_ranges) != 1
-        or len(ranges) != 1
-        or ranges[0].unit != "m"
-        or ranges[0].minimum != Decimal(2000)
-    ):
-        raise HighFrequencyCalculationError(
-            "ALTITUDE_RULE_INVALID",
-            "altitude factor must declare one canonical-m range from the 2000 m boundary "
-            "and return a dimensionless factor",
-        )
-    supported = ranges[0]
+def _apply_altitude_correction(
+    effective: EffectiveCase,
+    clearance_mm: Decimal,
+    rules: RulePackage,
+) -> AltitudeResult:
+    return apply_a2_altitude_correction(effective, clearance_mm, rules)
+
+
+def _validate_a2_altitude_rule(
+    formula: Formula,
+    rules: RulePackage,
+) -> tuple[Table, Decimal]:
     expression = formula.expression
     if (
-        not isinstance(expression, LinearInterpolate)
-        or not isinstance(expression.x, Variable)
-        or expression.x.name != "altitude_m"
+        formula.unit != "1"
+        or not isinstance(expression, TableSelect)
+        or expression.row_mode != "linear"
+        or expression.column_mode != "exact"
+        or not isinstance(expression.row, Variable)
+        or expression.row.name != "altitude_m"
+        or not isinstance(expression.column, Variable)
+        or expression.column.name != "clearance_factor"
     ):
         raise HighFrequencyCalculationError(
             "ALTITUDE_RULE_INVALID",
-            "altitude factor must be a direct interpolation of the altitude variable",
+            "A.2 altitude factor must be a linear/exact semantic table selection",
         )
     tables = tuple(table for table in rules.tables if table.id == expression.table_id)
     if len(tables) != 1:
@@ -492,10 +515,12 @@ def _validate_altitude_factor_rule(formula: Formula, rules: RulePackage) -> None
         or table.unit != "1"
         or table.row_axis.id != "altitude_m"
         or table.row_axis.unit != "m"
+        or table.column_axis.id != "clearance_factor"
+        or table.column_axis.unit != "1"
+        or len(table.column_axis.values) != 1
         or len(row_values) < 2
         or any(left >= right for left, right in pairwise(row_values))
-        or supported.minimum < row_values[0]
-        or supported.maximum > row_values[-1]
+        or row_values[0] != Decimal(2000)
     ):
         raise HighFrequencyCalculationError(
             "ALTITUDE_RULE_INVALID",
@@ -503,42 +528,19 @@ def _validate_altitude_factor_rule(formula: Formula, rules: RulePackage) -> None
             "altitude row axis covering the supported formula range",
         )
     table_ranges = tuple(item for item in table.supported_ranges if item.variable == "altitude_m")
-    if table_ranges and not any(
-        item.unit == "m" and item.minimum <= supported.minimum and item.maximum >= supported.maximum
-        for item in table_ranges
+    if len(table_ranges) != 1 or not (
+        table_ranges[0].unit == "m"
+        and table_ranges[0].minimum == row_values[0]
+        and table_ranges[0].maximum == row_values[-1]
     ):
         raise HighFrequencyCalculationError(
             "ALTITUDE_RULE_INVALID",
-            "altitude table supported range must cover the formula supported range",
-        )
-    if expression.column is None:
-        if len(table.column_axis.values) != 1:
-            raise HighFrequencyCalculationError(
-                "ALTITUDE_RULE_INVALID",
-                "altitude interpolation must select one unambiguous factor column",
-            )
-        column_index = 0
-    elif isinstance(expression.column, Literal):
-        column_matches = tuple(
-            index
-            for index, value in enumerate(table.column_axis.values)
-            if value == expression.column.value
-        )
-        if table.column_axis.unit != "1" or len(column_matches) != 1:
-            raise HighFrequencyCalculationError(
-                "ALTITUDE_RULE_INVALID",
-                "altitude interpolation factor column selection is invalid",
-            )
-        column_index = column_matches[0]
-    else:
-        raise HighFrequencyCalculationError(
-            "ALTITUDE_RULE_INVALID",
-            "altitude interpolation factor column must be a direct literal selection",
+            "A.2 table must declare its complete canonical-m altitude range",
         )
     factors = []
     for row_index in range(len(row_values)):
         cell_matches = tuple(
-            cell for cell in table.cells if cell.row == row_index and cell.column == column_index
+            cell for cell in table.cells if cell.row == row_index and cell.column == 0
         )
         if len(cell_matches) != 1 or cell_matches[0].unit != "1":
             raise HighFrequencyCalculationError(
@@ -546,14 +548,7 @@ def _validate_altitude_factor_rule(formula: Formula, rules: RulePackage) -> None
                 "altitude factor column must contain one dimensionless cell per altitude row",
             )
         factors.append(cell_matches[0].value)
-    try:
-        boundary_index = row_values.index(Decimal(2000))
-    except ValueError as error:
-        raise HighFrequencyCalculationError(
-            "ALTITUDE_RULE_INVALID",
-            "altitude factor table must declare the 2000 m boundary",
-        ) from error
-    if factors[boundary_index] != Decimal(1):
+    if factors[0] != Decimal(1):
         raise HighFrequencyCalculationError(
             "ALTITUDE_RULE_INVALID",
             "altitude factor must equal one at the 2000 m boundary",
@@ -563,6 +558,7 @@ def _validate_altitude_factor_rule(formula: Formula, rules: RulePackage) -> None
             "ALTITUDE_RULE_INVALID",
             "altitude factor cells must not decrease with altitude",
         )
+    return table, table.column_axis.values[0]
 
 
 def _require_part4_scope(

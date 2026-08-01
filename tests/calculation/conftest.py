@@ -39,9 +39,7 @@ def synthetic_rules(tmp_path: Path) -> RulePackage:
 @pytest.fixture
 def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
     base = synthetic_part1_rule_package()
-    source = base.tables[0].source.model_copy(
-        update={"table": "F.2/F.8 synthetic", "row": None, "column": None}
-    )
+    source = base.tables[0].source.model_copy(update={"row": None, "column": None})
 
     def table(
         table_id: str,
@@ -50,6 +48,9 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
         column_id: str,
         labels: tuple[str, ...],
     ) -> Table:
+        table_source = source.model_copy(
+            update={"table": "F.2" if table_id.endswith("f2") else "F.8"}
+        )
         columns = tuple(Decimal(index + 1) for index in range(len(labels)))
         return Table(
             id=table_id,
@@ -72,7 +73,7 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
                     column=column_index,
                     value=Decimal(row_index + 1) + Decimal(column_index + 1) / Decimal(10),
                     unit="mm",
-                    source=source.model_copy(update={"row": str(row_value), "column": label}),
+                    source=table_source.model_copy(update={"row": str(row_value), "column": label}),
                 )
                 for row_index, row_value in enumerate(rows)
                 for column_index, label in enumerate(labels)
@@ -83,11 +84,11 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
                     minimum=rows[0],
                     maximum=rows[-1],
                     unit="kV",
-                    source=source,
+                    source=table_source,
                 ),
             ),
             interpolation="none",
-            source=source,
+            source=table_source,
         )
 
     f2 = table(
@@ -107,9 +108,89 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
     f8 = table(
         "iec60664-1-f8",
         "peak_voltage_kv",
-        tuple(map(Decimal, ("0.3", "0.5", "0.8", "1.0", "1.6"))),
+        tuple(map(Decimal, ("0.3", "0.5", "0.8", "1.0", "1.6", "2.5", "3.0", "4.0"))),
         "field_case",
         ("case_a_mm", "case_b_mm"),
+    )
+    a2_source = source.model_copy(update={"table": "A.2"})
+    a2 = Table(
+        id="iec60664-1-a2",
+        unit="1",
+        row_axis=TableAxis(
+            id="altitude_m",
+            unit="m",
+            values=tuple(map(Decimal, ("2000", "3000", "4000"))),
+            labels=("2000", "3000", "4000"),
+        ),
+        column_axis=TableAxis(
+            id="clearance_factor",
+            unit="1",
+            values=(Decimal(1),),
+            labels=("clearance_factor",),
+        ),
+        cells=tuple(
+            TableCell(
+                row=index,
+                column=0,
+                value=value,
+                unit="1",
+                source=a2_source.model_copy(update={"row": altitude, "column": "factor"}),
+            )
+            for index, (altitude, value) in enumerate(
+                zip(("2000", "3000", "4000"), map(Decimal, ("1", "1.1", "1.2")), strict=True)
+            )
+        ),
+        supported_ranges=(
+            SupportedRange(
+                variable="altitude_m",
+                minimum=Decimal(2000),
+                maximum=Decimal(4000),
+                unit="m",
+                source=a2_source,
+            ),
+        ),
+        interpolation="linear",
+        source=a2_source,
+    )
+    f9_source = source.model_copy(update={"table": "F.9"})
+    f9 = Table(
+        id="iec60664-1-f9",
+        unit="mm",
+        row_axis=TableAxis(
+            id="peak_voltage_kv",
+            unit="kV",
+            values=tuple(map(Decimal, ("2.5", "3", "4"))),
+            labels=("2.5", "3", "4"),
+        ),
+        column_axis=TableAxis(
+            id="partial_discharge_advice",
+            unit="1",
+            values=(Decimal(1),),
+            labels=("case_a_mm",),
+        ),
+        cells=tuple(
+            TableCell(
+                row=index,
+                column=0,
+                value=value,
+                unit="mm",
+                source=f9_source.model_copy(update={"row": voltage, "column": "case_a_mm"}),
+            )
+            for index, (voltage, value) in enumerate(
+                zip(("2.5", "3", "4"), map(Decimal, ("2", "3.2", "11")), strict=True)
+            )
+        ),
+        supported_ranges=(
+            SupportedRange(
+                variable="peak_voltage_kv",
+                minimum=Decimal("2.5"),
+                maximum=Decimal(4),
+                unit="kV",
+                source=f9_source,
+            ),
+        ),
+        interpolation="linear",
+        source=f9_source,
     )
 
     def formula(formula_id: str, table: Table, row_mode: str) -> Formula:
@@ -123,7 +204,7 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
         return Formula(
             id=formula_id,
             expression=expression,
-            unit="mm",
+            unit=table.unit,
             parameter_sets=(
                 ParameterSet(
                     id="synthetic-annex-g",
@@ -131,15 +212,16 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
                         Parameter(name=table.row_axis.id, unit=table.row_axis.unit),
                         Parameter(name=table.column_axis.id, unit=table.column_axis.unit),
                     ),
-                    source=source,
+                    source=table.source,
                 ),
             ),
-            source=source,
+            source=table.source,
         )
 
     formulas = (
         formula("iec60664-1:f2-clearance", f2, "ceiling"),
         formula("iec60664-1:f8-clearance", f8, "ceiling"),
+        formula("iec60664-1:a2-altitude-factor", a2, "linear"),
     )
     mappings = tuple(
         CompatibilityMapping(
@@ -152,7 +234,7 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
                 "iec60664-1:f2-clearance" if candidate == "impulse" else "iec60664-1:f8-clearance"
             ),
             approved=True,
-            source=source,
+            source=(f2.source if candidate == "impulse" else f8.source),
         )
         for kind in ("functional", "basic", "supplementary", "reinforced")
         for candidate in ("impulse", "periodic")
@@ -167,9 +249,19 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
     retained_mappings = tuple(item for item in base.mappings if "_clearance_" not in item.id)
     candidate = base.model_copy(
         update={
-            "tables": (*retained_tables, f2, f8),
+            "tables": (*retained_tables, f2, f8, f9, a2),
             "formulas": (*retained_formulas, *formulas),
-            "mappings": (*retained_mappings, *mappings),
+            "mappings": (
+                *retained_mappings,
+                *mappings,
+                CompatibilityMapping(
+                    id="annex-a2-altitude",
+                    source_rule_id="iec60664-1:altitude_correction:base=2000m",
+                    target_rule_id="iec60664-1:a2-altitude-factor",
+                    approved=True,
+                    source=a2_source,
+                ),
+            ),
             "checksums": {},
             "package_sha256": None,
         }
