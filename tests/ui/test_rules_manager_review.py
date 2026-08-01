@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -12,11 +11,12 @@ from insulation_coordination.rules.importer.approval import (
     is_fully_resolved,
 )
 from insulation_coordination.rules.importer.extract import extract_draft
-from insulation_coordination.rules.importer.review import accept_raw_table
-from insulation_coordination.ui.rules_manager import (
-    FormulaConstantDialog,
-    RulesManagerWindow,
+from insulation_coordination.rules.importer.review import (
+    accept_raw_table,
+    unresolved_equation_items,
+    unresolved_mapping_items,
 )
+from insulation_coordination.ui.rules_manager import RulesManagerWindow
 from tests.rules.test_importer import (
     _accept_all_source_artifacts,
     _compound_draft,
@@ -98,7 +98,8 @@ def test_raw_review_gates_build_button(rules_manager, tmp_path: Path) -> None:
     rules_manager.set_draft(accepted)
 
     assert rules_manager.review_tables_enabled is False
-    assert rules_manager.build_review_enabled is True
+    assert rules_manager.formula_review_enabled is True
+    assert rules_manager.build_review_enabled is False
 
 
 def test_review_tables_opens_without_global_resolution_notes(
@@ -124,30 +125,37 @@ def test_review_tables_opens_without_global_resolution_notes(
     assert warnings == []
 
 
-def test_formula_constant_fields_start_empty_and_require_exact_count(
-    qtbot,
+def test_build_waits_for_equation_and_mapping_review(
     rules_manager,
     supported_pdfs,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     draft = extract_draft(supported_pdfs)
-    warnings: list[str] = []
-    monkeypatch.setattr(
-        "insulation_coordination.ui.rules_manager.QMessageBox.warning",
-        lambda _parent, _title, message: warnings.append(message),
-    )
-    dialog = FormulaConstantDialog(
+    for grid in draft.raw_grids:
+        draft = accept_raw_table(
+            draft,
+            grid_id=grid.id,
+            corrections={},
+            actor="Maintainer",
+            notes="Verified table",
+        )
+    rules_manager.set_draft(draft)
+
+    assert rules_manager.formula_review_enabled is True
+    assert rules_manager.build_review_enabled is False
+
+    from insulation_coordination.rules.importer.review import accept_equation_mapping
+
+    draft = accept_equation_mapping(
         draft,
-        (("synthetic-placeholder", (Decimal(1), Decimal(1))),),
+        equation_ids=tuple(item.semantic_id for item in unresolved_equation_items(draft)),
+        mapping_ids=tuple(item.semantic_id for item in unresolved_mapping_items(draft)),
+        actor="Maintainer",
+        notes="Verified formulas and mappings",
     )
-    qtbot.addWidget(dialog)
+    rules_manager.set_draft(draft)
 
-    assert tuple(edit.text() for edit in dialog._edits) == ("",)
-    dialog._edits[0].setText("2")
-    dialog._validate()
-
-    assert warnings
-    assert dialog.result() != dialog.DialogCode.Accepted
+    assert rules_manager.formula_review_enabled is False
+    assert rules_manager.build_review_enabled is True
 
 
 def test_build_reviewed_content_unlocks_approval(

@@ -170,9 +170,7 @@ class RawGridReviewDialog(QDialog):
     def _row_labels(grid: RawGrid) -> tuple[str, ...]:
         labels: list[str] = []
         for segment in grid.segments:
-            labels.extend(
-                f"p{segment.page_number} r{row + 1}" for row in range(segment.row_count)
-            )
+            labels.extend(f"p{segment.page_number} r{row + 1}" for row in range(segment.row_count))
         return tuple(labels)
 
     def _load_grid(self, _index: int) -> None:

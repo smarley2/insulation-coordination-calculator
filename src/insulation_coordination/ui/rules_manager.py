@@ -8,8 +8,6 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QDialog,
-    QDialogButtonBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -44,6 +42,7 @@ from insulation_coordination.rules.audit import (
 )
 from insulation_coordination.rules.importer.approval import is_fully_resolved
 from insulation_coordination.rules.importer.extract import ImportedRuleDraft
+from insulation_coordination.ui.equation_review import EquationReviewDialog
 from insulation_coordination.ui.raw_grid_review import RawGridReviewDialog
 
 _SECTIONS = ("Manifest", "Checksums", "Tables", "Formulas", "Mappings", "Validation")
@@ -137,10 +136,10 @@ class RulesManagerWindow(QWidget):
         self._build_review_button.setEnabled(False)
         self._build_review_button.clicked.connect(self._on_build_review_clicked)
         review_layout.addWidget(self._build_review_button)
-        self._confirm_formulas_button = QPushButton("Review formula constants…")
-        self._confirm_formulas_button.setEnabled(False)
-        self._confirm_formulas_button.clicked.connect(self._on_confirm_formulas_clicked)
-        review_layout.addWidget(self._confirm_formulas_button)
+        self._review_equations_button = QPushButton("Review equations and mappings…")
+        self._review_equations_button.setEnabled(False)
+        self._review_equations_button.clicked.connect(self._on_review_equations_clicked)
+        review_layout.addWidget(self._review_equations_button)
         self._review_approve_button = QPushButton("Approve reviewed draft…")
         self._review_approve_button.clicked.connect(self._on_review_approve_clicked)
         self._review_approve_button.setEnabled(False)
@@ -239,7 +238,7 @@ class RulesManagerWindow(QWidget):
 
     @property
     def formula_review_enabled(self) -> bool:
-        return self._confirm_formulas_button.isEnabled()
+        return self._review_equations_button.isEnabled()
 
     @property
     def resolved_count(self) -> int:
@@ -253,27 +252,8 @@ class RulesManagerWindow(QWidget):
         return self._draft is not None and is_fully_resolved(self._draft)
 
     @property
-    def placeholder_pending(self) -> bool:
-        """True when a placeholder-literal formula still needs confirmation."""
-        if self._draft is None:
-            return False
-        from insulation_coordination.rules.importer.review import placeholder_formula_ids
-
-        resolved = {r.review_item_sha256 for r in self._draft.review_resolutions}
-        formulas = {formula.id for formula in self._draft.formulas}
-        pending = [
-            item
-            for item in self._draft.review_items
-            if item.kind == "formula"
-            and item.semantic_id in placeholder_formula_ids()
-            and item.semantic_id in formulas
-            and item.sha256 not in resolved
-        ]
-        return bool(pending)
-
-    @property
     def can_approve(self) -> bool:
-        return self._draft is not None and self.is_fully_resolved and not self.placeholder_pending
+        return self._draft is not None and self.is_fully_resolved
 
     def _refresh_review(self) -> None:
         self._review_list.clear()
@@ -286,7 +266,7 @@ class RulesManagerWindow(QWidget):
             self._review_approve_button.setEnabled(False)
             self._review_tables_button.setEnabled(False)
             self._build_review_button.setEnabled(False)
-            self._confirm_formulas_button.setEnabled(False)
+            self._review_equations_button.setEnabled(False)
             return
         from insulation_coordination.rules.importer.review import (
             missing_required_content,
@@ -296,12 +276,16 @@ class RulesManagerWindow(QWidget):
         report = required_content_report(self._draft)
         missing = missing_required_content(self._draft)
         from insulation_coordination.rules.importer.review import (
+            unresolved_equation_items,
+            unresolved_mapping_items,
             unresolved_raw_review_items,
             unresolved_table_items,
         )
 
         raw_pending = unresolved_raw_review_items(self._draft)
         table_pending = unresolved_table_items(self._draft)
+        equation_pending = unresolved_equation_items(self._draft)
+        mapping_pending = unresolved_mapping_items(self._draft)
         for required in report:
             mark = "[x]" if required.present else "[ ]"
             table = f" (table {required.source_table})" if required.source_table else ""
@@ -313,10 +297,13 @@ class RulesManagerWindow(QWidget):
             f"Required IEC content: {len(report) - len(missing)} of {len(report)} present"
         )
         self._review_tables_button.setEnabled(bool(table_pending or raw_pending))
-        self._build_review_button.setEnabled(
-            not table_pending and not raw_pending and bool(missing)
+        tables_done = not table_pending and not raw_pending
+        self._review_equations_button.setEnabled(
+            tables_done and bool(equation_pending or mapping_pending)
         )
-        self._confirm_formulas_button.setEnabled(self.placeholder_pending)
+        self._build_review_button.setEnabled(
+            tables_done and not equation_pending and not mapping_pending and bool(missing)
+        )
         resolved = {r.review_item_sha256 for r in self._draft.review_resolutions}
         for item in self._draft.review_items:
             mark = "[x]" if item.sha256 in resolved else "[ ]"
@@ -360,42 +347,15 @@ class RulesManagerWindow(QWidget):
             "Build Reviewed Content",
             f"Built required content. {self.resolved_count} of "
             f"{self.review_count} review items resolved; {remaining} remain. "
-            "Confirm formula constants, then approve.",
+            "Validate the reviewed package, then approve.",
         )
 
-    def _on_confirm_formulas_clicked(self) -> None:
-        if self._draft is None or not self.placeholder_pending:
+    def _on_review_equations_clicked(self) -> None:
+        if self._draft is None:
             return
-        from insulation_coordination.rules.importer.review import (
-            placeholder_formula_literals,
-        )
-
-        dialog = FormulaConstantDialog(self._draft, placeholder_formula_literals(self._draft))
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        try:
-            draft = self._draft
-            for formula_id, values in dialog.resolved_values().items():
-                from insulation_coordination.rules.importer.review import (
-                    confirm_placeholder_formula,
-                )
-
-                draft = confirm_placeholder_formula(
-                    draft,
-                    formula_id=formula_id,
-                    values=values,
-                    actor="maintainer",
-                    notes="confirmed IEC formula constant",
-                )
-        except ValueError as error:
-            QMessageBox.critical(self, "Review Formula Constants", str(error))
-            return
-        self.set_draft(draft)
-        QMessageBox.information(
-            self,
-            "Review Formula Constants",
-            "Formula constants confirmed. You can now approve the draft.",
-        )
+        dialog = EquationReviewDialog(self._draft, actor="maintainer")
+        dialog.draft_changed.connect(self.set_draft)
+        dialog.exec()
 
     def approve_reviewed_draft(self, approver: str, notes: str) -> None:
         """Approve a fully-resolved draft and switch the manager to the approved package."""
@@ -713,83 +673,3 @@ def _format_expression(node: object) -> str:
     if op == "round":
         return f"round:{getattr(node, 'places', '?')}:{getattr(node, 'mode', '?')}"
     return str(op)
-
-
-class FormulaConstantDialog(QDialog):
-    """Review and confirm the IEC formula constants that cannot be derived."""
-
-    def __init__(
-        self,
-        draft: ImportedRuleDraft,
-        formulas: Iterable[tuple[str, tuple[Decimal, ...]]],
-    ) -> None:
-        super().__init__()
-        self.setWindowTitle("Review formula constants")
-        self.resize(520, 320)
-        self._formula_ids: list[str] = []
-        self._edits: list[QLineEdit] = []
-        self._expected_counts: list[int] = []
-
-        layout = QVBoxLayout(self)
-        heading = QLabel(
-            "These IEC formula constants could not be derived from the PDF "
-            "extraction. Enter the values from the standard, separated by commas.",
-        )
-        heading.setWordWrap(True)
-        layout.addWidget(heading)
-
-        for formula_id, values in formulas:
-            self._formula_ids.append(formula_id)
-            self._expected_counts.append(len(values))
-            row = QHBoxLayout()
-            row.addWidget(QLabel(_formula_display_name(draft, formula_id, values)), 1)
-            edit = QLineEdit()
-            edit.setPlaceholderText(f"{len(values)} comma-separated value(s)")
-            self._edits.append(edit)
-            row.addWidget(edit)
-            layout.addLayout(row)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self._validate)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def _validate(self) -> None:
-        try:
-            for formula_id, edit, expected in zip(
-                self._formula_ids,
-                self._edits,
-                self._expected_counts,
-                strict=True,
-            ):
-                tokens = tuple(token.strip() for token in edit.text().split(","))
-                if len(tokens) != expected or any(not token for token in tokens):
-                    raise ValueError(f"{formula_id} requires exactly {expected} value(s)")
-                values = tuple(Decimal(token) for token in tokens)
-                if any(not value.is_finite() for value in values):
-                    raise ValueError(f"{formula_id} values must be finite")
-        except (ValueError, ArithmeticError) as error:
-            QMessageBox.warning(self, "Review Formula Constants", str(error))
-            return
-        self.accept()
-
-    def resolved_values(self) -> dict[str, tuple[Decimal, ...]]:
-        result: dict[str, tuple[Decimal, ...]] = {}
-        for formula_id, edit in zip(self._formula_ids, self._edits, strict=True):
-            values = tuple(
-                Decimal(token.strip()) for token in edit.text().split(",") if token.strip()
-            )
-            result[formula_id] = values
-        return result
-
-
-def _formula_display_name(
-    draft: ImportedRuleDraft,
-    formula_id: str,
-    values: tuple[Decimal, ...],
-) -> str:
-    formula = next((f for f in draft.formulas if f.id == formula_id), None)
-    shape = _format_expression(formula.expression) if formula is not None else formula_id
-    return f"{formula_id} — {shape}"

@@ -161,7 +161,9 @@ def test_dialog_uses_recipe_headings_and_table_progress(
     dialog = RawGridReviewDialog(draft, actor="Maintainer")
     qtbot.addWidget(dialog)
 
-    assert tuple(
-        dialog._table.horizontalHeaderItem(index).text() for index in range(3)
-    ) == ("Stress voltage", "Low branch", "High branch")
+    assert tuple(dialog._table.horizontalHeaderItem(index).text() for index in range(3)) == (
+        "Stress voltage",
+        "Low branch",
+        "High branch",
+    )
     assert dialog._progress.text() == "This table is pending. All tables: 2 pending."
