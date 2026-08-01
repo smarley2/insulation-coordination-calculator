@@ -200,6 +200,7 @@ class MainWindow(QMainWindow):
         from insulation_coordination.ui.rules_manager import RulesManagerWindow
 
         window = RulesManagerWindow()
+        window.package_activated.connect(self._on_rules_changed)
         self._rules_manager_window = window
         window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         window.show()
@@ -244,6 +245,7 @@ class MainWindow(QMainWindow):
         from insulation_coordination.ui.rules_manager import RulesManagerWindow
 
         window = RulesManagerWindow()
+        window.package_activated.connect(self._on_rules_changed)
         window.set_draft(draft)
         self._rules_manager_window = window
         window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)

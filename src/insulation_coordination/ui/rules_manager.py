@@ -6,7 +6,7 @@ from collections.abc import Iterable, Iterator
 from decimal import Decimal
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFileDialog,
     QGroupBox,
@@ -56,6 +56,8 @@ class ImportResult:
 
 class RulesManagerWindow(QWidget):
     """Browse and install rule packages; review drafts and full package audits."""
+
+    package_activated = Signal(object)
 
     def __init__(self, rules_dir: Path | None = None) -> None:
         super().__init__()
@@ -188,6 +190,7 @@ class RulesManagerWindow(QWidget):
         self._review_notes.clear()
         self._populate_tree()
         self._apply_search()
+        self.package_activated.emit(package)
 
     def import_package(self, path: Path) -> ImportResult:
         package = load_rule_package(Path(path))

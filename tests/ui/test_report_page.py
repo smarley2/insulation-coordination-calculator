@@ -71,9 +71,9 @@ def complete_workspace(tmp_path: Path):
         )
         for index, (net_a, net_b, kind, rms, peak) in enumerate(
             (
-                (1, 2, InsulationType.FUNCTIONAL, Decimal(500), Decimal(500)),
+                (1, 2, InsulationType.BASIC, Decimal(500), Decimal(500)),
                 (1, 3, InsulationType.BASIC, Decimal(500), Decimal(500)),
-                (2, 3, InsulationType.REINFORCED, Decimal(500), Decimal(500)),
+                (2, 3, InsulationType.BASIC, Decimal(500), Decimal(500)),
             )
         )
     )
@@ -176,3 +176,13 @@ def test_export_writes_tex_and_pdf_with_log(qtbot, complete_workspace) -> None:
     assert result.tex_path.exists()
     assert result.pdf_path.exists()
     assert result.log_path.exists()
+
+
+def test_split_group_persists_split(qtbot, complete_workspace) -> None:
+    page = complete_workspace.report_page
+    qtbot.addWidget(page)
+    before = page.group_count
+    page.split_selected_group()
+    assert page.group_count >= before + 1
+    assert page._project is not None and page._project.group_splits
+    assert page._split_button.isEnabled() is True
