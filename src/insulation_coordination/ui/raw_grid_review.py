@@ -24,9 +24,11 @@ from insulation_coordination.rules.importer.extract import (
     RawGrid,
     RawGridCell,
 )
+from insulation_coordination.rules.importer.identify import TableAuditSpec
 from insulation_coordination.rules.importer.review import (
-    accept_raw_grid,
+    accept_raw_table,
     unresolved_raw_review_items,
+    unresolved_table_items,
 )
 
 _CELL_COLORS = {
@@ -34,6 +36,8 @@ _CELL_COLORS = {
     "ambiguous_numeric": QColor("#ffe3a3"),
     "text": QColor("#e8eef8"),
     "blank": QColor("#f0f0f0"),
+    "non_scalar": QColor("#ffe3a3"),
+    "range": QColor("#ffe3a3"),
 }
 
 
@@ -47,14 +51,12 @@ class RawGridReviewDialog(QDialog):
         draft: ImportedRuleDraft,
         *,
         actor: str,
-        notes: str,
     ) -> None:
         super().__init__()
         self.setWindowTitle("Review extracted IEC tables")
         self.resize(900, 620)
         self._draft = draft
         self._actor = actor
-        self._notes = notes
         self._corrections: dict[str, dict[tuple[int, int], Decimal]] = {}
 
         layout = QVBoxLayout(self)
@@ -94,6 +96,13 @@ class RawGridReviewDialog(QDialog):
         editor_row.addWidget(self._apply_button)
         layout.addLayout(editor_row)
 
+        notes_row = QHBoxLayout()
+        notes_row.addWidget(QLabel("Resolution notes:"))
+        self._notes_edit = QLineEdit()
+        self._notes_edit.setPlaceholderText("Required only when accepting this table")
+        notes_row.addWidget(self._notes_edit, 1)
+        layout.addLayout(notes_row)
+
         action_row = QHBoxLayout()
         action_row.addStretch(1)
         self._accept_button = QPushButton("Accept table")
@@ -113,6 +122,10 @@ class RawGridReviewDialog(QDialog):
     @property
     def pending_cell_count(self) -> int:
         return len(unresolved_raw_review_items(self._draft))
+
+    @property
+    def pending_table_count(self) -> int:
+        return len(unresolved_table_items(self._draft))
 
     @property
     def pending_corrections(self) -> dict[tuple[int, int], Decimal]:
@@ -135,6 +148,33 @@ class RawGridReviewDialog(QDialog):
             if item.semantic_id.startswith(f"{grid_id}:")
         }
 
+    def _current_spec(self) -> TableAuditSpec | None:
+        from insulation_coordination.rules.importer.recipes import RECIPES
+
+        semantic_id = self._current_grid_id().removeprefix("raw-")
+        return next(
+            (
+                spec
+                for recipe in RECIPES
+                for spec in recipe.tables
+                if spec.semantic_id == semantic_id
+            ),
+            None,
+        )
+
+    def _table_pending(self, grid_id: str) -> bool:
+        semantic_id = grid_id.removeprefix("raw-")
+        return any(item.semantic_id == semantic_id for item in unresolved_table_items(self._draft))
+
+    @staticmethod
+    def _row_labels(grid: RawGrid) -> tuple[str, ...]:
+        labels: list[str] = []
+        for segment in grid.segments:
+            labels.extend(
+                f"p{segment.page_number} r{row + 1}" for row in range(segment.row_count)
+            )
+        return tuple(labels)
+
     def _load_grid(self, _index: int) -> None:
         grid = self._current_grid()
         if grid is None:
@@ -147,10 +187,14 @@ class RawGridReviewDialog(QDialog):
         self._table.clear()
         self._table.setRowCount(grid.rows)
         self._table.setColumnCount(grid.columns)
-        self._table.setHorizontalHeaderLabels(
-            tuple(f"Column {column + 1}" for column in range(grid.columns))
+        spec = self._current_spec()
+        headings = (
+            tuple(column.heading for column in spec.columns)
+            if spec is not None and len(spec.columns) == grid.columns
+            else tuple(f"Column {column + 1}" for column in range(grid.columns))
         )
-        self._table.setVerticalHeaderLabels(tuple(f"Row {row + 1}" for row in range(grid.rows)))
+        self._table.setHorizontalHeaderLabels(headings)
+        self._table.setVerticalHeaderLabels(self._row_labels(grid))
         for cell in grid.cells:
             item = QTableWidgetItem(cell.raw_text)
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -158,10 +202,11 @@ class RawGridReviewDialog(QDialog):
             item.setToolTip(self._cell_details(cell, (cell.row, cell.column) in pending))
             self._table.setItem(cell.row, cell.column, item)
         self._table.resizeColumnsToContents()
-        self._accept_button.setEnabled(bool(pending))
+        table_pending = self._table_pending(grid.id)
+        self._accept_button.setEnabled(table_pending)
+        state = "pending" if table_pending else "accepted"
         self._progress.setText(
-            f"This table: {len(pending)} cell(s) pending. "
-            f"All tables: {self.pending_cell_count} pending."
+            f"This table is {state}. All tables: {self.pending_table_count} pending."
         )
         self._selection_changed(-1, -1, -1, -1)
 
@@ -182,8 +227,10 @@ class RawGridReviewDialog(QDialog):
         )
         corrected = self._corrections.get(self._current_grid_id(), {}).get((cell.row, cell.column))
         return (
-            f"status: {cell.parse_status}; raw: {cell.raw_text!r}; "
-            f"parsed: {cell.value}; pending review: {'yes' if pending else 'no'}; "
+            f"role: {cell.role}; status: {cell.parse_status}; raw: {cell.raw_text!r}; "
+            f"normalized: {cell.value}; qualifier: {cell.qualifier}; "
+            f"footnotes: {', '.join(cell.footnotes) or 'none'}; "
+            f"pending review: {'yes' if pending else 'no'}; "
             f"pending correction: {corrected}; source: {location}"
         )
 
@@ -238,17 +285,35 @@ class RawGridReviewDialog(QDialog):
 
     def _accept_table(self) -> None:
         grid_id = self._current_grid_id()
+        notes = self._notes_edit.text().strip()
+        if not notes:
+            QMessageBox.warning(
+                self,
+                "Review Extracted Table",
+                "Resolution notes are required to accept this table.",
+            )
+            return
         try:
-            self._draft = accept_raw_grid(
+            self._draft = accept_raw_table(
                 self._draft,
                 grid_id=grid_id,
                 corrections=self._corrections.get(grid_id, {}),
                 actor=self._actor,
-                notes=self._notes,
+                notes=notes,
             )
         except ValueError as error:
             QMessageBox.warning(self, "Review Extracted Table", str(error))
             return
         self._corrections.pop(grid_id, None)
+        self._notes_edit.clear()
         self.draft_changed.emit(self._draft)
-        self._load_grid(self._grid_selector.currentIndex())
+        next_index = next(
+            (
+                index
+                for index in range(self._grid_selector.count())
+                if self._table_pending(str(self._grid_selector.itemData(index)))
+            ),
+            self._grid_selector.currentIndex(),
+        )
+        self._grid_selector.setCurrentIndex(next_index)
+        self._load_grid(next_index)

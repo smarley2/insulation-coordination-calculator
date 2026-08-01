@@ -297,9 +297,11 @@ class RulesManagerWindow(QWidget):
         missing = missing_required_content(self._draft)
         from insulation_coordination.rules.importer.review import (
             unresolved_raw_review_items,
+            unresolved_table_items,
         )
 
         raw_pending = unresolved_raw_review_items(self._draft)
+        table_pending = unresolved_table_items(self._draft)
         for required in report:
             mark = "[x]" if required.present else "[ ]"
             table = f" (table {required.source_table})" if required.source_table else ""
@@ -310,8 +312,10 @@ class RulesManagerWindow(QWidget):
         self._required_status.setText(
             f"Required IEC content: {len(report) - len(missing)} of {len(report)} present"
         )
-        self._review_tables_button.setEnabled(bool(raw_pending))
-        self._build_review_button.setEnabled(not raw_pending and bool(missing))
+        self._review_tables_button.setEnabled(bool(table_pending or raw_pending))
+        self._build_review_button.setEnabled(
+            not table_pending and not raw_pending and bool(missing)
+        )
         self._confirm_formulas_button.setEnabled(self.placeholder_pending)
         resolved = {r.review_item_sha256 for r in self._draft.review_resolutions}
         for item in self._draft.review_items:
@@ -327,18 +331,9 @@ class RulesManagerWindow(QWidget):
     def _on_review_tables_clicked(self) -> None:
         if self._draft is None:
             return
-        notes = self._review_notes.text().strip()
-        if not notes:
-            QMessageBox.warning(
-                self,
-                "Review Extracted Tables",
-                "Resolution notes are required.",
-            )
-            return
         dialog = RawGridReviewDialog(
             self._draft,
             actor="maintainer",
-            notes=notes,
         )
         dialog.draft_changed.connect(self.set_draft)
         dialog.exec()

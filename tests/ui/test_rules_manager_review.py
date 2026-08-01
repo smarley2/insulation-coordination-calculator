@@ -4,6 +4,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import Qt
 
 from insulation_coordination.rules.importer import recipes as recipe_registry
 from insulation_coordination.rules.importer.approval import (
@@ -11,7 +12,7 @@ from insulation_coordination.rules.importer.approval import (
     is_fully_resolved,
 )
 from insulation_coordination.rules.importer.extract import extract_draft
-from insulation_coordination.rules.importer.review import accept_raw_grid
+from insulation_coordination.rules.importer.review import accept_raw_table
 from insulation_coordination.ui.rules_manager import (
     FormulaConstantDialog,
     RulesManagerWindow,
@@ -80,9 +81,16 @@ def test_raw_review_gates_build_button(rules_manager, tmp_path: Path) -> None:
     assert rules_manager.review_tables_enabled is True
     assert rules_manager.build_review_enabled is False
 
-    accepted = accept_raw_grid(
+    accepted = accept_raw_table(
         draft,
         grid_id="raw-synthetic-part1-table",
+        corrections={},
+        actor="Maintainer",
+        notes="Compared against PDF",
+    )
+    accepted = accept_raw_table(
+        accepted,
+        grid_id="raw-synthetic-part4-table",
         corrections={},
         actor="Maintainer",
         notes="Compared against PDF",
@@ -91,6 +99,29 @@ def test_raw_review_gates_build_button(rules_manager, tmp_path: Path) -> None:
 
     assert rules_manager.review_tables_enabled is False
     assert rules_manager.build_review_enabled is True
+
+
+def test_review_tables_opens_without_global_resolution_notes(
+    qtbot,
+    rules_manager,
+    supported_pdfs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "insulation_coordination.ui.rules_manager.QMessageBox.warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    monkeypatch.setattr(
+        "insulation_coordination.ui.rules_manager.RawGridReviewDialog.exec",
+        lambda _dialog: 0,
+    )
+    rules_manager.set_draft(extract_draft(supported_pdfs))
+    assert rules_manager._review_notes.text() == ""
+
+    qtbot.mouseClick(rules_manager._review_tables_button, Qt.MouseButton.LeftButton)
+
+    assert warnings == []
 
 
 def test_formula_constant_fields_start_empty_and_require_exact_count(
