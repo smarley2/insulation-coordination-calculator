@@ -38,6 +38,7 @@ from insulation_coordination.rules.importer.identify import (
     StandardIdentity,
     StandardRecipe,
     TableAuditSpec,
+    TableSegmentSpec,
     identify_standard,
 )
 
@@ -159,12 +160,18 @@ class RawGrid(FrozenModel):
         ) or sum(segment.row_count for segment in self.segments) != self.rows:
             raise ValueError("raw grid segments must cover rows once in order")
         if any(
-            (cell.logical_row is None or cell.logical_column is None)
-            if cell.role == "data"
-            else (cell.logical_row is not None or cell.logical_column is not None)
+            (
+                cell.logical_row is None or cell.logical_column is None
+                if cell.role == "data"
+                else (
+                    (cell.logical_row is None) != (cell.logical_column is None)
+                    if cell.role == "blank"
+                    else (cell.logical_row is not None or cell.logical_column is not None)
+                )
+            )
             for cell in self.cells
         ):
-            raise ValueError("raw grid logical coordinates must belong only to data cells")
+            raise ValueError("raw grid logical coordinates do not match cell roles")
         return self
 
 
@@ -317,7 +324,12 @@ def _anchor_boxes(
 ) -> tuple[dict[str, float], ...]:
     matches: list[dict[str, float]] = []
     page_height = float(page.mediabox.height)
-    normalized_anchor = re.sub(r"\s+", " ", anchor_text).strip().casefold()
+
+    def normalized(value: str) -> str:
+        compact = re.sub(r"\s+", " ", value).strip().casefold()
+        return re.sub(r"\s*\.\s*", ".", compact)
+
+    normalized_anchor = normalized(anchor_text)
 
     def visitor(
         text: str,
@@ -326,7 +338,7 @@ def _anchor_boxes(
         _font: object,
         font_size: float,
     ) -> None:
-        normalized_text = re.sub(r"\s+", " ", text).strip().casefold()
+        normalized_text = normalized(text)
         if normalized_anchor not in normalized_text:
             return
         matrix = mult(text_matrix, current_matrix)
@@ -352,28 +364,42 @@ def _anchor_boxes(
     return tuple(matches)
 
 
-def _extract_layout_table(
+def _legacy_segment(spec: TableAuditSpec) -> TableSegmentSpec:
+    return TableSegmentSpec(
+        id=spec.semantic_id,
+        page_number=spec.page_number,
+        title_anchor=spec.title_anchor,
+        expected_raw_rows=spec.expected_raw_rows,
+        expected_raw_columns=spec.expected_raw_columns,
+        expected_bbox=spec.expected_bbox,
+        bbox_tolerance=spec.bbox_tolerance,
+        anchor_max_vertical_gap=spec.anchor_max_vertical_gap,
+        anchor_min_x_overlap=spec.anchor_min_x_overlap,
+    )
+
+
+def _extract_segment(
     page: pdfplumber.page.Page,
     anchor_page: PageObject,
-    identity: StandardIdentity,
-    spec: TableAuditSpec,
-) -> tuple[RawGrid, tuple[ImportReviewItem, ...]]:
-    anchors = _anchor_boxes(anchor_page, anchor_text=spec.title_anchor)
+    semantic_id: str,
+    segment: TableSegmentSpec,
+) -> list[list[str | None]]:
+    anchors = _anchor_boxes(anchor_page, anchor_text=segment.title_anchor)
     if not anchors:
         raise ExtractionError(
-            f"layout anchor is missing for {spec.semantic_id}; extraction refused"
+            f"layout anchor is missing for {semantic_id}; extraction refused"
         )
     matching = []
     for found in page.find_tables():
         raw = found.extract()
         shape = (len(raw), max((len(row) for row in raw), default=0))
         bbox_matches = all(
-            abs(float(actual) - expected) <= spec.bbox_tolerance
-            for actual, expected in zip(found.bbox, spec.expected_bbox, strict=True)
+            abs(float(actual) - expected) <= segment.bbox_tolerance
+            for actual, expected in zip(found.bbox, segment.expected_bbox, strict=True)
         )
         spatially_bound = any(
             found.bbox[1] >= anchor["bottom"]
-            and found.bbox[1] - anchor["bottom"] <= spec.anchor_max_vertical_gap
+            and found.bbox[1] - anchor["bottom"] <= segment.anchor_max_vertical_gap
             and max(
                 0.0,
                 min(found.bbox[2], anchor["x1"])
@@ -386,113 +412,195 @@ def _extract_layout_table(
                     anchor["x1"] - anchor["x0"],
                 ),
             )
-            >= spec.anchor_min_x_overlap
+            >= segment.anchor_min_x_overlap
             for anchor in anchors
         )
         if (
-            shape == (spec.expected_raw_rows, spec.expected_raw_columns)
+            shape == (segment.expected_raw_rows, segment.expected_raw_columns)
             and bbox_matches
             and spatially_bound
         ):
             matching.append(found)
     if len(matching) != 1:
         raise ExtractionError(
-            f"layout dimensions are ambiguous for {spec.semantic_id}; extraction refused"
+            f"layout dimensions are ambiguous for {semantic_id}; extraction refused"
         )
-    raw = matching[0].extract()
+    return matching[0].extract()
+
+
+def _legacy_data_logical(
+    spec: TableAuditSpec,
+    raw: list[list[str | None]],
+) -> dict[tuple[int, int], tuple[int, int]]:
+    if spec.data_strategy == "rectangle":
+        if spec.data_row_start is None or spec.data_column_start is None:
+            raise ExtractionError("rectangle data contract has no starting coordinate")
+        return {
+            (spec.data_row_start + row, spec.data_column_start + column): (row, column)
+            for row in range(spec.expected_data_rows)
+            for column in range(spec.expected_data_columns)
+        }
+    numeric_coordinates = tuple(
+        (row, column)
+        for row in range(spec.expected_raw_rows)
+        for column in range(spec.expected_raw_columns)
+        if parse_data_cell(
+            raw[row][column],
+            allowed_footnotes=spec.allowed_suffixes,
+        ).value
+        is not None
+    )
+    if len(numeric_coordinates) != spec.expected_data_rows * spec.expected_data_columns:
+        raise ExtractionError(f"layout data dimensions do not match for {spec.semantic_id}")
+    return {
+        coordinate: (
+            index // spec.expected_data_columns,
+            index % spec.expected_data_columns,
+        )
+        for index, coordinate in enumerate(numeric_coordinates)
+    }
+
+
+def _extract_layout_table(
+    pdf: pdfplumber.pdf.PDF,
+    anchor_reader: PdfReader,
+    identity: StandardIdentity,
+    spec: TableAuditSpec,
+) -> tuple[RawGrid, tuple[ImportReviewItem, ...]]:
+    segment_specs = spec.segments or (_legacy_segment(spec),)
     table_source = _source(
         identity,
         page_number=spec.page_number,
         clause=spec.clause,
         table=spec.source_table,
     )
-    if spec.data_strategy == "rectangle":
-        if spec.data_row_start is None or spec.data_column_start is None:
-            raise ExtractionError("rectangle data contract has no starting coordinate")
-        data_logical = {
-            (spec.data_row_start + row, spec.data_column_start + column): (row, column)
-            for row in range(spec.expected_data_rows)
-            for column in range(spec.expected_data_columns)
-        }
-    else:
-        numeric_coordinates = tuple(
-            (row, column)
-            for row in range(spec.expected_raw_rows)
-            for column in range(spec.expected_raw_columns)
-            if parse_data_cell(
-                raw[row][column],
-                allowed_footnotes=spec.allowed_suffixes,
-            ).value
-            is not None
-        )
-        if len(numeric_coordinates) != spec.expected_data_rows * spec.expected_data_columns:
-            raise ExtractionError(
-                f"layout data dimensions do not match for {spec.semantic_id}"
-            )
-        data_logical = {
-            coordinate: (
-                index // spec.expected_data_columns,
-                index % spec.expected_data_columns,
-            )
-            for index, coordinate in enumerate(numeric_coordinates)
-        }
-
     cells: list[RawGridCell] = []
-    for row in range(spec.expected_raw_rows):
-        for column in range(spec.expected_raw_columns):
-            raw_text = raw[row][column] or ""
-            logical = data_logical.get((row, column))
-            if logical is None:
-                role: Literal["header", "data", "blank", "note", "footnote"] = (
-                    "blank" if not raw_text.strip() else "header"
-                )
-                parsed = None
-                parse_status = "blank" if role == "blank" else "text"
-            else:
-                role = "data"
-                parsed = parse_data_cell(
-                    raw_text,
-                    allowed_footnotes=spec.allowed_suffixes,
-                )
-                parse_status = parsed.parse_status
-            cells.append(
-                RawGridCell(
-                    row=row,
-                    column=column,
-                    raw_text=raw_text,
-                    role=role,
-                    logical_row=None if logical is None else logical[0],
-                    logical_column=(
-                        None if logical is None else f"column-{logical[1] + 1}"
-                    ),
-                    value=None if parsed is None else parsed.value,
-                    qualifier=None if parsed is None else parsed.qualifier,
-                    suffix=None if parsed is None else parsed.suffix,
-                    footnotes=() if parsed is None else parsed.footnotes,
-                    parse_status=parse_status,  # type: ignore[arg-type]
-                    source=_source(
-                        identity,
-                        page_number=spec.page_number,
-                        clause=spec.clause,
-                        table=spec.source_table,
-                        row=f"grid row {row + 1}",
-                        column=f"grid column {column + 1}",
-                    ),
-                )
+    segments: list[RawGridSegment] = []
+    row_start = 0
+    grid_columns: int | None = None
+    for segment in segment_specs:
+        raw = _extract_segment(
+            pdf.pages[segment.page_number - 1],
+            anchor_reader.pages[segment.page_number - 1],
+            spec.semantic_id,
+            segment,
+        )
+        source_columns = segment.source_columns or tuple(range(segment.expected_raw_columns))
+        if spec.columns and source_columns != tuple(
+            column.source_column for column in spec.columns
+        ):
+            raise ExtractionError(f"column contract is inconsistent for {spec.semantic_id}")
+        if grid_columns is None:
+            grid_columns = len(source_columns)
+        elif grid_columns != len(source_columns):
+            raise ExtractionError(f"continuation columns differ for {spec.semantic_id}")
+        data_rows = tuple(segment.data_rows)
+        data_row_indexes = {row: index for index, row in enumerate(data_rows)}
+        legacy_logical = {} if spec.segments else _legacy_data_logical(spec, raw)
+        segment_source = _source(
+            identity,
+            page_number=segment.page_number,
+            clause=spec.clause,
+            table=spec.source_table,
+        )
+        segments.append(
+            RawGridSegment(
+                page_number=segment.page_number,
+                row_start=row_start,
+                row_count=segment.expected_raw_rows,
+                source=segment_source,
             )
+        )
+        for physical_row in range(segment.expected_raw_rows):
+            for column, source_column in enumerate(source_columns):
+                raw_text = raw[physical_row][source_column] or ""
+                logical: tuple[int, str] | None = None
+                parsed: ParsedDataCell | None = None
+                role: Literal["header", "data", "blank", "note", "footnote"]
+                if spec.segments:
+                    column_spec = spec.columns[column]
+                    if physical_row in segment.header_rows:
+                        role = "blank" if not raw_text.strip() else "header"
+                    elif physical_row in segment.note_rows:
+                        role = "blank" if not raw_text.strip() else "note"
+                    elif physical_row in segment.footnote_rows:
+                        role = "blank" if not raw_text.strip() else "footnote"
+                    elif physical_row in data_row_indexes and column_spec.role != "context":
+                        logical = (
+                            segment.logical_row_offset + data_row_indexes[physical_row],
+                            column_spec.semantic_id,
+                        )
+                        if raw_text.strip():
+                            role = "data"
+                            parsed = parse_data_cell(
+                                raw_text,
+                                allowed_footnotes=spec.allowed_suffixes,
+                            )
+                        else:
+                            role = "blank"
+                    elif physical_row in data_row_indexes:
+                        role = "blank" if not raw_text.strip() else "note"
+                    else:
+                        role = "blank" if not raw_text.strip() else "note"
+                else:
+                    legacy = legacy_logical.get((physical_row, source_column))
+                    if legacy is None:
+                        role = "blank" if not raw_text.strip() else "header"
+                    else:
+                        logical = (legacy[0], f"column-{legacy[1] + 1}")
+                        role = "data"
+                        parsed = parse_data_cell(
+                            raw_text,
+                            allowed_footnotes=spec.allowed_suffixes,
+                        )
+                parse_status = (
+                    parsed.parse_status
+                    if parsed is not None
+                    else ("blank" if not raw_text.strip() else "text")
+                )
+                cells.append(
+                    RawGridCell(
+                        row=row_start + physical_row,
+                        column=column,
+                        raw_text=raw_text,
+                        role=role,
+                        logical_row=None if logical is None else logical[0],
+                        logical_column=None if logical is None else logical[1],
+                        value=None if parsed is None else parsed.value,
+                        qualifier=None if parsed is None else parsed.qualifier,
+                        suffix=None if parsed is None else parsed.suffix,
+                        footnotes=() if parsed is None else parsed.footnotes,
+                        parse_status=parse_status,
+                        source=_source(
+                            identity,
+                            page_number=segment.page_number,
+                            clause=spec.clause,
+                            table=spec.source_table,
+                            row=f"grid row {physical_row + 1}",
+                            column=f"grid column {source_column + 1}",
+                        ),
+                    )
+                )
+        row_start += segment.expected_raw_rows
+
+    if grid_columns is None or (row_start, grid_columns) != (
+        spec.expected_raw_rows,
+        spec.expected_raw_columns,
+    ):
+        raise ExtractionError(f"logical grid dimensions differ for {spec.semantic_id}")
+    if spec.segments:
+        logical_rows = {cell.logical_row for cell in cells if cell.logical_row is not None}
+        logical_columns = {
+            column.semantic_id for column in spec.columns if column.role != "context"
+        }
+        if len(logical_rows) != spec.expected_data_rows or len(logical_columns) != spec.expected_data_columns:
+            raise ExtractionError(f"semantic data dimensions differ for {spec.semantic_id}")
     grid = RawGrid(
         id=f"raw-{spec.semantic_id}",
-        rows=spec.expected_raw_rows,
-        columns=spec.expected_raw_columns,
+        rows=row_start,
+        columns=grid_columns,
         target_unit=spec.target_unit,
-        segments=(
-            RawGridSegment(
-                page_number=spec.page_number,
-                row_start=0,
-                row_count=spec.expected_raw_rows,
-                source=table_source,
-            ),
-        ),
+        segments=tuple(segments),
         cells=tuple(cells),
         source=table_source,
     )
@@ -584,8 +692,8 @@ def _extract_real_layout(
         with pdfplumber.open(path) as pdf:
             extracted = tuple(
                 _extract_layout_table(
-                    pdf.pages[spec.page_number - 1],
-                    anchor_reader.pages[spec.page_number - 1],
+                    pdf,
+                    anchor_reader,
                     identity,
                     spec,
                 )

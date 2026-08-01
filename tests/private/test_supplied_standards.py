@@ -80,8 +80,10 @@ def test_supplied_standards_match_human_reviewed_draft(
     }
     assert {grid.id for grid in draft.raw_grids} == {
         "raw-iec60664-1-f2",
-        "raw-iec60664-1-f3",
-        "raw-iec60664-1-f4",
+        "raw-iec60664-1-f5",
+        "raw-iec60664-1-f8",
+        "raw-iec60664-1-f9",
+        "raw-iec60664-1-a2",
         "raw-iec60664-4-table-1",
         "raw-iec60664-4-table-2",
         "raw-iec60664-4-table-5",
@@ -91,8 +93,10 @@ def test_supplied_standards_match_human_reviewed_draft(
         for grid in draft.raw_grids
     } == {
         "raw-iec60664-1-f2": (30, 7),
-        "raw-iec60664-1-f3": (23, 3),
-        "raw-iec60664-1-f4": (20, 4),
+        "raw-iec60664-1-f5": (49, 10),
+        "raw-iec60664-1-f8": (35, 3),
+        "raw-iec60664-1-f9": (35, 2),
+        "raw-iec60664-1-a2": (12, 3),
         "raw-iec60664-4-table-1": (10, 2),
         "raw-iec60664-4-table-2": (20, 8),
         "raw-iec60664-4-table-5": (6, 4),
@@ -114,6 +118,21 @@ def test_supplied_standards_match_human_reviewed_draft(
         for grid in draft.raw_grids
         for cell in grid.cells
     )
+    f5 = next(grid for grid in draft.raw_grids if grid.id == "raw-iec60664-1-f5")
+    assert tuple(segment.page_number for segment in f5.segments) == (73, 74)
+    assert tuple(segment.row_start for segment in f5.segments) == (0, 30)
+    assert all(cell.role in {"header", "data", "blank", "note", "footnote"} for cell in f5.cells)
+    assert max(cell.logical_row for cell in f5.cells if cell.logical_row is not None) == 38
+    assert any(
+        cell.source.note == "PDF page 74" and cell.logical_row is not None
+        for cell in f5.cells
+    )
+    assert any(
+        " " in cell.raw_text.strip() and cell.value is not None
+        for cell in f5.cells
+        if cell.logical_column == "rms_voltage_v"
+    )
+    assert any(cell.footnotes for grid in draft.raw_grids for cell in grid.cells)
     expected_draft_failures = {
         "approval",
         "approval_record",

@@ -52,6 +52,7 @@ class TableSegmentSpec(FrozenModel):
     anchor_max_vertical_gap: float = Field(default=80.0, ge=0, le=300)
     anchor_min_x_overlap: float = Field(default=0.1, ge=0, le=1)
     logical_row_offset: int = Field(default=0, ge=0)
+    source_columns: tuple[int, ...] = ()
     header_rows: tuple[int, ...] = ()
     data_rows: tuple[int, ...] = ()
     note_rows: tuple[int, ...] = ()

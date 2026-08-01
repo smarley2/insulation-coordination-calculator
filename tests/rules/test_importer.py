@@ -51,6 +51,9 @@ from insulation_coordination.rules.importer.identify import (
     UnsupportedStandardError,
     identify_standard,
 )
+from insulation_coordination.rules.importer.recipes.iec60664_1_2020 import (
+    RECIPE as PART1_RECIPE,
+)
 from insulation_coordination.rules.importer.review import (
     accept_raw_grid,
     build_reviewed_draft,
@@ -69,6 +72,33 @@ _CELLS = (
     ("1", "1.1", "1.2"),
     ("2", "2.1", "2.2"),
 )
+
+
+def test_part1_recipe_contains_only_required_pcb_source_inventory() -> None:
+    tables = {table.semantic_id: table for table in PART1_RECIPE.tables}
+
+    assert set(tables) == {
+        "iec60664-1-f2",
+        "iec60664-1-f5",
+        "iec60664-1-f8",
+        "iec60664-1-f9",
+        "iec60664-1-a2",
+    }
+    assert tuple(segment.page_number for segment in tables["iec60664-1-f5"].segments) == (
+        73,
+        74,
+    )
+    assert tuple(column.semantic_id for column in tables["iec60664-1-f5"].columns[:3]) == (
+        "rms_voltage_v",
+        "pcb_pollution_1",
+        "pcb_pollution_2",
+    )
+    assert {
+        column.semantic_id for column in tables["iec60664-1-f8"].columns
+    } == {"peak_voltage_kv", "case_a_mm", "case_b_mm"}
+    assert {
+        column.semantic_id for column in tables["iec60664-1-a2"].columns
+    } == {"altitude_m", "pressure_kpa", "clearance_factor"}
 
 
 def _pdf_string(value: str) -> bytes:
