@@ -32,7 +32,7 @@ from insulation_coordination.calculation.grouping import (
 from insulation_coordination.domain.project import Project
 from insulation_coordination.domain.rules import RulePackage
 from insulation_coordination.project.resolver import resolve_effective_case
-from insulation_coordination.report.compiler import compile_pdf
+from insulation_coordination.report.compiler import CompilerCommand, compile_pdf
 from insulation_coordination.report.latex import render_latex
 from insulation_coordination.report.model import ReportBuildError, build_report_model
 
@@ -49,7 +49,7 @@ class ReportOutput:
 class ReportPage(QWidget):
     """Shows automatic groups, document metadata, and blocked/final report state."""
 
-    def __init__(self, tectonic: Path | None = None) -> None:
+    def __init__(self, tectonic: CompilerCommand | None = None) -> None:
         super().__init__()
         self._project: Project | None = None
         self._rules: RulePackage | None = None

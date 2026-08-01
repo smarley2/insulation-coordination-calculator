@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
@@ -33,9 +34,8 @@ from insulation_coordination.rules.archive import load_rule_package, write_rule_
 from tests.fixtures.synthetic_rules import synthetic_hf_rule_package
 
 
-def _fake_tectonic(path: Path) -> Path:
-    script = """#!/usr/bin/env python3
-from pathlib import Path
+def _fake_tectonic(path: Path) -> tuple[str, str]:
+    script = """from pathlib import Path
 import sys
 from pypdf import PdfWriter
 
@@ -46,9 +46,9 @@ writer.add_blank_page(width=612, height=792)
 with (outdir / (tex.stem + ".pdf")).open("wb") as stream:
     writer.write(stream)
 """
-    path.write_text(script, encoding="utf-8")
-    path.chmod(0o755)
-    return path
+    script_path = path.with_suffix(".py")
+    script_path.write_text(script, encoding="utf-8")
+    return sys.executable, str(script_path)
 
 
 def _uuid(seed: int) -> UUID:
