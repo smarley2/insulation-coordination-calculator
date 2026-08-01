@@ -17,7 +17,11 @@ from PySide6.QtWidgets import (
 )
 
 from insulation_coordination.calculation.engine import PairResult
-from insulation_coordination.domain.enums import InsulationType
+from insulation_coordination.domain.enums import (
+    ConstructionType,
+    FieldCondition,
+    InsulationType,
+)
 from insulation_coordination.domain.project import (
     OverrideValue,
     PairCase,
@@ -54,6 +58,16 @@ def _parse_frequency(text: str) -> Decimal:
     return Decimal(text)
 
 
+def _override_row(widget: QWidget, label: QLabel) -> QWidget:
+    """Wrap a control plus a Default/Override provenance label."""
+    row = QHBoxLayout()
+    row.addWidget(widget, 1)
+    row.addWidget(label)
+    container = QWidget()
+    container.setLayout(row)
+    return container
+
+
 class PairEditor(QWidget):
     """Detailed editor for a single pair case."""
 
@@ -81,6 +95,22 @@ class PairEditor(QWidget):
         voltages_layout.addRow("Temporary OV peak:", self._to_peak_edit)
         layout.addWidget(voltages_group)
 
+        na_group = QGroupBox("Not applicable (with justification)")
+        na_layout = QHBoxLayout(na_group)
+        self._rms_na_button = QPushButton("RMS N/A")
+        self._rms_na_button.clicked.connect(self._on_rms_na)
+        na_layout.addWidget(self._rms_na_button)
+        self._steady_na_button = QPushButton("Steady peak N/A")
+        self._steady_na_button.clicked.connect(self._on_steady_na)
+        na_layout.addWidget(self._steady_na_button)
+        self._recurring_na_button = QPushButton("Recurring N/A")
+        self._recurring_na_button.clicked.connect(self._on_recurring_na)
+        na_layout.addWidget(self._recurring_na_button)
+        self._to_na_button = QPushButton("Temp OV N/A")
+        self._to_na_button.clicked.connect(self._on_to_na)
+        na_layout.addWidget(self._to_na_button)
+        layout.addWidget(na_group)
+
         params_group = QGroupBox("Parameters")
         params_layout = QFormLayout(params_group)
 
@@ -100,6 +130,65 @@ class PairEditor(QWidget):
         self._insulation_combo.currentTextChanged.connect(self._on_insulation_changed)
         params_layout.addRow("Insulation type:", self._insulation_combo)
 
+        self._impulse_edit = QLineEdit()
+        self._impulse_edit.editingFinished.connect(self._on_impulse_changed)
+        self._impulse_source_label = QLabel("Default")
+        params_layout.addRow(
+            "Impulse:", _override_row(self._impulse_edit, self._impulse_source_label)
+        )
+
+        self._field_combo = QComboBox()
+        self._field_combo.addItem("")
+        for field in FieldCondition:
+            self._field_combo.addItem(field.value)
+        self._field_combo.currentTextChanged.connect(self._on_field_changed)
+        self._field_source_label = QLabel("Default")
+        params_layout.addRow(
+            "Field condition:", _override_row(self._field_combo, self._field_source_label)
+        )
+
+        self._radius_edit = QLineEdit()
+        self._radius_edit.editingFinished.connect(self._on_radius_changed)
+        self._radius_source_label = QLabel("Default")
+        params_layout.addRow(
+            "Electrode radius (mm):", _override_row(self._radius_edit, self._radius_source_label)
+        )
+
+        self._altitude_edit = QLineEdit()
+        self._altitude_edit.editingFinished.connect(self._on_altitude_changed)
+        self._altitude_source_label = QLabel("Default")
+        params_layout.addRow(
+            "Altitude (m):", _override_row(self._altitude_edit, self._altitude_source_label)
+        )
+
+        self._pollution_edit = QLineEdit()
+        self._pollution_edit.editingFinished.connect(self._on_pollution_changed)
+        self._pollution_source_label = QLabel("Default")
+        params_layout.addRow(
+            "Pollution degree:", _override_row(self._pollution_edit, self._pollution_source_label)
+        )
+
+        self._construction_combo = QComboBox()
+        self._construction_combo.addItem("")
+        for construction in ConstructionType:
+            self._construction_combo.addItem(construction.value)
+        self._construction_combo.currentTextChanged.connect(self._on_construction_changed)
+        self._construction_source_label = QLabel("Default")
+        params_layout.addRow(
+            "Construction:", _override_row(self._construction_combo, self._construction_source_label)
+        )
+
+        self._cti_edit = QLineEdit()
+        self._cti_edit.editingFinished.connect(self._on_cti_changed)
+        self._cti_source_label = QLabel("Default")
+        params_layout.addRow(
+            "CTI / material group:", _override_row(self._cti_edit, self._cti_source_label)
+        )
+
+        self._notes_edit = QLineEdit()
+        self._notes_edit.editingFinished.connect(self._on_notes_changed)
+        params_layout.addRow("Notes:", self._notes_edit)
+
         layout.addWidget(params_group)
 
     @property
@@ -118,6 +207,14 @@ class PairEditor(QWidget):
         self._to_peak_edit.blockSignals(True)
         self._freq_edit.blockSignals(True)
         self._insulation_combo.blockSignals(True)
+        self._impulse_edit.blockSignals(True)
+        self._field_combo.blockSignals(True)
+        self._radius_edit.blockSignals(True)
+        self._altitude_edit.blockSignals(True)
+        self._pollution_edit.blockSignals(True)
+        self._construction_combo.blockSignals(True)
+        self._cti_edit.blockSignals(True)
+        self._notes_edit.blockSignals(True)
 
         self._rms_edit.setText(
             str(pair.voltages.long_term_rms_v.value) if pair.voltages.long_term_rms_v.value else ""
@@ -144,12 +241,60 @@ class PairEditor(QWidget):
             self._freq_edit.setText("")
             self._freq_source_label.setText("Default")
 
+        self._impulse_edit.setText(
+            str(pair.impulse_v.value) if pair.impulse_v.value is not None else ""
+        )
+        self._impulse_source_label.setText("Override" if pair.impulse_v.is_override else "Default")
+        self._field_combo.setCurrentText(
+            pair.field_condition.value.value if pair.field_condition.value else ""
+        )
+        self._field_source_label.setText(
+            "Override" if pair.field_condition.is_override else "Default"
+        )
+        self._radius_edit.setText(
+            str(pair.electrode_radius_mm.value)
+            if pair.electrode_radius_mm.value is not None
+            else ""
+        )
+        self._radius_source_label.setText(
+            "Override" if pair.electrode_radius_mm.is_override else "Default"
+        )
+        self._altitude_edit.setText(
+            str(pair.altitude_m.value) if pair.altitude_m.value is not None else ""
+        )
+        self._altitude_source_label.setText("Override" if pair.altitude_m.is_override else "Default")
+        self._pollution_edit.setText(
+            str(pair.pollution_degree.value) if pair.pollution_degree.value is not None else ""
+        )
+        self._pollution_source_label.setText(
+            "Override" if pair.pollution_degree.is_override else "Default"
+        )
+        self._construction_combo.setCurrentText(
+            pair.construction_type.value.value if pair.construction_type.value else ""
+        )
+        self._construction_source_label.setText(
+            "Override" if pair.construction_type.is_override else "Default"
+        )
+        self._cti_edit.setText(pair.cti_or_material_group.value or "")
+        self._cti_source_label.setText(
+            "Override" if pair.cti_or_material_group.is_override else "Default"
+        )
+        self._notes_edit.setText(pair.notes or "")
+
         self._insulation_combo.blockSignals(False)
         self._rms_edit.blockSignals(False)
         self._steady_peak_edit.blockSignals(False)
         self._recurring_peak_edit.blockSignals(False)
         self._to_peak_edit.blockSignals(False)
         self._freq_edit.blockSignals(False)
+        self._impulse_edit.blockSignals(False)
+        self._field_combo.blockSignals(False)
+        self._radius_edit.blockSignals(False)
+        self._altitude_edit.blockSignals(False)
+        self._pollution_edit.blockSignals(False)
+        self._construction_combo.blockSignals(False)
+        self._cti_edit.blockSignals(False)
+        self._notes_edit.blockSignals(False)
 
     def set_long_term_rms(self, text: str) -> None:
         if self._pair is None:
@@ -173,6 +318,16 @@ class PairEditor(QWidget):
         voltage = PairVoltage.applicable(value)
         self._update_pair(
             voltages=self._pair.voltages.model_copy(update={"steady_state_peak_v": voltage})
+        )
+
+    def set_steady_state_peak_not_applicable(self, justification: str) -> None:
+        if self._pair is None:
+            return
+        voltage = PairVoltage.not_applicable(justification)
+        self._update_pair(
+            voltages=self._pair.voltages.model_copy(
+                update={"steady_state_peak_v": voltage}
+            )
         )
 
     def set_recurring_peak(self, text: str) -> None:
@@ -206,11 +361,13 @@ class PairEditor(QWidget):
         value = _parse_voltage(text)
         override = OverrideValue[Decimal].override(value)
         self._update_pair(impulse_v=override)
+        self._impulse_source_label.setText("Override")
 
     def clear_impulse_override(self) -> None:
         if self._pair is None:
             return
         self._update_pair(impulse_v=OverrideValue[Decimal].inherit())
+        self._impulse_source_label.setText("Default")
 
     def set_frequency_override(self, text: str) -> None:
         if self._pair is None:
@@ -280,6 +437,147 @@ class PairEditor(QWidget):
             return
         override = OverrideValue[InsulationType].override(insulation)
         self._update_pair(insulation_type=override)
+
+    def set_field_override(self, value: FieldCondition) -> None:
+        if self._pair is None:
+            return
+        self._update_pair(field_condition=OverrideValue[FieldCondition].override(value))
+        self._field_source_label.setText("Override")
+
+    def clear_field_override(self) -> None:
+        if self._pair is None:
+            return
+        self._update_pair(field_condition=OverrideValue[FieldCondition].inherit())
+        self._field_source_label.setText("Default")
+
+    def set_radius_override(self, text: str) -> None:
+        if self._pair is None:
+            return
+        value = Decimal(text.strip())
+        self._update_pair(electrode_radius_mm=OverrideValue[Decimal].override(value))
+        self._radius_source_label.setText("Override")
+
+    def set_altitude_override(self, text: str) -> None:
+        if self._pair is None:
+            return
+        value = Decimal(text.strip())
+        self._update_pair(altitude_m=OverrideValue[Decimal].override(value))
+        self._altitude_source_label.setText("Override")
+
+    def set_pollution_override(self, text: str) -> None:
+        if self._pair is None:
+            return
+        value = int(text.strip())
+        self._update_pair(pollution_degree=OverrideValue[int].override(value))
+        self._pollution_source_label.setText("Override")
+
+    def set_construction_override(self, value: ConstructionType) -> None:
+        if self._pair is None:
+            return
+        self._update_pair(construction_type=OverrideValue[ConstructionType].override(value))
+        self._construction_source_label.setText("Override")
+
+    def set_cti_override(self, text: str) -> None:
+        if self._pair is None:
+            return
+        value = text.strip()
+        self._update_pair(cti_or_material_group=OverrideValue[str].override(value))
+        self._cti_source_label.setText("Override")
+
+    def set_notes(self, text: str) -> None:
+        if self._pair is None:
+            return
+        self._update_pair(notes=(text.strip() or None))
+
+    def _on_impulse_changed(self) -> None:
+        text = self._impulse_edit.text().strip()
+        if not text:
+            return
+        try:
+            self.set_impulse_override(text)
+        except (InvalidOperation, ValueError):
+            pass
+
+    def _on_field_changed(self, text: str) -> None:
+        if self._pair is None or not text:
+            return
+        try:
+            self.set_field_override(FieldCondition(text))
+        except ValueError:
+            pass
+
+    def _on_radius_changed(self) -> None:
+        text = self._radius_edit.text().strip()
+        if not text:
+            return
+        try:
+            self.set_radius_override(text)
+        except (InvalidOperation, ValueError):
+            pass
+
+    def _on_altitude_changed(self) -> None:
+        text = self._altitude_edit.text().strip()
+        if not text:
+            return
+        try:
+            self.set_altitude_override(text)
+        except (InvalidOperation, ValueError):
+            pass
+
+    def _on_pollution_changed(self) -> None:
+        text = self._pollution_edit.text().strip()
+        if not text:
+            return
+        try:
+            self.set_pollution_override(text)
+        except (InvalidOperation, ValueError):
+            pass
+
+    def _on_construction_changed(self, text: str) -> None:
+        if self._pair is None or not text:
+            return
+        try:
+            self.set_construction_override(ConstructionType(text))
+        except ValueError:
+            pass
+
+    def _on_cti_changed(self) -> None:
+        text = self._cti_edit.text().strip()
+        if not text:
+            return
+        try:
+            self.set_cti_override(text)
+        except ValueError:
+            pass
+
+    def _on_notes_changed(self) -> None:
+        if self._pair is None:
+            return
+        self.set_notes(self._notes_edit.text())
+
+    def _on_rms_na(self) -> None:
+        if self._pair is None:
+            return
+        self.set_long_term_rms_not_applicable("Not applicable per design review")
+        self._rms_edit.clear()
+
+    def _on_steady_na(self) -> None:
+        if self._pair is None:
+            return
+        self.set_steady_state_peak_not_applicable("Not applicable per design review")
+        self._steady_peak_edit.clear()
+
+    def _on_recurring_na(self) -> None:
+        if self._pair is None:
+            return
+        self.set_recurring_peak_not_applicable("Not applicable per design review")
+        self._recurring_peak_edit.clear()
+
+    def _on_to_na(self) -> None:
+        if self._pair is None:
+            return
+        self.set_temporary_overvoltage_not_applicable()
+        self._to_peak_edit.clear()
 
     def _update_pair(self, **updates: object) -> None:
         if self._pair is None:

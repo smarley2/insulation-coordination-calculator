@@ -551,6 +551,13 @@ def _require_draft_structure(draft: DraftRulePackage) -> None:
         raise ApprovalError(f"approval validation failed: {', '.join(failures)}")
 
 
+def is_fully_resolved(draft: ImportedRuleDraft) -> bool:
+    """True when every manual review item has an associated resolution."""
+    resolved = {resolution.review_item_sha256 for resolution in draft.review_resolutions}
+    inventory = {item.sha256 for item in draft.review_items}
+    return len(resolved) == len(draft.review_resolutions) == len(inventory) and resolved == inventory
+
+
 def approve_draft(
     draft: ImportedRuleDraft,
     approver: str,

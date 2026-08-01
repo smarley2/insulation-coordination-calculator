@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
@@ -28,6 +29,7 @@ from insulation_coordination.calculation.grouping import (
     CalculationGroup,
     GroupingError,
     group_results,
+    split_group,
 )
 from insulation_coordination.domain.project import Project
 from insulation_coordination.domain.rules import RulePackage
@@ -48,6 +50,8 @@ class ReportOutput:
 
 class ReportPage(QWidget):
     """Shows automatic groups, document metadata, and blocked/final report state."""
+
+    project_changed = Signal(object)
 
     def __init__(self, tectonic: CompilerCommand | None = None) -> None:
         super().__init__()
@@ -79,6 +83,10 @@ class ReportPage(QWidget):
         groups_layout = QVBoxLayout(groups_group)
         self._groups_list = QListWidget()
         groups_layout.addWidget(self._groups_list)
+        self._split_button = QPushButton("Split selected group")
+        self._split_button.setEnabled(False)
+        self._split_button.clicked.connect(self._on_split_clicked)
+        groups_layout.addWidget(self._split_button)
         layout.addWidget(groups_group)
 
         export_row = QHBoxLayout()
@@ -192,6 +200,11 @@ class ReportPage(QWidget):
             else:
                 self._blocking = ()
         self._generate_button.setEnabled(self._project is not None and not self._blocking)
+        self._split_button.setEnabled(
+            self._project is not None and any(
+                len(group.pair_ids) > 1 for group in self._groups
+            )
+        )
         self._summary_label.setText(self.validation_summary)
         self._groups_list.clear()
         for group in self._groups:
@@ -200,6 +213,31 @@ class ReportPage(QWidget):
                 f"{'s' if len(group.pair_ids) != 1 else ''})"
             )
             self._groups_list.addItem(label)
+
+    def split_selected_group(self) -> None:
+        """Split the first multi-pair group by moving its last pair out."""
+        if self._project is None or self._groups is None:
+            return
+        target = next((g for g in self._groups if len(g.pair_ids) > 1), None)
+        if target is None:
+            raise GroupingError("no group with more than one pair to split")
+        selected = target.pair_ids[-1:]
+        split_group(self._groups, target.group_id, selected)  # validate split applies
+        # persist a GroupSplit
+        from insulation_coordination.domain.project import GroupSplit
+
+        existing = list(self._project.group_splits)
+        existing.append(GroupSplit(signature=target.signature, pair_ids=selected))
+        project = self._project.model_copy(update={"group_splits": tuple(existing)})
+        self._project = project
+        self._refresh()
+        self.project_changed.emit(project)
+
+    def _on_split_clicked(self) -> None:
+        try:
+            self.split_selected_group()
+        except GroupingError as error:
+            QMessageBox.warning(self, "Split Group", str(error))
 
     def _on_generate_clicked(self) -> None:
         if self._project is None:
