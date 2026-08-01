@@ -44,6 +44,7 @@ from insulation_coordination.rules.audit import (
 )
 from insulation_coordination.rules.importer.approval import is_fully_resolved
 from insulation_coordination.rules.importer.extract import ImportedRuleDraft
+from insulation_coordination.ui.raw_grid_review import RawGridReviewDialog
 
 _SECTIONS = ("Manifest", "Checksums", "Tables", "Formulas", "Mappings", "Validation")
 
@@ -115,7 +116,9 @@ class RulesManagerWindow(QWidget):
 
         review_group = QGroupBox("Maintainer PDF extraction review")
         review_layout = QVBoxLayout(review_group)
-        self._review_status = QLabel("No draft loaded. Import a draft package or set one programmatically.")
+        self._review_status = QLabel(
+            "No draft loaded. Import a draft package or set one programmatically."
+        )
         review_layout.addWidget(self._review_status)
         self._required_status = QLabel("Required IEC content: unknown")
         review_layout.addWidget(self._required_status)
@@ -126,6 +129,10 @@ class RulesManagerWindow(QWidget):
         self._review_notes = QLineEdit()
         self._review_notes.setPlaceholderText("Resolution / approval notes (required)")
         review_layout.addWidget(self._review_notes)
+        self._review_tables_button = QPushButton("Review extracted tables…")
+        self._review_tables_button.setEnabled(False)
+        self._review_tables_button.clicked.connect(self._on_review_tables_clicked)
+        review_layout.addWidget(self._review_tables_button)
         self._build_review_button = QPushButton("Build reviewed content…")
         self._build_review_button.setEnabled(False)
         self._build_review_button.clicked.connect(self._on_build_review_clicked)
@@ -199,7 +206,9 @@ class RulesManagerWindow(QWidget):
         )
         self._approve_button.setEnabled(package.manifest.approved and package.manifest.compatible)
         self._inventory_button.setEnabled(True)
-        self._review_status.setText("No draft loaded. Import a draft package or set one programmatically.")
+        self._review_status.setText(
+            "No draft loaded. Import a draft package or set one programmatically."
+        )
         self._review_list.clear()
         self._review_notes.clear()
         self._populate_tree()
@@ -219,6 +228,14 @@ class RulesManagerWindow(QWidget):
     @property
     def review_count(self) -> int:
         return len(self._draft.review_items) if self._draft is not None else 0
+
+    @property
+    def review_tables_enabled(self) -> bool:
+        return self._review_tables_button.isEnabled()
+
+    @property
+    def build_review_enabled(self) -> bool:
+        return self._build_review_button.isEnabled()
 
     @property
     def resolved_count(self) -> int:
@@ -250,19 +267,18 @@ class RulesManagerWindow(QWidget):
 
     @property
     def can_approve(self) -> bool:
-        return (
-            self._draft is not None
-            and self.is_fully_resolved
-            and not self.placeholder_pending
-        )
+        return self._draft is not None and self.is_fully_resolved and not self.placeholder_pending
 
     def _refresh_review(self) -> None:
         self._review_list.clear()
         self._required_list.clear()
         if self._draft is None:
-            self._review_status.setText("No draft loaded. Import a draft package or set one programmatically.")
+            self._review_status.setText(
+                "No draft loaded. Import a draft package or set one programmatically."
+            )
             self._required_status.setText("Required IEC content: unknown")
             self._review_approve_button.setEnabled(False)
+            self._review_tables_button.setEnabled(False)
             self._build_review_button.setEnabled(False)
             self._confirm_formulas_button.setEnabled(False)
             return
@@ -273,6 +289,11 @@ class RulesManagerWindow(QWidget):
 
         report = required_content_report(self._draft)
         missing = missing_required_content(self._draft)
+        from insulation_coordination.rules.importer.review import (
+            unresolved_raw_review_items,
+        )
+
+        raw_pending = unresolved_raw_review_items(self._draft)
         for required in report:
             mark = "[x]" if required.present else "[ ]"
             table = f" (table {required.source_table})" if required.source_table else ""
@@ -283,7 +304,8 @@ class RulesManagerWindow(QWidget):
         self._required_status.setText(
             f"Required IEC content: {len(report) - len(missing)} of {len(report)} present"
         )
-        self._build_review_button.setEnabled(not self.is_fully_resolved)
+        self._review_tables_button.setEnabled(bool(raw_pending))
+        self._build_review_button.setEnabled(not raw_pending and bool(missing))
         self._confirm_formulas_button.setEnabled(self.placeholder_pending)
         resolved = {r.review_item_sha256 for r in self._draft.review_resolutions}
         for item in self._draft.review_items:
@@ -296,6 +318,25 @@ class RulesManagerWindow(QWidget):
         )
         self._review_approve_button.setEnabled(self.can_approve)
 
+    def _on_review_tables_clicked(self) -> None:
+        if self._draft is None:
+            return
+        notes = self._review_notes.text().strip()
+        if not notes:
+            QMessageBox.warning(
+                self,
+                "Review Extracted Tables",
+                "Resolution notes are required.",
+            )
+            return
+        dialog = RawGridReviewDialog(
+            self._draft,
+            actor="maintainer",
+            notes=notes,
+        )
+        dialog.draft_changed.connect(self.set_draft)
+        dialog.exec()
+
     def _on_build_review_clicked(self) -> None:
         if self._draft is None or self.is_fully_resolved:
             return
@@ -303,23 +344,21 @@ class RulesManagerWindow(QWidget):
 
         notes = self._review_notes.text().strip()
         if not notes:
-            QMessageBox.warning(
-                self, "Build Reviewed Content", "Resolution notes are required."
-            )
+            QMessageBox.warning(self, "Build Reviewed Content", "Resolution notes are required.")
             return
         try:
-            reviewed = build_reviewed_draft(
-                self._draft, actor="maintainer", notes=notes
-            )
+            reviewed = build_reviewed_draft(self._draft, actor="maintainer", notes=notes)
         except (ValueError, KeyError) as error:
             QMessageBox.critical(self, "Build Reviewed Content", str(error))
             return
         self.set_draft(reviewed)
         self._review_notes.clear()
+        remaining = self.review_count - self.resolved_count
         QMessageBox.information(
             self,
             "Build Reviewed Content",
-            f"Reviewed {self.review_count} items. "
+            f"Built required content. {self.resolved_count} of "
+            f"{self.review_count} review items resolved; {remaining} remain. "
             "Confirm formula constants, then approve.",
         )
 
@@ -395,11 +434,7 @@ class RulesManagerWindow(QWidget):
             export_table_csv(self._package, table.id, destination / f"table-{table.id}.csv")
 
     def _install_path(self, package: RulePackage) -> Path:
-        rules_dir = (
-            self._rules_dir
-            if self._rules_dir is not None
-            else _default_rules_dir()
-        )
+        rules_dir = self._rules_dir if self._rules_dir is not None else _default_rules_dir()
         rules_dir.mkdir(parents=True, exist_ok=True)
         return rules_dir / f"{package.manifest.package_id}-{package.manifest.version}.icrules"
 
@@ -430,9 +465,7 @@ class RulesManagerWindow(QWidget):
     def _on_export_inventory_clicked(self) -> None:
         if self._package is None:
             return
-        directory = QFileDialog.getExistingDirectory(
-            self, "Export Audit Inventory"
-        )
+        directory = QFileDialog.getExistingDirectory(self, "Export Audit Inventory")
         if not directory:
             return
         try:
@@ -490,8 +523,10 @@ class RulesManagerWindow(QWidget):
             top.addChild(
                 QTreeWidgetItem(
                     (
-                        (f"source_document[{index}]: {document.standard} "
-                         f"{document.edition} {document.sha256}"),
+                        (
+                            f"source_document[{index}]: {document.standard} "
+                            f"{document.edition} {document.sha256}"
+                        ),
                     )
                 )
             )
@@ -499,8 +534,10 @@ class RulesManagerWindow(QWidget):
             top.addChild(
                 QTreeWidgetItem(
                     (
-                        (f"approval: {record.action} by {record.actor} at "
-                         f"{record.recorded_at.isoformat()} — {record.notes}"),
+                        (
+                            f"approval: {record.action} by {record.actor} at "
+                            f"{record.recorded_at.isoformat()} — {record.notes}"
+                        ),
                     )
                 )
             )
@@ -528,20 +565,22 @@ class RulesManagerWindow(QWidget):
                 table_item.addChild(
                     QTreeWidgetItem(
                         (
-                            (f"range {supported.variable} "
-                             f"{supported.minimum}..{supported.maximum} {supported.unit}"),
+                            (
+                                f"range {supported.variable} "
+                                f"{supported.minimum}..{supported.maximum} {supported.unit}"
+                            ),
                         )
                     )
                 )
-            table_item.addChild(
-                QTreeWidgetItem((f"source: {_format_reference(table.source)}",))
-            )
+            table_item.addChild(QTreeWidgetItem((f"source: {_format_reference(table.source)}",)))
             for cell in table.cells:
                 table_item.addChild(
                     QTreeWidgetItem(
                         (
-                            (f"[{cell.row},{cell.column}] {cell.value} {cell.unit} "
-                             f"— {_format_reference(cell.source)}"),
+                            (
+                                f"[{cell.row},{cell.column}] {cell.value} {cell.unit} "
+                                f"— {_format_reference(cell.source)}"
+                            ),
                         )
                     )
                 )
@@ -552,22 +591,16 @@ class RulesManagerWindow(QWidget):
         if top is None:
             return
         for formula in inventory.formulas:
-            formula_item = QTreeWidgetItem(
-                (f"Formula {formula.id} ({formula.unit})",)
-            )
+            formula_item = QTreeWidgetItem((f"Formula {formula.id} ({formula.unit})",))
             formula_item.setData(0, Qt.ItemDataRole.UserRole, f"formula:{formula.id}")
             top.addChild(formula_item)
             for node in inventory.formula_nodes:
                 if node.formula_id != formula.id:
                     continue
                 formula_item.addChild(
-                    QTreeWidgetItem(
-                        (f"{node.path}: {_format_expression(node.node)}",)
-                    )
+                    QTreeWidgetItem((f"{node.path}: {_format_expression(node.node)}",))
                 )
-            formula_item.addChild(
-                QTreeWidgetItem((f"latex: {formula.latex}",))
-            )
+            formula_item.addChild(QTreeWidgetItem((f"latex: {formula.latex}",)))
             formula_item.addChild(
                 QTreeWidgetItem((f"source: {_format_reference(formula.source)}",))
             )
@@ -581,9 +614,11 @@ class RulesManagerWindow(QWidget):
             top.addChild(
                 QTreeWidgetItem(
                     (
-                        (f"{mapping.id}: {mapping.source_rule_id} → "
-                         f"{mapping.target_rule_id} (approved={mapping.approved}) "
-                         f"— {_format_reference(mapping.source)}"),
+                        (
+                            f"{mapping.id}: {mapping.source_rule_id} → "
+                            f"{mapping.target_rule_id} (approved={mapping.approved}) "
+                            f"— {_format_reference(mapping.source)}"
+                        ),
                     )
                 )
             )
@@ -614,9 +649,7 @@ class RulesManagerWindow(QWidget):
         if not needle or self._tree is None:
             return
         haystack = self._collect_audit_lines()
-        self._search_matches = [
-            line for line in haystack if needle in line.casefold()
-        ]
+        self._search_matches = [line for line in haystack if needle in line.casefold()]
 
     def _collect_audit_lines(self) -> tuple[str, ...]:
         lines: list[str] = []
@@ -694,6 +727,7 @@ class FormulaConstantDialog(QDialog):
         self.resize(520, 320)
         self._formula_ids: list[str] = []
         self._edits: list[QLineEdit] = []
+        self._expected_counts: list[int] = []
 
         layout = QVBoxLayout(self)
         heading = QLabel(
@@ -705,19 +739,17 @@ class FormulaConstantDialog(QDialog):
 
         for formula_id, values in formulas:
             self._formula_ids.append(formula_id)
+            self._expected_counts.append(len(values))
             row = QHBoxLayout()
-            row.addWidget(
-                QLabel(_formula_display_name(draft, formula_id, values)), 1
-            )
-            edit = QLineEdit(", ".join(format(float(v), "g") for v in values))
-            edit.setPlaceholderText("comma-separated value(s)")
+            row.addWidget(QLabel(_formula_display_name(draft, formula_id, values)), 1)
+            edit = QLineEdit()
+            edit.setPlaceholderText(f"{len(values)} comma-separated value(s)")
             self._edits.append(edit)
             row.addWidget(edit)
             layout.addLayout(row)
 
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(self._validate)
         buttons.rejected.connect(self.reject)
@@ -725,11 +757,18 @@ class FormulaConstantDialog(QDialog):
 
     def _validate(self) -> None:
         try:
-            for edit in self._edits:
-                for token in edit.text().split(","):
-                    token = token.strip()
-                    if token:
-                        Decimal(token)
+            for formula_id, edit, expected in zip(
+                self._formula_ids,
+                self._edits,
+                self._expected_counts,
+                strict=True,
+            ):
+                tokens = tuple(token.strip() for token in edit.text().split(","))
+                if len(tokens) != expected or any(not token for token in tokens):
+                    raise ValueError(f"{formula_id} requires exactly {expected} value(s)")
+                values = tuple(Decimal(token) for token in tokens)
+                if any(not value.is_finite() for value in values):
+                    raise ValueError(f"{formula_id} values must be finite")
         except (ValueError, ArithmeticError) as error:
             QMessageBox.warning(self, "Review Formula Constants", str(error))
             return
@@ -739,9 +778,7 @@ class FormulaConstantDialog(QDialog):
         result: dict[str, tuple[Decimal, ...]] = {}
         for formula_id, edit in zip(self._formula_ids, self._edits, strict=True):
             values = tuple(
-                Decimal(token.strip())
-                for token in edit.text().split(",")
-                if token.strip()
+                Decimal(token.strip()) for token in edit.text().split(",") if token.strip()
             )
             result[formula_id] = values
         return result

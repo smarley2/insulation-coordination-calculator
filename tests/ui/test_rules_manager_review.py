@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -10,12 +11,17 @@ from insulation_coordination.rules.importer.approval import (
     is_fully_resolved,
 )
 from insulation_coordination.rules.importer.extract import extract_draft
-from insulation_coordination.ui.rules_manager import RulesManagerWindow
-from tests.rules.test_importer import (
-    _review_all as build_reviewed,
+from insulation_coordination.rules.importer.review import accept_raw_grid
+from insulation_coordination.ui.rules_manager import (
+    FormulaConstantDialog,
+    RulesManagerWindow,
 )
 from tests.rules.test_importer import (
+    _compound_draft,
     create_geometry_pdf,
+)
+from tests.rules.test_importer import (
+    _review_all as build_reviewed,
 )
 
 
@@ -64,6 +70,52 @@ def test_draft_requires_review_and_blocks_approve(qtbot, rules_manager, supporte
     assert rules_manager.is_fully_resolved is False
     assert rules_manager.export_approved_enabled is False
     assert rules_manager.can_approve is False
+
+
+def test_raw_review_gates_build_button(rules_manager, tmp_path: Path) -> None:
+    draft = _compound_draft(tmp_path)
+    rules_manager.set_draft(draft)
+
+    assert rules_manager.review_tables_enabled is True
+    assert rules_manager.build_review_enabled is False
+
+    accepted = accept_raw_grid(
+        draft,
+        grid_id="raw-synthetic-part1-table",
+        corrections={},
+        actor="Maintainer",
+        notes="Compared against PDF",
+    )
+    rules_manager.set_draft(accepted)
+
+    assert rules_manager.review_tables_enabled is False
+    assert rules_manager.build_review_enabled is True
+
+
+def test_formula_constant_fields_start_empty_and_require_exact_count(
+    qtbot,
+    rules_manager,
+    supported_pdfs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    draft = extract_draft(supported_pdfs)
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "insulation_coordination.ui.rules_manager.QMessageBox.warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    dialog = FormulaConstantDialog(
+        draft,
+        (("synthetic-placeholder", (Decimal(1), Decimal(1))),),
+    )
+    qtbot.addWidget(dialog)
+
+    assert tuple(edit.text() for edit in dialog._edits) == ("",)
+    dialog._edits[0].setText("2")
+    dialog._validate()
+
+    assert warnings
+    assert dialog.result() != dialog.DialogCode.Accepted
 
 
 def test_build_reviewed_content_unlocks_approval(
