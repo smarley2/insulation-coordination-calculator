@@ -4,6 +4,7 @@ from decimal import Decimal
 import pytest
 
 from insulation_coordination.domain.rules import (
+    RULE_SCHEMA_VERSION,
     Add,
     ApprovalRecord,
     Compare,
@@ -177,7 +178,7 @@ def synthetic_rule_package() -> RulePackage:
     )
     return RulePackage(
         manifest=Manifest(
-            schema_version=1,
+            schema_version=RULE_SCHEMA_VERSION,
             package_id="00000000-0000-0000-0000-000000000001",
             version="1.0",
             importer_version="test-1",
@@ -381,7 +382,7 @@ def synthetic_part1_rule_package() -> RulePackage:
     )
     return RulePackage(
         manifest=Manifest(
-            schema_version=1,
+            schema_version=RULE_SCHEMA_VERSION,
             package_id="00000000-0000-0000-0000-000000000006",
             version="part1-synthetic-1",
             importer_version="test-1",

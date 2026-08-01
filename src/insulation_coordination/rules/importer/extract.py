@@ -19,6 +19,7 @@ from pypdf.errors import PyPdfError
 
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import (
+    IEC_IMPORTER_VERSION,
     RULE_SCHEMA_VERSION,
     ApprovalRecord,
     CompatibilityMapping,
@@ -42,7 +43,7 @@ from insulation_coordination.rules.importer.identify import (
     identify_standard,
 )
 
-IMPORTER_VERSION = "iec-pdf-1"
+IMPORTER_VERSION = IEC_IMPORTER_VERSION
 _REQUIRED_RECIPES = {"iec60664-1-2020", "iec60664-4-2005"}
 
 __all__ = [

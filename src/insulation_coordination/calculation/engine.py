@@ -41,7 +41,7 @@ from insulation_coordination.domain.rules import Maximum, RulePackage, SourceRef
 from insulation_coordination.domain.trace import Quantity, TraceStep
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_formula
 
-CALCULATION_ENGINE_VERSION = "part1-part4-1"
+CALCULATION_ENGINE_VERSION = "pcb-annex-gh-2"
 
 __all__ = [
     "CALCULATION_ENGINE_VERSION",

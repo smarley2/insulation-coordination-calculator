@@ -15,6 +15,7 @@ from insulation_coordination.domain.rules import (
     MAX_LATEX_LENGTH,
     MAX_NOTES_LENGTH,
     MAX_REFERENCE_TEXT_LENGTH,
+    RULE_SCHEMA_VERSION,
     DraftRulePackage,
     RulePackage,
     RulePackageError,
@@ -26,6 +27,7 @@ from insulation_coordination.rules.archive import (
     migrate_rule_package,
     write_rule_package,
 )
+from insulation_coordination.rules.importer.extract import IMPORTER_VERSION
 
 
 def test_approved_package_loads_without_source_pdfs(
@@ -175,7 +177,7 @@ def test_load_rejects_malformed_checksum_set_and_unsupported_schema(
     with zipfile.ZipFile(original) as archive:
         members = {name: archive.read(name) for name in archive.namelist()}
     manifest = json.loads(members["manifest.json"])
-    manifest["schema_version"] = 2
+    manifest["schema_version"] = 3
     members["manifest.json"] = _canonical_json(manifest)
     checksums = json.loads(members["checksums.json"])
     checksums["manifest.json"] = hashlib.sha256(members["manifest.json"]).hexdigest()
@@ -184,6 +186,32 @@ def test_load_rejects_malformed_checksum_set_and_unsupported_schema(
     _write_members(future, members)
     with pytest.raises(RulePackageError, match="unsupported schema"):
         load_rule_package(future)
+
+
+def test_current_rule_trust_versions_require_semantic_pcb_packages() -> None:
+    assert RULE_SCHEMA_VERSION == 2
+    assert IMPORTER_VERSION == "iec-pdf-2"
+
+
+def test_legacy_schema_tells_maintainer_to_regenerate_from_pdfs(
+    synthetic_package: RulePackage,
+    tmp_path: Path,
+) -> None:
+    current = tmp_path / "current.icrules"
+    write_rule_package(current, synthetic_package)
+    with zipfile.ZipFile(current) as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    manifest = json.loads(members["manifest.json"])
+    manifest["schema_version"] = 1
+    members["manifest.json"] = _canonical_json(manifest)
+    checksums = json.loads(members["checksums.json"])
+    checksums["manifest.json"] = hashlib.sha256(members["manifest.json"]).hexdigest()
+    members["checksums.json"] = _canonical_json(checksums)
+    legacy = tmp_path / "legacy.icrules"
+    _write_members(legacy, members)
+
+    with pytest.raises(RulePackageError, match="re-import.*licensed IEC PDFs"):
+        load_rule_package(legacy)
 
 
 def test_migration_creates_new_unapproved_identity(
@@ -204,7 +232,7 @@ def test_migration_creates_new_unapproved_identity(
 def test_draft_package_cannot_be_written_or_loaded(
     synthetic_package: RulePackage, tmp_path: Path
 ) -> None:
-    draft = migrate_rule_package(synthetic_package, target_schema=1)
+    draft = migrate_rule_package(synthetic_package, target_schema=2)
 
     with pytest.raises(RulePackageError, match="approved"):
         write_rule_package(tmp_path / "draft.icrules", draft)

@@ -13,7 +13,8 @@ from pydantic.config import ExtraValues
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.quantities import DecimalValue
 
-RULE_SCHEMA_VERSION = 1
+RULE_SCHEMA_VERSION = 2
+IEC_IMPORTER_VERSION = "iec-pdf-2"
 MAX_IDENTIFIER_LENGTH = 160
 MAX_REFERENCE_TEXT_LENGTH = 500
 MAX_NOTES_LENGTH = 2_000

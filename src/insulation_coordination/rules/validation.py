@@ -9,6 +9,7 @@ from pydantic import computed_field
 
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import (
+    IEC_IMPORTER_VERSION,
     RULE_SCHEMA_VERSION,
     Add,
     Compare,
@@ -249,6 +250,40 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
     formula_tables_valid = referenced_tables <= set(table_ids)
     mapping_links_valid = all(mapping.target_rule_id in formula_ids for mapping in package.mappings)
     mapping_source_ids = [mapping.source_rule_id for mapping in package.mappings]
+    is_iec_import = package.manifest.importer_version.startswith("iec-pdf-")
+    trusted_iec_package = is_iec_import and package.manifest.approved
+    if trusted_iec_package:
+        from insulation_coordination.rules.importer.recipes import RECIPES
+
+        expected_table_ids = {
+            spec.semantic_id for recipe in RECIPES for spec in recipe.tables
+        }
+        expected_formula_ids = {
+            spec.semantic_id for recipe in RECIPES for spec in recipe.formulas
+        }
+        expected_mapping_ids = {spec.id for recipe in RECIPES for spec in recipe.mappings}
+    else:
+        expected_table_ids = set(table_ids)
+        expected_formula_ids = set(formula_ids)
+        expected_mapping_ids = set(mapping_ids)
+    identifiers = (*table_ids, *formula_ids, *mapping_ids)
+    obsolete_markers = (
+        "raw_sequence",
+        "-f3",
+        "-f4",
+        "table-5",
+        "functional-applicability",
+        "iteration-limit",
+        "iteration-tolerance",
+    )
+    obsolete_content = any(
+        marker in identifier for marker in obsolete_markers for identifier in identifiers
+    ) or any(
+        node.name == "raw_sequence"
+        for formula in package.formulas
+        for node in _walk_expression(formula.expression)
+        if isinstance(node, Variable)
+    )
     for formula in package.formulas:
         for node in _walk_expression(formula.expression):
             if not isinstance(node, LinearInterpolate):
@@ -307,6 +342,27 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
             "schema",
             package.manifest.schema_version == RULE_SCHEMA_VERSION,
             "schema version is supported",
+        ),
+        _result(
+            "importer_version",
+            not trusted_iec_package
+            or package.manifest.importer_version == IEC_IMPORTER_VERSION,
+            "IEC package uses the current semantic PDF importer",
+        ),
+        _result(
+            "pcb_source_inventory",
+            not trusted_iec_package
+            or (
+                set(table_ids) == expected_table_ids
+                and set(formula_ids) == expected_formula_ids
+                and set(mapping_ids) == expected_mapping_ids
+            ),
+            "IEC package contains the complete PCB Annex G/H source inventory",
+        ),
+        _result(
+            "obsolete_rule_content",
+            not trusted_iec_package or not obsolete_content,
+            "IEC package contains no obsolete placeholder rule content",
         ),
         _result("approval", package.manifest.approved, "package is approved"),
         _result(

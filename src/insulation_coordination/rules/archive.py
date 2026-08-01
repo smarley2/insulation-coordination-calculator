@@ -62,7 +62,8 @@ def _member_checksums(payloads: dict[str, bytes]) -> dict[str, str]:
 def _require_usable_metadata(package: RulePackage) -> None:
     if package.manifest.schema_version != RULE_SCHEMA_VERSION:
         raise RulePackageError(
-            f"unsupported schema {package.manifest.schema_version}; expected {RULE_SCHEMA_VERSION}"
+            f"unsupported schema {package.manifest.schema_version}; expected {RULE_SCHEMA_VERSION}; "
+            "re-import the licensed IEC PDFs to regenerate the rules package"
         )
     if not package.manifest.approved:
         raise RulePackageError("rule package must be approved")
@@ -228,7 +229,10 @@ def load_rule_package(path: Path) -> RulePackage:
         raise RulePackageError("manifest.json root must be an object")
     schema = manifest.get("schema_version")
     if schema != RULE_SCHEMA_VERSION:
-        raise RulePackageError(f"unsupported schema {schema}")
+        raise RulePackageError(
+            f"unsupported schema {schema}; re-import the licensed IEC PDFs "
+            "to regenerate the rules package"
+        )
     package = RulePackage.model_validate(
         {
             "manifest": manifest,

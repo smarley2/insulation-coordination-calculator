@@ -143,6 +143,33 @@ def test_validation_rejects_unapproved_or_incompatible_packages(
     assert validate_rule_package(incompatible).is_valid is False
 
 
+def test_validation_rejects_obsolete_or_incomplete_iec_imports(
+    synthetic_package: RulePackage,
+) -> None:
+    old_importer = synthetic_package.model_copy(
+        update={
+            "manifest": synthetic_package.manifest.model_copy(
+                update={"importer_version": "iec-pdf-1"}
+            )
+        }
+    )
+    incomplete = old_importer.model_copy(
+        update={
+            "manifest": old_importer.manifest.model_copy(
+                update={"importer_version": "iec-pdf-2"}
+            )
+        }
+    )
+    obsolete_formula = synthetic_package.formulas[0].model_copy(
+        update={"id": "iec60664-4-iteration-limit-formula"}
+    )
+    obsolete = incomplete.model_copy(update={"formulas": (obsolete_formula,)})
+
+    assert _result(validate_rule_package(old_importer), "importer_version").passed is False
+    assert _result(validate_rule_package(incomplete), "pcb_source_inventory").passed is False
+    assert _result(validate_rule_package(obsolete), "obsolete_rule_content").passed is False
+
+
 def test_validation_accepts_a_sparse_table_with_unique_in_bounds_cells(
     synthetic_package: RulePackage,
 ) -> None:
