@@ -238,6 +238,10 @@ class RulesManagerWindow(QWidget):
         return self._build_review_button.isEnabled()
 
     @property
+    def formula_review_enabled(self) -> bool:
+        return self._confirm_formulas_button.isEnabled()
+
+    @property
     def resolved_count(self) -> int:
         if self._draft is None:
             return 0
@@ -256,11 +260,13 @@ class RulesManagerWindow(QWidget):
         from insulation_coordination.rules.importer.review import placeholder_formula_ids
 
         resolved = {r.review_item_sha256 for r in self._draft.review_resolutions}
+        formulas = {formula.id for formula in self._draft.formulas}
         pending = [
             item
             for item in self._draft.review_items
             if item.kind == "formula"
             and item.semantic_id in placeholder_formula_ids()
+            and item.semantic_id in formulas
             and item.sha256 not in resolved
         ]
         return bool(pending)
