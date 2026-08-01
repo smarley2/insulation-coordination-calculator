@@ -7,6 +7,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 from threading import Lock
 
@@ -32,15 +33,34 @@ class CompileResult(FrozenModel):
     stderr: str
 
 
-def compile_pdf(tex_path: Path, output_path: Path, tectonic: Path) -> CompileResult:
+type CommandPart = str | os.PathLike[str]
+type CompilerCommand = CommandPart | Sequence[CommandPart]
+
+
+def _normalize_command(command: CompilerCommand) -> list[str]:
+    """Turn a single path or a command list into a list of string parts."""
+    if isinstance(command, (str, os.PathLike)):
+        return [os.fspath(command)]
+    return [os.fspath(part) for part in command]
+
+
+def _program(command: list[str], outdir: Path, tex: Path) -> Path:
+    """Resolve the leading program path for validation."""
+    if not command:
+        raise CompileError("Tectonic command must not be empty")
+    return _input_file(Path(command[0]), None, "Tectonic executable")
+
+
+def compile_pdf(tex_path: Path, output_path: Path, tectonic: CompilerCommand) -> CompileResult:
     """Compile one LaTeX file in an isolated offline workspace."""
     tex = _input_file(tex_path, ".tex", "LaTeX source")
-    executable = _input_file(tectonic, None, "Tectonic executable")
+    command = _normalize_command(tectonic)
+    program = _program(command, output_path, tex)
     output = _output_leaf(output_path, ".pdf", "PDF output")
     log_path = output.with_suffix(".compile.log")
-    if output == tex or log_path == tex or executable in {output, log_path}:
+    if output == tex or log_path == tex or program in {output, log_path}:
         raise CompileError("compiler, source, output, and log paths must be distinct")
-    if not os.access(executable, os.X_OK):
+    if not os.access(program, os.X_OK):
         raise CompileError("Tectonic executable is not executable")
 
     with _COMPILE_LOCK:
@@ -52,7 +72,7 @@ def compile_pdf(tex_path: Path, output_path: Path, tectonic: Path) -> CompileRes
         ) as temporary:
             outdir = Path(temporary)
             produced = outdir / f"{tex.stem}.pdf"
-            returncode, stdout, stderr = _run_tectonic(executable, outdir, tex)
+            returncode, stdout, stderr = _run_tectonic(command, outdir, tex)
             pdf_path: Path | None = None
             success = False
             if returncode == 0:
@@ -78,12 +98,12 @@ def compile_pdf(tex_path: Path, output_path: Path, tectonic: Path) -> CompileRes
     )
 
 
-def _run_tectonic(executable: Path, outdir: Path, tex: Path) -> tuple[int | None, str, str]:
+def _run_tectonic(command: Sequence[str], outdir: Path, tex: Path) -> tuple[int | None, str, str]:
     try:
         completed = subprocess.run(
             [
-                str(executable),
-                _offline_flag(executable),
+                *_normalize_command(command),
+                _offline_flag(command),
                 "--outdir",
                 str(outdir),
                 str(tex),
@@ -200,11 +220,11 @@ def _write_log(path: Path, returncode: int | None, stdout: str, stderr: str) -> 
         raise
 
 
-def _offline_flag(executable: Path) -> str:
+def _offline_flag(command: Sequence[str]) -> str:
     """Tectonic 0.15 uses --offline; newer versions renamed it to --only-cached."""
     try:
         completed = subprocess.run(
-            [str(executable), "--help"],
+            [*_normalize_command(command), "--help"],
             shell=False,
             timeout=10,
             capture_output=True,

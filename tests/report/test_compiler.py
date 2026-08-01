@@ -1,5 +1,6 @@
 import shutil
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -15,9 +16,9 @@ def _fake_tectonic(
     exit_code: int = 0,
     produce_pdf: bool = True,
     valid_pdf: bool = True,
-) -> Path:
-    script = f"""#!/usr/bin/env python3
-from pathlib import Path
+) -> tuple[str, str]:
+    script_path = path.with_suffix(".py")
+    script = f"""from pathlib import Path
 import sys
 from pypdf import PdfWriter
 
@@ -36,14 +37,13 @@ if {produce_pdf!r}:
         output.write_bytes(b"not a PDF")
 raise SystemExit({exit_code})
 """
-    path.write_text(script, encoding="utf-8")
-    path.chmod(0o755)
-    return path
+    script_path.write_text(script, encoding="utf-8")
+    return sys.executable, str(script_path)
 
 
-def _racing_fake_tectonic(path: Path) -> Path:
-    script = """#!/usr/bin/env python3
-from pathlib import Path
+def _racing_fake_tectonic(path: Path) -> tuple[str, str]:
+    script_path = path.with_suffix(".py")
+    script = """from pathlib import Path
 import sys
 import time
 from pypdf import PdfWriter
@@ -62,9 +62,8 @@ if title == "slow":
     time.sleep(0.3)
 print(str(tex))
 """
-    path.write_text(script, encoding="utf-8")
-    path.chmod(0o755)
-    return path
+    script_path.write_text(script, encoding="utf-8")
+    return sys.executable, str(script_path)
 
 
 def test_compile_pdf_uses_offline_argv_and_validates_output(tmp_path: Path) -> None:
