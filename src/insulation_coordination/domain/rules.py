@@ -302,8 +302,7 @@ class Table(FrozenModel):
         if len(coordinates) != len(self.cells):
             raise ValueError("Table cell coordinates must be unique")
         if any(
-            cell.row >= len(self.row_axis.values)
-            or cell.column >= len(self.column_axis.values)
+            cell.row >= len(self.row_axis.values) or cell.column >= len(self.column_axis.values)
             for cell in self.cells
         ):
             raise ValueError("Table cell coordinates must be inside the declared axes")

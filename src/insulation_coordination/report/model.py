@@ -205,7 +205,9 @@ def build_report_model(
         project.required_rules.sha256,
     )
     if project_rules_identity != rules_identity:
-        raise ReportBuildError("project rules package pin does not match the supplied rules package")
+        raise ReportBuildError(
+            "project rules package pin does not match the supplied rules package"
+        )
 
     project_pair_ids = tuple(str(pair.id) for pair in project.pairs)
     if len(project_pair_ids) != len(set(project_pair_ids)):
@@ -345,7 +347,9 @@ def _validate_result(result: PairResult, rules_identity: tuple[str, str, str]) -
         raise ReportBuildError(f"pair {result.pair_id} has an incomplete clearance trace")
     if any(not candidate.steps for candidate in result.trace.creepage_candidates):
         raise ReportBuildError(f"pair {result.pair_id} has an incomplete creepage trace")
-    if any(not step.symbolic.strip() or not step.substituted.strip() for step in result.trace.steps):
+    if any(
+        not step.symbolic.strip() or not step.substituted.strip() for step in result.trace.steps
+    ):
         raise ReportBuildError(f"pair {result.pair_id} has an incomplete formula trace")
     if result.warnings != result.trace.warnings or (
         result.verification_requirements != result.trace.verification_requirements
@@ -395,11 +399,7 @@ def _validate_groups(
         for pair_id in group.pair_ids:
             if calculation_signature(result_by_pair[pair_id]) != group.signature:
                 raise ReportBuildError(f"group {group.group_id} result signature mismatch")
-    return {
-        pair_id: group.group_id
-        for group in groups
-        for pair_id in group.pair_ids
-    }
+    return {pair_id: group.group_id for group in groups for pair_id in group.pair_ids}
 
 
 def _matrix_row(

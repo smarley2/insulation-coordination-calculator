@@ -67,9 +67,7 @@ def compile_pdf(tex_path: Path, output_path: Path, tectonic: CompilerCommand) ->
         _reject_unsafe_leaf(output, "PDF output")
         _reject_unsafe_leaf(log_path, "compiler log")
         output.unlink(missing_ok=True)
-        with tempfile.TemporaryDirectory(
-            prefix=".icc-tectonic-", dir=output.parent
-        ) as temporary:
+        with tempfile.TemporaryDirectory(prefix=".icc-tectonic-", dir=output.parent) as temporary:
             outdir = Path(temporary)
             produced = outdir / f"{tex.stem}.pdf"
             returncode, stdout, stderr = _run_tectonic(command, outdir, tex)

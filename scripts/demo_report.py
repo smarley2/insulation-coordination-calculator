@@ -52,8 +52,7 @@ from tests.fixtures.synthetic_rules import synthetic_hf_rule_package
 
 def build_demo_project(rules) -> Project:
     nets = tuple(
-        NetClass(id=UUID(int=i + 1), name=name)
-        for i, name in enumerate(("HV+", "HV-", "PE", "LV"))
+        NetClass(id=UUID(int=i + 1), name=name) for i, name in enumerate(("HV+", "HV-", "PE", "LV"))
     )
     pair_specs = (
         # (net_a, net_b, insulation, frequency Hz, steady peak V, rms V)

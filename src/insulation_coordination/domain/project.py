@@ -78,7 +78,9 @@ class PairVoltage(FrozenModel):
         elif self.applicability is Applicability.NOT_APPLICABLE:
             if self.value is not None or not self.justification or not self.justification.strip():
                 raise ValueError("A not-applicable voltage requires a justification and no value")
-        elif self.applicability is Applicability.BLANK and (self.value is not None or self.justification):
+        elif self.applicability is Applicability.BLANK and (
+            self.value is not None or self.justification
+        ):
             raise ValueError("Only applicable or not-applicable voltages may carry data")
         return self
 
@@ -199,9 +201,7 @@ class Project(FrozenModel):
         if len(pair_ids) != len(set(pair_ids)):
             raise ValueError("Pair IDs must be unique")
 
-        expected = {
-            _canonical_pair_key(left, right) for left, right in combinations(net_ids, 2)
-        }
+        expected = {_canonical_pair_key(left, right) for left, right in combinations(net_ids, 2)}
         actual = {_canonical_pair_key(pair.net_a, pair.net_b) for pair in self.pairs}
         if any(pair.key != _canonical_pair_key(pair.net_a, pair.net_b) for pair in self.pairs):
             raise ValueError("Pair keys must be canonical")

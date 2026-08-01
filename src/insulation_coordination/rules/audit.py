@@ -151,11 +151,7 @@ def _children(expression: Expression) -> tuple[Expression, ...]:
     if isinstance(expression, Lookup):
         return (expression.row, expression.column)
     if isinstance(expression, LinearInterpolate):
-        return (
-            (expression.x,)
-            if expression.column is None
-            else (expression.x, expression.column)
-        )
+        return (expression.x,) if expression.column is None else (expression.x, expression.column)
     if isinstance(expression, TableSelect):
         return (expression.row, expression.column)
     return ()

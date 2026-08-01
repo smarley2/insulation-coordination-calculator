@@ -66,7 +66,9 @@ def test_import_copies_exact_package_and_rejects_altered_copy(
     loaded = load_rule_package(result.path)
     assert loaded.manifest.package_id == rules_manager.active_package.manifest.package_id
     assert loaded.package_sha256 == rules_manager.active_package.package_sha256
-    assert rules_manager.identity_text.startswith(str(rules_manager.active_package.manifest.package_id))
+    assert rules_manager.identity_text.startswith(
+        str(rules_manager.active_package.manifest.package_id)
+    )
 
     original = result.path.read_bytes()
     altered = tmp_path / "altered.icrules"

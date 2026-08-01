@@ -175,7 +175,8 @@ class PairEditor(QWidget):
         self._construction_combo.currentTextChanged.connect(self._on_construction_changed)
         self._construction_source_label = QLabel("Default")
         params_layout.addRow(
-            "Construction:", _override_row(self._construction_combo, self._construction_source_label)
+            "Construction:",
+            _override_row(self._construction_combo, self._construction_source_label),
         )
 
         self._cti_edit = QLineEdit()
@@ -262,7 +263,9 @@ class PairEditor(QWidget):
         self._altitude_edit.setText(
             str(pair.altitude_m.value) if pair.altitude_m.value is not None else ""
         )
-        self._altitude_source_label.setText("Override" if pair.altitude_m.is_override else "Default")
+        self._altitude_source_label.setText(
+            "Override" if pair.altitude_m.is_override else "Default"
+        )
         self._pollution_edit.setText(
             str(pair.pollution_degree.value) if pair.pollution_degree.value is not None else ""
         )
@@ -301,7 +304,9 @@ class PairEditor(QWidget):
             return
         value = _parse_voltage(text)
         voltage = PairVoltage.applicable(value)
-        self._update_pair(voltages=self._pair.voltages.model_copy(update={"long_term_rms_v": voltage}))
+        self._update_pair(
+            voltages=self._pair.voltages.model_copy(update={"long_term_rms_v": voltage})
+        )
 
     def set_long_term_rms_not_applicable(self, justification: str) -> None:
         if self._pair is None:
@@ -325,9 +330,7 @@ class PairEditor(QWidget):
             return
         voltage = PairVoltage.not_applicable(justification)
         self._update_pair(
-            voltages=self._pair.voltages.model_copy(
-                update={"steady_state_peak_v": voltage}
-            )
+            voltages=self._pair.voltages.model_copy(update={"steady_state_peak_v": voltage})
         )
 
     def set_recurring_peak(self, text: str) -> None:
@@ -352,7 +355,9 @@ class PairEditor(QWidget):
             return
         voltage = PairVoltage.not_applicable("Not applicable")
         self._update_pair(
-            voltages=self._pair.voltages.model_copy(update={"temporary_overvoltage_peak_v": voltage})
+            voltages=self._pair.voltages.model_copy(
+                update={"temporary_overvoltage_peak_v": voltage}
+            )
         )
 
     def set_impulse_override(self, text: str) -> None:
@@ -674,9 +679,7 @@ class PairPage(QWidget):
     def _on_pair_changed(self, updated_pair: PairCase) -> None:
         if self._project is None:
             return
-        pairs = tuple(
-            updated_pair if p.id == updated_pair.id else p for p in self._project.pairs
-        )
+        pairs = tuple(updated_pair if p.id == updated_pair.id else p for p in self._project.pairs)
         self._project = self._project.model_copy(update={"pairs": pairs})
         self.project_changed.emit(self._project)
 
@@ -694,7 +697,6 @@ class PairPage(QWidget):
                 self._results[str(pair.id)] = result
             except (ValueError, RuntimeError, TypeError, KeyError):
                 continue
-
 
         results_tuple: tuple[PairResult, ...] = tuple(self._results.values())
         if results_tuple:

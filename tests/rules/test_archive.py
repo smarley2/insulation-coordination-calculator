@@ -87,9 +87,7 @@ def test_archive_is_byte_deterministic_and_has_only_canonical_members(
             "mappings.json",
             "checksums.json",
         ]
-        assert {member.date_time for member in archive.infolist()} == {
-            (1980, 1, 1, 0, 0, 0)
-        }
+        assert {member.date_time for member in archive.infolist()} == {(1980, 1, 1, 0, 0, 0)}
         checksums = json.loads(archive.read("checksums.json"))
         assert set(checksums) == {
             "manifest.json",
@@ -119,9 +117,7 @@ def test_load_rejects_changed_member_even_when_zip_is_readable(
         load_rule_package(path)
 
 
-def test_load_rejects_extra_archive_members(
-    synthetic_package: RulePackage, tmp_path: Path
-) -> None:
+def test_load_rejects_extra_archive_members(synthetic_package: RulePackage, tmp_path: Path) -> None:
     path = tmp_path / "extra.icrules"
     write_rule_package(path, synthetic_package)
     with zipfile.ZipFile(path, "a") as archive:
@@ -384,8 +380,7 @@ def test_reference_identifiers_reject_whitespace_and_overlong_values() -> None:
 
 def _canonical_json(value: object) -> bytes:
     return (
-        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-        + "\n"
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
     ).encode()
 
 

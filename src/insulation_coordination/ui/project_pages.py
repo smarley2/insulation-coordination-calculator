@@ -188,8 +188,12 @@ class ProjectPage(QWidget):
         self._insulation_combo.blockSignals(True)
         self._field_combo.blockSignals(True)
         self._construction_combo.blockSignals(True)
-        self._insulation_combo.setCurrentText(defaults.insulation_type.value if defaults.insulation_type else "")
-        self._field_combo.setCurrentText(defaults.field_condition.value if defaults.field_condition else "")
+        self._insulation_combo.setCurrentText(
+            defaults.insulation_type.value if defaults.insulation_type else ""
+        )
+        self._field_combo.setCurrentText(
+            defaults.field_condition.value if defaults.field_condition else ""
+        )
         self._construction_combo.setCurrentText(
             defaults.construction_type.value if defaults.construction_type else ""
         )
@@ -397,9 +401,7 @@ class ProjectPage(QWidget):
         if row < 0:
             return
         current_name = self._net_list.item(row).text()
-        name, ok = QInputDialog.getText(
-            self, "Rename Net Class", "Name:", text=current_name
-        )
+        name, ok = QInputDialog.getText(self, "Rename Net Class", "Name:", text=current_name)
         if ok and name.strip():
             try:
                 self.rename_net_class(row, name.strip())

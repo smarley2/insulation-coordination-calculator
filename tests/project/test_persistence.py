@@ -53,17 +53,13 @@ def sample_project() -> Project:
                 key=f"{high}::{low}",
                 net_a=high,
                 net_b=low,
-                voltages=PairVoltages(
-                    long_term_rms_v=PairVoltage.applicable(Decimal("560.00"))
-                ),
+                voltages=PairVoltages(long_term_rms_v=PairVoltage.applicable(Decimal("560.00"))),
             ),
         ),
     )
 
 
-def test_project_round_trip_preserves_decimal_text(
-    sample_project: Project, tmp_path: Path
-) -> None:
+def test_project_round_trip_preserves_decimal_text(sample_project: Project, tmp_path: Path) -> None:
     path = tmp_path / "drive.icproj"
 
     save_project_atomic(path, sample_project)

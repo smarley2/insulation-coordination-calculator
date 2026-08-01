@@ -67,7 +67,9 @@ def group_results(
         if members is None or not set(split.pair_ids) <= set(members):
             raise GroupingError("stale group split references a missing result or signature")
         if len(split.pair_ids) == len(members):
-            raise GroupingError("saved group split must leave at least one pair in its source group")
+            raise GroupingError(
+                "saved group split must leave at least one pair in its source group"
+            )
         if set(split.pair_ids) & {
             pair_id for existing in split_ids[split.signature] for pair_id in existing
         }:
@@ -106,7 +108,9 @@ def group_results(
                     pair_display_order=tuple(display_index[pair_id] for pair_id in remainder),
                 )
             )
-    return tuple(sorted(groups, key=lambda group: min(display_index[pair] for pair in group.pair_ids)))
+    return tuple(
+        sorted(groups, key=lambda group: min(display_index[pair] for pair in group.pair_ids))
+    )
 
 
 def split_group(
@@ -173,7 +177,9 @@ def merge_groups(
             pair_display_order=tuple(positions[pair_id] for pair_id in selected),
         )
     )
-    return tuple(sorted(retained, key=lambda group: min(positions[pair] for pair in group.pair_ids)))
+    return tuple(
+        sorted(retained, key=lambda group: min(positions[pair] for pair in group.pair_ids))
+    )
 
 
 def _group(

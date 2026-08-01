@@ -96,10 +96,7 @@ class CalculationReviewPage(QWidget):
 
     def _summarise(self, result: PairResult) -> str:
         pair_id = str(result.pair_id)
-        return (
-            f"{pair_id}: clearance={result.clearance_mm} mm, "
-            f"creepage={result.creepage_mm} mm"
-        )
+        return f"{pair_id}: clearance={result.clearance_mm} mm, creepage={result.creepage_mm} mm"
 
     def _detail(self, result: PairResult) -> str:
         lines: list[str] = []

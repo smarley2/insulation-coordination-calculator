@@ -148,6 +148,7 @@ def test_failed_compile_removes_preexisting_regular_pdf(
         valid_pdf=failure != "invalid",
     )
     if failure == "timeout":
+
         def raise_timeout(*_args: object, **_kwargs: object) -> None:
             raise subprocess.TimeoutExpired(cmd="fake-tectonic", timeout=120)
 

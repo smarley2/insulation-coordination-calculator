@@ -39,7 +39,8 @@ def test_accept_raw_grid_resolves_only_selected_grid_and_preserves_raw_text(
     draft = extract_draft(supported_pdfs)
     grid = draft.raw_grids[0]
     flagged = tuple(
-        item for item in draft.review_items
+        item
+        for item in draft.review_items
         if item.kind == "raw_cell" and item.semantic_id.startswith(f"{grid.id}:")
     )
 
@@ -181,9 +182,7 @@ git commit -m "fix: require raw cell review before rule build"
 
 ```python
 def test_dialog_shows_complete_grid_and_flags_review_cells(qtbot, draft) -> None:
-    dialog = RawGridReviewDialog(
-        draft, actor="Maintainer", notes="Compared against PDF"
-    )
+    dialog = RawGridReviewDialog(draft, actor="Maintainer", notes="Compared against PDF")
     qtbot.addWidget(dialog)
     grid = draft.raw_grids[0]
 

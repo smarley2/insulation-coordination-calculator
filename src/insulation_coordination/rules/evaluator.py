@@ -527,9 +527,7 @@ class _Evaluator:
             "linear" in (expression.row_mode, expression.column_mode)
             and table.interpolation != "linear"
         ):
-            raise EvaluationError(
-                f"table {table.id!r} does not permit linear interpolation"
-            )
+            raise EvaluationError(f"table {table.id!r} does not permit linear interpolation")
         row_weights = _axis_weights(
             table.row_axis,
             row.quantity.value,

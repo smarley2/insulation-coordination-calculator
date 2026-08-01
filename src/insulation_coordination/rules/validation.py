@@ -255,12 +255,8 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
     if trusted_iec_package:
         from insulation_coordination.rules.importer.recipes import RECIPES
 
-        expected_table_ids = {
-            spec.semantic_id for recipe in RECIPES for spec in recipe.tables
-        }
-        expected_formula_ids = {
-            spec.semantic_id for recipe in RECIPES for spec in recipe.formulas
-        }
+        expected_table_ids = {spec.semantic_id for recipe in RECIPES for spec in recipe.tables}
+        expected_formula_ids = {spec.semantic_id for recipe in RECIPES for spec in recipe.formulas}
         expected_mapping_ids = {spec.id for recipe in RECIPES for spec in recipe.mappings}
     else:
         expected_table_ids = set(table_ids)
@@ -345,8 +341,7 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         ),
         _result(
             "importer_version",
-            not trusted_iec_package
-            or package.manifest.importer_version == IEC_IMPORTER_VERSION,
+            not trusted_iec_package or package.manifest.importer_version == IEC_IMPORTER_VERSION,
             "IEC package uses the current semantic PDF importer",
         ),
         _result(

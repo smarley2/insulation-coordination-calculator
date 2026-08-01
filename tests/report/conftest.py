@@ -46,9 +46,7 @@ def report_inputs(tmp_path: Path):
             long_term_rms_v=PairVoltage.applicable(Decimal(150)),
             steady_state_peak_v=PairVoltage.applicable(Decimal(150)),
             recurring_peak_v=PairVoltage.not_applicable("No recurring peak."),
-            temporary_overvoltage_peak_v=PairVoltage.not_applicable(
-                "No temporary overvoltage."
-            ),
+            temporary_overvoltage_peak_v=PairVoltage.not_applicable("No temporary overvoltage."),
         ),
     )
     assert rules.package_sha256 is not None

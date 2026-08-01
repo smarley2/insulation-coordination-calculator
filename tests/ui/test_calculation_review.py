@@ -31,9 +31,7 @@ from tests.fixtures.synthetic_rules import synthetic_part1_rule_package
 
 @pytest.fixture
 def project() -> Project:
-    nets = tuple(
-        NetClass(id=UUID(int=i + 1), name=n) for i, n in enumerate(("HV+", "HV-"))
-    )
+    nets = tuple(NetClass(id=UUID(int=i + 1), name=n) for i, n in enumerate(("HV+", "HV-")))
     pair = PairCase(
         id=UUID(int=10),
         key="0",

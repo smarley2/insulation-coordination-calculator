@@ -149,9 +149,7 @@ def test_blocked_when_one_pair_missing_stress(qtbot, complete_workspace) -> None
     pair = complete_workspace.project.pairs[0]
     blank = pair.model_copy(
         update={
-            "voltages": pair.voltages.model_copy(
-                update={"long_term_rms_v": PairVoltage.blank()}
-            )
+            "voltages": pair.voltages.model_copy(update={"long_term_rms_v": PairVoltage.blank()})
         }
     )
     project = complete_workspace.project.model_copy(

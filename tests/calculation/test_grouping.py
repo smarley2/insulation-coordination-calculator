@@ -51,9 +51,7 @@ def result_factory(synthetic_rules):
                 frequency_hz=EffectiveValue(
                     value=Decimal(30000), provenance=Provenance.PROJECT_DEFAULT
                 ),
-                impulse_v=EffectiveValue(
-                    value=Decimal(1000), provenance=Provenance.PAIR_OVERRIDE
-                ),
+                impulse_v=EffectiveValue(value=Decimal(1000), provenance=Provenance.PAIR_OVERRIDE),
                 insulation_type=EffectiveValue(
                     value=InsulationType.BASIC, provenance=Provenance.PAIR_OVERRIDE
                 ),
@@ -118,9 +116,7 @@ def test_warning_only_difference_changes_signature(result_factory) -> None:
     result = result_factory(pair_id=1)
     changed = result.model_copy(
         update={
-            "warnings": (
-                CalculationWarning(code="TEST_WARNING", message="Synthetic warning."),
-            )
+            "warnings": (CalculationWarning(code="TEST_WARNING", message="Synthetic warning."),)
         }
     )
 
@@ -149,7 +145,9 @@ def test_result_rejects_advisories_that_do_not_match_its_trace(result_factory) -
         PairResult.model_validate(document)
 
 
-def test_signature_includes_effective_input_provenance_and_not_trace_reconstruction(result_factory) -> None:
+def test_signature_includes_effective_input_provenance_and_not_trace_reconstruction(
+    result_factory,
+) -> None:
     result = result_factory(pair_id=1)
     changed_provenance = result.model_copy(
         update={
@@ -184,7 +182,9 @@ def test_signature_normalizes_equivalent_decimal_input_text(result_factory) -> N
     assert calculation_signature(equivalent_decimal) == calculation_signature(result)
 
 
-def test_signature_is_context_independent_for_distinct_high_precision_decimals(result_factory) -> None:
+def test_signature_is_context_independent_for_distinct_high_precision_decimals(
+    result_factory,
+) -> None:
     result = result_factory(pair_id=1)
     values = (
         Decimal("1.123456789012345678901234567890123456789012345678901234567890123456789"),

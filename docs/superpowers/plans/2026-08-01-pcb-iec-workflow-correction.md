@@ -425,7 +425,10 @@ Cover functional, basic, supplementary, and reinforced insulation; Case A/Case B
 ```python
 candidates = calculate_clearance_candidates(effective, rules)
 assert {item.candidate_id for item in candidates} == {
-    "impulse", "steady_state_peak", "temporary_overvoltage_peak", "recurring_peak"
+    "impulse",
+    "steady_state_peak",
+    "temporary_overvoltage_peak",
+    "recurring_peak",
 }
 assert trace_step(candidates, "impulse").semantic_rule_id == "iec60664-1:f2"
 ```

@@ -223,9 +223,7 @@ def test_report_formats_every_exact_source_locator(report_model) -> None:
             )
         }
     )
-    changed_calculation = calculation.model_copy(
-        update={"steps": (step, *calculation.steps[1:])}
-    )
+    changed_calculation = calculation.model_copy(update={"steps": (step, *calculation.steps[1:])})
     changed_group = report_model.groups[0].model_copy(
         update={"calculations": (changed_calculation,)}
     )
@@ -233,10 +231,7 @@ def test_report_formats_every_exact_source_locator(report_model) -> None:
 
     tex = render_latex(changed_model)
 
-    assert (
-        "IEC 60664-1:2020, 5.3.4, Table F.5, Figure F.1, Note 2, row 150 V, column PD 2"
-        in tex
-    )
+    assert "IEC 60664-1:2020, 5.3.4, Table F.5, Figure F.1, Note 2, row 150 V, column PD 2" in tex
 
 
 def test_report_rejects_internally_mismatched_results_and_tampered_rules(
@@ -250,11 +245,7 @@ def test_report_rejects_internally_mismatched_results_and_tampered_rules(
         build_report_model(
             project,
             (changed_result,),
-            (
-                groups[0].model_copy(
-                    update={"signature": calculation_signature(changed_result)}
-                ),
-            ),
+            (groups[0].model_copy(update={"signature": calculation_signature(changed_result)}),),
             rules,
         )
     table = rules.tables[0]
@@ -376,9 +367,7 @@ def test_report_renders_single_caret_superscripts_and_allowed_commands(report_mo
             ),
         }
     )
-    changed_calculation = calculation.model_copy(
-        update={"steps": (step, *calculation.steps[1:])}
-    )
+    changed_calculation = calculation.model_copy(update={"steps": (step, *calculation.steps[1:])})
     changed_group = report_model.groups[0].model_copy(
         update={"calculations": (changed_calculation,)}
     )

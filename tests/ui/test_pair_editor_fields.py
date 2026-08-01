@@ -20,9 +20,7 @@ from insulation_coordination.project.pairs import reconcile_pairs
 
 
 def _make_project() -> Project:
-    nets = tuple(
-        NetClass(id=UUID(int=i + 1), name=n) for i, n in enumerate(("HV+", "HV-"))
-    )
+    nets = tuple(NetClass(id=UUID(int=i + 1), name=n) for i, n in enumerate(("HV+", "HV-")))
     return Project(
         id=UUID(int=100),
         metadata=ProjectMetadata(title="Editor Fields"),

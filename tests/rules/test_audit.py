@@ -118,9 +118,7 @@ def test_inventory_json_records_counts_and_validation_without_pdf_bytes(
     assert b"%PDF" not in inventory_path.read_bytes()
 
 
-def test_export_unknown_table_is_rejected(
-    synthetic_package: RulePackage, tmp_path: Path
-) -> None:
+def test_export_unknown_table_is_rejected(synthetic_package: RulePackage, tmp_path: Path) -> None:
     with pytest.raises(KeyError, match="missing"):
         export_table_csv(synthetic_package, "missing", tmp_path / "missing.csv")
 
@@ -129,14 +127,10 @@ def test_validation_rejects_unapproved_or_incompatible_packages(
     synthetic_package: RulePackage,
 ) -> None:
     unapproved = synthetic_package.model_copy(
-        update={
-            "manifest": synthetic_package.manifest.model_copy(update={"approved": False})
-        }
+        update={"manifest": synthetic_package.manifest.model_copy(update={"approved": False})}
     )
     incompatible = synthetic_package.model_copy(
-        update={
-            "manifest": synthetic_package.manifest.model_copy(update={"compatible": False})
-        }
+        update={"manifest": synthetic_package.manifest.model_copy(update={"compatible": False})}
     )
 
     assert validate_rule_package(unapproved).is_valid is False
@@ -155,9 +149,7 @@ def test_validation_rejects_obsolete_or_incomplete_iec_imports(
     )
     incomplete = old_importer.model_copy(
         update={
-            "manifest": old_importer.manifest.model_copy(
-                update={"importer_version": "iec-pdf-2"}
-            )
+            "manifest": old_importer.manifest.model_copy(update={"importer_version": "iec-pdf-2"})
         }
     )
     obsolete_formula = synthetic_package.formulas[0].model_copy(
@@ -201,11 +193,7 @@ def test_validation_rejects_undeclared_variables_and_unlinked_ranges(
 ) -> None:
     formula = synthetic_package.formulas[0]
     undeclared = synthetic_package.model_copy(
-        update={
-            "formulas": (
-                formula.model_copy(update={"expression": Variable(name="missing")}),
-            )
-        }
+        update={"formulas": (formula.model_copy(update={"expression": Variable(name="missing")}),)}
     )
     unlinked = synthetic_package.model_copy(
         update={
@@ -213,9 +201,7 @@ def test_validation_rejects_undeclared_variables_and_unlinked_ranges(
                 formula.model_copy(
                     update={
                         "supported_ranges": (
-                            formula.supported_ranges[0].model_copy(
-                                update={"variable": "missing"}
-                            ),
+                            formula.supported_ranges[0].model_copy(update={"variable": "missing"}),
                         )
                     }
                 ),
@@ -272,11 +258,7 @@ def test_interpolation_requires_table_linear_permission(
 ) -> None:
     table = synthetic_package.tables[0]
     package = synthetic_package.model_copy(
-        update={
-            "tables": (
-                table.model_copy(update={"interpolation": "none"}),
-            )
-        }
+        update={"tables": (table.model_copy(update={"interpolation": "none"}),)}
     )
 
     assert _result(validate_rule_package(package), "formula_tables").passed is False
@@ -302,11 +284,7 @@ def test_validation_rejects_ambiguous_interpolation_and_non_unique_axes(
         }
     )
     ambiguous = synthetic_package.model_copy(
-        update={
-            "formulas": (
-                formula.model_copy(update={"expression": ambiguous_expression}),
-            )
-        }
+        update={"formulas": (formula.model_copy(update={"expression": ambiguous_expression}),)}
     )
     table = synthetic_package.tables[0]
     duplicate_axis = synthetic_package.model_copy(
@@ -392,9 +370,7 @@ def test_validation_rejects_incomplete_source_locators(
             update={
                 "mappings": (
                     mapping.model_copy(
-                        update={
-                            "source": mapping.source.model_copy(update={"clause": None})
-                        }
+                        update={"source": mapping.source.model_copy(update={"clause": None})}
                     ),
                 )
             }
@@ -421,9 +397,7 @@ def test_cell_table_coordinates_do_not_replace_clause_locator(
     table = synthetic_package.tables[0]
     first = table.cells[0]
     cells = (
-        first.model_copy(
-            update={"source": first.source.model_copy(update={"clause": None})}
-        ),
+        first.model_copy(update={"source": first.source.model_copy(update={"clause": None})}),
         *table.cells[1:],
     )
     package = synthetic_package.model_copy(

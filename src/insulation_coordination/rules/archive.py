@@ -43,9 +43,7 @@ def _canonical_json(value: object) -> bytes:
 def _core_member_payloads(package: RulePackage) -> dict[str, bytes]:
     return {
         "manifest.json": _canonical_json(package.manifest.model_dump(mode="json")),
-        "tables.json": _canonical_json(
-            [table.model_dump(mode="json") for table in package.tables]
-        ),
+        "tables.json": _canonical_json([table.model_dump(mode="json") for table in package.tables]),
         "formulas.json": _canonical_json(
             [formula.model_dump(mode="json") for formula in package.formulas]
         ),
@@ -67,9 +65,7 @@ def _require_usable_metadata(package: RulePackage) -> None:
         )
     if not package.manifest.approved:
         raise RulePackageError("rule package must be approved")
-    if not package.manifest.compatible or any(
-        not mapping.approved for mapping in package.mappings
-    ):
+    if not package.manifest.compatible or any(not mapping.approved for mapping in package.mappings):
         raise RulePackageError("rule package must have approved compatibility mappings")
     if not any(record.action == "approval" for record in package.manifest.approval_records):
         raise RulePackageError("approved rule package requires an approval record")
@@ -122,11 +118,7 @@ def write_rule_package(path: Path, package: RulePackage) -> str:
     _require_usable_metadata(package)
     content, checksums = _archive_bytes(package)
     digest = hashlib.sha256(content).hexdigest()
-    _require_valid(
-        package.model_copy(
-            update={"checksums": checksums, "package_sha256": digest}
-        )
-    )
+    _require_valid(package.model_copy(update={"checksums": checksums, "package_sha256": digest}))
     if package.package_sha256 is not None and package.package_sha256 != digest:
         raise RulePackageError("inconsistent package digest")
     path.write_bytes(content)
@@ -148,11 +140,13 @@ def _read_members(path: Path) -> tuple[dict[str, bytes], bytes]:
             infos = archive.infolist()
             if any(member.is_dir() or member.flag_bits & 1 for member in infos):
                 raise RulePackageError("rules archive contains a directory or encrypted member")
-            if any(
-                member.file_size > MAX_MEMBER_BYTES
-                or member.compress_size > MAX_MEMBER_BYTES
-                for member in infos
-            ) or sum(member.file_size for member in infos) > MAX_ARCHIVE_BYTES:
+            if (
+                any(
+                    member.file_size > MAX_MEMBER_BYTES or member.compress_size > MAX_MEMBER_BYTES
+                    for member in infos
+                )
+                or sum(member.file_size for member in infos) > MAX_ARCHIVE_BYTES
+            ):
                 raise RulePackageError("rules archive member exceeds the size limit")
             if any(
                 member.file_size > max(member.compress_size, 1) * MAX_COMPRESSION_RATIO
@@ -251,9 +245,7 @@ def load_rule_package(path: Path) -> RulePackage:
     return package
 
 
-def migrate_rule_package(
-    package: RulePackage, target_schema: int
-) -> DraftRulePackage:
+def migrate_rule_package(package: RulePackage, target_schema: int) -> DraftRulePackage:
     if isinstance(target_schema, bool) or target_schema < 1:
         raise RulePackageError("target schema must be a positive integer")
     manifest = package.manifest.model_copy(

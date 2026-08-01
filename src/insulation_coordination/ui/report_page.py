@@ -201,9 +201,7 @@ class ReportPage(QWidget):
                 self._blocking = ()
         self._generate_button.setEnabled(self._project is not None and not self._blocking)
         self._split_button.setEnabled(
-            self._project is not None and any(
-                len(group.pair_ids) > 1 for group in self._groups
-            )
+            self._project is not None and any(len(group.pair_ids) > 1 for group in self._groups)
         )
         self._summary_label.setText(self.validation_summary)
         self._groups_list.clear()
