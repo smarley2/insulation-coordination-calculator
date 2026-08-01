@@ -49,11 +49,13 @@ from insulation_coordination.rules.importer.identify import (
     identify_standard,
 )
 from insulation_coordination.rules.importer.review import (
+    accept_raw_grid,
     build_reviewed_draft,
     confirm_placeholder_formula,
     missing_required_content,
     placeholder_formula_ids,
     required_content_report,
+    unresolved_raw_review_items,
 )
 
 _PAGE_WIDTH = 612
@@ -526,9 +528,7 @@ def test_real_geometry_extracts_every_raw_cell_and_pending_contract(
     assert all(item.expected_contract for item in draft.review_items)
 
 
-def test_unknown_compound_numeric_token_is_preserved_and_flagged(
-    tmp_path: Path,
-) -> None:
+def _compound_draft(tmp_path: Path) -> ImportedRuleDraft:
     part1 = tmp_path / "part1.pdf"
     part4 = tmp_path / "part4.pdf"
     compound_cells = (
@@ -554,7 +554,13 @@ def test_unknown_compound_numeric_token_is_preserved_and_flagged(
         table_anchor="Table S4",
     )
 
-    draft = extract_draft((part1, part4))
+    return extract_draft((part1, part4))
+
+
+def test_unknown_compound_numeric_token_is_preserved_and_flagged(
+    tmp_path: Path,
+) -> None:
+    draft = _compound_draft(tmp_path)
 
     cell = next(
         cell
@@ -573,6 +579,125 @@ def test_unknown_compound_numeric_token_is_preserved_and_flagged(
         and item.semantic_id == "raw-synthetic-part1-table:1:1"
         for item in draft.review_items
     )
+
+
+def test_accept_raw_grid_resolves_only_selected_grid_and_preserves_raw_text(
+    tmp_path: Path,
+) -> None:
+    draft = _compound_draft(tmp_path)
+    pending = unresolved_raw_review_items(draft)
+    assert tuple(item.semantic_id for item in pending) == (
+        "raw-synthetic-part1-table:1:1",
+    )
+    original = next(
+        cell
+        for grid in draft.raw_grids
+        if grid.id == "raw-synthetic-part1-table"
+        for cell in grid.cells
+        if (cell.row, cell.column) == (1, 1)
+    )
+
+    accepted = accept_raw_grid(
+        draft,
+        grid_id="raw-synthetic-part1-table",
+        corrections={},
+        actor="Maintainer",
+        notes="Compared against PDF",
+    )
+
+    reviewed = next(
+        cell
+        for grid in accepted.raw_grids
+        if grid.id == "raw-synthetic-part1-table"
+        for cell in grid.cells
+        if (cell.row, cell.column) == (1, 1)
+    )
+    assert reviewed.raw_text == original.raw_text
+    assert reviewed.source == original.source
+    assert reviewed.value == Decimal("1.2")
+    assert reviewed.parse_status == "numeric"
+    assert reviewed.qualifier is None
+    assert reviewed.suffix is None
+    assert unresolved_raw_review_items(accepted) == ()
+    assert {resolution.review_item_sha256 for resolution in accepted.review_resolutions} == {
+        pending[0].sha256
+    }
+
+
+def test_accept_raw_grid_applies_finite_decimal_correction(tmp_path: Path) -> None:
+    draft = _compound_draft(tmp_path)
+
+    accepted = accept_raw_grid(
+        draft,
+        grid_id="raw-synthetic-part1-table",
+        corrections={(1, 1): Decimal("1.25")},
+        actor="Maintainer",
+        notes="Corrected from PDF",
+    )
+
+    reviewed = next(
+        cell
+        for grid in accepted.raw_grids
+        if grid.id == "raw-synthetic-part1-table"
+        for cell in grid.cells
+        if (cell.row, cell.column) == (1, 1)
+    )
+    assert reviewed.value == Decimal("1.25")
+    assert reviewed.raw_text == "<= 1.2zz"
+
+
+@pytest.mark.parametrize(
+    ("grid_id", "corrections", "message"),
+    (
+        ("missing-grid", {}, "unknown raw grid"),
+        (
+            "raw-synthetic-part1-table",
+            {(9, 9): Decimal(1)},
+            "not flagged",
+        ),
+        (
+            "raw-synthetic-part1-table",
+            {(1, 1): Decimal("NaN")},
+            "finite",
+        ),
+    ),
+)
+def test_accept_raw_grid_rejects_invalid_request(
+    tmp_path: Path,
+    grid_id: str,
+    corrections: dict[tuple[int, int], Decimal],
+    message: str,
+) -> None:
+    draft = _compound_draft(tmp_path)
+
+    with pytest.raises(ValueError, match=message):
+        accept_raw_grid(
+            draft,
+            grid_id=grid_id,
+            corrections=corrections,
+            actor="Maintainer",
+            notes="Compared against PDF",
+        )
+
+
+def test_accept_raw_grid_rejects_already_resolved_table(tmp_path: Path) -> None:
+    draft = _compound_draft(tmp_path)
+    accepted = accept_raw_grid(
+        draft,
+        grid_id="raw-synthetic-part1-table",
+        corrections={},
+        actor="Maintainer",
+        notes="Compared against PDF",
+    )
+
+    with pytest.raises(ValueError, match="no unresolved raw cells"):
+        accept_raw_grid(
+            accepted,
+            grid_id="raw-synthetic-part1-table",
+            corrections={},
+            actor="Maintainer",
+            notes="Compared again",
+        )
 
 
 def test_two_equally_valid_anchor_table_regions_are_rejected(

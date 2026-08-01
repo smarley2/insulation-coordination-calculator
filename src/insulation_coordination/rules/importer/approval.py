@@ -66,6 +66,8 @@ def _review_resolution_exists(
     return any(
         f"{grid.id}:{cell.row}:{cell.column}" == item.semantic_id
         and _source_matches(cell.source, item.source)
+        and cell.value is not None
+        and cell.parse_status == "numeric"
         for grid in changed.raw_grids
         for cell in grid.cells
     )
@@ -88,7 +90,48 @@ def _changed_tokens(
             for item_id in sorted(set(before) | set(after))
             if before.get(item_id) != after.get(item_id)
         )
+    before_grids = {grid.id: grid for grid in original.raw_grids}
+    after_grids = {grid.id: grid for grid in changed.raw_grids}
+    tokens.extend(
+        f"raw-grid:{grid_id}"
+        for grid_id in sorted(set(before_grids) | set(after_grids))
+        if before_grids.get(grid_id) != after_grids.get(grid_id)
+    )
     return tuple(tokens)
+
+
+def _require_safe_raw_grid_correction(
+    original: ImportedRuleDraft,
+    changed: ImportedRuleDraft,
+) -> None:
+    before_grids = {grid.id: grid for grid in original.raw_grids}
+    after_grids = {grid.id: grid for grid in changed.raw_grids}
+    if set(before_grids) != set(after_grids):
+        raise ApprovalError("a correction cannot add or remove extracted raw grids")
+    for grid_id, before in before_grids.items():
+        after = after_grids[grid_id]
+        if (
+            before.rows,
+            before.columns,
+            before.target_unit,
+            before.source,
+        ) != (
+            after.rows,
+            after.columns,
+            after.target_unit,
+            after.source,
+        ):
+            raise ApprovalError("a correction cannot rewrite raw grid structure")
+        before_cells = {(cell.row, cell.column): cell for cell in before.cells}
+        after_cells = {(cell.row, cell.column): cell for cell in after.cells}
+        if set(before_cells) != set(after_cells):
+            raise ApprovalError("a correction cannot add or remove raw grid cells")
+        if any(
+            before_cells[key].raw_text != after_cells[key].raw_text
+            or before_cells[key].source != after_cells[key].source
+            for key in before_cells
+        ):
+            raise ApprovalError("a correction cannot rewrite extracted raw text or source")
 
 
 def _require_valid_review_resolutions(
@@ -162,8 +205,7 @@ def record_correction(
         raise ApprovalError("a correction cannot rewrite imported review items")
     if changed.review_resolutions != original.review_resolutions:
         raise ApprovalError("a correction cannot rewrite review resolutions")
-    if changed.raw_grids != original.raw_grids:
-        raise ApprovalError("a correction cannot rewrite extracted raw grids")
+    _require_safe_raw_grid_correction(original, changed)
     content_changed = (
         changed.tables,
         changed.formulas,
@@ -173,7 +215,8 @@ def record_correction(
         original.formulas,
         original.mappings,
     )
-    if not content_changed and not resolve:
+    raw_changed = changed.raw_grids != original.raw_grids
+    if not content_changed and not raw_changed and not resolve:
         raise ApprovalError("a correction must change rule content")
     _require_logged_content(original)
     original_reviews = original.review_items

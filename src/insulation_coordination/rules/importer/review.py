@@ -11,6 +11,7 @@ review them via ``record_correction``.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from decimal import Decimal
 from typing import Any
 
@@ -30,7 +31,12 @@ from insulation_coordination.domain.rules import (
 )
 from insulation_coordination.domain.rules import Expression as RuleExpression
 from insulation_coordination.rules.importer.approval import record_correction
-from insulation_coordination.rules.importer.extract import ImportedRuleDraft, RawGrid
+from insulation_coordination.rules.importer.extract import (
+    ImportedRuleDraft,
+    ImportReviewItem,
+    RawGrid,
+    RawGridCell,
+)
 from insulation_coordination.rules.importer.identify import (
     FormulaAuditSpec,
     MappingAuditSpec,
@@ -205,6 +211,83 @@ def _mapping_from_spec(
             figure=spec.figure,
             note=f"PDF page {spec.page_number}",
         ),
+    )
+
+
+def unresolved_raw_review_items(
+    draft: ImportedRuleDraft,
+) -> tuple[ImportReviewItem, ...]:
+    """Raw-cell review items without an explicit maintainer resolution."""
+    resolved = {
+        resolution.review_item_sha256 for resolution in draft.review_resolutions
+    }
+    return tuple(
+        item
+        for item in draft.review_items
+        if item.kind == "raw_cell" and item.sha256 not in resolved
+    )
+
+
+def accept_raw_grid(
+    draft: ImportedRuleDraft,
+    *,
+    grid_id: str,
+    corrections: Mapping[tuple[int, int], Decimal],
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Correct or explicitly accept all pending review cells in one raw grid."""
+    grid = next((item for item in draft.raw_grids if item.id == grid_id), None)
+    if grid is None:
+        raise ValueError(f"unknown raw grid: {grid_id}")
+    pending = tuple(
+        item
+        for item in unresolved_raw_review_items(draft)
+        if item.semantic_id.startswith(f"{grid_id}:")
+    )
+    if not pending:
+        raise ValueError(f"raw grid {grid_id} has no unresolved raw cells")
+    coordinates = {
+        tuple(map(int, item.semantic_id.rsplit(":", 2)[-2:])) for item in pending
+    }
+    unexpected = set(corrections) - coordinates
+    if unexpected:
+        raise ValueError(f"raw grid correction is not flagged: {sorted(unexpected)!r}")
+
+    changed_cells: list[RawGridCell] = []
+    for cell in grid.cells:
+        coordinate = (cell.row, cell.column)
+        if coordinate not in coordinates:
+            changed_cells.append(cell)
+            continue
+        value = corrections.get(coordinate, cell.value)
+        if value is None or not value.is_finite():
+            raise ValueError(f"raw grid correction must be a finite decimal: {coordinate}")
+        changed_cells.append(
+            cell.model_copy(
+                update={
+                    "value": value,
+                    "qualifier": None,
+                    "suffix": None,
+                    "parse_status": "numeric",
+                }
+            )
+        )
+    changed_grid = grid.model_copy(update={"cells": tuple(changed_cells)})
+    changed = draft.model_copy(
+        update={
+            "raw_grids": tuple(
+                changed_grid if item.id == grid_id else item
+                for item in draft.raw_grids
+            )
+        }
+    )
+    return record_correction(
+        draft,
+        changed,
+        actor=actor.strip(),
+        notes=notes.strip(),
+        resolve=pending,
     )
 
 

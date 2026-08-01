@@ -21,8 +21,10 @@ from insulation_coordination.rules.importer.identify import (
 )
 from insulation_coordination.rules.importer.review import (
     RequiredContentStatus,
+    accept_raw_grid,
     missing_required_content,
     required_content_report,
+    unresolved_raw_review_items,
 )
 
 __all__ = [
@@ -36,10 +38,12 @@ __all__ = [
     "RequiredContentStatus",
     "StandardIdentity",
     "UnsupportedStandardError",
+    "accept_raw_grid",
     "approve_draft",
     "extract_draft",
     "identify_standard",
     "missing_required_content",
     "record_correction",
     "required_content_report",
+    "unresolved_raw_review_items",
 ]
