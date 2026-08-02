@@ -7,6 +7,7 @@ from uuid import UUID
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 
 from insulation_coordination.domain.enums import Applicability, Provenance
+from insulation_coordination.domain.display import pair_label
 from insulation_coordination.domain.project import PairCase, Project
 from insulation_coordination.project.resolver import resolve_effective_case
 
@@ -173,11 +174,8 @@ class PairListModel(QAbstractTableModel):
         self._project = project
         self._pair_labels = []
         self._statuses = []
-        nets_by_id = {nc.id: nc.name for nc in project.net_classes}
         for pair in project.pairs:
-            name_a = nets_by_id.get(pair.net_a, "?")
-            name_b = nets_by_id.get(pair.net_b, "?")
-            self._pair_labels.append(f"{name_a} ↔ {name_b}")
+            self._pair_labels.append(pair_label(project, pair))
             self._statuses.append((statuses or {}).get(str(pair.id), "—"))
         self.endResetModel()
 

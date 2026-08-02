@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from insulation_coordination.calculation.engine import PairResult
+from insulation_coordination.domain.display import pair_label
 
 
 class CalculationReviewPage(QWidget):
@@ -60,15 +61,27 @@ class CalculationReviewPage(QWidget):
             nets_by_id[nc.id] = nc.name
 
         for result in results:
-            item = QListWidgetItem(self._summarise(result))
+            pair = next((candidate for candidate in project.pairs if candidate.id == result.pair_id), None)
+            label = pair_label(project, pair) if pair is not None else "? ↔ ?"
+            item = QListWidgetItem(self._summarise(result, label))
             item.setToolTip(self._detail(result))
             self._results_list.addItem(item)
 
-        for group in self._groups:
-            group_id = getattr(group, "group_id", "?")
+        for group_index, group in enumerate(self._groups, start=1):
             pair_ids = getattr(group, "pair_ids", ())
-            label = f"{group_id[:16]}… ({len(pair_ids)} pair{'s' if len(pair_ids) != 1 else ''})"
-            self._groups_list.addItem(QListWidgetItem(label))
+            labels = [
+                pair_label(project, pair)
+                for pair_id in pair_ids
+                if (pair := next((candidate for candidate in project.pairs if str(candidate.id) == str(pair_id)), None))
+            ]
+            count = len(pair_ids)
+            members = ", ".join(labels)
+            group_label = f"Group {group_index} — {count} pair{'s' if count != 1 else ''}"
+            if members:
+                group_label += f": {members}"
+            item = QListWidgetItem(group_label)
+            item.setToolTip(f"Internal group: {getattr(group, 'group_id', '?')}")
+            self._groups_list.addItem(item)
 
     def recalculate_after_change(self, project: object) -> None:
         """Recalculate from project + stored rules if available; else clear."""
@@ -94,9 +107,8 @@ class CalculationReviewPage(QWidget):
                 continue
         self.update_results(tuple(valid), project)
 
-    def _summarise(self, result: PairResult) -> str:
-        pair_id = str(result.pair_id)
-        return f"{pair_id}: clearance={result.clearance_mm} mm, creepage={result.creepage_mm} mm"
+    def _summarise(self, result: PairResult, label: str) -> str:
+        return f"{label}: clearance={result.clearance_mm} mm, creepage={result.creepage_mm} mm"
 
     def _detail(self, result: PairResult) -> str:
         lines: list[str] = []
