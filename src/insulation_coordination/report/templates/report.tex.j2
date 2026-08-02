@@ -1,8 +1,6 @@
 \documentclass[10pt]{article}
 \usepackage[a4paper,margin=18mm]{geometry}
-\usepackage{amsmath}
 \usepackage{lmodern}
-\providecommand{\newline}{\\}
 \usepackage{fontspec}
 \setmainfont{texgyrepagella}[
   Extension = .otf,
@@ -14,9 +12,8 @@
 \usepackage{array}
 \usepackage{booktabs}
 \usepackage{fancyhdr}
-\usepackage{graphicx}
 \usepackage{longtable}
-\usepackage{pdflscape}
+\usepackage{tabularx}
 \usepackage[hidelinks]{hyperref}
 \pagestyle{fancy}
 \fancyhf{}
@@ -25,15 +22,7 @@
 \cfoot{\thepage}
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{5pt}
-\newsavebox{\iccformulabox}
-\newcommand{\fitformula}[1]{
-  \sbox{\iccformulabox}{$\displaystyle #1$}
-  \ifdim\wd\iccformulabox>\linewidth
-    \resizebox{\linewidth}{!}{\usebox{\iccformulabox}}
-  \else
-    \usebox{\iccformulabox}
-  \fi
-}
+\renewcommand{\arraystretch}{1.15}
 
 \begin{document}
 \begin{titlepage}
@@ -49,23 +38,23 @@ Customer & {{ model.project_metadata.customer|tex }} \\
 Author & {{ model.project_metadata.author|tex }} \\
 Checker & {{ model.project_metadata.checker|tex }} \\
 Approver & {{ model.project_metadata.approver|tex }} \\
-Project ID & \texttt{ {{- model.project_id|tex -}} } \\
-Project SHA-256 & \texttt{ {{- model.project_sha256|tex -}} } \\
 \end{tabular}
 \end{titlepage}
+
+\tableofcontents
+\clearpage
 
 \section{Document Control}
 \begin{tabular}{@{}ll@{}}
 Application version & {{ model.application_version|tex }} \\
 Calculation engine & {{ model.calculation_engine_version|tex }} \\
 Rules package & {{ model.rules.package_id|tex }}, version {{ model.rules.version|tex }} \\
-Rules SHA-256 & \texttt{ {{- model.rules.package_sha256|tex -}} } \\
 \end{tabular}
 
 \section{Scope, Basis, and Defaults}
-This report records the complete calculated project snapshot. It contains only selected
-rule values and source locators needed to audit the calculations; it does not reproduce
-complete private rules tables.
+This report records the calculated project snapshot in a form intended for
+human review. Project defaults are inherited by each pair unless that pair
+contains an explicit override.
 
 \begin{longtable}{@{}p{55mm}p{95mm}@{}}
 \toprule
@@ -100,273 +89,137 @@ Name & Description & Notes \\
 \bottomrule
 \end{longtable}
 
-\begin{landscape}
-\section{Authoritative Pair Matrix}
-\scriptsize
-\setlength{\tabcolsep}{2pt}
-\begin{longtable}{@{}p{19mm}p{18mm}p{34mm}p{24mm}p{20mm}p{18mm}p{23mm}p{15mm}p{15mm}p{26mm}p{26mm}@{}}
+\section{Pair Comparison Matrices}
+{% if human.common_values %}
+\paragraph{Common values.}
+The following characteristics have the same effective value for every pair:
+\begin{itemize}
+{% for item in human.common_values %}
+\item {{ item.name|tex }}: {{ item.value|tex }}.
+{% endfor %}
+\end{itemize}
+{% else %}
+There are no characteristics common to every pair.
+{% endif %}
+
+{% if human.comparison_matrices %}
+{% for matrix in human.comparison_matrices %}
+\subsection{ {{- matrix.name|tex -}} }
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}l{% for header in matrix.headers %}X{% endfor %}@{}}
 \toprule
-Pair ID & Nets & Stresses and applicability & Impulse / frequency & Insulation & Field & Construction / CTI / pollution / altitude & Required clearance & Required creepage & Governing paths & Group / result SHA-256 \\
+& {% for header in matrix.headers %}{{ header|tex }}{% if not loop.last %} & {% endif %}{% endfor %} \\
 \midrule
-\endfirsthead
-\toprule
-Pair ID & Nets & Stresses and applicability & Impulse / frequency & Insulation & Field & Construction / CTI / pollution / altitude & Required clearance & Required creepage & Governing paths & Group / result SHA-256 \\
-\midrule
-\endhead
-{% for row in model.matrix_rows %}
-\texttt{ {{- row.pair_id|tex -}} } &
-{{ row.net_a|tex }} / {{ row.net_b|tex }} &
-{% for stress in row.stresses -%}
-{{ stress.name|tex }}: {{ stress.applicability|tex }}{% if stress.value_v is not none %}, {{ stress.value_v|value }} V{% endif %}{% if stress.justification %} ({{ stress.justification|tex }}){% endif %}{% if not loop.last %}\\{% endif %}
-{%- endfor %} &
-{{ row.impulse.value|value }} V ({{ row.impulse.provenance|tex }})\newline
-{{ row.frequency.value|value }} Hz ({{ row.frequency.provenance|tex }}) &
-{{ row.insulation_type|tex }} ({{ row.insulation_type_provenance|tex }}) &
-{{ row.field_condition|tex }} ({{ row.field_condition_provenance|tex }})\newline
-radius {{ row.electrode_radius_mm|value }} mm ({{ row.electrode_radius_provenance|tex }}) &
-{{ row.construction_type|tex }} ({{ row.construction_type_provenance|tex }}) /
-{{ row.cti_or_material_group|value }} ({{ row.cti_or_material_group_provenance|tex }}) /
-PD {{ row.pollution_degree|value }} ({{ row.pollution_degree_provenance|tex }}) /
-{{ row.altitude_m|value }} m ({{ row.altitude_provenance|tex }}) &
-{{ row.clearance_mm|value }} mm &
-{{ row.creepage_mm|value }} mm &
-{{ row.governing_clearance_path|tex }}\newline {{ row.governing_creepage_path|tex }} &
-{\ttfamily {{ row.group_id|breakable }}}\newline
-{\ttfamily {{ row.result_sha256|breakable }}} \\
-\midrule
+{% for header in matrix.headers %}
+{{ header|tex }} & {% for cell in matrix.values[loop.index0] %}{% if cell == "—" %}\textemdash{% else %}{{ cell|tex }}{% endif %}{% if not loop.last %} & {% endif %}{% endfor %} \\
 {% endfor %}
 \bottomrule
-\end{longtable}
-\normalsize
-\end{landscape}
+\end{tabularx}
+\end{center}
+{% endfor %}
+{% else %}
+All comparison characteristics are common to every pair; no difference matrices are required.
+{% endif %}
 
 \section{Grouped Calculations}
-{% for group in model.groups %}
-\clearpage
-\subsection{Calculation Group {{ group.group_id|tex }}}
-Signature: \texttt{ {{- group.signature|tex -}} }
-
-Included pairs: {% for pair_id in group.pair_ids %}\texttt{ {{- pair_id|tex -}} }{% if not loop.last %}, {% endif %}{% endfor %}.
+{% for group in human.groups %}
+\subsection{ {{- group.name|tex -}} }
+Included pairs: {% for pair_label in group.pair_labels %}{{ pair_label|tex }}{% if not loop.last %}, {% endif %}{% endfor %}.
 
 {% for calculation in group.calculations %}
-\subsubsection{Pair {{ calculation.pair_id|tex }}}
-Result SHA-256: \texttt{ {{- calculation.result_sha256|tex -}} }
-
+\subsubsection{ {{- calculation.pair_label|tex -}} }
 \paragraph{Effective conditions.}
-Frequency {{ calculation.effective_inputs.frequency_hz.value|value }} Hz
-({{ calculation.effective_inputs.frequency_hz.provenance|value }}),
-impulse {{ calculation.effective_inputs.impulse_v.value|value }} V
-({{ calculation.effective_inputs.impulse_v.provenance|value }}),
-insulation {{ calculation.effective_inputs.insulation_type.value|value }}
-({{ calculation.effective_inputs.insulation_type.provenance|value }}),
-field {{ calculation.effective_inputs.field_condition.value|value }}
-({{ calculation.effective_inputs.field_condition.provenance|value }}),
-electrode radius {{ calculation.effective_inputs.electrode_radius_mm.value|value }} mm
-({{ calculation.effective_inputs.electrode_radius_mm.provenance|value }}),
-altitude {{ calculation.effective_inputs.altitude_m.value|value }} m
-({{ calculation.effective_inputs.altitude_m.provenance|value }}),
-pollution degree {{ calculation.effective_inputs.pollution_degree.value|value }}
-({{ calculation.effective_inputs.pollution_degree.provenance|value }}),
-construction {{ calculation.effective_inputs.construction_type.value|value }}
-({{ calculation.effective_inputs.construction_type.provenance|value }}),
-CTI or material group {{ calculation.effective_inputs.cti_or_material_group.value|value }}
-({{ calculation.effective_inputs.cti_or_material_group.provenance|value }}).
-
-\paragraph{Effective voltage stresses.}
-\begin{longtable}{@{}p{38mm}p{29mm}p{24mm}p{27mm}p{42mm}@{}}
+\begin{tabularx}{\linewidth}{@{}lXl@{}}
 \toprule
-Stress & Applicability & Value & Provenance & Justification \\
+Condition & Value & Source \\
 \midrule
-\endhead
-{% for stress in calculation.stresses %}
-{{ stress.name|tex }} &
-{{ stress.applicability|tex }} &
-{% if stress.value_v is none %}-{% else %}{{ stress.value_v|value }} V{% endif %} &
-{{ stress.provenance|tex }} &
-{{ stress.justification|value }} \\
+{% for condition in calculation.effective_conditions %}
+{{ condition.name|tex }} & {{ condition.value|tex }} & {{ condition.provenance|replace("_", " ")|tex }} \\
 {% endfor %}
 \bottomrule
-\end{longtable}
+\end{tabularx}
+
+\paragraph{Voltage stresses.}
+\begin{tabularx}{\linewidth}{@{}lXlX@{}}
+\toprule
+Stress & Applicability & Value & Justification \\
+\midrule
+{% for stress in calculation.stresses %}
+{{ stress.name|tex }} & {{ stress.applicability|replace("_", " ")|tex }} & {% if stress.value_v is none %}\textemdash{% else %}{{ stress.value_v|value }} V{% endif %} & {{ stress.justification|value }} \\
+{% endfor %}
+\bottomrule
+\end{tabularx}
 
 \paragraph{Clearance candidates.}
-\begin{longtable}{@{}p{32mm}p{31mm}p{25mm}p{72mm}@{}}
+\begin{tabularx}{\linewidth}{@{}lrrX@{}}
 \toprule
-Candidate & Stress & Distance & Semantic path / reason \\
+Candidate & Stress & Distance & Why it was selected \\
 \midrule
-\endhead
 {% for candidate in calculation.clearance_candidates %}
-{{ candidate.candidate_id|tex }} &
-{{ candidate.stress.value|value }} {{ candidate.stress.unit|tex }} &
-{{ candidate.distance_mm|value }} mm &
-{{ candidate.semantic_rule_id|tex }}; {{ candidate.reason|tex }} \\
+{{ candidate.name|tex }} & {{ candidate.stress|tex }} & {{ candidate.distance|tex }} & {{ candidate.reason|tex }}{% if candidate.source_reference %}. Source: {{ candidate.source_reference|reference }}{% endif %} \\
 {% endfor %}
 \bottomrule
-\end{longtable}
+\end{tabularx}
 
 \paragraph{Creepage candidates.}
-\begin{longtable}{@{}p{32mm}p{31mm}p{25mm}p{72mm}@{}}
+\begin{tabularx}{\linewidth}{@{}lrrX@{}}
 \toprule
-Candidate & Stress & Distance & Semantic path / reason \\
+Candidate & Stress & Distance & Why it was selected \\
 \midrule
-\endhead
 {% for candidate in calculation.creepage_candidates %}
-{{ candidate.candidate_id|tex }} &
-{{ candidate.stress.value|value }} {{ candidate.stress.unit|tex }} &
-{{ candidate.distance_mm|value }} mm &
-{{ candidate.semantic_rule_id|tex }}; {{ candidate.reason|tex }} \\
+{{ candidate.name|tex }} & {{ candidate.stress|tex }} & {{ candidate.distance|tex }} & {{ candidate.reason|tex }}{% if candidate.source_reference %}. Source: {{ candidate.source_reference|reference }}{% endif %} \\
 {% endfor %}
 \bottomrule
-\end{longtable}
+\end{tabularx}
 
-{% if calculation.omissions %}
-\paragraph{Not-applicable candidates.}
-\begin{itemize}
-{% for omission in calculation.omissions %}
-\item {{ omission.stress_field|tex }} - {{ omission.justification|tex }}
-{% endfor %}
-\end{itemize}
-{% endif %}
+\paragraph{Calculation summary.}
+Clearance was governed by {{ calculation.clearance_explanation|tex }}. The pre-altitude
+clearance was {{ calculation.pre_altitude_clearance|tex }}; altitude correction was
+{{ calculation.altitude_correction_applied|yesno }}. The required clearance is
+\textbf{ {{- calculation.clearance|tex -}} }.
 
-{% if calculation.hf_iterations %}
-\paragraph{High-frequency field iterations.}
-\begin{longtable}{@{}rrrrp{45mm}@{}}
-\toprule
-Iteration & Previous mm & Calculated mm & Delta mm & Selected route \\
-\midrule
-\endhead
-{% for iteration in calculation.hf_iterations %}
-{{ iteration.number }} & {{ iteration.previous_clearance_mm|value }} &
-{{ iteration.calculated_clearance_mm|value }} & {{ iteration.delta_mm|value }} &
-{{ iteration.selected_route|tex }} \\
-{% endfor %}
-\bottomrule
-\end{longtable}
-{% endif %}
-
-\paragraph{Transformations, corrections, and selections.}
-{% for step in calculation.steps %}
-\textbf{ {{- step.semantic_rule_id|tex -}} } ({{ step.operation|tex }})
-\textbf{Symbolic:}\quad\fitformula{ {{- step.symbolic_latex.latex }} }\par
-\textbf{Substituted:}\quad\fitformula{ {{- step.substituted_latex.latex }} }\par
-Unrounded: \( {{ step.unrounded_value|value }}\,\mathrm{ {{- step.output.unit|tex -}} } \).
-Rounded: {% if step.rounded_value is none %}not separately rounded{% else %}\( {{ step.rounded_value|value }}\,\mathrm{ {{- step.output.unit|tex -}} } \){% endif %}.
-Reason: {{ step.reason|tex }}.
-Applicability: {{ step.applicability|value }}.
-Source: {{ step.source_reference|reference }}.
-{% if step.formula_source_reference and step.formula_source_reference != step.source_reference %}
-Formula source: {{ step.formula_source_reference|reference }}.
-{% endif %}
-{% if step.source_cells %}
-Selected or bounding cells: {% for cell in step.source_cells %}{{ cell|tex }}{% if not loop.last %}, {% endif %}{% endfor %}.
-{% endif %}
-{% if step.cell_references %}
-Cell references: {% for reference in step.cell_references %}{{ reference|reference }}{% if not loop.last %}; {% endif %}{% endfor %}.
-{% endif %}
-\par\medskip
-{% endfor %}
-
-\paragraph{Governing selections and final distances.}
-Clearance: {{ calculation.governing_clearance_candidate_id|tex }} -
-{{ calculation.governing_clearance_reason|tex }}. Pre-altitude value
-{{ calculation.pre_altitude_clearance_mm|value }} mm; altitude correction applied:
-{{ calculation.altitude_correction_applied|yesno }}. Final clearance:
-\textbf{ {{- calculation.clearance_mm|value }} mm}.
-
-Creepage: {{ calculation.governing_creepage_candidate_id|tex }} -
-{{ calculation.governing_creepage_reason|tex }}. Final creepage:
-\textbf{ {{- calculation.creepage_mm|value }} mm}.
-
-\paragraph{Pair-linked advisories.}
-Affected pair ID: {{ calculation.pair_id|tex }}.
-
-\textbf{Warnings:}
-{% if calculation.warnings %}
-\begin{itemize}
-{% for warning in calculation.warnings %}
-\item \textbf{ {{- warning.code|tex -}} }: {{ warning.message|tex }}
-{% if warning.semantic_rule_id %} ({{ warning.semantic_rule_id|tex }}){% endif %}
-{% if warning.source_reference %}; {{ warning.source_reference|reference }}{% endif %}
-{% endfor %}
-\end{itemize}
-{% else %}
-None.
-{% endif %}
-
-\textbf{Verification requirements:}
-{% if calculation.verification_requirements %}
-\begin{itemize}
-{% for requirement in calculation.verification_requirements %}
-\item \textbf{ {{- requirement.code|tex -}} }: {{ requirement.message|tex }}
-{% if requirement.semantic_rule_id %} ({{ requirement.semantic_rule_id|tex }}){% endif %}
-{% if requirement.source_reference %}; {{ requirement.source_reference|reference }}{% endif %}
-{% endfor %}
-\end{itemize}
-{% else %}
-None.
-{% endif %}
+Creepage was governed by {{ calculation.creepage_explanation|tex }}. The required
+creepage is \textbf{ {{- calculation.creepage|tex -}} }.
 
 {% endfor %}
 {% endfor %}
 
+{% if human.advisories or human.verification_requirements %}
 \clearpage
 \section{Advisories}
+{% if human.advisories %}
 \subsection{Warnings}
-{% if model.warnings %}
 \begin{itemize}
-{% for warning in model.warnings %}
-\item \textbf{ {{- warning.code|tex -}} }: {{ warning.message|tex }}
-{% if warning.semantic_rule_id %} ({{ warning.semantic_rule_id|tex }}){% endif %}
-{% if warning.source_reference %}; {{ warning.source_reference|reference }}{% endif %}
+{% for advisory in human.advisories %}
+\item \textbf{ {{- advisory.code|tex -}} }: {{ advisory.message|tex }}{% if advisory.source_reference %}. Source: {{ advisory.source_reference|reference }}{% endif %}
 {% endfor %}
 \end{itemize}
-{% else %}
-No calculation warnings.
 {% endif %}
-
+{% if human.verification_requirements %}
 \subsection{Verification Requirements}
-{% if model.verification_requirements %}
 \begin{itemize}
-{% for requirement in model.verification_requirements %}
-\item \textbf{ {{- requirement.code|tex -}} }: {{ requirement.message|tex }}
-{% if requirement.semantic_rule_id %} ({{ requirement.semantic_rule_id|tex }}){% endif %}
-{% if requirement.source_reference %}; {{ requirement.source_reference|reference }}{% endif %}
+{% for advisory in human.verification_requirements %}
+\item \textbf{ {{- advisory.code|tex -}} }: {{ advisory.message|tex }}{% if advisory.source_reference %}. Source: {{ advisory.source_reference|reference }}{% endif %}
 {% endfor %}
 \end{itemize}
-{% else %}
-No additional verification requirements.
+{% endif %}
 {% endif %}
 
 \section{Rules Package Provenance}
 \begin{tabular}{@{}ll@{}}
 Package ID & {{ model.rules.package_id|tex }} \\
 Version & {{ model.rules.version|tex }} \\
-SHA-256 & \texttt{ {{- model.rules.package_sha256|tex -}} } \\
 Schema version & {{ model.rules.schema_version }} \\
 Importer version & {{ model.rules.importer_version|tex }} \\
 Created at & {{ model.rules.created_at|tex }} \\
 Approved & {{ model.rules.approved|yesno }} \\
 Compatible & {{ model.rules.compatible|yesno }} \\
-Notes & {{ model.rules.notes|value }} \\
 \end{tabular}
 
 \subsection{Source Documents}
 \begin{itemize}
 {% for document in model.rules.source_documents %}
-\item {{ document.standard|tex }}:{{ document.edition|tex }} -
-\texttt{ {{- document.sha256|tex -}} }
+\item {{ document.standard|tex }} ({{ document.edition|tex }})
 {% endfor %}
 \end{itemize}
-
-\subsection{Approval Records}
-\begin{longtable}{@{}p{25mm}p{35mm}p{43mm}p{55mm}@{}}
-\toprule
-Action & Actor & Recorded at & Notes \\
-\midrule
-\endhead
-{% for record in model.rules.approval_records %}
-{{ record.action|tex }} & {{ record.actor|tex }} &
-{{ record.recorded_at.isoformat()|tex }} & {{ record.notes|value }} \\
-{% endfor %}
-\bottomrule
-\end{longtable}
 \end{document}

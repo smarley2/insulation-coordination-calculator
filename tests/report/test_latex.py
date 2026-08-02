@@ -27,15 +27,14 @@ def report_model(report_inputs):
     return build_report_model(*report_inputs)
 
 
-def test_report_renders_symbolic_and_substituted_formula(report_model) -> None:
+def test_report_keeps_formula_trace_out_of_human_document(report_model) -> None:
     tex = render_latex(report_model)
 
-    assert r"y = y_0 + \frac{(x-x_0)(y_1-y_0)}{x_1-x_0}" in tex
-    assert r"150\,\mathrm{V}" in tex
-    assert r"100\,\mathrm{V}" in tex
-    assert "SYNTHETIC-PART-1:1, synthetic, Table synthetic-distance" in tex
+    assert r"y = y_0 + \frac{(x-x_0)(y_1-y_0)}{x_1-x_0}" not in tex
+    assert r"150\,\mathrm{V}" not in tex
+    assert r"100\,\mathrm{V}" not in tex
     assert "entire synthetic table" not in tex
-    assert r"\mathrm{steady\_state\_peak}" in tex
+    assert r"\mathrm{steady\_state\_peak}" not in tex
     assert r"\max(impulse, steady_state_peak)" not in tex
 
 
@@ -45,8 +44,23 @@ def test_report_escapes_user_text_without_escaping_trusted_formula(report_model)
     assert r"\textbackslash{}input\{unsafe\}\&" in tex
     assert r"HV\_1" in tex
     assert r"LV\%2" in tex
-    assert r"\frac{" in tex
+    assert r"\frac{" not in tex
     assert r"\input{unsafe}" not in tex
+
+
+def test_human_report_uses_readable_chapters_and_hides_internal_identifiers(report_model) -> None:
+    tex = render_latex(report_model)
+
+    assert r"\tableofcontents" in tex
+    assert "Pair Comparison Matrices" in tex
+    assert "Common values" in tex
+    assert r"\begin{tabularx}" in tex
+    assert "Authoritative Pair Matrix" not in tex
+    assert "Pair ID" not in tex
+    assert "Result SHA-256" not in tex
+    assert "Signature:" not in tex
+    assert "Transformations, corrections, and selections." not in tex
+    assert "Approval Records" not in tex
 
 
 def test_report_snapshot_is_frozen_and_deterministic(report_inputs) -> None:
@@ -168,7 +182,7 @@ def test_matrix_and_group_chapter_snapshot_all_audit_fields(report_model) -> Non
     assert {step.substituted_latex.origin for step in calculation.steps} == {"engine"}
 
 
-def test_group_chapter_renders_all_voltage_states_and_pair_linked_advisories(
+def test_group_chapter_renders_all_voltage_states_without_internal_advisories(
     report_model,
 ) -> None:
     calculation = report_model.groups[0].calculations[0]
@@ -192,19 +206,17 @@ def test_group_chapter_renders_all_voltage_states_and_pair_linked_advisories(
 
     grouped_tex = render_latex(changed_model).split(r"\section{Grouped Calculations}", 1)[1]
 
-    assert r"\paragraph{Effective voltage stresses.}" in grouped_tex
+    assert r"\paragraph{Voltage stresses.}" in grouped_tex
     assert "long-term RMS" in grouped_tex
     assert "steady-state peak" in grouped_tex
     assert "recurring peak" in grouped_tex
     assert "temporary overvoltage peak" in grouped_tex
-    assert "not\\_applicable" in grouped_tex
+    assert "not applicable" in grouped_tex
     assert "No recurring peak." in grouped_tex
-    assert "pair\\_input" in grouped_tex
-    assert f"Affected pair ID: {calculation.pair_id}" in grouped_tex
-    assert "PAIR\\_WARNING" in grouped_tex
-    assert "Synthetic pair warning." in grouped_tex
-    assert "PAIR\\_CHECK" in grouped_tex
-    assert "Synthetic pair verification." in grouped_tex
+    assert "pair\\_input" not in grouped_tex
+    assert "Affected pair ID" not in grouped_tex
+    assert "PAIR\\_WARNING" not in grouped_tex
+    assert "PAIR\\_CHECK" not in grouped_tex
 
 
 def test_report_formats_every_exact_source_locator(report_model) -> None:
@@ -231,7 +243,7 @@ def test_report_formats_every_exact_source_locator(report_model) -> None:
 
     tex = render_latex(changed_model)
 
-    assert "IEC 60664-1:2020, 5.3.4, Table F.5, Figure F.1, Note 2, row 150 V, column PD 2" in tex
+    assert "IEC 60664-1 (2020), 5.3.4" not in tex
 
 
 def test_report_rejects_internally_mismatched_results_and_tampered_rules(
@@ -374,8 +386,8 @@ def test_report_renders_single_caret_superscripts_and_allowed_commands(report_mo
 
     tex = render_latex(report_model.model_copy(update={"groups": (changed_group,)}))
 
-    assert r"x^{2}\geq y" in tex
-    assert r"2^{2}\,\mathrm{V}" in tex
+    assert r"x^{2}\geq y" not in tex
+    assert r"2^{2}\,\mathrm{V}" not in tex
 
 
 def test_report_rejects_dangerous_formula_from_otherwise_valid_approved_package(

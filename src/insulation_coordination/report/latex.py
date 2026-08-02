@@ -8,6 +8,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from insulation_coordination.domain.rules import SourceReference
+from insulation_coordination.report.human_view import build_human_report_view
 from insulation_coordination.report.model import ReportModel
 
 _TEMPLATE_DIR = Path(__file__).with_name("templates")
@@ -42,7 +43,10 @@ def render_latex(model: ReportModel) -> str:
         breakable=_breakable,
         yesno=lambda value: "yes" if value else "no",
     )
-    return environment.get_template("report.tex.j2").render(model=model)
+    return environment.get_template("report.tex.j2").render(
+        model=model,
+        human=build_human_report_view(model),
+    )
 
 
 def escape_latex_text(value: object) -> str:
@@ -63,7 +67,7 @@ def _value(value: object) -> str:
 def _reference(reference: SourceReference | None) -> str:
     if reference is None:
         return "Engine aggregation; no table content reproduced"
-    parts = [f"{reference.standard}:{reference.edition}"]
+    parts = [f"{reference.standard} ({reference.edition})"]
     if reference.clause:
         parts.append(reference.clause)
     if reference.table:
