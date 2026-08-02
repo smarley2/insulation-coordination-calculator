@@ -917,7 +917,14 @@ class PairPage(QWidget):
         self.project_changed.emit(self._project)
 
     def recalculate(self) -> None:
-        if self._project is None or self._rules is None:
+        if self._project is None:
+            return
+        if self._rules is None:
+            QMessageBox.critical(
+                self,
+                "Cannot recalculate",
+                "Load an approved rules package before recalculating.",
+            )
             return
         from insulation_coordination.calculation.engine import calculate_pair
         from insulation_coordination.project.resolver import resolve_effective_case

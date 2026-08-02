@@ -131,6 +131,26 @@ def test_recalculate_after_voltage_change(qtbot, pair_page):
     assert result.clearance_mm <= result.creepage_mm
 
 
+def test_recalculate_reports_missing_rules(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    from insulation_coordination.ui.pair_editor import PairPage
+
+    page = PairPage()
+    qtbot.addWidget(page)
+    page.load_project(_make_project(("HV+", "HV-", "PE")))
+    captured: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        staticmethod(lambda _parent, _title, message: captured.append(message)),
+    )
+
+    page.recalculate()
+
+    assert "Load an approved rules package" in captured[0]
+    assert page.result_by_id(page.project.pairs[0].id) is None
+
+
 def test_invalid_input_clears_results(qtbot, pair_page, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 
