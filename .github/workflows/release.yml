@@ -20,11 +20,11 @@ jobs:
       - run: uv run python scripts/create_release_fixtures.py release-smoke
       - run: >-
           uv run python scripts/prepare_tectonic.py --platform windows-x86_64
-          --destination build/tectonic/windows-x86_64 --fixtures release-smoke --refresh-lock
+          --destination .release-tectonic/windows-x86_64 --fixtures release-smoke --refresh-lock
       - shell: pwsh
         run: |
           New-Item -ItemType Directory -Force packaging\tectonic-locks | Out-Null
-          Copy-Item build\tectonic\windows-x86_64\tectonic-locks\windows-x86_64.json packaging\tectonic-locks\
+          Copy-Item .release-tectonic\windows-x86_64\tectonic-locks\windows-x86_64.json packaging\tectonic-locks\
       - run: uv run python scripts/render_icons.py packaging/assets/icc.svg build/icons
       - run: uv run pyinstaller --noconfirm --clean packaging/insulation_coordination.spec
       - name: Build and smoke-test installer
@@ -56,8 +56,8 @@ jobs:
       - run: uv run python scripts/create_release_fixtures.py release-smoke
       - run: >-
           uv run python scripts/prepare_tectonic.py --platform macos-arm64
-          --destination build/tectonic/macos-arm64 --fixtures release-smoke --refresh-lock
-      - run: mkdir -p packaging/tectonic-locks && cp build/tectonic/macos-arm64/tectonic-locks/macos-arm64.json packaging/tectonic-locks/
+          --destination .release-tectonic/macos-arm64 --fixtures release-smoke --refresh-lock
+      - run: mkdir -p packaging/tectonic-locks && cp .release-tectonic/macos-arm64/tectonic-locks/macos-arm64.json packaging/tectonic-locks/
       - run: uv run python scripts/render_icons.py packaging/assets/icc.svg build/icons
       - run: uv run pyinstaller --noconfirm --clean packaging/insulation_coordination.spec
       - run: packaging/macos/package.sh "dist/Insulation Coordination Calculator.app" release-smoke "$VERSION" dist/release
@@ -82,8 +82,8 @@ jobs:
       - run: uv run python scripts/create_release_fixtures.py release-smoke
       - run: >-
           uv run python scripts/prepare_tectonic.py --platform linux-x86_64
-          --destination build/tectonic/linux-x86_64 --fixtures release-smoke --refresh-lock
-      - run: mkdir -p packaging/tectonic-locks && cp build/tectonic/linux-x86_64/tectonic-locks/linux-x86_64.json packaging/tectonic-locks/
+          --destination .release-tectonic/linux-x86_64 --fixtures release-smoke --refresh-lock
+      - run: mkdir -p packaging/tectonic-locks && cp .release-tectonic/linux-x86_64/tectonic-locks/linux-x86_64.json packaging/tectonic-locks/
       - run: uv run python scripts/render_icons.py packaging/assets/icc.svg build/icons
       - run: uv run pyinstaller --noconfirm --clean packaging/insulation_coordination.spec
       - name: Download verified AppImageTool

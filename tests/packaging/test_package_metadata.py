@@ -15,7 +15,7 @@ def test_pyinstaller_spec_bundles_templates_manifest_and_tectonic() -> None:
         "report/templates",
         "tectonic-manifest.json",
         "tectonic-locks",
-        "build/tectonic",
+        ".release-tectonic",
         "CFBundleDocumentTypes",
     ):
         assert required in spec

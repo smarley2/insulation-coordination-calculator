@@ -14,8 +14,8 @@ elif sys.platform.startswith("linux") and machine in {"amd64", "x86_64"}:
 else:
     raise SystemExit(f"unsupported release platform: {sys.platform}/{machine}")
 
-# Native inputs are staged below build/tectonic/<platform> before PyInstaller runs.
-tectonic_stage = root / "build" / "tectonic" / platform_key
+# Native inputs are staged outside PyInstaller's --clean work tree.
+tectonic_stage = root / ".release-tectonic" / platform_key
 tectonic_manifest = root / "packaging" / "tectonic-manifest.json"
 tectonic_lock = root / "packaging" / "tectonic-locks" / f"{platform_key}.json"
 tectonic_executable = tectonic_stage / "tectonic" / (
