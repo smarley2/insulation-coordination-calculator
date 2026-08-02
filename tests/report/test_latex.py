@@ -68,6 +68,14 @@ def test_human_report_uses_readable_chapters_and_hides_internal_identifiers(repo
     assert "Approval Records" not in tex
 
 
+def test_grouped_report_renders_one_shared_block_per_group(report_model) -> None:
+    tex = render_latex(report_model)
+
+    assert r"\subsubsection" not in tex
+    assert "Included pairs:" in tex
+    assert tex.count(r"\textbf{Effective conditions.}") == len(report_model.groups)
+
+
 def test_report_snapshot_is_frozen_and_deterministic(report_inputs) -> None:
     first = build_report_model(*report_inputs)
     second = build_report_model(*report_inputs)

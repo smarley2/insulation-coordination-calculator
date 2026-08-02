@@ -123,11 +123,11 @@ All comparison characteristics are common to every pair; no difference matrices 
 
 \section{Grouped Calculations}
 {% for group in human.groups %}
+\clearpage
 \subsection{ {{- group.name|tex -}} }
 Included pairs: {% for pair_label in group.pair_labels %}{{ pair_label|tex }}{% if not loop.last %}, {% endif %}{% endfor %}.
 
-{% for calculation in group.calculations %}
-\subsubsection{ {{- calculation.pair_label|tex -}} }
+{% set calculation = group.calculations[0] %}
 \textbf{Effective conditions.}\par
 \begin{tabularx}{\linewidth}{@{}XXX@{}}
 \toprule
@@ -181,7 +181,6 @@ clearance was {{ calculation.pre_altitude_clearance|tex }}; altitude correction 
 {{ calculation.creepage_explanation|tex }} The required
 creepage is \textbf{ {{- calculation.creepage|tex -}} }.
 
-{% endfor %}
 {% endfor %}
 
 {% if human.advisories or human.verification_requirements %}
