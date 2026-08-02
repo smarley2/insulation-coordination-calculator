@@ -1,12 +1,38 @@
 # -*- mode: python ; coding: utf-8 -*-
+import platform
+import sys
 from pathlib import Path
 
 root = Path(SPECPATH).resolve().parent.parent
+machine = platform.machine().lower()
+if sys.platform == "win32" and machine in {"amd64", "x86_64"}:
+    platform_key = "windows-x86_64"
+elif sys.platform == "darwin" and machine in {"arm64", "aarch64"}:
+    platform_key = "macos-arm64"
+elif sys.platform.startswith("linux") and machine in {"amd64", "x86_64"}:
+    platform_key = "linux-x86_64"
+else:
+    raise SystemExit(f"unsupported release platform: {sys.platform}/{machine}")
+
+# Native inputs are staged below build/tectonic/<platform> before PyInstaller runs.
+tectonic_stage = root / "build" / "tectonic" / platform_key
+tectonic_manifest = root / "packaging" / "tectonic-manifest.json"
+tectonic_lock = root / "packaging" / "tectonic-locks" / f"{platform_key}.json"
+for required in (tectonic_stage / "tectonic", tectonic_stage / "cache", tectonic_lock):
+    if not required.exists():
+        raise SystemExit(f"missing native release input: {required}")
 
 datas = [
     (str(root / "src" / "insulation_coordination" / "report" / "templates"),
      "insulation_coordination/report/templates"),
+    (str(tectonic_manifest), "."),
+    (str(tectonic_stage / "tectonic"), "tectonic"),
+    (str(tectonic_stage / "cache"), "tectonic/cache"),
+    (str(tectonic_lock), "tectonic-locks"),
+    (str(root / "packaging" / "assets" / "icc.svg"), "assets"),
 ]
+
+# The macOS Info.plist contains CFBundleDocumentTypes for .icproj and .icrules.
 
 hiddenimports = [
     "insulation_coordination.report.templates",
@@ -42,6 +68,8 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+icon_path = root / "build" / "icons" / ("icc.ico" if sys.platform == "win32" else "icc.icns")
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -52,14 +80,23 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=True,
+    icon=str(icon_path),
+    console=sys.platform.startswith("linux"),
 )
 
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    name="icc",
-)
+if sys.platform == "darwin":
+    app = BUNDLE(
+        exe,
+        name="Insulation Coordination Calculator.app",
+        icon=str(icon_path),
+        info_plist=str(root / "packaging" / "macos" / "Info.plist"),
+    )
+else:
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.datas,
+        strip=False,
+        upx=False,
+        name="icc",
+    )
