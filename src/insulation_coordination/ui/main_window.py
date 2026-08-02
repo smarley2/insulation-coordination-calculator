@@ -161,10 +161,19 @@ class MainWindow(QMainWindow):
         self._update_actions()
 
     def _show_page(self, index: int) -> None:
+        was_maximized = self.isMaximized()
+        was_full_screen = self.isFullScreen()
+        normal_geometry = self.geometry()
         self._current_page = index
         self._stack.setCurrentIndex(index)
         for name, button in self._nav_buttons.items():
             button.setChecked(name == self._PAGES[index])
+        if was_maximized and not self.isMaximized():
+            self.showMaximized()
+        elif was_full_screen and not self.isFullScreen():
+            self.showFullScreen()
+        elif not was_maximized and not was_full_screen:
+            self.setGeometry(normal_geometry)
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")

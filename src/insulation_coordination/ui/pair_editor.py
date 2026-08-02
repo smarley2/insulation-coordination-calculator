@@ -112,6 +112,8 @@ class PairEditor(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._pair: PairCase | None = None
         self._defaults: ProjectDefaults | None = None
 
@@ -864,9 +866,13 @@ class PairPage(QWidget):
 
     def load_project(self, project: Project) -> None:
         self._project = project
+        self._splitters_initialized = False
         self.matrix_model.load_project(project)
         self.pair_list_model.load_project(project)
         self.calculation_review.load_project(project)
+        if self.isVisible():
+            self._splitters_initialized = True
+            QTimer.singleShot(0, self._set_initial_splitter_sizes)
 
     def _on_matrix_parameter_changed(self, index: int) -> None:
         parameter = self._matrix_parameter_combo.itemData(index)

@@ -298,3 +298,16 @@ def test_pairs_page_separates_matrix_pairs_and_editor_scroll(qtbot, pair_page):
     assert pair_page._left_splitter.sizes()[0] >= 160
     assert pair_page._left_splitter.sizes()[1] >= 80
     assert pair_page._editor_scroll.verticalScrollBar().maximum() > 0
+    matrix_rect = pair_page._matrix_view.rect()
+    matrix_rect.moveTopLeft(pair_page._matrix_view.mapTo(pair_page, matrix_rect.topLeft()))
+    pairs_rect = pair_page._pair_list_view.rect()
+    pairs_rect.moveTopLeft(pair_page._pair_list_view.mapTo(pair_page, pairs_rect.topLeft()))
+    assert not matrix_rect.intersects(pairs_rect)
+    assert pair_page.editor._rms_na_button.parentWidget() is not None
+    assert pair_page.editor._steady_na_button.parentWidget() is not None
+
+
+def test_pair_editor_does_not_force_horizontal_page_growth(qtbot, pair_page):
+    assert pair_page.editor.minimumWidth() == 0
+    assert pair_page._editor_scroll.minimumWidth() == 0
+    assert pair_page.editor.sizePolicy().horizontalPolicy().name == "Expanding"
