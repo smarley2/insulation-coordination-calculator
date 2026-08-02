@@ -19,11 +19,16 @@ def _fake_tectonic(
 ) -> tuple[str, str]:
     script_path = path.with_suffix(".py")
     script = f"""from pathlib import Path
+import os
 import sys
 from pypdf import PdfWriter
 
 print("|".join(sys.argv[1:]))
 print("synthetic compiler diagnostic", file=sys.stderr)
+cache = os.environ.get("TECTONIC_CACHE_DIR")
+if cache:
+    print(f"CACHE={{cache}}")
+    print(f"SEED={{(Path(cache) / 'seed.txt').read_text(encoding='utf-8')}}")
 if {produce_pdf!r}:
     outdir = Path(sys.argv[sys.argv.index("--outdir") + 1])
     tex = Path(sys.argv[-1])
@@ -105,6 +110,49 @@ def test_compile_pdf_retains_tex_and_log_on_compiler_failure(tmp_path: Path) -> 
     assert result.log_path.exists()
     assert "synthetic compiler diagnostic" in result.log_path.read_text(encoding="utf-8")
     assert not output.exists()
+
+
+def test_compile_pdf_uses_declared_flag_and_isolated_cache(tmp_path: Path) -> None:
+    tex = tmp_path / "source.tex"
+    tex.write_text("synthetic source", encoding="utf-8")
+    command = _fake_tectonic(tmp_path / "fake-tectonic")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "seed.txt").write_text("seed", encoding="utf-8")
+
+    result = compile_pdf(
+        tex,
+        tmp_path / "report.pdf",
+        command,
+        offline_flag="--only-cached",
+        cache_dir=cache,
+    )
+
+    assert result.success is True
+    assert "--only-cached" in result.stdout
+    assert "SEED=seed" in result.stdout
+    assert str(cache.resolve()) not in result.stdout
+    assert (cache / "seed.txt").read_text(encoding="utf-8") == "seed"
+
+
+@pytest.mark.parametrize("cache_kind", ["missing", "file"])
+def test_compile_pdf_rejects_missing_or_non_directory_cache(
+    tmp_path: Path, cache_kind: str
+) -> None:
+    tex = tmp_path / "source.tex"
+    tex.write_text("synthetic source", encoding="utf-8")
+    cache = tmp_path / "cache"
+    if cache_kind == "file":
+        cache.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(CompileError, match="cache"):
+        compile_pdf(
+            tex,
+            tmp_path / "report.pdf",
+            _fake_tectonic(tmp_path / "fake-tectonic"),
+            offline_flag="--only-cached",
+            cache_dir=cache,
+        )
 
 
 def test_compile_pdf_rejects_success_without_a_valid_pdf(tmp_path: Path) -> None:

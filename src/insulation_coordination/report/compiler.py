@@ -51,7 +51,14 @@ def _program(command: list[str], outdir: Path, tex: Path) -> Path:
     return _input_file(Path(command[0]), None, "Tectonic executable")
 
 
-def compile_pdf(tex_path: Path, output_path: Path, tectonic: CompilerCommand) -> CompileResult:
+def compile_pdf(
+    tex_path: Path,
+    output_path: Path,
+    tectonic: CompilerCommand,
+    *,
+    offline_flag: str | None = None,
+    cache_dir: Path | None = None,
+) -> CompileResult:
     """Compile one LaTeX file in an isolated offline workspace."""
     tex = _input_file(tex_path, ".tex", "LaTeX source")
     command = _normalize_command(tectonic)
@@ -62,6 +69,7 @@ def compile_pdf(tex_path: Path, output_path: Path, tectonic: CompilerCommand) ->
         raise CompileError("compiler, source, output, and log paths must be distinct")
     if not os.access(program, os.X_OK):
         raise CompileError("Tectonic executable is not executable")
+    cache_source = _cache_directory(cache_dir)
 
     with _COMPILE_LOCK:
         _reject_unsafe_leaf(output, "PDF output")
@@ -70,7 +78,19 @@ def compile_pdf(tex_path: Path, output_path: Path, tectonic: CompilerCommand) ->
         with tempfile.TemporaryDirectory(prefix=".icc-tectonic-", dir=output.parent) as temporary:
             outdir = Path(temporary)
             produced = outdir / f"{tex.stem}.pdf"
-            returncode, stdout, stderr = _run_tectonic(command, outdir, tex)
+            environment: dict[str, str] | None = None
+            if cache_source is not None:
+                isolated_cache = outdir / "tectonic-cache"
+                shutil.copytree(cache_source, isolated_cache)
+                environment = os.environ.copy()
+                environment["TECTONIC_CACHE_DIR"] = str(isolated_cache)
+            returncode, stdout, stderr = _run_tectonic(
+                command,
+                outdir,
+                tex,
+                offline_flag=offline_flag or _offline_flag(command),
+                environment=environment,
+            )
             pdf_path: Path | None = None
             success = False
             if returncode == 0:
@@ -96,12 +116,19 @@ def compile_pdf(tex_path: Path, output_path: Path, tectonic: CompilerCommand) ->
     )
 
 
-def _run_tectonic(command: Sequence[str], outdir: Path, tex: Path) -> tuple[int | None, str, str]:
+def _run_tectonic(
+    command: Sequence[str],
+    outdir: Path,
+    tex: Path,
+    *,
+    offline_flag: str,
+    environment: dict[str, str] | None,
+) -> tuple[int | None, str, str]:
     try:
         completed = subprocess.run(
             [
                 *_normalize_command(command),
-                _offline_flag(command),
+                offline_flag,
                 "--outdir",
                 str(outdir),
                 str(tex),
@@ -111,6 +138,7 @@ def _run_tectonic(command: Sequence[str], outdir: Path, tex: Path) -> tuple[int 
             capture_output=True,
             text=True,
             check=False,
+            env=environment,
         )
         return completed.returncode, completed.stdout, completed.stderr
     except subprocess.TimeoutExpired as error:
@@ -146,6 +174,21 @@ def _output_leaf(path: Path, suffix: str, label: str) -> Path:
     if not parent.is_dir():
         raise CompileError(f"{label} parent is not a directory")
     return parent / expanded.name
+
+
+def _cache_directory(path: Path | None) -> Path | None:
+    if path is None:
+        return None
+    candidate = Path(path).expanduser()
+    if candidate.is_symlink():
+        raise CompileError("Tectonic cache must not be a symlink")
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as error:
+        raise CompileError(f"Tectonic cache does not exist or is unsafe: {error}") from error
+    if not resolved.is_dir():
+        raise CompileError("Tectonic cache must be a directory")
+    return resolved
 
 
 def _reject_unsafe_leaf(path: Path, label: str) -> None:
@@ -230,6 +273,6 @@ def _offline_flag(command: Sequence[str]) -> str:
             check=False,
         )
         help_text = completed.stdout + completed.stderr
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return "--offline"
     return "--only-cached" if "--only-cached" in help_text else "--offline"
