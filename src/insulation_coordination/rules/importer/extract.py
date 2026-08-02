@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -228,7 +229,32 @@ def _recipe(identity: StandardIdentity) -> StandardRecipe:
     matches = tuple(recipe for recipe in RECIPES if recipe.id == identity.recipe_id)
     if len(matches) != 1:
         raise ExtractionError(f"no unique extraction recipe for {identity.recipe_id}")
-    return matches[0]
+    recipe = matches[0]
+    offset = dict(recipe.page_number_offsets).get(identity.page_count, 0)
+    if offset == 0:
+        return recipe
+
+    tables = tuple(
+        table.model_copy(
+            update={
+                "page_number": table.page_number + offset,
+                "segments": tuple(
+                    segment.model_copy(update={"page_number": segment.page_number + offset})
+                    for segment in table.segments
+                ),
+            }
+        )
+        for table in recipe.tables
+    )
+    formulas = tuple(
+        formula.model_copy(update={"page_number": formula.page_number + offset})
+        for formula in recipe.formulas
+    )
+    mappings = tuple(
+        mapping.model_copy(update={"page_number": mapping.page_number + offset})
+        for mapping in recipe.mappings
+    )
+    return recipe.model_copy(update={"tables": tables, "formulas": formulas, "mappings": mappings})
 
 
 _NUMERIC_CELL = re.compile(
@@ -843,14 +869,20 @@ def _require_unique_ids(
             raise ExtractionError(f"duplicate extracted {label} semantic ID")
 
 
-def extract_draft(paths: tuple[Path, ...]) -> ImportedRuleDraft:
+def extract_draft(
+    paths: tuple[Path, ...],
+    passwords: Mapping[Path, str] | None = None,
+) -> ImportedRuleDraft:
     """Extract recognized sources into a deliberately unusable immutable draft."""
 
     if not paths:
         raise ExtractionError(
             "IEC 60664-1 and IEC 60664-4 must be loaded together; no PDFs were selected"
         )
-    identified = tuple((path, identify_standard(path)) for path in paths)
+    identified = tuple(
+        (path, identify_standard(path, password=(passwords or {}).get(path)))
+        for path in paths
+    )
     recipe_ids = tuple(identity.recipe_id for _, identity in identified)
     if len(recipe_ids) != len(set(recipe_ids)):
         raise ExtractionError("duplicate supported IEC part")

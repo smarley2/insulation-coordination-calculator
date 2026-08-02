@@ -19,6 +19,7 @@ from insulation_coordination.rules.importer.extract import (
 from insulation_coordination.rules.importer.identify import (
     AmbiguousStandardError,
     EquationAuditSpec,
+    PasswordRequiredError,
     StandardIdentity,
     TableColumnSpec,
     TableSegmentSpec,
@@ -47,6 +48,7 @@ __all__ = [
     "ExtractionError",
     "ImportReviewItem",
     "ImportedRuleDraft",
+    "PasswordRequiredError",
     "RawGrid",
     "RawGridCell",
     "RawGridSegment",

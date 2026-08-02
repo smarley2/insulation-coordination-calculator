@@ -124,12 +124,26 @@ All comparison characteristics are common to every pair; no difference matrices 
 
 \clearpage
 \section{Grouped Calculations}
+\textbf{Group index.}\par
+\begin{itemize}
+{% for group in human.groups %}
+\item \textbf{ {{- group.name|tex -}} }: {% for pair_label in group.pair_labels %}{{ pair_label|tex }}{% if not loop.last %}, {% endif %}{% endfor %}
+{% endfor %}
+\end{itemize}
+
 {% for group in human.groups %}
 {% if not loop.first %}
 \clearpage
 {% endif %}
 \subsection{ {{- group.name|tex -}} }
 Included pairs: {% for pair_label in group.pair_labels %}{{ pair_label|tex }}{% if not loop.last %}, {% endif %}{% endfor %}.
+
+\textbf{Rules applied.}\par
+\begin{itemize}
+{% for rule in group.rules %}
+\item {{ rule.description|tex }}{% if rule.source_reference %} Source: {{ rule.source_reference|reference }}{% endif %}
+{% endfor %}
+\end{itemize}
 
 {% set calculation = group.calculations[0] %}
 \textbf{Effective conditions.}\par
@@ -144,7 +158,7 @@ Condition & Value & Source \\
 \end{tabularx}
 
 \textbf{Voltage stresses.}\par
-\begin{tabularx}{\linewidth}{@{}XrrX@{}}
+\begin{tabularx}{\linewidth}{@{}lrrX@{}}
 \toprule
 Stress & Applicability & Value & Justification \\
 \midrule
@@ -155,7 +169,7 @@ Stress & Applicability & Value & Justification \\
 \end{tabularx}
 
 \textbf{Clearance candidates.}\par
-\begin{tabularx}{\linewidth}{@{}XrrX@{}}
+\begin{tabularx}{\linewidth}{@{}lrrX@{}}
 \toprule
 Candidate & Stress & Distance & Why it was selected \\
 \midrule
@@ -166,7 +180,7 @@ Candidate & Stress & Distance & Why it was selected \\
 \end{tabularx}
 
 \textbf{Creepage candidates.}\par
-\begin{tabularx}{\linewidth}{@{}XXXX@{}}
+\begin{tabularx}{\linewidth}{@{}lrrX@{}}
 \toprule
 Candidate & Stress & Distance & Why it was selected \\
 \midrule

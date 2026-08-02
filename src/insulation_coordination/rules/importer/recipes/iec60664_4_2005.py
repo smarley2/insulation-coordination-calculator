@@ -116,12 +116,13 @@ RECIPE = StandardRecipe(
     id="iec60664-4-2005",
     standard="IEC 60664-4",
     edition="2005",
-    expected_page_count=144,
+    expected_page_count=138,
+    accepted_page_counts=(144,),
     metadata_identity_fields=("/Title", "/Subject", "/Keywords"),
     metadata_identity_anchors=("IEC 60664-4", "2005"),
     identity_anchors=(
         "IEC 60664-4",
-        "first edition",
+        "Second edition",
         "high-frequency voltage stress",
     ),
     tables=(

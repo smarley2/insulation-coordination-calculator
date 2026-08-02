@@ -46,6 +46,7 @@ from insulation_coordination.rules.importer.identify import (
     AmbiguousStandardError,
     FormulaAuditSpec,
     MappingAuditSpec,
+    PasswordRequiredError,
     StandardRecipe,
     TableAuditSpec,
     UnsupportedStandardError,
@@ -474,6 +475,49 @@ def test_identifies_supported_document_from_recipe_specific_evidence(
     assert identity.edition == "2020"
     assert identity.page_count == 1
     assert len(identity.sha256) == 64
+
+
+def test_identifies_encrypted_document_with_empty_password(
+    supported_pdfs: tuple[Path, Path], tmp_path: Path
+) -> None:
+    encrypted = tmp_path / "part1-empty-password.pdf"
+    writer = PdfWriter(clone_from=supported_pdfs[0])
+    writer.encrypt("")
+    with encrypted.open("wb") as target:
+        writer.write(target)
+
+    identity = identify_standard(encrypted)
+
+    assert identity.standard == "IEC 60664-1"
+
+
+def test_reports_password_required_without_leaking_password(
+    supported_pdfs: tuple[Path, Path], tmp_path: Path
+) -> None:
+    encrypted = tmp_path / "part1-password.pdf"
+    writer = PdfWriter(clone_from=supported_pdfs[0])
+    writer.encrypt("correct horse")
+    with encrypted.open("wb") as target:
+        writer.write(target)
+
+    with pytest.raises(PasswordRequiredError, match="requires a password") as captured:
+        identify_standard(encrypted)
+
+    assert "correct horse" not in str(captured.value)
+
+
+def test_identifies_encrypted_document_with_supplied_password(
+    supported_pdfs: tuple[Path, Path], tmp_path: Path
+) -> None:
+    encrypted = tmp_path / "part1-password.pdf"
+    writer = PdfWriter(clone_from=supported_pdfs[0])
+    writer.encrypt("correct horse")
+    with encrypted.open("wb") as target:
+        writer.write(target)
+
+    identity = identify_standard(encrypted, password="correct horse")
+
+    assert identity.standard == "IEC 60664-1"
 
 
 def test_unknown_document_is_rejected(tmp_path: Path) -> None:

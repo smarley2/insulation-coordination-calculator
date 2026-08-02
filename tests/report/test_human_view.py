@@ -43,6 +43,8 @@ def test_human_view_separates_common_values_and_differing_matrices(report_inputs
     } <= matrix_names
     assert "determined the clearance" in view.groups[0].calculations[0].clearance_explanation
     assert "determined the creepage" in view.groups[0].calculations[0].creepage_explanation
+    assert view.groups[0].rules
+    assert all(rule.description.endswith(".") for rule in view.groups[0].rules)
 
 
 def test_human_view_deduplicates_warning_and_matching_verification(report_inputs) -> None:

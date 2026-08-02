@@ -301,7 +301,7 @@ def test_rules_manager_reports_unsupported_pdf_without_crashing(qtbot, monkeypat
         lambda *_args, **_kwargs: (["unsupported.pdf"], "PDF files (*.pdf)"),
     )
 
-    def reject(_paths):
+    def reject(_paths, passwords=None):
         raise UnsupportedStandardError("PDF is not a recognized supported IEC edition")
 
     monkeypatch.setattr(
@@ -316,3 +316,40 @@ def test_rules_manager_reports_unsupported_pdf_without_crashing(qtbot, monkeypat
     window._on_extract_draft_clicked()
 
     assert messages == [("Extract Draft", "PDF is not a recognized supported IEC edition")]
+
+
+def test_rules_manager_retries_encrypted_pdf_with_masked_password(qtbot, monkeypatch) -> None:
+    from insulation_coordination.rules.importer.identify import PasswordRequiredError
+    from insulation_coordination.ui.rules_manager import RulesManagerWindow
+
+    window = RulesManagerWindow()
+    qtbot.addWidget(window)
+    calls: list[dict[Path, str]] = []
+    selected = (Path("part1.pdf"), Path("part4.pdf"))
+
+    monkeypatch.setattr(
+        "insulation_coordination.ui.rules_manager.QFileDialog.getOpenFileNames",
+        lambda *_args, **_kwargs: ([str(path) for path in selected], "PDF files (*.pdf)"),
+    )
+    monkeypatch.setattr(
+        "insulation_coordination.ui.rules_manager.QInputDialog.getText",
+        lambda *_args, **_kwargs: ("secret", True),
+    )
+
+    def extract(paths, passwords=None):
+        calls.append(dict(passwords or {}))
+        if len(calls) == 1:
+            raise PasswordRequiredError(paths[0])
+        return object()
+
+    monkeypatch.setattr(
+        "insulation_coordination.rules.importer.extract.extract_draft",
+        extract,
+    )
+    installed: list[object] = []
+    monkeypatch.setattr(window, "set_draft", installed.append)
+
+    window._on_extract_draft_clicked()
+
+    assert calls == [{}, {selected[0]: "secret"}]
+    assert len(installed) == 1

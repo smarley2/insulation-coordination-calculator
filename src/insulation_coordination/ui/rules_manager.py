@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -494,13 +495,31 @@ class RulesManagerWindow(QWidget):
         if not paths:
             return
         from insulation_coordination.rules.importer.extract import ExtractionError, extract_draft
-        from insulation_coordination.rules.importer.identify import StandardIdentificationError
+        from insulation_coordination.rules.importer.identify import (
+            PasswordRequiredError,
+            StandardIdentificationError,
+        )
 
-        try:
-            draft = extract_draft(tuple(Path(path) for path in paths))
-        except (ExtractionError, StandardIdentificationError) as error:
-            QMessageBox.critical(self, "Extract Draft", str(error))
-            return
+        selected_paths = tuple(Path(path) for path in paths)
+        passwords: dict[Path, str] = {}
+        while True:
+            try:
+                draft = extract_draft(selected_paths, passwords=passwords)
+                break
+            except PasswordRequiredError as error:
+                password, accepted = QInputDialog.getText(
+                    self,
+                    "Unlock standard PDF",
+                    f"{error}\nEnter the PDF password for {error.path.name}:",
+                    QLineEdit.EchoMode.Password,
+                )
+                if not accepted:
+                    QMessageBox.critical(self, "Extract Draft", str(error))
+                    return
+                passwords[error.path] = password
+            except (ExtractionError, StandardIdentificationError) as error:
+                QMessageBox.critical(self, "Extract Draft", str(error))
+                return
         self.set_draft(draft)
 
     def _on_export_approved_clicked(self) -> None:

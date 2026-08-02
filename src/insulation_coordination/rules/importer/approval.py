@@ -621,7 +621,8 @@ def _require_source_genesis(draft: ImportedRuleDraft) -> None:
         or any(
             identity.standard != recipe.standard
             or identity.edition != recipe.edition
-            or identity.page_count != recipe.expected_page_count
+            or identity.page_count
+            not in (recipe.expected_page_count, *recipe.accepted_page_counts)
             for identity, recipe in zip(
                 draft.source_identities,
                 expected,

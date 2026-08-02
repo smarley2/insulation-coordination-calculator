@@ -47,6 +47,12 @@ class HumanAdvisory:
 
 
 @dataclass(frozen=True)
+class HumanRule:
+    description: str
+    source_reference: SourceReference | None
+
+
+@dataclass(frozen=True)
 class HumanPairCalculation:
     pair_label: str
     effective_conditions: tuple[HumanValue, ...]
@@ -68,6 +74,7 @@ class HumanGroup:
     name: str
     pair_labels: tuple[str, ...]
     calculations: tuple[HumanPairCalculation, ...]
+    rules: tuple[HumanRule, ...]
 
 
 @dataclass(frozen=True)
@@ -153,6 +160,7 @@ def build_human_report_view(model: ReportModel) -> HumanReportView:
                 name=f"Group {group_index}",
                 pair_labels=tuple(calculation.pair_label for calculation in calculations),
                 calculations=calculations,
+                rules=_human_rules(group.calculations),
             )
         )
 
@@ -243,6 +251,112 @@ def _candidate(candidate: object) -> HumanCandidate:
         reason=_sentence(getattr(candidate, "reason", "")),
         source_reference=source_reference,
     )
+
+
+def _human_rules(calculations: tuple[PairCalculationReport, ...]) -> tuple[HumanRule, ...]:
+    result: list[HumanRule] = []
+    seen: set[tuple[str, str]] = set()
+    for calculation in calculations:
+        for kind, candidates in (
+            ("clearance", calculation.clearance_candidates),
+            ("creepage", calculation.creepage_candidates),
+        ):
+            for candidate in candidates:
+                key = (f"{kind}:{candidate.semantic_rule_id}", "candidate_selection")
+                if key in seen:
+                    continue
+                seen.add(key)
+                source_reference = next(
+                    (
+                        step.source_reference
+                        for step in reversed(candidate.steps)
+                        if step.source_reference is not None
+                    ),
+                    None,
+                )
+                if not _source_is_public(source_reference):
+                    source_reference = None
+                result.append(
+                    HumanRule(
+                        description=_candidate_rule_description(kind, candidate),
+                        source_reference=source_reference,
+                    )
+                )
+        for step in calculation.steps:
+            if not _is_summary_step(step):
+                continue
+            key = (step.semantic_rule_id, step.operation)
+            if key in seen:
+                continue
+            seen.add(key)
+            source_reference = step.source_reference or step.formula_source_reference
+            if not _source_is_public(source_reference):
+                source_reference = None
+            result.append(
+                HumanRule(
+                    description=_rule_description(step),
+                    source_reference=source_reference,
+                )
+            )
+    return tuple(result)
+
+
+def _source_is_public(source_reference: SourceReference | None) -> bool:
+    return source_reference is not None and source_reference.standard.startswith("IEC 60664-")
+
+
+def _candidate_rule_description(kind: str, candidate: object) -> str:
+    label = _candidate_name(str(getattr(candidate, "candidate_id", "candidate")))
+    source_reference = next(
+        (
+            step.source_reference
+            for step in reversed(getattr(candidate, "steps", ()))
+            if step.source_reference is not None
+        ),
+        None,
+    )
+    if source_reference is not None:
+        standard = source_reference.standard
+        table = source_reference.table or "the approved table"
+        return f"Select the {kind} candidate {label} from {standard} Table {table}."
+    return f"Select the {kind} candidate {label} using the approved calculation rule."
+
+
+def _is_summary_step(step: object) -> bool:
+    semantic_rule_id = str(getattr(step, "semantic_rule_id", ""))
+    operation = str(getattr(step, "operation", ""))
+    return (
+        semantic_rule_id == "clearance.maximum"
+        or semantic_rule_id.startswith("part1.creepage.clearance_floor")
+        or operation in {"altitude_boundary", "reinforced_stress_treatment", "reinforced_creepage_double"}
+        or ":corrected_clearance" in semantic_rule_id
+    )
+
+
+def _rule_description(step: object) -> str:
+    semantic_rule_id = str(getattr(step, "semantic_rule_id", ""))
+    operation = str(getattr(step, "operation", ""))
+    source = getattr(step, "source_reference", None) or getattr(
+        step, "formula_source_reference", None
+    )
+    if semantic_rule_id == "clearance.maximum":
+        return "The required clearance is the largest selected clearance candidate."
+    if semantic_rule_id.startswith("part1.creepage.clearance_floor"):
+        return "The final clearance is retained as a minimum creepage candidate."
+    if operation == "altitude_boundary":
+        return "The altitude boundary is checked; no correction factor is applied at or below 2000 m."
+    if operation == "reinforced_stress_treatment":
+        return _sentence(getattr(step, "reason", ""))
+    if operation == "reinforced_creepage_double":
+        return "Reinforced insulation uses twice the selected creepage distance."
+    if operation == "table_select" and source is not None:
+        table = getattr(source, "table", None) or "the approved table"
+        standard = getattr(source, "standard", "the applicable IEC standard")
+        return f"Select the required distance from {standard} Table {table} using the applicable branch."
+    reason = str(getattr(step, "reason", ""))
+    if reason:
+        return _sentence(reason)
+    return f"Apply the approved calculation rule {semantic_rule_id}."
 
 
 def _advisory(item: object) -> HumanAdvisory:

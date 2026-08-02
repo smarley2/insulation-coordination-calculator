@@ -30,6 +30,19 @@ class UnsupportedStandardError(StandardIdentificationError):
     """The PDF is not one of the explicitly supported editions."""
 
 
+class PasswordRequiredError(StandardIdentificationError):
+    """The PDF could not be unlocked with the available password."""
+
+    def __init__(self, path: Path, *, supplied: bool = False) -> None:
+        self.path = path
+        message = (
+            "could not unlock encrypted standard PDF with the supplied password"
+            if supplied
+            else "encrypted standard PDF requires a password"
+        )
+        super().__init__(f"{message}: {path.name}")
+
+
 class AmbiguousStandardError(StandardIdentificationError):
     """More than one recipe matched the PDF."""
 
@@ -141,6 +154,8 @@ class StandardRecipe(FrozenModel):
     standard: Identifier
     edition: Identifier
     expected_page_count: int = Field(ge=1)
+    accepted_page_counts: tuple[int, ...] = ()
+    page_number_offsets: tuple[tuple[int, int], ...] = ()
     metadata_identity_fields: tuple[str, ...]
     metadata_identity_anchors: tuple[str, ...]
     identity_anchors: tuple[str, ...]
@@ -176,7 +191,8 @@ class StandardRecipe(FrozenModel):
             _normalized(anchor) in metadata_text for anchor in self.metadata_identity_anchors
         )
         return (
-            metadata_identifies_document or page_count == self.expected_page_count
+            metadata_identifies_document
+            or page_count in (self.expected_page_count, *self.accepted_page_counts)
         ) and self.matches_text(text)
 
 
@@ -186,6 +202,7 @@ def _normalized(value: str) -> str:
 
 def _read_pdf(
     path: Path,
+    password: str | None = None,
 ) -> tuple[PdfReader, str, str, str, dict[str, str]]:
     try:
         size = path.stat().st_size
@@ -195,8 +212,8 @@ def _read_pdf(
         if not payload.startswith(b"%PDF-"):
             raise UnsupportedStandardError("standard source is not a PDF")
         reader = PdfReader(path)
-        if reader.is_encrypted:
-            raise UnsupportedStandardError("encrypted standards are not supported")
+        if reader.is_encrypted and not reader.decrypt(password or ""):
+            raise PasswordRequiredError(path, supplied=password is not None)
         if not reader.pages:
             raise UnsupportedStandardError("standard PDF has no pages")
         page_texts = tuple(page.extract_text() or "" for page in reader.pages[:MAX_IDENTITY_PAGES])
@@ -219,10 +236,10 @@ def _read_pdf(
         raise UnsupportedStandardError("standard PDF could not be read") from error
 
 
-def identify_standard(path: Path) -> StandardIdentity:
+def identify_standard(path: Path, password: str | None = None) -> StandardIdentity:
     """Identify one supported edition without trusting the filename."""
 
-    reader, digest, text, first_page_text, metadata = _read_pdf(path)
+    reader, digest, text, first_page_text, metadata = _read_pdf(path, password=password)
     # Imported lazily to avoid recipe registration during module initialization.
     from insulation_coordination.rules.importer.recipes import RECIPES
 

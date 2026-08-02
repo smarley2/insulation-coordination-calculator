@@ -72,7 +72,9 @@ def test_grouped_report_renders_one_shared_block_per_group(report_model) -> None
     tex = render_latex(report_model)
 
     assert r"\subsubsection" not in tex
+    assert "Group index." in tex
     assert "Included pairs:" in tex
+    assert "Rules applied." in tex
     assert tex.count(r"\textbf{Effective conditions.}") == len(report_model.groups)
 
 
@@ -81,7 +83,7 @@ def test_report_paginates_chapters_and_uses_readable_calculation_layout(report_m
 
     assert "\\clearpage\n\\section{Pair Comparison Matrices}" in tex
     assert "\\clearpage\n\\section{Grouped Calculations}" in tex
-    assert r"@{}XrrX@{}" in tex
+    assert r"@{}lrrX@{}" in tex
     assert "altitude correction was not needed" in tex
     grouped_start = tex.index(r"\section{Grouped Calculations}")
     first_group = tex.index(r"\subsection{Group 1}")
