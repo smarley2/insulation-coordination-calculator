@@ -1,11 +1,64 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import cast
 from uuid import UUID
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 
+from insulation_coordination.domain.enums import Applicability, Provenance
 from insulation_coordination.domain.project import PairCase, Project
+from insulation_coordination.project.resolver import resolve_effective_case
+
+
+MATRIX_PARAMETERS = (
+    ("coverage", "Coverage"),
+    ("long_term_rms_v", "Long-term RMS voltage"),
+    ("steady_state_peak_v", "Steady-state peak voltage"),
+    ("recurring_peak_v", "Recurring peak voltage"),
+    ("temporary_overvoltage_peak_v", "Temporary overvoltage peak"),
+    ("impulse_v", "Impulse withstand voltage"),
+    ("frequency_hz", "Frequency"),
+    ("insulation_type", "Insulation type"),
+    ("field_condition", "Field condition"),
+    ("electrode_radius_mm", "Electrode radius"),
+    ("altitude_m", "Altitude"),
+    ("pollution_degree", "Pollution degree"),
+    ("construction_type", "Construction"),
+    ("cti_or_material_group", "CTI/material group"),
+)
+
+_MATRIX_PARAMETER_KEYS = {key for key, _label in MATRIX_PARAMETERS}
+_VOLTAGE_FIELDS = {
+    "long_term_rms_v": ("long_term_rms_v", "V"),
+    "steady_state_peak_v": ("steady_state_peak_v", "V"),
+    "recurring_peak_v": ("recurring_peak_v", "V"),
+    "temporary_overvoltage_peak_v": ("temporary_overvoltage_peak_v", "V"),
+}
+_DEFAULTABLE_UNITS = {
+    "impulse_v": "V",
+    "frequency_hz": "Hz",
+    "electrode_radius_mm": "mm",
+    "altitude_m": "m",
+}
+
+
+def _format_scalar(value: object) -> str:
+    if value is None:
+        return "—"
+    if isinstance(value, Decimal):
+        text = format(value, "f")
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+        return text or "0"
+    return str(getattr(value, "value", value))
+
+
+def _format_value(value: object, unit: str | None = None) -> str:
+    text = _format_scalar(value)
+    if text == "—" or unit is None:
+        return text
+    return f"{text} {unit}"
 
 
 class CoverageMatrixModel(QAbstractTableModel):
@@ -15,6 +68,18 @@ class CoverageMatrixModel(QAbstractTableModel):
         super().__init__()
         self._project: Project | None = None
         self._pairs_by_net: dict[tuple[UUID, UUID], PairCase] = {}
+        self._parameter = "coverage"
+
+    @property
+    def parameter(self) -> str:
+        return self._parameter
+
+    def set_parameter(self, parameter: str) -> None:
+        if parameter not in _MATRIX_PARAMETER_KEYS:
+            raise ValueError(f"Unknown matrix parameter: {parameter}")
+        self.beginResetModel()
+        self._parameter = parameter
+        self.endResetModel()
 
     def load_project(self, project: Project) -> None:
         self.beginResetModel()
@@ -53,10 +118,33 @@ class CoverageMatrixModel(QAbstractTableModel):
             if row == col:
                 return nets[row].name
             pair = self.pair_at(row, col)
-            if pair is not None:
-                return "✓"
-            return ""
+            if pair is None:
+                return ""
+            return self._display_pair_value(pair)
         return None
+
+    def _display_pair_value(self, pair: PairCase) -> str:
+        if self._parameter == "coverage":
+            return "✓"
+        if self._parameter in _VOLTAGE_FIELDS:
+            field, unit = _VOLTAGE_FIELDS[self._parameter]
+            voltage = getattr(pair.voltages, field)
+            if voltage.applicability is Applicability.NOT_APPLICABLE:
+                return "N/A"
+            if voltage.applicability is not Applicability.APPLICABLE:
+                return "—"
+            return _format_value(voltage.value, unit)
+
+        if self._project is None:
+            return "—"
+        effective = resolve_effective_case(self._project.defaults, pair)
+        resolved = getattr(effective, self._parameter)
+        value = resolved.value
+        if value is None:
+            return "—"
+        text = _format_value(value, _DEFAULTABLE_UNITS.get(self._parameter))
+        marker = "D" if resolved.provenance is Provenance.PROJECT_DEFAULT else "O"
+        return f"{text} ({marker})"
 
     def headerData(
         self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole

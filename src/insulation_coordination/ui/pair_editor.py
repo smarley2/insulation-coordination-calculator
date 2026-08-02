@@ -3,15 +3,22 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
-from PySide6.QtCore import QModelIndex, Signal
+from PySide6.QtCore import QModelIndex, Qt, Signal
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QComboBox,
     QFormLayout,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListView,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSplitter,
+    QTableView,
     QVBoxLayout,
     QWidget,
 )
@@ -31,7 +38,11 @@ from insulation_coordination.domain.project import (
 )
 from insulation_coordination.domain.rules import RulePackage
 from insulation_coordination.project.resolver import resolve_effective_case
-from insulation_coordination.ui.pair_models import CoverageMatrixModel, PairListModel
+from insulation_coordination.ui.pair_models import (
+    MATRIX_PARAMETERS,
+    CoverageMatrixModel,
+    PairListModel,
+)
 
 
 def _parse_voltage(text: str) -> Decimal:
@@ -734,37 +745,74 @@ class PairPage(QWidget):
         layout = QVBoxLayout(self)
 
         self.matrix_model = CoverageMatrixModel()
-        from PySide6.QtWidgets import QTableView
-
         self._matrix_view = QTableView()
         self._matrix_view.setModel(self.matrix_model)
-        self._matrix_view.setSelectionMode(QTableView.SelectionMode.SingleSelection)
-        self._matrix_view.setSelectionBehavior(QTableView.SelectionBehavior.SelectItems)
+        self._matrix_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._matrix_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
+        self._matrix_view.setMinimumHeight(160)
+        self._matrix_view.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self._matrix_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._matrix_view.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self._matrix_view.clicked.connect(self._on_matrix_clicked)
-        layout.addWidget(QLabel("Coverage Matrix:"))
-        layout.addWidget(self._matrix_view)
 
         self.pair_list_model = PairListModel()
-        from PySide6.QtWidgets import QListView
-
         self._pair_list_view = QListView()
         self._pair_list_view.setModel(self.pair_list_model)
+        self._pair_list_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._pair_list_view.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         self._pair_list_view.clicked.connect(self._on_list_clicked)
-        layout.addWidget(QLabel("Pairs:"))
-        layout.addWidget(self._pair_list_view)
 
         self.editor = PairEditor()
         self.editor.pair_changed.connect(self._on_pair_changed)
-        layout.addWidget(self.editor)
-
-        self.recalc_button = QPushButton("Recalculate")
-        self.recalc_button.clicked.connect(self.recalculate)
-        layout.addWidget(self.recalc_button)
 
         from insulation_coordination.ui.calculation_review import CalculationReviewPage
 
         self.calculation_review = CalculationReviewPage()
-        layout.addWidget(self.calculation_review)
+
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        parameter_row = QHBoxLayout()
+        parameter_row.addWidget(QLabel("Show in matrix:"))
+        self._matrix_parameter_combo = QComboBox()
+        for key, label in MATRIX_PARAMETERS:
+            self._matrix_parameter_combo.addItem(label, key)
+        self._matrix_parameter_combo.currentIndexChanged.connect(
+            self._on_matrix_parameter_changed
+        )
+        parameter_row.addWidget(self._matrix_parameter_combo, 1)
+        left_layout.addLayout(parameter_row)
+        left_layout.addWidget(QLabel("Coverage Matrix:"))
+        left_layout.addWidget(self._matrix_view, 3)
+        left_layout.addWidget(QLabel("Pairs:"))
+        left_layout.addWidget(self._pair_list_view, 1)
+
+        editor_scroll = QScrollArea()
+        editor_scroll.setWidgetResizable(True)
+        editor_scroll.setWidget(self.editor)
+
+        self._top_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._top_splitter.addWidget(left_panel)
+        self._top_splitter.addWidget(editor_scroll)
+        self._top_splitter.setStretchFactor(0, 2)
+        self._top_splitter.setStretchFactor(1, 3)
+
+        lower_panel = QWidget()
+        lower_layout = QVBoxLayout(lower_panel)
+        self.recalc_button = QPushButton("Recalculate")
+        self.recalc_button.clicked.connect(self.recalculate)
+        lower_layout.addWidget(self.recalc_button)
+        lower_layout.addWidget(self.calculation_review)
+
+        self._main_splitter = QSplitter(Qt.Orientation.Vertical)
+        self._main_splitter.addWidget(self._top_splitter)
+        self._main_splitter.addWidget(lower_panel)
+        self._main_splitter.setStretchFactor(0, 3)
+        self._main_splitter.setStretchFactor(1, 2)
+        layout.addWidget(self._main_splitter)
 
     @property
     def project(self) -> Project:
@@ -778,6 +826,11 @@ class PairPage(QWidget):
         self.pair_list_model.load_project(project)
         self.calculation_review.load_project(project)
 
+    def _on_matrix_parameter_changed(self, index: int) -> None:
+        parameter = self._matrix_parameter_combo.itemData(index)
+        if isinstance(parameter, str):
+            self.matrix_model.set_parameter(parameter)
+
     def load_rules(self, rules: RulePackage) -> None:
         self._rules = rules
 
@@ -787,7 +840,7 @@ class PairPage(QWidget):
             return
         for pair in self._project.pairs:
             if str(pair.id) == pair_id:
-                self.editor.load_pair(pair)
+                self.editor.load_pair(pair, self._project.defaults)
                 return
 
     def _on_matrix_clicked(self, index: QModelIndex) -> None:
@@ -808,6 +861,11 @@ class PairPage(QWidget):
             return
         pairs = tuple(updated_pair if p.id == updated_pair.id else p for p in self._project.pairs)
         self._project = self._project.model_copy(update={"pairs": pairs})
+        parameter = self.matrix_model.parameter
+        self.matrix_model.load_project(self._project)
+        self.matrix_model.set_parameter(parameter)
+        self.pair_list_model.load_project(self._project)
+        self.calculation_review.load_project(self._project)
         self.project_changed.emit(self._project)
 
     def recalculate(self) -> None:
