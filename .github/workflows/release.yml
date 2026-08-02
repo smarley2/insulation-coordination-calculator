@@ -7,6 +7,7 @@ on:
 
 env:
   VERSION: "0.1.0"
+  TECTONIC_STAGE_ROOT: ${{ github.workspace }}/.release-tectonic
 
 jobs:
   windows:
@@ -20,11 +21,23 @@ jobs:
       - run: uv run python scripts/create_release_fixtures.py release-smoke
       - run: >-
           uv run python scripts/prepare_tectonic.py --platform windows-x86_64
-          --destination .release-tectonic/windows-x86_64 --fixtures release-smoke --refresh-lock
+          --destination "$env:TECTONIC_STAGE_ROOT/windows-x86_64" --fixtures release-smoke --refresh-lock
       - shell: pwsh
         run: |
           New-Item -ItemType Directory -Force packaging\tectonic-locks | Out-Null
-          Copy-Item .release-tectonic\windows-x86_64\tectonic-locks\windows-x86_64.json packaging\tectonic-locks\
+          Copy-Item "$env:TECTONIC_STAGE_ROOT\windows-x86_64\tectonic-locks\windows-x86_64.json" packaging\tectonic-locks\
+      - name: Verify native release inputs
+        shell: pwsh
+        run: |
+          $paths = @(
+            "$env:TECTONIC_STAGE_ROOT\windows-x86_64\tectonic\tectonic.exe",
+            "$env:TECTONIC_STAGE_ROOT\windows-x86_64\tectonic\cache",
+            "packaging\tectonic-locks\windows-x86_64.json"
+          )
+          foreach ($path in $paths) {
+            if (-not (Test-Path $path)) { throw "Missing native release input: $path" }
+          }
+          Get-ChildItem "$env:TECTONIC_STAGE_ROOT\windows-x86_64" -Recurse -File | Select-Object FullName
       - run: uv run python scripts/render_icons.py packaging/assets/icc.svg build/icons
       - run: uv run pyinstaller --noconfirm --clean packaging/insulation_coordination.spec
       - name: Build and smoke-test installer
@@ -56,8 +69,14 @@ jobs:
       - run: uv run python scripts/create_release_fixtures.py release-smoke
       - run: >-
           uv run python scripts/prepare_tectonic.py --platform macos-arm64
-          --destination .release-tectonic/macos-arm64 --fixtures release-smoke --refresh-lock
-      - run: mkdir -p packaging/tectonic-locks && cp .release-tectonic/macos-arm64/tectonic-locks/macos-arm64.json packaging/tectonic-locks/
+          --destination "$TECTONIC_STAGE_ROOT/macos-arm64" --fixtures release-smoke --refresh-lock
+      - run: mkdir -p packaging/tectonic-locks && cp "$TECTONIC_STAGE_ROOT/macos-arm64/tectonic-locks/macos-arm64.json" packaging/tectonic-locks/
+      - name: Verify native release inputs
+        run: |
+          test -x "$TECTONIC_STAGE_ROOT/macos-arm64/tectonic/tectonic"
+          test -d "$TECTONIC_STAGE_ROOT/macos-arm64/tectonic/cache"
+          test -f packaging/tectonic-locks/macos-arm64.json
+          find "$TECTONIC_STAGE_ROOT/macos-arm64" -maxdepth 4 -type f -print
       - run: uv run python scripts/render_icons.py packaging/assets/icc.svg build/icons
       - run: uv run pyinstaller --noconfirm --clean packaging/insulation_coordination.spec
       - run: packaging/macos/package.sh "dist/Insulation Coordination Calculator.app" release-smoke "$VERSION" dist/release
@@ -82,8 +101,14 @@ jobs:
       - run: uv run python scripts/create_release_fixtures.py release-smoke
       - run: >-
           uv run python scripts/prepare_tectonic.py --platform linux-x86_64
-          --destination .release-tectonic/linux-x86_64 --fixtures release-smoke --refresh-lock
-      - run: mkdir -p packaging/tectonic-locks && cp .release-tectonic/linux-x86_64/tectonic-locks/linux-x86_64.json packaging/tectonic-locks/
+          --destination "$TECTONIC_STAGE_ROOT/linux-x86_64" --fixtures release-smoke --refresh-lock
+      - run: mkdir -p packaging/tectonic-locks && cp "$TECTONIC_STAGE_ROOT/linux-x86_64/tectonic-locks/linux-x86_64.json" packaging/tectonic-locks/
+      - name: Verify native release inputs
+        run: |
+          test -x "$TECTONIC_STAGE_ROOT/linux-x86_64/tectonic/tectonic"
+          test -d "$TECTONIC_STAGE_ROOT/linux-x86_64/tectonic/cache"
+          test -f packaging/tectonic-locks/linux-x86_64.json
+          find "$TECTONIC_STAGE_ROOT/linux-x86_64" -maxdepth 4 -type f -print
       - run: uv run python scripts/render_icons.py packaging/assets/icc.svg build/icons
       - run: uv run pyinstaller --noconfirm --clean packaging/insulation_coordination.spec
       - name: Download verified AppImageTool

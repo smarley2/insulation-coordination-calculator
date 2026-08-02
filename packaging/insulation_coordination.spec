@@ -1,5 +1,6 @@
 import platform
 import plistlib
+import os
 import sys
 from pathlib import Path
 
@@ -15,7 +16,8 @@ else:
     raise SystemExit(f"unsupported release platform: {sys.platform}/{machine}")
 
 # Native inputs are staged outside PyInstaller's --clean work tree.
-tectonic_stage = root / ".release-tectonic" / platform_key
+tectonic_root = Path(os.environ.get("TECTONIC_STAGE_ROOT", root / ".release-tectonic"))
+tectonic_stage = tectonic_root / platform_key
 tectonic_manifest = root / "packaging" / "tectonic-manifest.json"
 tectonic_lock = root / "packaging" / "tectonic-locks" / f"{platform_key}.json"
 tectonic_executable = tectonic_stage / "tectonic" / (
