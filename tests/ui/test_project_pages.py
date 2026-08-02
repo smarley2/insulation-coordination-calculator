@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QApplication
 
 from insulation_coordination.domain.project import (
@@ -48,6 +49,82 @@ def test_adding_three_net_classes_creates_three_pairs(qtbot, qtbot_project):
     page.add_net_class("PE")
     assert page.project.net_class_names == ("HV+", "HV-", "PE")
     assert len(page.project.pairs) == 3
+
+
+def test_project_default_dropdown_choices(qtbot, qtbot_project):
+    page = qtbot_project
+    assert [page._impulse_combo.itemText(i) for i in range(page._impulse_combo.count())] == [
+        "",
+        "0.33 kV",
+        "0.40 kV",
+        "0.50 kV",
+        "0.60 kV",
+        "0.80 kV",
+        "1.0 kV",
+        "1.2 kV",
+        "1.5 kV",
+        "2.0 kV",
+        "2.5 kV",
+        "3.0 kV",
+        "4.0 kV",
+        "5.0 kV",
+        "6.0 kV",
+        "8.0 kV",
+        "10 kV",
+        "12 kV",
+        "15 kV",
+        "20 kV",
+        "25 kV",
+        "30 kV",
+        "40 kV",
+        "50 kV",
+        "60 kV",
+        "80 kV",
+        "100 kV",
+    ]
+    assert [page._pollution_combo.itemText(i) for i in range(page._pollution_combo.count())] == [
+        "",
+        "1",
+        "2",
+    ]
+    assert [page._cti_combo.itemText(i) for i in range(page._cti_combo.count())] == [
+        "",
+        "I",
+        "II",
+        "IIIa",
+        "IIIb",
+    ]
+
+
+def test_project_default_dropdowns_update_existing_model(qtbot, qtbot_project):
+    page = qtbot_project
+    page._impulse_combo.setCurrentText("2.5 kV")
+    page._pollution_combo.setCurrentText("2")
+    page._cti_combo.setCurrentText("IIIa")
+    assert page.project.defaults.impulse_v == Decimal(2500)
+    assert page.project.defaults.pollution_degree == 2
+    assert page.project.defaults.cti_or_material_group == "IIIa"
+    page._impulse_combo.setCurrentIndex(0)
+    page._pollution_combo.setCurrentIndex(0)
+    page._cti_combo.setCurrentIndex(0)
+    assert page.project.defaults.impulse_v is None
+    assert page.project.defaults.pollution_degree is None
+    assert page.project.defaults.cti_or_material_group is None
+
+
+def test_add_button_adds_net_class_through_dialog(qtbot, qtbot_project):
+    page = qtbot_project
+
+    def accept_dialog() -> None:
+        dialog = QApplication.activeModalWidget()
+        assert dialog is not None
+        dialog.setTextValue("HV+")
+        dialog.accept()
+
+    QTimer.singleShot(0, accept_dialog)
+    qtbot.mouseClick(page._add_button, Qt.MouseButton.LeftButton)
+    assert page.project.net_class_names == ("HV+",)
+    assert page._net_list.count() == 1
 
 
 def test_rename_preserves_stable_ids_and_pairs(qtbot, qtbot_project):

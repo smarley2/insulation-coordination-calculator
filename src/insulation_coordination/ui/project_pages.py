@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -39,6 +40,37 @@ from insulation_coordination.project.persistence import (
     load_project,
     save_project_atomic,
 )
+
+_IMPULSE_OPTIONS = (
+    ("0.33 kV", Decimal(330)),
+    ("0.40 kV", Decimal(400)),
+    ("0.50 kV", Decimal(500)),
+    ("0.60 kV", Decimal(600)),
+    ("0.80 kV", Decimal(800)),
+    ("1.0 kV", Decimal(1000)),
+    ("1.2 kV", Decimal(1200)),
+    ("1.5 kV", Decimal(1500)),
+    ("2.0 kV", Decimal(2000)),
+    ("2.5 kV", Decimal(2500)),
+    ("3.0 kV", Decimal(3000)),
+    ("4.0 kV", Decimal(4000)),
+    ("5.0 kV", Decimal(5000)),
+    ("6.0 kV", Decimal(6000)),
+    ("8.0 kV", Decimal(8000)),
+    ("10 kV", Decimal(10000)),
+    ("12 kV", Decimal(12000)),
+    ("15 kV", Decimal(15000)),
+    ("20 kV", Decimal(20000)),
+    ("25 kV", Decimal(25000)),
+    ("30 kV", Decimal(30000)),
+    ("40 kV", Decimal(40000)),
+    ("50 kV", Decimal(50000)),
+    ("60 kV", Decimal(60000)),
+    ("80 kV", Decimal(80000)),
+    ("100 kV", Decimal(100000)),
+)
+_POLLUTION_OPTIONS = (("1", 1), ("2", 2))
+_MATERIAL_OPTIONS = (("I", "I"), ("II", "II"), ("IIIa", "IIIa"), ("IIIb", "IIIb"))
 
 
 class ProjectPage(QWidget):
@@ -84,9 +116,12 @@ class ProjectPage(QWidget):
         self._freq_edit = QLineEdit()
         self._freq_edit.editingFinished.connect(self._on_freq_changed)
         defaults_layout.addRow("Frequency (Hz):", self._freq_edit)
-        self._impulse_edit = QLineEdit()
-        self._impulse_edit.editingFinished.connect(self._on_impulse_changed)
-        defaults_layout.addRow("Impulse (V):", self._impulse_edit)
+        self._impulse_combo = QComboBox()
+        self._populate_combo(self._impulse_combo, _IMPULSE_OPTIONS)
+        self._impulse_combo.currentIndexChanged.connect(
+            lambda index: self._update_combo_default("impulse_v", self._impulse_combo, index)
+        )
+        defaults_layout.addRow("Impulse:", self._impulse_combo)
         self._insulation_combo = QComboBox()
         self._insulation_combo.addItem("")
         for insulation in InsulationType:
@@ -102,18 +137,26 @@ class ProjectPage(QWidget):
         self._altitude_edit = QLineEdit()
         self._altitude_edit.editingFinished.connect(self._on_altitude_changed)
         defaults_layout.addRow("Altitude (m):", self._altitude_edit)
-        self._pollution_edit = QLineEdit()
-        self._pollution_edit.editingFinished.connect(self._on_pollution_changed)
-        defaults_layout.addRow("Pollution degree:", self._pollution_edit)
+        self._pollution_combo = QComboBox()
+        self._populate_combo(self._pollution_combo, _POLLUTION_OPTIONS)
+        self._pollution_combo.currentIndexChanged.connect(
+            lambda index: self._update_combo_default("pollution_degree", self._pollution_combo, index)
+        )
+        defaults_layout.addRow("Pollution degree:", self._pollution_combo)
         self._construction_combo = QComboBox()
         self._construction_combo.addItem("")
         for construction in ConstructionType:
             self._construction_combo.addItem(construction.value)
         self._construction_combo.currentTextChanged.connect(self._on_construction_changed)
         defaults_layout.addRow("Construction:", self._construction_combo)
-        self._cti_edit = QLineEdit()
-        self._cti_edit.editingFinished.connect(self._on_cti_changed)
-        defaults_layout.addRow("CTI / material group:", self._cti_edit)
+        self._cti_combo = QComboBox()
+        self._populate_combo(self._cti_combo, _MATERIAL_OPTIONS)
+        self._cti_combo.currentIndexChanged.connect(
+            lambda index: self._update_combo_default(
+                "cti_or_material_group", self._cti_combo, index
+            )
+        )
+        defaults_layout.addRow("CTI / material group:", self._cti_combo)
         layout.addWidget(defaults_group)
 
         rules_layout = QHBoxLayout()
@@ -167,24 +210,38 @@ class ProjectPage(QWidget):
             self._doc_edit,
             self._revision_edit,
             self._freq_edit,
-            self._impulse_edit,
             self._altitude_edit,
-            self._pollution_edit,
-            self._cti_edit,
         ):
             widget.blockSignals(True)
+        for combo in (self._impulse_combo, self._pollution_combo, self._cti_combo):
+            combo.blockSignals(True)
         self._title_edit.setText(project.metadata.title)
         self._customer_edit.setText(project.metadata.customer)
         self._doc_edit.setText(project.metadata.document_number)
         self._revision_edit.setText(project.metadata.revision)
         defaults = project.defaults
         self._freq_edit.setText("" if defaults.frequency_hz is None else str(defaults.frequency_hz))
-        self._impulse_edit.setText("" if defaults.impulse_v is None else str(defaults.impulse_v))
         self._altitude_edit.setText("" if defaults.altitude_m is None else str(defaults.altitude_m))
-        self._pollution_edit.setText(
-            "" if defaults.pollution_degree is None else str(defaults.pollution_degree)
+        self._restore_combo_value(
+            self._impulse_combo,
+            _IMPULSE_OPTIONS,
+            defaults.impulse_v,
+            None
+            if defaults.impulse_v is None
+            else f"{defaults.impulse_v / Decimal(1000):g} kV",
         )
-        self._cti_edit.setText(defaults.cti_or_material_group or "")
+        self._restore_combo_value(
+            self._pollution_combo,
+            _POLLUTION_OPTIONS,
+            defaults.pollution_degree,
+            None if defaults.pollution_degree is None else str(defaults.pollution_degree),
+        )
+        self._restore_combo_value(
+            self._cti_combo,
+            _MATERIAL_OPTIONS,
+            defaults.cti_or_material_group,
+            defaults.cti_or_material_group,
+        )
         self._insulation_combo.blockSignals(True)
         self._field_combo.blockSignals(True)
         self._construction_combo.blockSignals(True)
@@ -206,12 +263,11 @@ class ProjectPage(QWidget):
             self._doc_edit,
             self._revision_edit,
             self._freq_edit,
-            self._impulse_edit,
             self._altitude_edit,
-            self._pollution_edit,
-            self._cti_edit,
         ):
             widget.blockSignals(False)
+        for combo in (self._impulse_combo, self._pollution_combo, self._cti_combo):
+            combo.blockSignals(False)
         rules = project.required_rules
         self._rules_label.setText(f"{rules.package_id} v{rules.version} ({rules.sha256[:12]}…)")
         self._refresh_net_list()
@@ -336,17 +392,8 @@ class ProjectPage(QWidget):
     def _on_freq_changed(self) -> None:
         self._update_default("frequency_hz", self._freq_edit.text())
 
-    def _on_impulse_changed(self) -> None:
-        self._update_default("impulse_v", self._impulse_edit.text())
-
     def _on_altitude_changed(self) -> None:
         self._update_default("altitude_m", self._altitude_edit.text())
-
-    def _on_pollution_changed(self) -> None:
-        self._update_default("pollution_degree", self._pollution_edit.text())
-
-    def _on_cti_changed(self) -> None:
-        self._update_default("cti_or_material_group", self._cti_edit.text())
 
     def _update_default(self, field: str, text: str) -> None:
         if self._project is None:
@@ -358,10 +405,6 @@ class ProjectPage(QWidget):
         try:
             if not text:
                 defaults[field] = None
-            elif field in ("pollution_degree",):
-                defaults[field] = int(text)
-            elif field == "cti_or_material_group":
-                defaults[field] = text
             else:
                 defaults[field] = Decimal(text)
         except (InvalidOperation, ValueError):
@@ -382,6 +425,42 @@ class ProjectPage(QWidget):
             return
         defaults = dict(self._project.defaults.model_dump(mode="python"))
         defaults[field] = enum(text).value if text else None
+        self._update_project(defaults=ProjectDefaults.model_validate(defaults))
+
+    @staticmethod
+    def _populate_combo(
+        combo: QComboBox,
+        options: tuple[tuple[str, Any], ...],
+    ) -> None:
+        combo.addItem("", None)
+        for text, value in options:
+            combo.addItem(text, value)
+
+    def _restore_combo_value(
+        self,
+        combo: QComboBox,
+        options: tuple[tuple[str, Any], ...],
+        value: Any,
+        legacy_display: str | None,
+    ) -> None:
+        combo.clear()
+        self._populate_combo(combo, options)
+        if value is None:
+            combo.setCurrentIndex(0)
+            return
+        index = combo.findData(value)
+        if index < 0:
+            if legacy_display is None:
+                raise ValueError("Legacy combo value requires a display label")
+            combo.addItem(f"{legacy_display} (legacy)", value)
+            index = combo.count() - 1
+        combo.setCurrentIndex(index)
+
+    def _update_combo_default(self, field: str, combo: QComboBox, index: int) -> None:
+        if self._project is None:
+            return
+        defaults = dict(self._project.defaults.model_dump(mode="python"))
+        defaults[field] = combo.itemData(index)
         self._update_project(defaults=ProjectDefaults.model_validate(defaults))
 
     def _on_add_clicked(self) -> None:
