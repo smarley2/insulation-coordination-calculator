@@ -13,6 +13,7 @@ from insulation_coordination.domain.enums import (
     InsulationType,
 )
 from insulation_coordination.domain.project import (
+    PairVoltage,
     NetClass,
     Project,
     ProjectDefaults,
@@ -139,6 +140,49 @@ def test_invalid_input_clears_results(qtbot, pair_page):
     pair_page.editor.clear_impulse_override()
     pair_page.recalculate()
     assert pair_page.result_by_id(pair.id) is None
+
+
+def test_recalculate_reports_missing_frequency_with_pair_label(qtbot, pair_page, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    project = pair_page.project.model_copy(
+        update={
+            "defaults": pair_page.project.defaults.model_copy(update={"frequency_hz": None}),
+            "pairs": tuple(
+                pair.model_copy(
+                    update={
+                        "voltages": pair.voltages.model_copy(
+                            update={
+                                "long_term_rms_v": PairVoltage.applicable(Decimal(500)),
+                                "steady_state_peak_v": PairVoltage.applicable(Decimal(300)),
+                                "recurring_peak_v": PairVoltage.applicable(Decimal(400)),
+                                "temporary_overvoltage_peak_v": PairVoltage.not_applicable(
+                                    "No temporary overvoltage."
+                                ),
+                            }
+                        ),
+                        "impulse_v": pair.impulse_v.override(Decimal(800)),
+                    }
+                )
+                for pair in pair_page.project.pairs
+            ),
+        }
+    )
+    pair_page.load_project(project)
+    captured: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        staticmethod(lambda _parent, _title, message: captured.append(message)),
+    )
+
+    pair_page.recalculate()
+
+    assert pair_page.calculation_review._results_list.count() == 0
+    assert "HV+ ↔ HV-" in captured[0]
+    assert "HV+ ↔ PE" in captured[0]
+    assert "HV- ↔ PE" in captured[0]
+    assert "Frequency is required" in captured[0]
 
 
 def test_pair_list_shows_net_names(qtbot, pair_page):

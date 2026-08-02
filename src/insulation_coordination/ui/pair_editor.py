@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListView,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -31,6 +32,7 @@ from insulation_coordination.domain.enums import (
     FieldCondition,
     InsulationType,
 )
+from insulation_coordination.domain.display import pair_label
 from insulation_coordination.domain.project import (
     OverrideValue,
     PairCase,
@@ -915,17 +917,49 @@ class PairPage(QWidget):
         from insulation_coordination.project.resolver import resolve_effective_case
 
         self._results = {}
+        self.calculation_review.update_results((), self._project)
+        errors: list[str] = []
         for pair in self._project.pairs:
             try:
                 effective = resolve_effective_case(self._project.defaults, pair)
                 result = calculate_pair(effective, self._rules)
                 self._results[str(pair.id)] = result
-            except (ValueError, RuntimeError, TypeError, KeyError):
-                continue
+            except (ValueError, RuntimeError, TypeError, KeyError) as error:
+                errors.append(format_calculation_error(pair_label(self._project, pair), error))
+
+        if errors:
+            self._results = {}
+            QMessageBox.critical(
+                self,
+                "Cannot recalculate",
+                "Calculation could not be completed for all pairs:\n\n" + "\n".join(errors),
+            )
+            return
 
         results_tuple: tuple[PairResult, ...] = tuple(self._results.values())
-        if results_tuple:
-            self.calculation_review.update_results(results_tuple, self._project)
+        self.calculation_review.update_results(results_tuple, self._project)
+
+
+def format_calculation_error(label: str, error: Exception) -> str:
+    """Turn an engine validation message into a human-readable pair error."""
+    message = str(error).strip() or "Calculation failed."
+    replacements = {
+        "frequency_hz": "Frequency",
+        "impulse_v": "Impulse voltage",
+        "insulation_type": "Insulation type",
+        "field_condition": "Field condition",
+        "electrode_radius_mm": "Electrode radius",
+        "altitude_m": "Altitude",
+        "pollution_degree": "Pollution degree",
+        "construction_type": "Construction",
+        "cti_or_material_group": "CTI/material group",
+    }
+    for source, display in replacements.items():
+        message = message.replace(source, display)
+    message = message[0].upper() + message[1:]
+    if not message.endswith((".", "!", "?")):
+        message += "."
+    return f"{label} — {message}"
 
     def result_by_id(self, pair_id: UUID) -> object | None:
         return self._results.get(str(pair_id))
