@@ -24,7 +24,9 @@ V1 produces one supported architecture per operating system:
 - Linux x86_64: an AppImage and a portable tar archive.
 
 All artifacts include the same Python application, report templates, pinned
-Tectonic 0.15.0 executable, and offline Tectonic resource cache. Runtime code is
+Tectonic 0.16.9 executable, and offline Tectonic resource cache. Version 0.16.9
+is required because it contains the macOS arm64 `fontspec` crash fix needed by
+the report template. Runtime code is
 identical across platforms except for startup integration, compiler location,
 and package metadata.
 
@@ -102,7 +104,7 @@ Platform integration points call this same interface:
 
 ## Bundled Offline Tectonic
 
-The repository contains a machine-readable manifest for Tectonic 0.15.0. For
+The repository contains a machine-readable manifest for Tectonic 0.16.9. For
 each supported platform it records:
 
 - platform and architecture;
