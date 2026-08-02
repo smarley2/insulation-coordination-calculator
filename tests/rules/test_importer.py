@@ -1115,6 +1115,14 @@ def test_build_reviewed_draft_resolves_every_item(
         item.sha256 for item in draft.review_items
     }
     assert is_fully_resolved(reviewed)
+    assert all(
+        len(table.supported_ranges) == 1
+        and table.supported_ranges[0].variable == table.row_axis.id
+        and table.supported_ranges[0].unit == table.row_axis.unit
+        and table.supported_ranges[0].minimum == table.row_axis.values[0]
+        and table.supported_ranges[0].maximum == table.row_axis.values[-1]
+        for table in reviewed.tables
+    )
 
 
 def test_staged_review_requires_tables_then_equations_and_mappings(

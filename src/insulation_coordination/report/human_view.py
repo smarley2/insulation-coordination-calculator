@@ -117,7 +117,12 @@ def build_human_report_view(model: ReportModel) -> HumanReportView:
             "cti",
             lambda row: row.cti_or_material_group or "—",
         ),
-        ("Required clearance", "mm", "clearance", lambda row: _effective_text(row.clearance_mm, "mm")),
+        (
+            "Required clearance",
+            "mm",
+            "clearance",
+            lambda row: _effective_text(row.clearance_mm, "mm"),
+        ),
         ("Required creepage", "mm", "creepage", lambda row: _effective_text(row.creepage_mm, "mm")),
     )
     for name, unit, _key, value_getter in default_specs:
@@ -127,9 +132,7 @@ def build_human_report_view(model: ReportModel) -> HumanReportView:
         if len(set(values)) == 1:
             common_values.append(HumanValue(name=name, value=values[0], provenance="common"))
         else:
-            matrices.append(
-                _matrix_for(name, unit, headers, model.matrix_rows, value_getter)
-            )
+            matrices.append(_matrix_for(name, unit, headers, model.matrix_rows, value_getter))
 
     voltage_specs = (
         ("Long-term RMS voltage", "V", "long-term RMS"),
@@ -144,7 +147,7 @@ def build_human_report_view(model: ReportModel) -> HumanReportView:
                 unit,
                 headers,
                 model.matrix_rows,
-                lambda row, stress_name=stress_name: _stress_text(row, stress_name),
+                _stress_getter(stress_name),
             )
         )
 
@@ -202,33 +205,67 @@ def _matrix_for(
 
 def _human_calculation(row: MatrixRow, calculation: PairCalculationReport) -> HumanPairCalculation:
     conditions = (
-        HumanValue("Frequency", _effective_text(calculation.effective_inputs.frequency_hz.value, "Hz"), calculation.effective_inputs.frequency_hz.provenance.value),
-        HumanValue("Impulse", _effective_text(calculation.effective_inputs.impulse_v.value, "V"), calculation.effective_inputs.impulse_v.provenance.value),
-        HumanValue("Insulation type", _value_text(calculation.effective_inputs.insulation_type.value), calculation.effective_inputs.insulation_type.provenance.value),
-        HumanValue("Field condition", _value_text(calculation.effective_inputs.field_condition.value), calculation.effective_inputs.field_condition.provenance.value),
-        HumanValue("Altitude", _effective_text(calculation.effective_inputs.altitude_m.value, "m"), calculation.effective_inputs.altitude_m.provenance.value),
-        HumanValue("Pollution degree", _effective_text(calculation.effective_inputs.pollution_degree.value, ""), calculation.effective_inputs.pollution_degree.provenance.value),
-        HumanValue("Construction", _value_text(calculation.effective_inputs.construction_type.value), calculation.effective_inputs.construction_type.provenance.value),
-        HumanValue("CTI/material group", _value_text(calculation.effective_inputs.cti_or_material_group.value), calculation.effective_inputs.cti_or_material_group.provenance.value),
+        HumanValue(
+            "Frequency",
+            _effective_text(calculation.effective_inputs.frequency_hz.value, "Hz"),
+            calculation.effective_inputs.frequency_hz.provenance.value,
+        ),
+        HumanValue(
+            "Impulse",
+            _effective_text(calculation.effective_inputs.impulse_v.value, "V"),
+            calculation.effective_inputs.impulse_v.provenance.value,
+        ),
+        HumanValue(
+            "Insulation type",
+            _value_text(calculation.effective_inputs.insulation_type.value),
+            calculation.effective_inputs.insulation_type.provenance.value,
+        ),
+        HumanValue(
+            "Field condition",
+            _value_text(calculation.effective_inputs.field_condition.value),
+            calculation.effective_inputs.field_condition.provenance.value,
+        ),
+        HumanValue(
+            "Altitude",
+            _effective_text(calculation.effective_inputs.altitude_m.value, "m"),
+            calculation.effective_inputs.altitude_m.provenance.value,
+        ),
+        HumanValue(
+            "Pollution degree",
+            _effective_text(calculation.effective_inputs.pollution_degree.value, ""),
+            calculation.effective_inputs.pollution_degree.provenance.value,
+        ),
+        HumanValue(
+            "Construction",
+            _value_text(calculation.effective_inputs.construction_type.value),
+            calculation.effective_inputs.construction_type.provenance.value,
+        ),
+        HumanValue(
+            "CTI/material group",
+            _value_text(calculation.effective_inputs.cti_or_material_group.value),
+            calculation.effective_inputs.cti_or_material_group.provenance.value,
+        ),
     )
     return HumanPairCalculation(
         pair_label=f"{row.net_a} ↔ {row.net_b}",
         effective_conditions=conditions,
         stresses=calculation.stresses,
-        clearance_candidates=tuple(_candidate(candidate) for candidate in calculation.clearance_candidates),
-        creepage_candidates=tuple(_candidate(candidate) for candidate in calculation.creepage_candidates),
-        clearance_explanation=_calculation_explanation(
-            calculation.governing_clearance_reason
+        clearance_candidates=tuple(
+            _candidate(candidate) for candidate in calculation.clearance_candidates
         ),
-        creepage_explanation=_calculation_explanation(
-            calculation.governing_creepage_reason
+        creepage_candidates=tuple(
+            _candidate(candidate) for candidate in calculation.creepage_candidates
         ),
+        clearance_explanation=_calculation_explanation(calculation.governing_clearance_reason),
+        creepage_explanation=_calculation_explanation(calculation.governing_creepage_reason),
         pre_altitude_clearance=_effective_text(calculation.pre_altitude_clearance_mm, "mm"),
         altitude_correction_applied=calculation.altitude_correction_applied,
         clearance=_effective_text(calculation.clearance_mm, "mm"),
         creepage=_effective_text(calculation.creepage_mm, "mm"),
         warnings=tuple(_advisory(item) for item in calculation.warnings),
-        verification_requirements=tuple(_advisory(item) for item in calculation.verification_requirements),
+        verification_requirements=tuple(
+            _advisory(item) for item in calculation.verification_requirements
+        ),
     )
 
 
@@ -328,7 +365,8 @@ def _is_summary_step(step: object) -> bool:
     return (
         semantic_rule_id == "clearance.maximum"
         or semantic_rule_id.startswith("part1.creepage.clearance_floor")
-        or operation in {"altitude_boundary", "reinforced_stress_treatment", "reinforced_creepage_double"}
+        or operation
+        in {"altitude_boundary", "reinforced_stress_treatment", "reinforced_creepage_double"}
         or ":corrected_clearance" in semantic_rule_id
     )
 
@@ -344,7 +382,9 @@ def _rule_description(step: object) -> str:
     if semantic_rule_id.startswith("part1.creepage.clearance_floor"):
         return "The final clearance is retained as a minimum creepage candidate."
     if operation == "altitude_boundary":
-        return "The altitude boundary is checked; no correction factor is applied at or below 2000 m."
+        return (
+            "The altitude boundary is checked; no correction factor is applied at or below 2000 m."
+        )
     if operation == "reinforced_stress_treatment":
         return _sentence(getattr(step, "reason", ""))
     if operation == "reinforced_creepage_double":
@@ -396,6 +436,13 @@ def _stress_text(row: MatrixRow, name: str) -> str:
     if stress is None or stress.value_v is None:
         return "N/A" if stress is not None and stress.applicability == "not_applicable" else "—"
     return _effective_text(stress.value_v, "V")
+
+
+def _stress_getter(name: str) -> Callable[[MatrixRow], str]:
+    def getter(row: MatrixRow) -> str:
+        return _stress_text(row, name)
+
+    return getter
 
 
 def _effective_text(value: object, unit: str) -> str:

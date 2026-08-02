@@ -323,7 +323,13 @@ def test_engine_trace_has_pair_decisions_and_no_fabricated_iteration_settings(
 
 @pytest.mark.parametrize(
     ("altitude_m", "factor", "applied"),
-    (("0", "1", False), ("2000", "1", False), ("2500", "1.05", True), ("4000", "1.2", True)),
+    (
+        ("0", "1", False),
+        ("2000", "1", False),
+        ("2500", "1.05", True),
+        ("4000", "1.2", True),
+        ("5000", "1.3", True),
+    ),
 )
 def test_a2_altitude_applies_after_clearance_maximum(
     altitude_m: str,
@@ -345,10 +351,10 @@ def test_a2_altitude_applies_after_clearance_maximum(
             for item in result.trace.steps
             if item.semantic_rule_id == "iec60664-1:altitude_correction:base=2000m"
         )
-        assert (
-            step.source_cells == ("2000/clearance_factor", "3000/clearance_factor")
-            or altitude_m == "4000"
-        )
+        assert step.source_cells == (
+            "2000/clearance_factor",
+            "3000/clearance_factor",
+        ) or altitude_m in {"4000", "5000"}
     else:
         step = next(
             item
@@ -364,7 +370,7 @@ def test_a2_altitude_outside_reviewed_range_blocks(
 ) -> None:
     with pytest.raises(HighFrequencyCalculationError) as caught:
         calculate_pair(
-            case_factory(frequency_hz="30000", altitude_m="4000.1"),
+            case_factory(frequency_hz="30000", altitude_m="5000.1"),
             semantic_part4_rules,
         )
 

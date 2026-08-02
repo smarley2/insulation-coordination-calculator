@@ -113,14 +113,16 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
         ("case_a_mm", "case_b_mm"),
     )
     a2_source = source.model_copy(update={"table": "A.2"})
+    a2_rows = tuple(map(Decimal, ("2000", "3000", "4000", "5000")))
+    a2_values = tuple(map(Decimal, ("1", "1.1", "1.2", "1.3")))
     a2 = Table(
         id="iec60664-1-a2",
         unit="1",
         row_axis=TableAxis(
             id="altitude_m",
             unit="m",
-            values=tuple(map(Decimal, ("2000", "3000", "4000"))),
-            labels=("2000", "3000", "4000"),
+            values=a2_rows,
+            labels=tuple(str(value) for value in a2_rows),
         ),
         column_axis=TableAxis(
             id="clearance_factor",
@@ -134,17 +136,15 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
                 column=0,
                 value=value,
                 unit="1",
-                source=a2_source.model_copy(update={"row": altitude, "column": "factor"}),
+                source=a2_source.model_copy(update={"row": str(altitude), "column": "factor"}),
             )
-            for index, (altitude, value) in enumerate(
-                zip(("2000", "3000", "4000"), map(Decimal, ("1", "1.1", "1.2")), strict=True)
-            )
+            for index, (altitude, value) in enumerate(zip(a2_rows, a2_values, strict=True))
         ),
         supported_ranges=(
             SupportedRange(
                 variable="altitude_m",
-                minimum=Decimal(2000),
-                maximum=Decimal(4000),
+                minimum=a2_rows[0],
+                maximum=a2_rows[-1],
                 unit="m",
                 source=a2_source,
             ),

@@ -19,6 +19,7 @@ from insulation_coordination.domain.rules import (
     Parameter,
     ParameterSet,
     SourceReference,
+    SupportedRange,
     Table,
     TableAxis,
     TableCell,
@@ -113,15 +114,22 @@ def project_table(
             )
     if not cells:
         raise ValueError(f"table {spec.semantic_id} has no projectable numeric cells")
+    source = _source(
+        identity,
+        page_number=spec.page_number,
+        clause=spec.clause,
+        table=spec.source_table,
+    )
+    row_axis = TableAxis(
+        id=spec.row_axis_id,
+        unit=spec.row_axis_unit,
+        values=row_values,
+        labels=row_labels,
+    )
     return Table(
         id=spec.semantic_id,
         unit=spec.target_unit,
-        row_axis=TableAxis(
-            id=spec.row_axis_id,
-            unit=spec.row_axis_unit,
-            values=row_values,
-            labels=row_labels,
-        ),
+        row_axis=row_axis,
         column_axis=TableAxis(
             id=spec.column_axis_id,
             unit=spec.column_axis_unit,
@@ -129,13 +137,17 @@ def project_table(
             labels=tuple(column.semantic_id for column in data_columns),
         ),
         cells=tuple(cells),
-        interpolation="linear",
-        source=_source(
-            identity,
-            page_number=spec.page_number,
-            clause=spec.clause,
-            table=spec.source_table,
+        supported_ranges=(
+            SupportedRange(
+                variable=row_axis.id,
+                minimum=row_axis.values[0],
+                maximum=row_axis.values[-1],
+                unit=row_axis.unit,
+                source=source,
+            ),
         ),
+        interpolation="linear",
+        source=source,
     )
 
 
@@ -162,15 +174,23 @@ def _project_legacy_table(
                     source=raw_cell.source,
                 )
             )
+    source = _source(
+        identity,
+        page_number=spec.page_number,
+        clause=spec.clause,
+        table=spec.source_table,
+    )
+    row_values = tuple(Decimal(index + 1) for index in range(spec.expected_data_rows))
+    row_axis = TableAxis(
+        id=spec.row_axis_id,
+        unit=spec.row_axis_unit,
+        values=row_values,
+        labels=tuple(f"row-{index + 1}" for index in range(spec.expected_data_rows)),
+    )
     return Table(
         id=spec.semantic_id,
         unit=spec.target_unit,
-        row_axis=TableAxis(
-            id=spec.row_axis_id,
-            unit=spec.row_axis_unit,
-            values=tuple(Decimal(index + 1) for index in range(spec.expected_data_rows)),
-            labels=tuple(f"row-{index + 1}" for index in range(spec.expected_data_rows)),
-        ),
+        row_axis=row_axis,
         column_axis=TableAxis(
             id=spec.column_axis_id,
             unit=spec.column_axis_unit,
@@ -178,13 +198,17 @@ def _project_legacy_table(
             labels=tuple(f"column-{index + 1}" for index in range(spec.expected_data_columns)),
         ),
         cells=tuple(cells),
-        interpolation="linear",
-        source=_source(
-            identity,
-            page_number=spec.page_number,
-            clause=spec.clause,
-            table=spec.source_table,
+        supported_ranges=(
+            SupportedRange(
+                variable=row_axis.id,
+                minimum=row_axis.values[0],
+                maximum=row_axis.values[-1],
+                unit=row_axis.unit,
+                source=source,
+            ),
         ),
+        interpolation="linear",
+        source=source,
     )
 
 

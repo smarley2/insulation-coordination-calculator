@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 
 from insulation_coordination.calculation.engine import PairResult
 from insulation_coordination.domain.display import pair_label
+from insulation_coordination.domain.project import Project
 
 
 class CalculationReviewPage(QWidget):
@@ -36,13 +37,13 @@ class CalculationReviewPage(QWidget):
     def groups(self) -> tuple[object, ...]:
         return self._groups
 
-    def load_project(self, project: object) -> None:
+    def load_project(self, project: Project) -> None:
         self._results = ()
         self._groups = ()
         self._results_list.clear()
         self._groups_list.clear()
 
-    def update_results(self, results: tuple[PairResult, ...], project: object) -> None:
+    def update_results(self, results: tuple[PairResult, ...], project: Project) -> None:
         from insulation_coordination.calculation.grouping import group_results
 
         self._results = results
@@ -61,7 +62,9 @@ class CalculationReviewPage(QWidget):
             nets_by_id[nc.id] = nc.name
 
         for result in results:
-            pair = next((candidate for candidate in project.pairs if candidate.id == result.pair_id), None)
+            pair = next(
+                (candidate for candidate in project.pairs if candidate.id == result.pair_id), None
+            )
             label = pair_label(project, pair) if pair is not None else "? ↔ ?"
             item = QListWidgetItem(self._summarise(result, label))
             item.setToolTip(self._detail(result))
@@ -72,7 +75,16 @@ class CalculationReviewPage(QWidget):
             labels = [
                 pair_label(project, pair)
                 for pair_id in pair_ids
-                if (pair := next((candidate for candidate in project.pairs if str(candidate.id) == str(pair_id)), None))
+                if (
+                    pair := next(
+                        (
+                            candidate
+                            for candidate in project.pairs
+                            if str(candidate.id) == str(pair_id)
+                        ),
+                        None,
+                    )
+                )
             ]
             count = len(pair_ids)
             members = ", ".join(labels)
@@ -83,7 +95,7 @@ class CalculationReviewPage(QWidget):
             item.setToolTip(f"Internal group: {getattr(group, 'group_id', '?')}")
             self._groups_list.addItem(item)
 
-    def recalculate_after_change(self, project: object) -> None:
+    def recalculate_after_change(self, project: Project) -> None:
         """Recalculate from project + stored rules if available; else clear."""
         rules = getattr(project, "_rules", None)
         if rules is None:
