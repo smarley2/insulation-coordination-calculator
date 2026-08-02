@@ -8,6 +8,7 @@ import pytest
 from insulation_coordination.domain.enums import (
     ConstructionType,
     FieldCondition,
+    InsulationType,
 )
 from insulation_coordination.domain.project import (
     NetClass,
@@ -112,3 +113,29 @@ def test_temporary_not_applicable_button(editor) -> None:
     editor._on_to_na()
     assert editor.pair is not None
     assert editor.pair.voltages.temporary_overvoltage_peak_v.applicability == "not_applicable"
+
+
+def test_clear_defaultable_overrides_returns_to_project_defaults(qtbot):
+    from insulation_coordination.ui.pair_editor import PairEditor
+
+    project = _make_project().model_copy(
+        update={
+            "defaults": ProjectDefaults(
+                frequency_hz=Decimal(50), insulation_type=InsulationType.BASIC
+            )
+        }
+    )
+    editor = PairEditor()
+    editor.load_pair(project.pairs[0], project.defaults)
+    qtbot.addWidget(editor)
+
+    editor.set_frequency_override("100 kHz")
+    editor.set_insulation_override(InsulationType.REINFORCED)
+    editor.clear_frequency_override()
+    editor.clear_insulation_override()
+
+    assert editor.pair is not None
+    assert not editor.pair.frequency_hz.is_override
+    assert not editor.pair.insulation_type.is_override
+    assert editor._freq_edit.text() == "50"
+    assert editor._insulation_combo.currentText() == "basic"

@@ -43,6 +43,7 @@ def _make_project(net_names: tuple[str, ...]) -> Project:
         ),
         defaults=ProjectDefaults(
             frequency_hz=Decimal(50),
+            impulse_v=Decimal(1200),
             insulation_type=InsulationType.BASIC,
             field_condition=FieldCondition.INHOMOGENEOUS,
             altitude_m=Decimal(0),
@@ -160,3 +161,56 @@ def test_grouping_shows_signatures(qtbot, pair_page):
     pair_page.recalculate()
     groups = pair_page.calculation_review.groups
     assert len(groups) >= 1
+
+
+def test_matrix_parameter_displays_pair_voltage(qtbot, pair_page):
+    pair = pair_page.project.pairs[0]
+    pair_page.select_pair_by_id(str(pair.id))
+    pair_page.editor.set_long_term_rms("500 V")
+    pair_page._matrix_parameter_combo.setCurrentText("Long-term RMS voltage")
+
+    index = pair_page.matrix_model.index(0, 1)
+    assert pair_page.matrix_model.data(index) == "500 V"
+    assert pair_page.matrix_model.data(pair_page.matrix_model.index(1, 0)) == "500 V"
+
+
+def test_matrix_parameter_displays_default_and_pair_override(qtbot, pair_page):
+    pair = pair_page.project.pairs[0]
+    pair_page._matrix_parameter_combo.setCurrentText("Frequency")
+    assert pair_page.matrix_model.data(pair_page.matrix_model.index(0, 1)) == "50 Hz (D)"
+
+    pair_page.select_pair_by_id(str(pair.id))
+    pair_page.editor.set_frequency_override("100 kHz")
+    assert pair_page.matrix_model.data(pair_page.matrix_model.index(0, 1)) == "100000 Hz (O)"
+
+    assert pair_page.matrix_model.data(pair_page.matrix_model.index(0, 2)) == "50 Hz (D)"
+
+
+def test_clicking_matrix_cell_loads_pair_editor(qtbot, pair_page):
+    pair_page._on_matrix_clicked(pair_page.matrix_model.index(1, 0))
+    assert pair_page.editor.pair is pair_page.project.pairs[0]
+
+
+def test_pair_editor_shows_inherited_default_values(qtbot, pair_page):
+    pair_page.select_pair_by_id(str(pair_page.project.pairs[0].id))
+    assert pair_page.editor._freq_edit.text() == "50"
+    assert pair_page.editor._freq_source_label.text() == "Default"
+    assert pair_page.editor._impulse_edit.text() == "1200"
+    assert pair_page.editor._impulse_source_label.text() == "Default"
+
+
+def test_pairs_page_uses_splitters_and_expanding_matrix(qtbot, pair_page):
+    from PySide6.QtWidgets import QSplitter
+
+    assert isinstance(pair_page._main_splitter, QSplitter)
+    assert isinstance(pair_page._top_splitter, QSplitter)
+    assert pair_page._matrix_view.minimumHeight() >= 160
+    assert pair_page._matrix_view.sizePolicy().verticalPolicy().name == "Expanding"
+
+
+def test_pair_edit_refreshes_selected_matrix_parameter(qtbot, pair_page):
+    pair_page._matrix_parameter_combo.setCurrentText("Long-term RMS voltage")
+    pair = pair_page.project.pairs[0]
+    pair_page.select_pair_by_id(str(pair.id))
+    pair_page.editor.set_long_term_rms("750 V")
+    assert pair_page.matrix_model.data(pair_page.matrix_model.index(0, 1)) == "750 V"
