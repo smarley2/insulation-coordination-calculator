@@ -28,6 +28,19 @@ def test_normal_invocations_route_to_gui(monkeypatch, tmp_path: Path) -> None:
     assert requests[2].path == project_path.resolve()
 
 
+def test_release_diagnostic_invocation_routes_without_starting_gui(monkeypatch, tmp_path: Path) -> None:
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        "_run_release_diagnostic",
+        lambda paths: calls.append(paths) or 23,
+    )
+    paths = (tmp_path / "project.icproj", tmp_path / "rules.icrules", tmp_path / "output")
+
+    assert cli.main(["--release-diagnostic", *(str(path) for path in paths)]) == 23
+    assert calls == [paths]
+
+
 def test_readme_documents_pcb_annex_gh_workflow() -> None:
     readme = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
 
