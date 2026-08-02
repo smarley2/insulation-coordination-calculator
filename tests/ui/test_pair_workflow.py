@@ -214,3 +214,16 @@ def test_pair_edit_refreshes_selected_matrix_parameter(qtbot, pair_page):
     pair_page.select_pair_by_id(str(pair.id))
     pair_page.editor.set_long_term_rms("750 V")
     assert pair_page.matrix_model.data(pair_page.matrix_model.index(0, 1)) == "750 V"
+
+
+def test_pairs_page_separates_matrix_pairs_and_editor_scroll(qtbot, pair_page):
+    from PySide6.QtWidgets import QApplication, QSplitter
+
+    pair_page.resize(1200, 800)
+    pair_page.show()
+    QApplication.processEvents()
+
+    assert isinstance(pair_page._left_splitter, QSplitter)
+    assert pair_page._left_splitter.sizes()[0] >= 160
+    assert pair_page._left_splitter.sizes()[1] >= 80
+    assert pair_page._editor_scroll.verticalScrollBar().maximum() > 0

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QStatusBar,
     QVBoxLayout,
@@ -62,13 +63,17 @@ class MainWindow(QMainWindow):
         layout.addLayout(nav_layout)
 
         self._stack = QStackedWidget()
+        self._stack.setMinimumSize(0, 0)
+        self._stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(self._stack)
+        layout.setStretch(1, 1)
 
         self._project_page = ProjectPage()
         self._project_page.project_changed.connect(self._on_project_changed)
         self._stack.addWidget(self._project_page)
 
         self._pair_page = PairPage()
+        self._pair_page.setMinimumSize(0, 0)
         self._pair_page.project_changed.connect(self._on_project_changed)
         self._pair_page.rules_changed.connect(self._on_rules_changed)
         self._stack.addWidget(self._pair_page)

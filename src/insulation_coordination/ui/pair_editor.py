@@ -4,7 +4,8 @@ from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
-from PySide6.QtCore import QModelIndex, Qt, Signal
+from PySide6.QtCore import QModelIndex, Qt, QTimer, Signal
+from PySide6.QtGui import QShowEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -93,6 +94,15 @@ def _override_row(
     return container
 
 
+def _voltage_row(edit: QLineEdit, na_button: QPushButton) -> QWidget:
+    row = QHBoxLayout()
+    row.addWidget(edit, 1)
+    row.addWidget(na_button)
+    container = QWidget()
+    container.setLayout(row)
+    return container
+
+
 class PairEditor(QWidget):
     """Detailed editor for a single pair case."""
 
@@ -109,33 +119,31 @@ class PairEditor(QWidget):
         voltages_layout = QFormLayout(voltages_group)
         self._rms_edit = QLineEdit()
         self._rms_edit.editingFinished.connect(self._on_rms_changed)
-        voltages_layout.addRow("Long-term RMS:", self._rms_edit)
-        self._steady_peak_edit = QLineEdit()
-        self._steady_peak_edit.editingFinished.connect(self._on_steady_peak_changed)
-        voltages_layout.addRow("Steady-state peak:", self._steady_peak_edit)
-        self._recurring_peak_edit = QLineEdit()
-        self._recurring_peak_edit.editingFinished.connect(self._on_recurring_peak_changed)
-        voltages_layout.addRow("Recurring peak:", self._recurring_peak_edit)
-        self._to_peak_edit = QLineEdit()
-        self._to_peak_edit.editingFinished.connect(self._on_to_peak_changed)
-        voltages_layout.addRow("Temporary OV peak:", self._to_peak_edit)
-        layout.addWidget(voltages_group)
-
-        na_group = QGroupBox("Not applicable (with justification)")
-        na_layout = QHBoxLayout(na_group)
         self._rms_na_button = QPushButton("RMS N/A")
         self._rms_na_button.clicked.connect(self._on_rms_na)
-        na_layout.addWidget(self._rms_na_button)
+        voltages_layout.addRow("Long-term RMS:", _voltage_row(self._rms_edit, self._rms_na_button))
+        self._steady_peak_edit = QLineEdit()
+        self._steady_peak_edit.editingFinished.connect(self._on_steady_peak_changed)
         self._steady_na_button = QPushButton("Steady peak N/A")
         self._steady_na_button.clicked.connect(self._on_steady_na)
-        na_layout.addWidget(self._steady_na_button)
+        voltages_layout.addRow(
+            "Steady-state peak:", _voltage_row(self._steady_peak_edit, self._steady_na_button)
+        )
+        self._recurring_peak_edit = QLineEdit()
+        self._recurring_peak_edit.editingFinished.connect(self._on_recurring_peak_changed)
         self._recurring_na_button = QPushButton("Recurring N/A")
         self._recurring_na_button.clicked.connect(self._on_recurring_na)
-        na_layout.addWidget(self._recurring_na_button)
+        voltages_layout.addRow(
+            "Recurring peak:", _voltage_row(self._recurring_peak_edit, self._recurring_na_button)
+        )
+        self._to_peak_edit = QLineEdit()
+        self._to_peak_edit.editingFinished.connect(self._on_to_peak_changed)
         self._to_na_button = QPushButton("Temp OV N/A")
         self._to_na_button.clicked.connect(self._on_to_na)
-        na_layout.addWidget(self._to_na_button)
-        layout.addWidget(na_group)
+        voltages_layout.addRow(
+            "Temporary OV peak:", _voltage_row(self._to_peak_edit, self._to_na_button)
+        )
+        layout.addWidget(voltages_group)
 
         params_group = QGroupBox("Parameters")
         params_layout = QFormLayout(params_group)
@@ -774,8 +782,8 @@ class PairPage(QWidget):
 
         self.calculation_review = CalculationReviewPage()
 
-        left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
+        matrix_panel = QWidget()
+        matrix_layout = QVBoxLayout(matrix_panel)
         parameter_row = QHBoxLayout()
         parameter_row.addWidget(QLabel("Show in matrix:"))
         self._matrix_parameter_combo = QComboBox()
@@ -785,19 +793,33 @@ class PairPage(QWidget):
             self._on_matrix_parameter_changed
         )
         parameter_row.addWidget(self._matrix_parameter_combo, 1)
-        left_layout.addLayout(parameter_row)
-        left_layout.addWidget(QLabel("Coverage Matrix:"))
-        left_layout.addWidget(self._matrix_view, 3)
-        left_layout.addWidget(QLabel("Pairs:"))
-        left_layout.addWidget(self._pair_list_view, 1)
+        matrix_layout.addLayout(parameter_row)
+        matrix_layout.addWidget(QLabel("Coverage Matrix:"))
+        matrix_layout.addWidget(self._matrix_view)
 
-        editor_scroll = QScrollArea()
-        editor_scroll.setWidgetResizable(True)
-        editor_scroll.setWidget(self.editor)
+        pairs_panel = QWidget()
+        pairs_layout = QVBoxLayout(pairs_panel)
+        pairs_layout.addWidget(QLabel("Pairs:"))
+        pairs_layout.addWidget(self._pair_list_view)
+
+        self._left_splitter = QSplitter(Qt.Orientation.Vertical)
+        self._left_splitter.setChildrenCollapsible(False)
+        self._left_splitter.addWidget(matrix_panel)
+        self._left_splitter.addWidget(pairs_panel)
+        self._left_splitter.setStretchFactor(0, 3)
+        self._left_splitter.setStretchFactor(1, 1)
+
+        self._editor_scroll = QScrollArea()
+        self._editor_scroll.setWidgetResizable(True)
+        self._editor_scroll.setMinimumSize(0, 0)
+        self._editor_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._editor_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._editor_scroll.setWidget(self.editor)
 
         self._top_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self._top_splitter.addWidget(left_panel)
-        self._top_splitter.addWidget(editor_scroll)
+        self._top_splitter.setChildrenCollapsible(False)
+        self._top_splitter.addWidget(self._left_splitter)
+        self._top_splitter.addWidget(self._editor_scroll)
         self._top_splitter.setStretchFactor(0, 2)
         self._top_splitter.setStretchFactor(1, 3)
 
@@ -814,6 +836,23 @@ class PairPage(QWidget):
         self._main_splitter.setStretchFactor(0, 3)
         self._main_splitter.setStretchFactor(1, 2)
         layout.addWidget(self._main_splitter)
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._splitters_initialized = False
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        if not self._splitters_initialized:
+            self._splitters_initialized = True
+            QTimer.singleShot(0, self._set_initial_splitter_sizes)
+
+    def _set_initial_splitter_sizes(self) -> None:
+        width = max(self.width(), 1)
+        height = max(self.height(), 1)
+        self._top_splitter.setSizes([int(width * 0.44), int(width * 0.56)])
+        self._main_splitter.setSizes([int(height * 0.72), int(height * 0.28)])
+        top_height = max(self._left_splitter.height(), 1)
+        self._left_splitter.setSizes([int(top_height * 0.68), int(top_height * 0.32)])
 
     @property
     def project(self) -> Project:

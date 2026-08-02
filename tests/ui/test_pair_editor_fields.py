@@ -139,3 +139,16 @@ def test_clear_defaultable_overrides_returns_to_project_defaults(qtbot):
     assert not editor.pair.insulation_type.is_override
     assert editor._freq_edit.text() == "50"
     assert editor._insulation_combo.currentText() == "basic"
+
+
+def test_not_applicable_buttons_share_voltage_rows(editor):
+    assert editor._rms_na_button.parentWidget() is editor._rms_edit.parentWidget()
+    assert (
+        editor._steady_na_button.parentWidget()
+        is editor._steady_peak_edit.parentWidget()
+    )
+    assert (
+        editor._recurring_na_button.parentWidget()
+        is editor._recurring_peak_edit.parentWidget()
+    )
+    assert editor._to_na_button.parentWidget() is editor._to_peak_edit.parentWidget()
