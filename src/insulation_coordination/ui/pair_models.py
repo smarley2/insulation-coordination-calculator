@@ -10,7 +10,6 @@ from insulation_coordination.domain.enums import Applicability, Provenance
 from insulation_coordination.domain.project import PairCase, Project
 from insulation_coordination.project.resolver import resolve_effective_case
 
-
 MATRIX_PARAMETERS = (
     ("coverage", "Coverage"),
     ("long_term_rms_v", "Long-term RMS voltage"),

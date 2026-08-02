@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
@@ -9,8 +10,8 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QGroupBox,
-    QHeaderView,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QListView,
@@ -74,7 +75,7 @@ def _parse_frequency(text: str) -> Decimal:
 def _override_row(
     widget: QWidget,
     label: QLabel,
-    reset_slot: object,
+    reset_slot: Callable[[], None],
     object_name: str,
 ) -> QWidget:
     """Wrap a control plus a Default/Override provenance label."""
@@ -85,7 +86,7 @@ def _override_row(
     reset_button.setObjectName(object_name)
     reset_button.setToolTip("Use project default")
     reset_button.setAutoDefault(False)
-    reset_button.clicked.connect(reset_slot)  # type: ignore[arg-type]
+    reset_button.clicked.connect(reset_slot)
     row.addWidget(reset_button)
     container = QWidget()
     container.setLayout(row)
