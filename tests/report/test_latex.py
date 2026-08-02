@@ -55,6 +55,10 @@ def test_human_report_uses_readable_chapters_and_hides_internal_identifiers(repo
     assert "Pair Comparison Matrices" in tex
     assert "Common values" in tex
     assert r"\begin{tabularx}" in tex
+    assert "Long-term RMS voltage" in tex
+    assert "Steady-state peak voltage" in tex
+    assert "Recurring peak voltage" in tex
+    assert "Temporary overvoltage peak voltage" in tex
     assert "Authoritative Pair Matrix" not in tex
     assert "Pair ID" not in tex
     assert "Result SHA-256" not in tex

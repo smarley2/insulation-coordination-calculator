@@ -34,6 +34,13 @@ def test_human_view_separates_common_values_and_differing_matrices(report_inputs
     assert frequency.values[0][0] == "—"
     assert frequency.values[2][1] == "60 Hz"
     assert any(item.name == "Impulse" for item in view.common_values)
+    matrix_names = {item.name for item in view.comparison_matrices}
+    assert {
+        "Long-term RMS voltage",
+        "Steady-state peak voltage",
+        "Recurring peak voltage",
+        "Temporary overvoltage peak voltage",
+    } <= matrix_names
     assert "determined the clearance" in view.groups[0].calculations[0].clearance_explanation
     assert "determined the creepage" in view.groups[0].calculations[0].creepage_explanation
 

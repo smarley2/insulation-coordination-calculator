@@ -85,7 +85,7 @@ def build_human_report_view(model: ReportModel) -> HumanReportView:
     headers = tuple(net.name for net in model.net_classes)
     common_values: list[HumanValue] = []
     matrices: list[HumanMatrix] = []
-    specs: tuple[tuple[str, str, str, Callable[[MatrixRow], str]], ...] = (
+    default_specs: tuple[tuple[str, str, str, Callable[[MatrixRow], str]], ...] = (
         ("Frequency", "Hz", "frequency", lambda row: _effective_text(row.frequency.value, "Hz")),
         ("Impulse", "V", "impulse", lambda row: _effective_text(row.impulse.value, "V")),
         ("Insulation type", "", "insulation", lambda row: row.insulation_type or "—"),
@@ -110,24 +110,10 @@ def build_human_report_view(model: ReportModel) -> HumanReportView:
             "cti",
             lambda row: row.cti_or_material_group or "—",
         ),
-        *tuple(
-            (
-                stress_name,
-                "V",
-                stress_name,
-                lambda row, stress_name=stress_name: _stress_text(row, stress_name),
-            )
-            for stress_name in (
-                "long-term RMS",
-                "steady-state peak",
-                "recurring peak",
-                "temporary overvoltage peak",
-            )
-        ),
         ("Required clearance", "mm", "clearance", lambda row: _effective_text(row.clearance_mm, "mm")),
         ("Required creepage", "mm", "creepage", lambda row: _effective_text(row.creepage_mm, "mm")),
     )
-    for name, unit, _key, value_getter in specs:
+    for name, unit, _key, value_getter in default_specs:
         values = tuple(value_getter(row) for row in model.matrix_rows)
         if not values:
             continue
@@ -137,6 +123,23 @@ def build_human_report_view(model: ReportModel) -> HumanReportView:
             matrices.append(
                 _matrix_for(name, unit, headers, model.matrix_rows, value_getter)
             )
+
+    voltage_specs = (
+        ("Long-term RMS voltage", "V", "long-term RMS"),
+        ("Steady-state peak voltage", "V", "steady-state peak"),
+        ("Recurring peak voltage", "V", "recurring peak"),
+        ("Temporary overvoltage peak voltage", "V", "temporary overvoltage peak"),
+    )
+    for name, unit, stress_name in voltage_specs:
+        matrices.append(
+            _matrix_for(
+                name,
+                unit,
+                headers,
+                model.matrix_rows,
+                lambda row, stress_name=stress_name: _stress_text(row, stress_name),
+            )
+        )
 
     row_by_id = {row.pair_id: row for row in model.matrix_rows}
     report_groups: list[HumanGroup] = []
