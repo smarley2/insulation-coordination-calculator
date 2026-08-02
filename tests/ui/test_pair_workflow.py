@@ -76,6 +76,16 @@ def pair_page(qtbot, synthetic_rules):
     return page
 
 
+def _set_valid_inputs(page) -> None:
+    for pair in page.project.pairs:
+        page.select_pair_by_id(str(pair.id))
+        page.editor.set_long_term_rms("500 V")
+        page.editor.set_steady_state_peak("300 V")
+        page.editor.set_recurring_peak("400 V")
+        page.editor.set_temporary_overvoltage_not_applicable()
+        page.editor.set_impulse_override("800 V")
+
+
 def test_matrix_lower_half_references_same_pair(qtbot, pair_page):
     upper = pair_page.matrix_model.pair_at(0, 1)
     lower = pair_page.matrix_model.pair_at(1, 0)
@@ -112,12 +122,7 @@ def test_set_long_term_rms_updates_project(qtbot, pair_page):
 
 def test_recalculate_after_voltage_change(qtbot, pair_page):
     pair = pair_page.project.pairs[0]
-    pair_page.select_pair_by_id(str(pair.id))
-    pair_page.editor.set_long_term_rms("500 V")
-    pair_page.editor.set_steady_state_peak("300 V")
-    pair_page.editor.set_recurring_peak("400 V")
-    pair_page.editor.set_temporary_overvoltage_not_applicable()
-    pair_page.editor.set_impulse_override("800 V")
+    _set_valid_inputs(pair_page)
     pair_page.recalculate()
     result = pair_page.result_by_id(pair.id)
     assert result is not None
@@ -126,18 +131,18 @@ def test_recalculate_after_voltage_change(qtbot, pair_page):
     assert result.clearance_mm <= result.creepage_mm
 
 
-def test_invalid_input_clears_results(qtbot, pair_page):
+def test_invalid_input_clears_results(qtbot, pair_page, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
     pair = pair_page.project.pairs[0]
-    pair_page.select_pair_by_id(str(pair.id))
-    pair_page.editor.set_long_term_rms("500 V")
-    pair_page.editor.set_steady_state_peak("300 V")
-    pair_page.editor.set_recurring_peak("400 V")
-    pair_page.editor.set_temporary_overvoltage_not_applicable()
-    pair_page.editor.set_impulse_override("800 V")
+    _set_valid_inputs(pair_page)
     pair_page.recalculate()
     assert pair_page.result_by_id(pair.id) is not None
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *_args: None))
     # Clear impulse — calculation should fail without it
-    pair_page.editor.clear_impulse_override()
+    for current_pair in pair_page.project.pairs:
+        pair_page.select_pair_by_id(str(current_pair.id))
+        pair_page.editor.clear_impulse_override()
     pair_page.recalculate()
     assert pair_page.result_by_id(pair.id) is None
 
@@ -228,6 +233,28 @@ def test_matrix_parameter_displays_default_and_pair_override(qtbot, pair_page):
     assert pair_page.matrix_model.data(pair_page.matrix_model.index(0, 1)) == "100000 Hz (O)"
 
     assert pair_page.matrix_model.data(pair_page.matrix_model.index(0, 2)) == "50 Hz (D)"
+
+
+def test_matrix_parameter_displays_calculated_distances(qtbot, pair_page):
+    pair_page._matrix_parameter_combo.setCurrentText("Required clearance")
+    assert pair_page.matrix_model.data(pair_page.matrix_model.index(0, 1)) == "—"
+
+    _set_valid_inputs(pair_page)
+    pair_page.recalculate()
+    result = pair_page.result_by_id(pair_page.project.pairs[0].id)
+
+    assert result is not None
+    assert pair_page.matrix_model.data(pair_page.matrix_model.index(0, 1)) == (
+        f"{result.clearance_mm} mm"
+    )
+    assert pair_page.matrix_model.data(pair_page.matrix_model.index(1, 0)) == (
+        f"{result.clearance_mm} mm"
+    )
+
+    pair_page._matrix_parameter_combo.setCurrentText("Required creepage")
+    assert pair_page.matrix_model.data(pair_page.matrix_model.index(0, 1)) == (
+        f"{format(result.creepage_mm, 'f').rstrip('0').rstrip('.')} mm"
+    )
 
 
 def test_clicking_matrix_cell_loads_pair_editor(qtbot, pair_page):

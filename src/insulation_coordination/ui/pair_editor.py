@@ -917,6 +917,7 @@ class PairPage(QWidget):
         from insulation_coordination.project.resolver import resolve_effective_case
 
         self._results = {}
+        self.matrix_model.set_results({})
         self.calculation_review.update_results((), self._project)
         errors: list[str] = []
         for pair in self._project.pairs:
@@ -937,7 +938,22 @@ class PairPage(QWidget):
             return
 
         results_tuple: tuple[PairResult, ...] = tuple(self._results.values())
+        self.matrix_model.set_results(self._results)
         self.calculation_review.update_results(results_tuple, self._project)
+
+    def result_by_id(self, pair_id: UUID) -> object | None:
+        return self._results.get(str(pair_id))
+
+    def pair_by_id(self, pair_id: UUID) -> PairCase | None:
+        return self.project.pair_by_id(pair_id)
+
+    def _pair_by_id(self, pair_id: UUID) -> PairCase | None:
+        if self._project is None:
+            return None
+        for pair in self._project.pairs:
+            if pair.id == pair_id:
+                return pair
+        return None
 
 
 def format_calculation_error(label: str, error: Exception) -> str:
@@ -960,17 +976,3 @@ def format_calculation_error(label: str, error: Exception) -> str:
     if not message.endswith((".", "!", "?")):
         message += "."
     return f"{label} — {message}"
-
-    def result_by_id(self, pair_id: UUID) -> object | None:
-        return self._results.get(str(pair_id))
-
-    def pair_by_id(self, pair_id: UUID) -> PairCase | None:
-        return self.project.pair_by_id(pair_id)
-
-    def _pair_by_id(self, pair_id: UUID) -> PairCase | None:
-        if self._project is None:
-            return None
-        for pair in self._project.pairs:
-            if pair.id == pair_id:
-                return pair
-        return None

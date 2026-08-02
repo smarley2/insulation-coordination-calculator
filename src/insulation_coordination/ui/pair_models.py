@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import cast
+from typing import Mapping, cast
 from uuid import UUID
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 
 from insulation_coordination.domain.enums import Applicability, Provenance
+from insulation_coordination.calculation.engine import PairResult
 from insulation_coordination.domain.display import pair_label
 from insulation_coordination.domain.project import PairCase, Project
 from insulation_coordination.project.resolver import resolve_effective_case
@@ -26,6 +27,8 @@ MATRIX_PARAMETERS = (
     ("pollution_degree", "Pollution degree"),
     ("construction_type", "Construction"),
     ("cti_or_material_group", "CTI/material group"),
+    ("required_clearance_mm", "Required clearance"),
+    ("required_creepage_mm", "Required creepage"),
 )
 
 _MATRIX_PARAMETER_KEYS = {key for key, _label in MATRIX_PARAMETERS}
@@ -68,6 +71,7 @@ class CoverageMatrixModel(QAbstractTableModel):
         super().__init__()
         self._project: Project | None = None
         self._pairs_by_net: dict[tuple[UUID, UUID], PairCase] = {}
+        self._results_by_pair: dict[str, PairResult] = {}
         self._parameter = "coverage"
 
     @property
@@ -85,9 +89,15 @@ class CoverageMatrixModel(QAbstractTableModel):
         self.beginResetModel()
         self._project = project
         self._pairs_by_net = {}
+        self._results_by_pair = {}
         for pair in project.pairs:
             key = cast(tuple[UUID, UUID], tuple(sorted((pair.net_a, pair.net_b))))
             self._pairs_by_net[key] = pair
+        self.endResetModel()
+
+    def set_results(self, results: Mapping[str, PairResult]) -> None:
+        self.beginResetModel()
+        self._results_by_pair = dict(results)
         self.endResetModel()
 
     def rowCount(self, parent: QModelIndex | None = None) -> int:  # type: ignore[override]
@@ -134,6 +144,17 @@ class CoverageMatrixModel(QAbstractTableModel):
             if voltage.applicability is not Applicability.APPLICABLE:
                 return "—"
             return _format_value(voltage.value, unit)
+
+        if self._parameter in {"required_clearance_mm", "required_creepage_mm"}:
+            result = self._results_by_pair.get(str(pair.id))
+            if result is None:
+                return "—"
+            field = (
+                "clearance_mm"
+                if self._parameter == "required_clearance_mm"
+                else "creepage_mm"
+            )
+            return _format_value(getattr(result, field), "mm")
 
         if self._project is None:
             return "—"
