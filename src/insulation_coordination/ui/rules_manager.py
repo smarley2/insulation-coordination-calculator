@@ -31,10 +31,7 @@ from insulation_coordination.domain.rules import (
     RulePackageError,
     SourceReference,
 )
-from insulation_coordination.rules.archive import (
-    load_rule_package,
-    write_rule_package,
-)
+from insulation_coordination.rules.archive import load_rule_package, write_rule_package
 from insulation_coordination.rules.audit import (
     AuditInventory,
     build_audit_inventory,
@@ -43,6 +40,7 @@ from insulation_coordination.rules.audit import (
 )
 from insulation_coordination.rules.importer.approval import is_fully_resolved
 from insulation_coordination.rules.importer.extract import ImportedRuleDraft
+from insulation_coordination.rules.installation import install_rule_package
 from insulation_coordination.ui.equation_review import EquationReviewDialog
 from insulation_coordination.ui.raw_grid_review import RawGridReviewDialog
 
@@ -220,12 +218,9 @@ class RulesManagerWindow(QWidget):
         self.package_activated.emit(package)
 
     def import_package(self, path: Path) -> ImportResult:
-        package = load_rule_package(Path(path))
-        destination = self._install_path(package)
-        write_rule_package(destination, package)
-        loaded = load_rule_package(destination)
-        self.set_package(loaded)
-        return ImportResult(destination, loaded)
+        installed = install_rule_package(Path(path), self._rules_dir)
+        self.set_package(installed.package)
+        return ImportResult(installed.path, installed.package)
 
     # -- Draft review -----------------------------------------------------
 
@@ -468,11 +463,6 @@ class RulesManagerWindow(QWidget):
         export_inventory_json(self._inventory, destination / "audit-inventory.json")
         for table in self._package.tables:
             export_table_csv(self._package, table.id, destination / f"table-{table.id}.csv")
-
-    def _install_path(self, package: RulePackage) -> Path:
-        rules_dir = self._rules_dir if self._rules_dir is not None else _default_rules_dir()
-        rules_dir.mkdir(parents=True, exist_ok=True)
-        return rules_dir / f"{package.manifest.package_id}-{package.manifest.version}.icrules"
 
     def _on_import_clicked(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -747,12 +737,6 @@ class RulesManagerWindow(QWidget):
             yield from (item.source for item in formula.parameter_sets)
             yield from (item.source for item in formula.supported_ranges)
         yield from (mapping.source for mapping in self._package.mappings)
-
-
-def _default_rules_dir() -> Path:
-    import platformdirs
-
-    return platformdirs.user_data_path("icc") / "rules"
 
 
 def _format_reference(reference: SourceReference) -> str:
