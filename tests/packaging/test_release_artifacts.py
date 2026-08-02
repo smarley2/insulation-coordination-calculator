@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -58,6 +59,23 @@ def test_forbidden_release_member_is_reported(tmp_path: Path, name: str) -> None
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"private")
     assert scan_forbidden(tmp_path)
+
+
+def test_release_archive_allows_application_files(tmp_path: Path) -> None:
+    archive_path = tmp_path / "application.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("application/bin/icc", b"executable")
+        archive.writestr("application/share/icc.desktop", b"desktop entry")
+
+    assert scan_forbidden(tmp_path) == ()
+
+
+def test_forbidden_release_archive_member_is_reported(tmp_path: Path) -> None:
+    archive_path = tmp_path / "application.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("application/customer.icproj", b"private")
+
+    assert scan_forbidden(tmp_path) == ("application.zip!application/customer.icproj",)
 
 
 def test_release_index_requires_all_v1_platforms_and_checks_artifacts(tmp_path: Path) -> None:

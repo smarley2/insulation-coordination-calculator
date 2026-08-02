@@ -26,13 +26,22 @@ def scan_forbidden(root: Path) -> tuple[str, ...]:
     findings: set[str] = set()
     for path in root.rglob("*"):
         relative = path.relative_to(root).as_posix()
-        if path.name in FORBIDDEN_NAMES or path.suffix.lower() in FORBIDDEN_SUFFIXES:
-            findings.add(relative)
-        if "__pycache__" in PurePosixPath(relative).parts:
+        if _is_forbidden(relative):
             findings.add(relative)
         if path.is_file() and (zipfile.is_zipfile(path) or tarfile.is_tarfile(path)):
-            findings.update(f"{relative}!{member}" for member in _archive_members(path))
+            findings.update(
+                f"{relative}!{member}" for member in _archive_members(path) if _is_forbidden(member)
+            )
     return tuple(sorted(findings))
+
+
+def _is_forbidden(name: str) -> bool:
+    path = PurePosixPath(name)
+    return (
+        path.name in FORBIDDEN_NAMES
+        or path.suffix.lower() in FORBIDDEN_SUFFIXES
+        or "__pycache__" in path.parts
+    )
 
 
 def build_release_index(artifact_dir: Path) -> dict[str, object]:
