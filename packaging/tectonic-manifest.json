@@ -1,8 +1,36 @@
 {
-  "tectonic_version": "pinned-0.15.0",
+  "schema_version": 1,
+  "tectonic_version": "0.16.9",
   "licence": "MIT",
-  "bundle_sha256": "replace-at-release",
-  "executable_sha256": "replace-at-release",
-  "offline": true,
-  "platforms": ["windows-x86_64", "macos-aarch64"]
+  "default_bundle_url": "https://relay.fullyjustified.net/default_bundle_v33.tar",
+  "default_bundle_sha256": "6ffe055852f8faf66c0acbe1a7fb27f87b869a90bad1204f3bf4d9683f597c7c",
+  "platforms": {
+    "windows-x86_64": {
+      "archive_url": "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%400.16.9/tectonic-0.16.9-x86_64-pc-windows-msvc.zip",
+      "archive_sha256": "131a24604785a9600989a3d91225f597df52ac06f00aeffe86fd529f99ee5cdd",
+      "archive_member": "tectonic.exe",
+      "executable_path": "tectonic/tectonic.exe",
+      "cache_path": "tectonic/cache",
+      "lock_path": "tectonic-locks/windows-x86_64.json",
+      "offline_flag": "--only-cached"
+    },
+    "macos-arm64": {
+      "archive_url": "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%400.16.9/tectonic-0.16.9-aarch64-apple-darwin.tar.gz",
+      "archive_sha256": "edb67c61aba768289f6da441c9e6f523cfaff4f8b2a5708523ef29c543f8e88e",
+      "archive_member": "tectonic",
+      "executable_path": "tectonic/tectonic",
+      "cache_path": "tectonic/cache",
+      "lock_path": "tectonic-locks/macos-arm64.json",
+      "offline_flag": "--only-cached"
+    },
+    "linux-x86_64": {
+      "archive_url": "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%400.16.9/tectonic-0.16.9-x86_64-unknown-linux-gnu.tar.gz",
+      "archive_sha256": "f3c825128095dc3399ea11c08c18035b33050a216930c295c79e8eb11bd21de4",
+      "archive_member": "tectonic",
+      "executable_path": "tectonic/tectonic",
+      "cache_path": "tectonic/cache",
+      "lock_path": "tectonic-locks/linux-x86_64.json",
+      "offline_flag": "--only-cached"
+    }
+  }
 }
