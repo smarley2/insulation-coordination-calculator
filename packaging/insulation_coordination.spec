@@ -19,7 +19,7 @@ else:
 tectonic_root = Path(os.environ.get("TECTONIC_STAGE_ROOT", root / ".release-tectonic"))
 tectonic_stage = tectonic_root / platform_key
 tectonic_manifest = root / "packaging" / "tectonic-manifest.json"
-tectonic_lock = root / "packaging" / "tectonic-locks" / f"{platform_key}.json"
+tectonic_lock = tectonic_stage / "tectonic-locks" / f"{platform_key}.json"
 tectonic_executable = tectonic_stage / "tectonic" / (
     "tectonic.exe" if platform_key == "windows-x86_64" else "tectonic"
 )
