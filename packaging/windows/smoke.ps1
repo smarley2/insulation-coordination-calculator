@@ -25,8 +25,10 @@ $diagnosticOutput = Join-Path $env:TEMP "icc-release-diagnostic"
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $diagnosticOutput
 $project = Join-Path $FixtureDirectory "project.icproj"
 $rules = Join-Path $FixtureDirectory "rules.icrules"
-& $executable --release-diagnostic $project $rules $diagnosticOutput
-if ($LASTEXITCODE -ne 0) { throw "release diagnostic failed: $LASTEXITCODE" }
+$diagnosticProcess = Start-Process -FilePath $executable -ArgumentList @(
+    "--release-diagnostic", $project, $rules, $diagnosticOutput
+) -Wait -PassThru
+if ($diagnosticProcess.ExitCode -ne 0) { throw "release diagnostic failed: $($diagnosticProcess.ExitCode)" }
 $result = Get-Content (Join-Path $diagnosticOutput "release-diagnostic.json") | ConvertFrom-Json
 if (-not $result.success -or -not (Test-Path $result.pdf_path)) { throw "diagnostic did not produce a PDF" }
 

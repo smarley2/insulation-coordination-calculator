@@ -72,9 +72,10 @@ def test_windows_installer_preserves_user_rules_and_routes_documents() -> None:
     assert "#ifndef AppVersion" in script
     assert "GetStringParameterValue" not in script
     assert "/DAppVersion" not in smoke
-    assert smoke.count("Start-Process") == 2
-    assert smoke.count("-Wait") == 2
+    assert smoke.count("Start-Process") == 3
+    assert smoke.count("-Wait") == 3
     assert "$installProcess.ExitCode -ne 0" in smoke
+    assert "$diagnosticProcess.ExitCode -ne 0" in smoke
     assert "$uninstallProcess.ExitCode -ne 0" in smoke
 
 
