@@ -4,6 +4,12 @@ Offline desktop application that calculates auditable functional, basic, and rei
 clearance and creepage requirements from approved private IEC rule packages and generates
 LaTeX/PDF insulation-coordination reports.
 
+> [!IMPORTANT]
+> This software does not include IEC rules, tables, or licensed standard PDFs. To calculate
+> results, you must create or obtain an approved `.icrules` package through the Rules Manager.
+> The package is the rule set used by the application and may be shared within your company
+> team only in accordance with your organization's standards licence and procedures.
+
 ## Highlights
 
 - Python 3.12 + PySide6 desktop shell with a UI-independent domain engine.
@@ -12,7 +18,8 @@ LaTeX/PDF insulation-coordination reports.
   interpolation, correction, and rounding step is traced and referenced.
 - Full audit browser in the Rules Manager: tables, formulas, mappings, checksums,
   validation, and CSV/JSON inventory export.
-- Offline LaTeX/PDF compilation through a pinned Tectonic executable.
+- Offline LaTeX/PDF compilation through a bundled, pinned Tectonic executable in packaged
+  builds; development runs can use Tectonic on `PATH` or an explicitly supplied executable.
 - Blocked final report generation while any pair has a blocking error.
 - Never executes code from rule packages; only whitelisted declarative operators.
 
@@ -38,19 +45,30 @@ PDFs.
 
 ## Rules Manager review workflow
 
-1. Import both licensed PDFs. The importer identifies exact editions and extracts
-   raw grids, semantic headings, equations, mappings, footnotes, and source cells.
-2. Open `Review extracted tables` with or without global notes. Opening is read-only;
-   accepting a table or applying a correction requires reviewer identity and notes.
-3. Review equations and mappings. Formula-targeted mappings appear with their
-   formula; table-targeted PCB mappings appear as separate `Mapping:` entries.
-4. Click `Build reviewed content` to project the accepted raw grids into typed
-   semantic tables/formulas/mappings. This button is active after source review
-   even when all review items are already marked resolved.
-5. The Audit tree shows draft provenance and pending/accepted review state. After
-   approval it switches to the full package audit (manifest, checksums, tables,
-   formulas, mappings, and validation).
-6. Approve, export, and activate the deterministic `.icrules` package.
+1. Select both licensed PDFs together: IEC 60664-1 and IEC 60664-4. The importer
+   identifies the supported editions and extracts raw grids, semantic headings,
+   equations, mappings, footnotes, and source cells.
+2. Review the extracted tables and raw cells. Review is read-only until a reviewer
+   records identity and notes for an acceptance or correction.
+3. Review the extracted equations and semantic mappings. Formula-targeted mappings
+   appear with their formula; table-targeted PCB mappings appear as separate
+   `Mapping:` entries.
+4. Click `Build reviewed content` after table/raw-cell and equation/mapping review
+   is complete. Provide the required notes and resolve any remaining review items.
+5. Click `Approve reviewed draft` and provide approver identity and approval notes.
+   Approval is blocked until the draft is fully resolved and passes validation.
+6. Click `Export approved package` to write the deterministic `.icrules` archive.
+7. Share the approved `.icrules` file internally where permitted, and use
+   `Import approved .icrules` on other team installations. The receiving installation
+   does not need the source PDFs.
+
+Approval switches the Rules Manager to the approved package. Export writes the
+shareable archive; later import installs and activates that archive on another
+installation.
+
+During review, the Audit tree shows draft provenance and pending/accepted review
+state. After approval, it shows the full package audit, including the manifest,
+checksums, tables, formulas, mappings, and validation.
 
 Required-content and manual-review counts measure different things. Required content
 counts one expected table, formula, or mapping. Manual review counts every approval
@@ -155,6 +173,23 @@ selection, normalized values, interpolation/lookup mode, formula substitution,
 rounding, source cells, source table/equation, warnings, and verification requirements.
 The report is blocked when any pair cannot produce a complete trace.
 
+## Responsibility and disclaimer
+
+The software and its results are decision-support output. They are not certification
+and do not replace engineering judgement, review, or the requirements of the applicable
+standards. The user is solely responsible for checking the inputs, rule package,
+calculations, and results against the applicable standards and project requirements
+before relying on them.
+
+The authors and contributors are not responsible for any loss, damage, non-compliance,
+injury, or other consequence arising from the use of this software or its results.
+
+## Contributing
+
+Inputs, bug reports, and improvement ideas are welcome. Please open an issue with
+enough context to reproduce or assess the situation. If you would like to collaborate,
+pull requests are welcome; describe the change and the verification you performed.
+
 ## Implementation map
 
 | Workflow step | Implementation | Focused verification |
@@ -192,5 +227,7 @@ uv run icc --gui
 - CI: `.github/workflows/windows-package.yml` and `.github/workflows/macos-package.yml`.
 - See `docs/release-checklist.md` for the acceptance matrix.
 
-Private licensed IEC PDFs, `.icrules`, `.icproj`, audits, and derived values stay local
-and are never committed (`/.gitignore`).
+Private licensed IEC PDFs, `.icrules`, `.icproj`, audit exports, and derived values must
+remain local and must not be committed or published. Common private locations and file
+types are ignored by default in `/.gitignore`; verify any new storage paths before adding
+files to the repository.
