@@ -1,6 +1,7 @@
 from decimal import Decimal
 from uuid import UUID
 
+from insulation_coordination.calculation.engine import CalculationWarning, VerificationRequirement
 from insulation_coordination.domain.project import NetClass
 from insulation_coordination.report.human_view import build_human_report_view
 from insulation_coordination.report.model import build_report_model
@@ -33,3 +34,21 @@ def test_human_view_separates_common_values_and_differing_matrices(report_inputs
     assert frequency.values[0][0] == "—"
     assert frequency.values[2][1] == "60 Hz"
     assert any(item.name == "Impulse" for item in view.common_values)
+
+
+def test_human_view_deduplicates_warning_and_matching_verification(report_inputs) -> None:
+    project, results, groups, rules = report_inputs
+    report_model = build_report_model(project, results, groups, rules)
+    warning = CalculationWarning(code="CHECK", message="Confirm the design choice.")
+    requirement = VerificationRequirement(code="CHECK", message="Confirm the design choice.")
+    changed_model = report_model.model_copy(
+        update={
+            "warnings": (warning, warning),
+            "verification_requirements": (requirement, requirement),
+        }
+    )
+
+    view = build_human_report_view(changed_model)
+
+    assert [item.code for item in view.advisories] == ["CHECK"]
+    assert view.verification_requirements == ()

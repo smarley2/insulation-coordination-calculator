@@ -374,29 +374,6 @@ def _advisories(
             )
         )
 
-    if effective.construction_type.value is ConstructionType.PRINTED_WIRING:
-        semantic_rule_id, source_reference = _advisory_context(
-            candidates,
-            steps,
-            "construction=printed_wiring",
-        )
-        warnings.append(
-            CalculationWarning(
-                code="PCB_CONSTRUCTION_CONFIRMATION",
-                message="Confirm printed-wiring construction classification.",
-                semantic_rule_id=semantic_rule_id,
-                source_reference=source_reference,
-            )
-        )
-        requirements.append(
-            VerificationRequirement(
-                code="PCB_CONSTRUCTION_CONFIRMATION",
-                message="Confirm printed-wiring construction classification.",
-                semantic_rule_id=semantic_rule_id,
-                source_reference=source_reference,
-            )
-        )
-
     return tuple(warnings), tuple(requirements)
 
 
