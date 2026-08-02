@@ -31,7 +31,7 @@ from insulation_coordination.domain.rules import (
     RulePackageError,
     SourceReference,
 )
-from insulation_coordination.rules.archive import load_rule_package, write_rule_package
+from insulation_coordination.rules.archive import write_rule_package
 from insulation_coordination.rules.audit import (
     AuditInventory,
     build_audit_inventory,
