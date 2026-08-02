@@ -4,7 +4,8 @@ import os
 import sys
 from pathlib import Path
 
-root = Path(SPECPATH).resolve().parent.parent
+# PyInstaller sets SPECPATH to the directory containing this spec file.
+root = Path(SPECPATH).resolve().parent
 machine = platform.machine().lower()
 if sys.platform == "win32" and machine in {"amd64", "x86_64"}:
     platform_key = "windows-x86_64"

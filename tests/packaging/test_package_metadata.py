@@ -21,6 +21,12 @@ def test_pyinstaller_spec_bundles_templates_manifest_and_tectonic() -> None:
         assert required in spec
 
 
+def test_pyinstaller_spec_resolves_repository_root_from_spec_directory() -> None:
+    spec = (ROOT / "packaging/insulation_coordination.spec").read_text(encoding="utf-8")
+    assert "root = Path(SPECPATH).resolve().parent\n" in spec
+    assert "root = Path(SPECPATH).resolve().parent.parent" not in spec
+
+
 def test_macos_document_types_route_both_extensions() -> None:
     plist = plistlib.loads((ROOT / "packaging/macos/Info.plist").read_bytes())
     extensions = {
