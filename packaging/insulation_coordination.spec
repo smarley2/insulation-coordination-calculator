@@ -1,5 +1,5 @@
-# -*- mode: python ; coding: utf-8 -*-
 import platform
+import plistlib
 import sys
 from pathlib import Path
 
@@ -18,7 +18,11 @@ else:
 tectonic_stage = root / "build" / "tectonic" / platform_key
 tectonic_manifest = root / "packaging" / "tectonic-manifest.json"
 tectonic_lock = root / "packaging" / "tectonic-locks" / f"{platform_key}.json"
-for required in (tectonic_stage / "tectonic", tectonic_stage / "cache", tectonic_lock):
+tectonic_executable = tectonic_stage / "tectonic" / (
+    "tectonic.exe" if platform_key == "windows-x86_64" else "tectonic"
+)
+tectonic_cache = tectonic_stage / "tectonic" / "cache"
+for required in (tectonic_executable, tectonic_cache, tectonic_lock):
     if not required.exists():
         raise SystemExit(f"missing native release input: {required}")
 
@@ -27,7 +31,6 @@ datas = [
      "insulation_coordination/report/templates"),
     (str(tectonic_manifest), "."),
     (str(tectonic_stage / "tectonic"), "tectonic"),
-    (str(tectonic_stage / "cache"), "tectonic/cache"),
     (str(tectonic_lock), "tectonic-locks"),
     (str(root / "packaging" / "assets" / "icc.svg"), "assets"),
 ]
@@ -70,28 +73,43 @@ pyz = PYZ(a.pure)
 
 icon_path = root / "build" / "icons" / ("icc.ico" if sys.platform == "win32" else "icc.icns")
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
-    name="icc",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,
-    icon=str(icon_path),
-    console=sys.platform.startswith("linux"),
-)
-
 if sys.platform == "darwin":
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.datas,
+        [],
+        name="icc",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        icon=str(icon_path),
+        console=False,
+    )
     app = BUNDLE(
         exe,
         name="Insulation Coordination Calculator.app",
         icon=str(icon_path),
-        info_plist=str(root / "packaging" / "macos" / "Info.plist"),
+        info_plist=plistlib.loads(
+            (root / "packaging" / "macos" / "Info.plist").read_bytes()
+        ),
     )
 else:
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        name="icc",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        icon=str(icon_path),
+        console=sys.platform.startswith("linux"),
+    )
     coll = COLLECT(
         exe,
         a.binaries,
