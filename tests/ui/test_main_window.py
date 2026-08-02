@@ -11,7 +11,10 @@ from insulation_coordination.domain.project import (
     ProjectMetadata,
 )
 from insulation_coordination.project.pairs import reconcile_pairs
+from insulation_coordination.rules.archive import write_rule_package
+from insulation_coordination.rules.installation import InstalledRulePackage
 from insulation_coordination.ui.main_window import MainWindow
+from tests.fixtures.synthetic_rules import synthetic_rule_package
 
 
 def _project() -> Project:
@@ -47,3 +50,32 @@ def test_project_load_pairs_navigation_preserves_maximized_geometry(qtbot) -> No
 
     assert window.isMaximized()
     assert window.frameGeometry() == before
+
+
+def test_open_document_loads_project(qtbot, tmp_path) -> None:
+    from insulation_coordination.project.persistence import save_project_atomic
+
+    path = tmp_path / "design.icproj"
+    save_project_atomic(path, _project())
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert window.open_document(path) is True
+    assert window.project is not None
+    assert window.project.id == _project().id
+    assert window.project.metadata.title == "Geometry test"
+
+
+def test_open_document_installs_and_loads_rules(qtbot, tmp_path, monkeypatch) -> None:
+    from insulation_coordination.ui import main_window as main_window_module
+
+    source = tmp_path / "rules.icrules"
+    package = synthetic_rule_package()
+    write_rule_package(source, package)
+    installed = InstalledRulePackage(tmp_path / "installed.icrules", package)
+    monkeypatch.setattr(main_window_module, "install_rule_package", lambda path: installed)
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert window.open_document(source) is True
+    assert window.rules == package

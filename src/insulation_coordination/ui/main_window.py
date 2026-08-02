@@ -26,6 +26,8 @@ from insulation_coordination.project.persistence import (
     load_project,
     save_project_atomic,
 )
+from insulation_coordination.rules.installation import install_rule_package
+from insulation_coordination.startup import StartupKind, classify_startup_path
 from insulation_coordination.ui.pair_editor import PairPage
 from insulation_coordination.ui.project_pages import ProjectPage
 from insulation_coordination.ui.report_page import ReportPage
@@ -108,6 +110,22 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Open Project", str(error))
             return
         self.open_project_from_project(project)
+
+    def open_document(self, path: Path) -> bool:
+        try:
+            request = classify_startup_path(path)
+            if request.path is None:
+                raise ValueError("startup document path is missing")
+            if request.kind is StartupKind.PROJECT:
+                project = load_project(request.path)
+                self.open_project_from_project(project)
+            else:
+                installed = install_rule_package(request.path)
+                self.load_rules(installed.package)
+        except (OSError, ValueError) as error:
+            QMessageBox.critical(self, "Open Document", str(error))
+            return False
+        return True
 
     def open_project_from_project(self, project: Project) -> None:
         self._project = project
