@@ -11,8 +11,10 @@ New-Item -ItemType Directory -Force (Split-Path $preserve) | Out-Null
 Set-Content -Path $preserve -Value "must survive uninstall"
 
 $installerPath = (Resolve-Path $Installer).Path
-& $installerPath /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-if ($LASTEXITCODE -ne 0) { throw "installer failed: $LASTEXITCODE" }
+$installProcess = Start-Process -FilePath $installerPath -ArgumentList @(
+    "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
+) -Wait -PassThru
+if ($installProcess.ExitCode -ne 0) { throw "installer failed: $($installProcess.ExitCode)" }
 $executable = Join-Path $installDirectory "icc.exe"
 if (-not (Test-Path $executable)) { throw "installed executable is missing" }
 $projectCommand = (Get-ItemProperty "Registry::HKEY_CURRENT_USER\Software\Classes\InsulationCoordinationProject\shell\open\command").'(default)'
@@ -29,6 +31,8 @@ $result = Get-Content (Join-Path $diagnosticOutput "release-diagnostic.json") | 
 if (-not $result.success -or -not (Test-Path $result.pdf_path)) { throw "diagnostic did not produce a PDF" }
 
 $uninstaller = Join-Path $installDirectory "unins000.exe"
-& $uninstaller /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-if ($LASTEXITCODE -ne 0) { throw "uninstaller failed: $LASTEXITCODE" }
+$uninstallProcess = Start-Process -FilePath $uninstaller -ArgumentList @(
+    "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
+) -Wait -PassThru
+if ($uninstallProcess.ExitCode -ne 0) { throw "uninstaller failed: $($uninstallProcess.ExitCode)" }
 if (-not (Test-Path $preserve)) { throw "user rules were removed by uninstall" }
