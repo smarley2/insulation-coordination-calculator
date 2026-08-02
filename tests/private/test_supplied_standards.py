@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import os
 import re
@@ -25,7 +23,7 @@ from insulation_coordination.domain.project import (
     PairVoltages,
     ProjectDefaults,
 )
-from insulation_coordination.domain.rules import DraftRulePackage, RulePackage
+from insulation_coordination.domain.rules import RulePackage
 from insulation_coordination.project.resolver import resolve_effective_case
 from insulation_coordination.rules.archive import load_rule_package, write_rule_package
 from insulation_coordination.rules.importer.approval import approve_draft, is_fully_resolved
@@ -38,6 +36,7 @@ from insulation_coordination.rules.importer.review import (
     accept_equation_mapping,
     accept_raw_table,
     build_reviewed_draft,
+    draft_review_digest,
     unresolved_equation_items,
     unresolved_mapping_items,
 )
@@ -59,28 +58,6 @@ def _private_locations() -> tuple[tuple[Path, Path], Path]:
         (standards / _FILENAMES[0], standards / _FILENAMES[1]),
         private_rules / "supplied-standards-draft.sha256",
     )
-
-
-def _review_digest(draft: DraftRulePackage) -> str:
-    payload = draft.model_dump(mode="json")
-    manifest = payload["manifest"]
-    stable = {
-        "source_documents": manifest["source_documents"],
-        "tables": payload["tables"],
-        "formulas": payload["formulas"],
-        "mappings": payload["mappings"],
-        "review_items": payload["review_items"],
-        "raw_grids": payload["raw_grids"],
-        "extracted_equations": payload["extracted_equations"],
-    }
-    canonical = json.dumps(
-        stable,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-    return hashlib.sha256(canonical).hexdigest()
 
 
 def _approve_supplied_package(paths: tuple[Path, Path]) -> RulePackage:
@@ -280,7 +257,7 @@ def test_supplied_standards_match_human_reviewed_draft(
 
     assert draft.raw_grids
     assert len({grid.id for grid in draft.raw_grids}) == len(draft.raw_grids)
-    assert _review_digest(draft) == golden, "private extraction differs from reviewed digest"
+    assert draft_review_digest(draft) == golden, "private extraction differs from reviewed digest"
 
 
 def test_supplied_standards_approve_and_calculate_pcb_annex_gh(

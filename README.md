@@ -184,6 +184,40 @@ before relying on them.
 The authors and contributors are not responsible for any loss, damage, non-compliance,
 injury, or other consequence arising from the use of this software or its results.
 
+## Free cross-platform release
+
+Release artifacts target Windows x86_64, macOS arm64, and Linux x86_64. The free release
+does not require a company or paid certificate: the Windows installer is unsigned and
+may show a SmartScreen warning; the macOS DMG is ad-hoc signed but not notarized; and
+Linux provides an AppImage plus a portable tar archive. Verify every download against
+`SHA256SUMS` before opening it.
+
+Windows users can run the installer per-user, choose the optional desktop shortcut, and
+open `.icproj` projects or `.icrules` packages by double-clicking them. If SmartScreen
+blocks an unsigned installer, use right-click → Open and confirm the publisher warning
+only after checking the checksum. Verify with:
+
+```powershell
+Get-FileHash .\insulation-coordination-0.1.0-windows-x86_64-setup.exe -Algorithm SHA256
+```
+
+On macOS, open the DMG and use Finder right-click → Open for the first launch because
+the free artifact is ad-hoc signed and not notarized. Verify with:
+
+```sh
+shasum -a 256 insulation-coordination-0.1.0-macos-arm64.dmg
+```
+
+On Linux, verify the AppImage, then run `chmod +x insulation-coordination-*.AppImage`
+and launch it. If FUSE or desktop integration is unavailable, use the tar archive and
+run its `icc` launcher. Optional GPG signatures, when published, can be checked with
+`gpg --verify`. The desktop and MIME files route both `.icproj` and `.icrules`.
+
+All three packages contain a verified Tectonic 0.16.9 runtime and warmed cache. Report
+compilation is offline; the application does not fall back to a system compiler or home
+cache in a frozen package. User projects and installed rules remain outside the app
+directory and survive uninstall.
+
 ## Contributing
 
 Inputs, bug reports, and improvement ideas are welcome. Please open an issue with

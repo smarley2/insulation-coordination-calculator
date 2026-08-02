@@ -70,3 +70,19 @@ def test_readme_documents_pcb_annex_gh_workflow() -> None:
         "computed independently for every pair",
     ):
         assert required in readme
+
+
+def test_readme_documents_free_cross_platform_release() -> None:
+    readme = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+    for required in (
+        "Windows x86_64",
+        "macOS arm64",
+        "Linux x86_64",
+        "SHA256SUMS",
+        "right-click",
+        "unsigned",
+        "AppImage",
+        ".icproj",
+        ".icrules",
+    ):
+        assert required in readme

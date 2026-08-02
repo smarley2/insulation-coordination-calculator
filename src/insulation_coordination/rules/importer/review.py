@@ -11,12 +11,15 @@ review them via ``record_correction``.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping
 from decimal import Decimal
 from typing import Any
 
 from insulation_coordination.domain.rules import (
     CompatibilityMapping,
+    DraftRulePackage,
     Formula,
     LinearInterpolate,
     Literal,
@@ -49,6 +52,29 @@ from insulation_coordination.rules.importer.projection import (
     project_mapping,
     project_table,
 )
+
+
+def draft_review_digest(draft: DraftRulePackage) -> str:
+    """Return a stable digest of extracted material for a human-reviewed baseline."""
+    payload = draft.model_dump(mode="json")
+    manifest = payload["manifest"]
+    stable = {
+        "source_documents": manifest["source_documents"],
+        "tables": payload["tables"],
+        "formulas": payload["formulas"],
+        "mappings": payload["mappings"],
+        "review_items": payload["review_items"],
+        "raw_grids": payload["raw_grids"],
+        "extracted_equations": payload["extracted_equations"],
+    }
+    canonical = json.dumps(
+        stable,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def _unresolved_items(
