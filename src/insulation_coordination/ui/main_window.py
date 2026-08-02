@@ -81,6 +81,7 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._show_page(0)
         self._update_actions()
+        self._on_new()
 
     @property
     def project(self) -> Project | None:

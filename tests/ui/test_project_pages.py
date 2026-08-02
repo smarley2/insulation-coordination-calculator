@@ -200,6 +200,16 @@ def test_create_application_returns_qapplication():
     assert isinstance(app, QApplication)
 
 
+def test_main_window_starts_with_new_project(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert window.project is not None
+    assert window.project.metadata.title == "Untitled"
+    window._project_page.add_net_class("HV")
+    assert window.project.net_class_names == ("HV",)
+
+
 def test_main_window_open_save(qtbot, tmp_path):
     window = MainWindow()
     qtbot.addWidget(window)
