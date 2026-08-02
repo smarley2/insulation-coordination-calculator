@@ -174,6 +174,30 @@ def test_build_reviewed_content_unlocks_approval(
     assert rules_manager.can_approve is True
 
 
+def test_build_reviewed_content_projects_typed_rules_after_source_review(
+    qtbot, rules_manager, supported_pdfs, injected_recipes, monkeypatch
+) -> None:
+    draft = _accept_all_source_artifacts(extract_draft(supported_pdfs))
+    rules_manager.set_draft(draft)
+    rules_manager._review_notes.setText("Project accepted source artifacts")
+    monkeypatch.setattr(
+        "insulation_coordination.ui.rules_manager.QMessageBox.information",
+        lambda *_args: None,
+    )
+
+    assert rules_manager.is_fully_resolved is True
+    assert rules_manager.build_review_enabled is True
+    assert rules_manager._draft is not None
+    assert rules_manager._draft.tables == ()
+
+    rules_manager._on_build_review_clicked()
+
+    assert rules_manager._draft is not None
+    assert rules_manager._draft.tables
+    assert rules_manager._draft.formulas
+    assert rules_manager._draft.mappings
+
+
 def test_resolving_all_items_enables_approval(
     qtbot, rules_manager, supported_pdfs, injected_recipes
 ) -> None:
@@ -215,3 +239,12 @@ def test_domain_is_fully_resolved_accepts_full_review(supported_pdfs, injected_r
     assert is_fully_resolved(reviewed)
     approved = approve_draft(reviewed, "Maintainer", "ok")
     assert approved.manifest.approved is True
+
+
+def test_draft_audit_tree_shows_review_state(
+    rules_manager, supported_pdfs, injected_recipes
+) -> None:
+    rules_manager.set_draft(extract_draft(supported_pdfs))
+
+    assert rules_manager._tree.topLevelItemCount() > 0
+    assert rules_manager._tree.topLevelItem(0).text(0) == "Draft review"

@@ -100,12 +100,24 @@ class EquationReviewDialog(QDialog):
         self._formula_selector.clear()
         for item in unresolved_equation_items(self._draft):
             self._formula_selector.addItem(item.semantic_id, item.semantic_id)
+        formula_ids = {item.semantic_id for item in unresolved_equation_items(self._draft)}
+        for mapping_id in self._mapping_only_ids(formula_ids):
+            self._formula_selector.addItem(f"Mapping: {mapping_id}", f"mapping:{mapping_id}")
         if current:
             index = self._formula_selector.findData(current)
             if index >= 0:
                 self._formula_selector.setCurrentIndex(index)
         self._formula_selector.blockSignals(False)
         self._load_current(self._formula_selector.currentIndex())
+
+    def _mapping_only_ids(self, unresolved_formula_ids: set[str]) -> tuple[str, ...]:
+        _, mapping_specs = self._recipe_specs()
+        pending = {item.semantic_id for item in unresolved_mapping_items(self._draft)}
+        return tuple(
+            mapping_id
+            for mapping_id, spec in mapping_specs.items()
+            if mapping_id in pending and spec.target_rule_id not in unresolved_formula_ids
+        )
 
     def _dependent_mapping_ids(self, formula_id: str) -> tuple[str, ...]:
         _, mapping_specs = self._recipe_specs()
@@ -117,7 +129,11 @@ class EquationReviewDialog(QDialog):
         )
 
     def _load_current(self, _index: int) -> None:
-        formula_id = str(self._formula_selector.currentData() or "")
+        selection = str(self._formula_selector.currentData() or "")
+        if selection.startswith("mapping:"):
+            self._load_mapping(selection.removeprefix("mapping:"))
+            return
+        formula_id = selection
         formula_specs, mapping_specs = self._recipe_specs()
         spec = formula_specs.get(formula_id)
         extracted = next(
@@ -161,9 +177,39 @@ class EquationReviewDialog(QDialog):
         )
         self._accept_button.setEnabled(parse_status == "parsed")
 
+    def _load_mapping(self, mapping_id: str) -> None:
+        _, mapping_specs = self._recipe_specs()
+        spec = mapping_specs.get(mapping_id)
+        pending_formulas = len(unresolved_equation_items(self._draft))
+        pending_mappings = len(unresolved_mapping_items(self._draft))
+        self._progress.setText(
+            f"Equations/formulas: {pending_formulas} pending. Mappings: {pending_mappings} pending."
+        )
+        if spec is None:
+            self._details.clear()
+            self._accept_button.setEnabled(False)
+            return
+        source = (
+            f"{spec.clause}; PDF page {spec.page_number}; "
+            f"{spec.figure or ('table ' + spec.table if spec.table else 'clause source')}"
+        )
+        self._mappings.clear()
+        self._details.setPlainText(
+            "\n".join(
+                (
+                    f"Mapping: {mapping_id}",
+                    f"Semantic route: {spec.semantic_route}",
+                    f"Target rule: {spec.target_rule_id}",
+                    f"Family: {spec.family}",
+                    f"Source: {source}",
+                )
+            )
+        )
+        self._accept_button.setEnabled(True)
+
     def _accept_current(self) -> None:
-        formula_id = str(self._formula_selector.currentData() or "")
-        if not formula_id:
+        selection = str(self._formula_selector.currentData() or "")
+        if not selection:
             return
         notes = self._notes_edit.text().strip()
         if not notes:
@@ -174,13 +220,23 @@ class EquationReviewDialog(QDialog):
             )
             return
         try:
-            self._draft = accept_equation_mapping(
-                self._draft,
-                equation_ids=(formula_id,),
-                mapping_ids=self._dependent_mapping_ids(formula_id),
-                actor=self._actor,
-                notes=notes,
-            )
+            if selection.startswith("mapping:"):
+                self._draft = accept_equation_mapping(
+                    self._draft,
+                    equation_ids=(),
+                    mapping_ids=(selection.removeprefix("mapping:"),),
+                    actor=self._actor,
+                    notes=notes,
+                )
+            else:
+                formula_id = selection
+                self._draft = accept_equation_mapping(
+                    self._draft,
+                    equation_ids=(formula_id,),
+                    mapping_ids=self._dependent_mapping_ids(formula_id),
+                    actor=self._actor,
+                    notes=notes,
+                )
         except ValueError as error:
             QMessageBox.warning(self, "Review Equation and Mappings", str(error))
             return

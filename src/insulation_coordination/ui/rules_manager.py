@@ -326,7 +326,7 @@ class RulesManagerWindow(QWidget):
         dialog.exec()
 
     def _on_build_review_clicked(self) -> None:
-        if self._draft is None or self.is_fully_resolved:
+        if self._draft is None:
             return
         from insulation_coordination.rules.importer.review import build_reviewed_draft
 
@@ -377,10 +377,80 @@ class RulesManagerWindow(QWidget):
         self._approve_button.setEnabled(False)
         self._inventory_button.setEnabled(False)
         self._refresh_review()
-        self._tree.clear()
+        self._populate_draft_tree()
         self._apply_search()
 
     # -- Audit browser -----------------------------------------------------
+
+    def _populate_draft_tree(self) -> None:
+        """Show draft provenance and review state before an approved package exists."""
+        from insulation_coordination.rules.importer.review import (
+            missing_required_content,
+            required_content_report,
+            unresolved_equation_items,
+            unresolved_mapping_items,
+            unresolved_raw_review_items,
+            unresolved_table_items,
+        )
+
+        draft = self._draft
+        self._tree.clear()
+        if draft is None:
+            return
+        resolved = {resolution.review_item_sha256 for resolution in draft.review_resolutions}
+        review = QTreeWidgetItem(("Draft review",))
+        self._tree.addTopLevelItem(review)
+        report = required_content_report(draft)
+        review.addChild(QTreeWidgetItem((f"package_id: {draft.manifest.package_id}",)))
+        review.addChild(QTreeWidgetItem((f"sources: {len(draft.manifest.source_documents)}",)))
+        review.addChild(
+            QTreeWidgetItem(
+                (f"review items: {len(resolved)} of {len(draft.review_items)} resolved",)
+            )
+        )
+        review.addChild(
+            QTreeWidgetItem(
+                (
+                    (
+                        f"required content: {len(report) - len(missing_required_content(draft))} "
+                        f"of {len(report)} present"
+                    ),
+                )
+            )
+        )
+
+        sources = QTreeWidgetItem(("Source documents",))
+        self._tree.addTopLevelItem(sources)
+        for source in draft.manifest.source_documents:
+            sources.addChild(QTreeWidgetItem((f"{source.standard} {source.edition}",)))
+
+        tables = QTreeWidgetItem(("Extracted tables",))
+        self._tree.addTopLevelItem(tables)
+        pending_tables = {item.semantic_id for item in unresolved_table_items(draft)}
+        pending_raw = {item.semantic_id for item in unresolved_raw_review_items(draft)}
+        for grid in draft.raw_grids:
+            pending = sum(item.startswith(f"{grid.id}:") for item in pending_raw)
+            state = "pending" if grid.id.removeprefix("raw-") in pending_tables else "accepted"
+            tables.addChild(QTreeWidgetItem((f"{grid.id}: {state}, {pending} raw cells pending",)))
+
+        equations = QTreeWidgetItem(("Extracted equations",))
+        self._tree.addTopLevelItem(equations)
+        pending_equations = {item.semantic_id for item in unresolved_equation_items(draft)}
+        for equation in draft.extracted_equations:
+            state = "pending" if equation.id in pending_equations else "accepted"
+            equations.addChild(
+                QTreeWidgetItem((f"{equation.id}: {state} ({equation.parse_status})",))
+            )
+
+        mappings = QTreeWidgetItem(("Semantic mappings",))
+        self._tree.addTopLevelItem(mappings)
+        pending_mappings = {item.semantic_id for item in unresolved_mapping_items(draft)}
+        from insulation_coordination.rules.importer.recipes import RECIPES
+
+        for spec in (spec for recipe in RECIPES for spec in recipe.mappings):
+            state = "pending" if spec.id in pending_mappings else "accepted"
+            mappings.addChild(QTreeWidgetItem((f"{spec.id}: {state} — {spec.semantic_route}",)))
+        self._tree.expandToDepth(0)
 
     def search(self, text: str) -> None:
         self._search_edit.setText(text)

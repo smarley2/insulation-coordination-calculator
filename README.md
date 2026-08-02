@@ -42,9 +42,15 @@ PDFs.
    raw grids, semantic headings, equations, mappings, footnotes, and source cells.
 2. Open `Review extracted tables` with or without global notes. Opening is read-only;
    accepting a table or applying a correction requires reviewer identity and notes.
-3. Review equations and mappings. This happens before `Build reviewed content`.
-4. Build typed semantic tables/formulas from accepted source artifacts.
-5. Approve, export, and activate the deterministic `.icrules` package.
+3. Review equations and mappings. Formula-targeted mappings appear with their
+   formula; table-targeted PCB mappings appear as separate `Mapping:` entries.
+4. Click `Build reviewed content` to project the accepted raw grids into typed
+   semantic tables/formulas/mappings. This button is active after source review
+   even when all review items are already marked resolved.
+5. The Audit tree shows draft provenance and pending/accepted review state. After
+   approval it switches to the full package audit (manifest, checksums, tables,
+   formulas, mappings, and validation).
+6. Approve, export, and activate the deterministic `.icrules` package.
 
 Required-content and manual-review counts measure different things. Required content
 counts one expected table, formula, or mapping. Manual review counts every approval

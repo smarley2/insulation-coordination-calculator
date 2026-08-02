@@ -100,3 +100,39 @@ def test_unresolved_extracted_equation_cannot_be_accepted(qtbot, tables_accepted
 
     assert "Parse status: review_required" in dialog._details.toPlainText()
     assert dialog._accept_button.isEnabled() is False
+
+
+def test_dialog_exposes_mapping_without_formula_dependency(
+    qtbot, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipes = _test_recipes()
+    part1 = recipes[0].model_copy(
+        update={
+            "mappings": (
+                recipes[0]
+                .mappings[0]
+                .model_copy(update={"target_rule_id": recipes[0].tables[0].semantic_id}),
+            )
+        }
+    )
+    monkeypatch.setattr(recipe_registry, "RECIPES", (part1, recipes[1]))
+    from tests.rules.test_importer import _compound_draft
+
+    draft = _compound_draft(tmp_path)
+    for grid in draft.raw_grids:
+        draft = accept_raw_table(
+            draft,
+            grid_id=grid.id,
+            corrections={},
+            actor="Maintainer",
+            notes="Verified table",
+        )
+
+    dialog = EquationReviewDialog(draft, actor="Maintainer")
+    qtbot.addWidget(dialog)
+
+    assert dialog._formula_selector.count() == 3
+    mapping_index = dialog._formula_selector.findData(f"mapping:{part1.mappings[0].id}")
+    assert mapping_index >= 0
+    dialog._formula_selector.setCurrentIndex(mapping_index)
+    assert "Mapping:" in dialog._details.toPlainText()
