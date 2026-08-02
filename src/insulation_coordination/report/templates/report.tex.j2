@@ -48,7 +48,7 @@ Approver & {{ model.project_metadata.approver|tex }} \\
 \begin{tabular}{@{}ll@{}}
 Application version & {{ model.application_version|tex }} \\
 Calculation engine & {{ model.calculation_engine_version|tex }} \\
-Rules package & {{ model.rules.package_id|tex }}, version {{ model.rules.version|tex }} \\
+Rules package version & {{ model.rules.version|tex }} \\
 \end{tabular}
 
 \section{Scope, Basis, and Defaults}
@@ -128,8 +128,8 @@ Included pairs: {% for pair_label in group.pair_labels %}{{ pair_label|tex }}{% 
 
 {% for calculation in group.calculations %}
 \subsubsection{ {{- calculation.pair_label|tex -}} }
-\paragraph{Effective conditions.}
-\begin{tabularx}{\linewidth}{@{}lXl@{}}
+\textbf{Effective conditions.}\par
+\begin{tabularx}{\linewidth}{@{}XXX@{}}
 \toprule
 Condition & Value & Source \\
 \midrule
@@ -139,8 +139,8 @@ Condition & Value & Source \\
 \bottomrule
 \end{tabularx}
 
-\paragraph{Voltage stresses.}
-\begin{tabularx}{\linewidth}{@{}lXlX@{}}
+\textbf{Voltage stresses.}\par
+\begin{tabularx}{\linewidth}{@{}XXXX@{}}
 \toprule
 Stress & Applicability & Value & Justification \\
 \midrule
@@ -150,35 +150,35 @@ Stress & Applicability & Value & Justification \\
 \bottomrule
 \end{tabularx}
 
-\paragraph{Clearance candidates.}
-\begin{tabularx}{\linewidth}{@{}lrrX@{}}
+\textbf{Clearance candidates.}\par
+\begin{tabularx}{\linewidth}{@{}XXXX@{}}
 \toprule
 Candidate & Stress & Distance & Why it was selected \\
 \midrule
 {% for candidate in calculation.clearance_candidates %}
-{{ candidate.name|tex }} & {{ candidate.stress|tex }} & {{ candidate.distance|tex }} & {{ candidate.reason|tex }}{% if candidate.source_reference %}. Source: {{ candidate.source_reference|reference }}{% endif %} \\
+{{ candidate.name|tex }} & {{ candidate.stress|tex }} & {{ candidate.distance|tex }} & {{ candidate.reason|tex }}{% if candidate.source_reference %} Source: {{ candidate.source_reference|reference }}{% endif %} \\
 {% endfor %}
 \bottomrule
 \end{tabularx}
 
-\paragraph{Creepage candidates.}
-\begin{tabularx}{\linewidth}{@{}lrrX@{}}
+\textbf{Creepage candidates.}\par
+\begin{tabularx}{\linewidth}{@{}XXXX@{}}
 \toprule
 Candidate & Stress & Distance & Why it was selected \\
 \midrule
 {% for candidate in calculation.creepage_candidates %}
-{{ candidate.name|tex }} & {{ candidate.stress|tex }} & {{ candidate.distance|tex }} & {{ candidate.reason|tex }}{% if candidate.source_reference %}. Source: {{ candidate.source_reference|reference }}{% endif %} \\
+{{ candidate.name|tex }} & {{ candidate.stress|tex }} & {{ candidate.distance|tex }} & {{ candidate.reason|tex }}{% if candidate.source_reference %} Source: {{ candidate.source_reference|reference }}{% endif %} \\
 {% endfor %}
 \bottomrule
 \end{tabularx}
 
-\paragraph{Calculation summary.}
-Clearance was governed by {{ calculation.clearance_explanation|tex }}. The pre-altitude
+\textbf{Calculation summary.}\par
+{{ calculation.clearance_explanation|tex }} The pre-altitude
 clearance was {{ calculation.pre_altitude_clearance|tex }}; altitude correction was
 {{ calculation.altitude_correction_applied|yesno }}. The required clearance is
 \textbf{ {{- calculation.clearance|tex -}} }.
 
-Creepage was governed by {{ calculation.creepage_explanation|tex }}. The required
+{{ calculation.creepage_explanation|tex }} The required
 creepage is \textbf{ {{- calculation.creepage|tex -}} }.
 
 {% endfor %}
@@ -207,7 +207,6 @@ creepage is \textbf{ {{- calculation.creepage|tex -}} }.
 
 \section{Rules Package Provenance}
 \begin{tabular}{@{}ll@{}}
-Package ID & {{ model.rules.package_id|tex }} \\
 Version & {{ model.rules.version|tex }} \\
 Schema version & {{ model.rules.schema_version }} \\
 Importer version & {{ model.rules.importer_version|tex }} \\

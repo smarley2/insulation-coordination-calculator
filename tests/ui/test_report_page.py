@@ -138,7 +138,7 @@ def test_complete_project_generates_tex_and_pdf(qtbot, complete_workspace) -> No
     assert result.tex_path.exists()
     assert result.pdf_path.exists()
     tex = result.tex_path.read_text(encoding="utf-8")
-    assert "SYNTHETIC-PART-1:1" in tex
+    assert "SYNTHETIC-PART-1 (1)" in tex
     assert len(PdfReader(result.pdf_path).pages) == 1
     assert "SYN-001" in tex
 

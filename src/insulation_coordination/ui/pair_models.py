@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from decimal import Decimal
-from typing import Mapping, cast
+from typing import cast
 from uuid import UUID
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 
-from insulation_coordination.domain.enums import Applicability, Provenance
 from insulation_coordination.calculation.engine import PairResult
 from insulation_coordination.domain.display import pair_label
+from insulation_coordination.domain.enums import Applicability, Provenance
 from insulation_coordination.domain.project import PairCase, Project
 from insulation_coordination.project.resolver import resolve_effective_case
 

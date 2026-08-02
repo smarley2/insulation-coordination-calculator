@@ -59,6 +59,7 @@ def test_human_report_uses_readable_chapters_and_hides_internal_identifiers(repo
     assert "Pair ID" not in tex
     assert "Result SHA-256" not in tex
     assert "Signature:" not in tex
+    assert str(report_model.rules.package_id) not in tex
     assert "Transformations, corrections, and selections." not in tex
     assert "Approval Records" not in tex
 
@@ -206,7 +207,7 @@ def test_group_chapter_renders_all_voltage_states_without_internal_advisories(
 
     grouped_tex = render_latex(changed_model).split(r"\section{Grouped Calculations}", 1)[1]
 
-    assert r"\paragraph{Voltage stresses.}" in grouped_tex
+    assert r"\textbf{Voltage stresses.}" in grouped_tex
     assert "long-term RMS" in grouped_tex
     assert "steady-state peak" in grouped_tex
     assert "recurring peak" in grouped_tex

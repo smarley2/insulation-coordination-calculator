@@ -27,12 +27,12 @@ from PySide6.QtWidgets import (
 )
 
 from insulation_coordination.calculation.engine import PairResult
+from insulation_coordination.domain.display import pair_label
 from insulation_coordination.domain.enums import (
     ConstructionType,
     FieldCondition,
     InsulationType,
 )
-from insulation_coordination.domain.display import pair_label
 from insulation_coordination.domain.project import (
     OverrideValue,
     PairCase,

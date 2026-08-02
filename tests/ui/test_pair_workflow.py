@@ -13,8 +13,8 @@ from insulation_coordination.domain.enums import (
     InsulationType,
 )
 from insulation_coordination.domain.project import (
-    PairVoltage,
     NetClass,
+    PairVoltage,
     Project,
     ProjectDefaults,
     ProjectMetadata,

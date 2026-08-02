@@ -135,11 +135,14 @@ def test_end_to_end_desktop_report_workflow(
     tex = render_latex(model)
 
     assert "E2E-001" in tex
-    assert "SYNTHETIC-PART-1:1" in tex
+    assert "SYNTHETIC-PART-1 (1)" in tex
     assert "iec60664-4-equation-1-critical-frequency" in {
         semantic_id for result in results for semantic_id in result.trace.semantic_rule_ids
     }
-    assert "HV+ / LV" in tex
+    assert "HV+ ↔ LV" in tex
+    assert "Authoritative Pair Matrix" not in tex
+    assert "Pair ID" not in tex
+    assert "Approval Records" not in tex
 
     tectonic = _fake_tectonic(tmp_path / "fake-tectonic")
     from insulation_coordination.report.compiler import compile_pdf

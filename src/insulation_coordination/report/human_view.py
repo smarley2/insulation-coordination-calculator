@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Callable
 
 from insulation_coordination.domain.rules import SourceReference
 from insulation_coordination.report.model import (
@@ -206,8 +206,12 @@ def _human_calculation(row: MatrixRow, calculation: PairCalculationReport) -> Hu
         stresses=calculation.stresses,
         clearance_candidates=tuple(_candidate(candidate) for candidate in calculation.clearance_candidates),
         creepage_candidates=tuple(_candidate(candidate) for candidate in calculation.creepage_candidates),
-        clearance_explanation=_sentence(calculation.governing_clearance_reason),
-        creepage_explanation=_sentence(calculation.governing_creepage_reason),
+        clearance_explanation=_calculation_explanation(
+            calculation.governing_clearance_reason
+        ),
+        creepage_explanation=_calculation_explanation(
+            calculation.governing_creepage_reason
+        ),
         pre_altitude_clearance=_effective_text(calculation.pre_altitude_clearance_mm, "mm"),
         altitude_correction_applied=calculation.altitude_correction_applied,
         clearance=_effective_text(calculation.clearance_mm, "mm"),
@@ -228,7 +232,10 @@ def _candidate(candidate: object) -> HumanCandidate:
     )
     return HumanCandidate(
         name=_candidate_name(getattr(candidate, "candidate_id", "candidate")),
-        stress=_sentence(getattr(getattr(candidate, "stress", None), "value", "")),
+        stress=_effective_text(
+            getattr(getattr(candidate, "stress", None), "value", None),
+            getattr(getattr(candidate, "stress", None), "unit", ""),
+        ),
         distance=_effective_text(getattr(candidate, "distance_mm", None), "mm"),
         reason=_sentence(getattr(candidate, "reason", "")),
         source_reference=source_reference,
@@ -297,3 +304,12 @@ def _sentence(value: str) -> str:
     if not text:
         return "No additional explanation."
     return text[0].upper() + text[1:] + ("" if text.endswith((".", "!", "?")) else ".")
+
+
+def _calculation_explanation(reason: str) -> str:
+    normalized = str(reason or "").replace("_", " ").strip().lower()
+    if normalized == "impulse governs clearance":
+        return "The impulse withstand requirement determined the clearance."
+    if normalized == "calculated creepage governs":
+        return "The calculated creepage requirement determined the creepage."
+    return _sentence(reason)

@@ -1,5 +1,6 @@
 from uuid import UUID
 
+from insulation_coordination.domain.display import pair_label
 from insulation_coordination.domain.project import (
     NetClass,
     PairCase,
@@ -8,7 +9,6 @@ from insulation_coordination.domain.project import (
     ProjectMetadata,
 )
 from insulation_coordination.project.pairs import canonical_pair_key
-from insulation_coordination.domain.display import pair_label
 
 
 def test_pair_label_uses_net_class_names() -> None:
