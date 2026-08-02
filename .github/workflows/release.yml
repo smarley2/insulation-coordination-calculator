@@ -1,0 +1,132 @@
+name: Cross-platform Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+env:
+  VERSION: "0.1.0"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked --all-groups
+      - run: uv run python scripts/create_release_fixtures.py release-smoke
+      - run: >-
+          uv run python scripts/prepare_tectonic.py --platform windows-x86_64
+          --destination build/tectonic/windows-x86_64 --fixtures release-smoke --refresh-lock
+      - shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force packaging\tectonic-locks | Out-Null
+          Copy-Item build\tectonic\windows-x86_64\tectonic-locks\windows-x86_64.json packaging\tectonic-locks\
+      - run: uv run python scripts/render_icons.py packaging/assets/icc.svg build/icons
+      - run: uv run pyinstaller --noconfirm --clean packaging/insulation_coordination.spec
+      - name: Build and smoke-test installer
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          & $iscc "/DAppVersion=$env:VERSION" installer\insulation-coordination.iss
+          .\packaging\windows\smoke.ps1 -Installer "Output\insulation-coordination-$env:VERSION-windows-x86_64-setup.exe" -FixtureDirectory release-smoke -Version $env:VERSION
+          New-Item -ItemType Directory -Force dist\release | Out-Null
+          Copy-Item "Output\*.exe" dist\release\
+      - name: Write Windows metadata
+        shell: pwsh
+        run: |
+          $artifact = Get-ChildItem dist\release\*.exe
+          uv run python -c "from pathlib import Path; from scripts.release_artifacts import write_platform_metadata; write_platform_metadata(Path('dist/release'), 'windows-x86_64', 'unsigned', [Path(r'$($artifact.FullName)')])"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: dist/release/*
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked --all-groups
+      - run: uv run python scripts/create_release_fixtures.py release-smoke
+      - run: >-
+          uv run python scripts/prepare_tectonic.py --platform macos-arm64
+          --destination build/tectonic/macos-arm64 --fixtures release-smoke --refresh-lock
+      - run: mkdir -p packaging/tectonic-locks && cp build/tectonic/macos-arm64/tectonic-locks/macos-arm64.json packaging/tectonic-locks/
+      - run: uv run python scripts/render_icons.py packaging/assets/icc.svg build/icons
+      - run: uv run pyinstaller --noconfirm --clean packaging/insulation_coordination.spec
+      - run: packaging/macos/package.sh "dist/Insulation Coordination Calculator.app" release-smoke "$VERSION" dist/release
+      - run: >-
+          uv run python -c "from pathlib import Path; from scripts.release_artifacts import write_platform_metadata;
+          write_platform_metadata(Path('dist/release'), 'macos-arm64', 'ad-hoc', list(Path('dist/release').glob('*.dmg')))"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: dist/release/*
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux package dependencies
+        run: sudo apt-get update && sudo apt-get install -y desktop-file-utils libegl1 libgl1 libxkbcommon0 libdbus-1-3
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked --all-groups
+      - run: uv run python scripts/create_release_fixtures.py release-smoke
+      - run: >-
+          uv run python scripts/prepare_tectonic.py --platform linux-x86_64
+          --destination build/tectonic/linux-x86_64 --fixtures release-smoke --refresh-lock
+      - run: mkdir -p packaging/tectonic-locks && cp build/tectonic/linux-x86_64/tectonic-locks/linux-x86_64.json packaging/tectonic-locks/
+      - run: uv run python scripts/render_icons.py packaging/assets/icc.svg build/icons
+      - run: uv run pyinstaller --noconfirm --clean packaging/insulation_coordination.spec
+      - name: Download verified AppImageTool
+        run: |
+          curl -fsSL https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -o appimagetool
+          echo "a6d71e2b6cd66f8e8d16c37ad164658985e0cf5fcaa950c90a482890cb9d13e0  appimagetool" | sha256sum -c -
+          chmod +x appimagetool
+      - name: Build Linux artifacts
+        env:
+          APPIMAGE_TOOL: ${{ github.workspace }}/appimagetool
+          ARCH: x86_64
+        run: |
+          mkdir -p dist/release
+          packaging/linux/package.sh dist/icc "$VERSION" dist/release
+          desktop-file-validate packaging/linux/icc.desktop
+          APPIMAGE_EXTRACT_AND_RUN=1 dist/release/insulation-coordination-$VERSION-linux-x86_64.AppImage --release-diagnostic release-smoke --output-dir /tmp/icc-diagnostic
+      - run: >-
+          uv run python -c "from pathlib import Path; from scripts.release_artifacts import write_platform_metadata;
+          write_platform_metadata(Path('dist/release'), 'linux-x86_64', 'unsigned', list(Path('dist/release').glob('*.AppImage')) + list(Path('dist/release').glob('*.tar.gz')))"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: dist/release/*
+
+  assemble:
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked --all-groups
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist/release
+          merge-multiple: true
+      - name: Assemble and verify public release
+        run: |
+          uv run python scripts/release_artifacts.py dist/release
+          (cd dist/release && sha256sum --check SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-complete
+          path: dist/release/*

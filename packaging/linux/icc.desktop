@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Insulation Coordination Calculator
+Comment=Insulation coordination design calculator
+Exec=icc %f
+Icon=icc
+Terminal=false
+Categories=Engineering;Science;
+MimeType=application/x-icc-project;application/x-icc-rules;
+NoDisplay=false
