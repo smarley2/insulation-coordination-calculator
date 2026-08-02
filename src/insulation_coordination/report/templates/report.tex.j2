@@ -125,7 +125,9 @@ All comparison characteristics are common to every pair; no difference matrices 
 \clearpage
 \section{Grouped Calculations}
 {% for group in human.groups %}
+{% if not loop.first %}
 \clearpage
+{% endif %}
 \subsection{ {{- group.name|tex -}} }
 Included pairs: {% for pair_label in group.pair_labels %}{{ pair_label|tex }}{% if not loop.last %}, {% endif %}{% endfor %}.
 

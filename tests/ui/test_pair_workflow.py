@@ -133,6 +133,7 @@ def test_recalculate_after_voltage_change(qtbot, pair_page):
 
 def test_recalculate_reports_missing_rules(qtbot, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
+
     from insulation_coordination.ui.pair_editor import PairPage
 
     page = PairPage()

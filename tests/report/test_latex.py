@@ -83,6 +83,9 @@ def test_report_paginates_chapters_and_uses_readable_calculation_layout(report_m
     assert "\\clearpage\n\\section{Grouped Calculations}" in tex
     assert r"@{}XrrX@{}" in tex
     assert "altitude correction was not needed" in tex
+    grouped_start = tex.index(r"\section{Grouped Calculations}")
+    first_group = tex.index(r"\subsection{Group 1}")
+    assert r"\clearpage" not in tex[grouped_start:first_group]
 
 
 def test_report_snapshot_is_frozen_and_deterministic(report_inputs) -> None:
