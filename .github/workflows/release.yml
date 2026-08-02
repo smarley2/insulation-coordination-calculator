@@ -41,9 +41,9 @@ jobs:
         run: |
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
           & $iscc "/DAppVersion=$env:VERSION" installer\insulation-coordination.iss
-          .\packaging\windows\smoke.ps1 -Installer "Output\insulation-coordination-$env:VERSION-windows-x86_64-setup.exe" -FixtureDirectory release-smoke -Version $env:VERSION
+          .\packaging\windows\smoke.ps1 -Installer "installer\Output\insulation-coordination-$env:VERSION-windows-x86_64-setup.exe" -FixtureDirectory release-smoke -Version $env:VERSION
           New-Item -ItemType Directory -Force dist\release | Out-Null
-          Copy-Item "Output\*.exe" dist\release\
+          Copy-Item "installer\Output\*.exe" dist\release\
       - name: Write Windows metadata
         shell: pwsh
         run: |
@@ -118,7 +118,7 @@ jobs:
           mkdir -p dist/release
           sh packaging/linux/package.sh dist/icc "$VERSION" dist/release
           desktop-file-validate packaging/linux/icc.desktop
-          APPIMAGE_EXTRACT_AND_RUN=1 dist/release/insulation-coordination-$VERSION-linux-x86_64.AppImage --release-diagnostic release-smoke --output-dir /tmp/icc-diagnostic
+          APPIMAGE_EXTRACT_AND_RUN=1 dist/release/insulation-coordination-$VERSION-linux-x86_64.AppImage --release-diagnostic release-smoke/project.icproj release-smoke/rules.icrules /tmp/icc-diagnostic
       - run: >-
           uv run python -c "from pathlib import Path; from scripts.release_artifacts import write_platform_metadata;
           write_platform_metadata(Path('dist/release'), 'linux-x86_64', 'unsigned', list(Path('dist/release').glob('*.AppImage')) + list(Path('dist/release').glob('*.tar.gz')))"

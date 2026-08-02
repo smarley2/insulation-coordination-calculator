@@ -51,11 +51,15 @@ def test_native_icons_are_rendered_from_one_svg(tmp_path: Path) -> None:
 
 def test_linux_metadata_routes_both_document_types() -> None:
     desktop = (ROOT / "packaging/linux/icc.desktop").read_text(encoding="utf-8")
+    package_script = (ROOT / "packaging/linux/package.sh").read_text(encoding="utf-8")
     mime = ET.parse(ROOT / "packaging/linux/application-x-icc.xml")
     assert "application/x-icc-project" in desktop
     assert "application/x-icc-rules" in desktop
     patterns = {node.attrib["pattern"] for node in mime.findall(".//{*}glob")}
     assert patterns == {"*.icproj", "*.icrules"}
+    assert '"$stage/icc.desktop"' in package_script
+    assert '"$stage/icc.svg"' in package_script
+    assert "--no-appstream" in package_script
 
 
 def test_windows_installer_preserves_user_rules_and_routes_documents() -> None:
@@ -76,6 +80,24 @@ def test_macos_package_verifies_ad_hoc_signature_and_dmg() -> None:
         "codesign --force --sign -",
         "codesign --verify --deep --strict",
         "hdiutil create",
+        "plistlib",
         "--release-diagnostic",
     ):
         assert required in script
+    assert "PlistBuddy" not in script
+
+
+def test_release_smokes_use_packaged_diagnostic_cli_contract() -> None:
+    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    macos = (ROOT / "packaging/macos/package.sh").read_text(encoding="utf-8")
+    windows = (ROOT / "packaging/windows/smoke.ps1").read_text(encoding="utf-8")
+
+    assert "release-smoke/project.icproj release-smoke/rules.icrules" in workflow
+    assert '"$FIXTURES/project.icproj" "$FIXTURES/rules.icrules"' in macos
+    assert "release-diagnostic.json" in macos
+    assert "release-diagnostic.pdf" in macos
+    assert 'Join-Path $FixtureDirectory "project.icproj"' in windows
+    assert 'Join-Path $FixtureDirectory "rules.icrules"' in windows
+    assert "release-diagnostic.json" in windows
+    assert "Resolve-Path $Installer" in windows
+    assert "installer\\Output\\insulation-coordination-" in workflow

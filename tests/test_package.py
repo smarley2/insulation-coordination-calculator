@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from pathlib import Path
 
 from insulation_coordination import __version__, cli
@@ -8,6 +10,22 @@ def test_package_exposes_version(capsys):
     assert __version__ == "0.1.0"
     assert cli.main(["--version"]) == 0
     assert capsys.readouterr().out.strip() == "0.1.0"
+
+
+def test_cli_module_runs_as_a_direct_script() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).parents[1] / "src/insulation_coordination/cli.py"),
+            "--version",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "0.1.0"
 
 
 def test_normal_invocations_route_to_gui(monkeypatch, tmp_path: Path) -> None:
@@ -28,7 +46,9 @@ def test_normal_invocations_route_to_gui(monkeypatch, tmp_path: Path) -> None:
     assert requests[2].path == project_path.resolve()
 
 
-def test_release_diagnostic_invocation_routes_without_starting_gui(monkeypatch, tmp_path: Path) -> None:
+def test_release_diagnostic_invocation_routes_without_starting_gui(
+    monkeypatch, tmp_path: Path
+) -> None:
     calls = []
     monkeypatch.setattr(
         cli,

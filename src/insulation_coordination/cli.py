@@ -87,3 +87,7 @@ def _run_gui(request: StartupRequest) -> int:
         for path in app.take_pending_open_paths():
             window.open_document(path)
     return app.exec()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
