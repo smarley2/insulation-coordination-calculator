@@ -74,7 +74,7 @@ jobs:
           find "$TECTONIC_STAGE_ROOT/macos-arm64" -maxdepth 4 -type f -print
       - run: uv run python scripts/render_icons.py packaging/assets/icc.svg build/icons
       - run: uv run pyinstaller --noconfirm --clean packaging/insulation_coordination.spec
-      - run: packaging/macos/package.sh "dist/Insulation Coordination Calculator.app" release-smoke "$VERSION" dist/release
+      - run: sh packaging/macos/package.sh "dist/Insulation Coordination Calculator.app" release-smoke "$VERSION" dist/release
       - run: >-
           uv run python -c "from pathlib import Path; from scripts.release_artifacts import write_platform_metadata;
           write_platform_metadata(Path('dist/release'), 'macos-arm64', 'ad-hoc', list(Path('dist/release').glob('*.dmg')))"
@@ -116,7 +116,7 @@ jobs:
           ARCH: x86_64
         run: |
           mkdir -p dist/release
-          packaging/linux/package.sh dist/icc "$VERSION" dist/release
+          sh packaging/linux/package.sh dist/icc "$VERSION" dist/release
           desktop-file-validate packaging/linux/icc.desktop
           APPIMAGE_EXTRACT_AND_RUN=1 dist/release/insulation-coordination-$VERSION-linux-x86_64.AppImage --release-diagnostic release-smoke --output-dir /tmp/icc-diagnostic
       - run: >-

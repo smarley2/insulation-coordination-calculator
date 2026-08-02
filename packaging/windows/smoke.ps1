@@ -10,7 +10,7 @@ $preserve = Join-Path $env:LOCALAPPDATA "icc\rules\preserve-me.txt"
 New-Item -ItemType Directory -Force (Split-Path $preserve) | Out-Null
 Set-Content -Path $preserve -Value "must survive uninstall"
 
-& $Installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DAppVersion=$Version
+& $Installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 if ($LASTEXITCODE -ne 0) { throw "installer failed: $LASTEXITCODE" }
 $executable = Join-Path $installDirectory "icc.exe"
 if (-not (Test-Path $executable)) { throw "installed executable is missing" }

@@ -1,5 +1,8 @@
+#ifndef AppVersion
+#define AppVersion "0.1.0"
+#endif
+
 [Setup]
-#define AppVersion GetStringParameterValue("AppVersion")
 AppId={{9A3B7D2E-4C21-4F0A-9D2C-000000000001}
 AppName=Insulation Coordination Calculator
 AppVersion={#AppVersion}

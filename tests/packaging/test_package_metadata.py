@@ -27,6 +27,12 @@ def test_pyinstaller_spec_resolves_repository_root_from_spec_directory() -> None
     assert "root = Path(SPECPATH).resolve().parent.parent" not in spec
 
 
+def test_release_workflow_invokes_unix_package_scripts_through_shell() -> None:
+    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    assert "sh packaging/linux/package.sh" in workflow
+    assert "sh packaging/macos/package.sh" in workflow
+
+
 def test_macos_document_types_route_both_extensions() -> None:
     plist = plistlib.loads((ROOT / "packaging/macos/Info.plist").read_bytes())
     extensions = {
@@ -54,11 +60,14 @@ def test_linux_metadata_routes_both_document_types() -> None:
 
 def test_windows_installer_preserves_user_rules_and_routes_documents() -> None:
     script = (ROOT / "installer/insulation-coordination.iss").read_text(encoding="utf-8")
+    smoke = (ROOT / "packaging/windows/smoke.ps1").read_text(encoding="utf-8")
     assert "[UninstallDelete]" not in script
     assert '""%1""' in script
     assert ".icproj" in script and ".icrules" in script
     assert "desktopicon" in script
-    assert "AppVersion" in script
+    assert "#ifndef AppVersion" in script
+    assert "GetStringParameterValue" not in script
+    assert "/DAppVersion" not in smoke
 
 
 def test_macos_package_verifies_ad_hoc_signature_and_dmg() -> None:
