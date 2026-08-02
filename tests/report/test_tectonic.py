@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from insulation_coordination.report import tectonic
 from insulation_coordination.report.tectonic import (
     TectonicIntegrityError,
     canonical_tree_sha256,
@@ -83,7 +84,10 @@ def test_canonical_tree_hash_includes_relative_names_and_bytes(tmp_path: Path) -
     assert canonical_tree_sha256(root) == expected
 
 
-def test_verify_bundled_tectonic_rejects_changed_executable(tmp_path: Path) -> None:
+def test_verify_bundled_tectonic_rejects_changed_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tectonic, "_verify_version", lambda *_args: None)
     base, manifest_path = _write_fake_bundle(tmp_path)
 
     runtime = verify_bundled_tectonic(base, "linux-x86_64", manifest_path)
@@ -94,7 +98,10 @@ def test_verify_bundled_tectonic_rejects_changed_executable(tmp_path: Path) -> N
         verify_bundled_tectonic(base, "linux-x86_64", manifest_path)
 
 
-def test_verify_bundled_tectonic_rejects_changed_cache(tmp_path: Path) -> None:
+def test_verify_bundled_tectonic_rejects_changed_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tectonic, "_verify_version", lambda *_args: None)
     base, manifest_path = _write_fake_bundle(tmp_path)
     verify_bundled_tectonic(base, "linux-x86_64", manifest_path)
     (base / "tectonic" / "cache" / "seed.txt").write_text("changed", encoding="utf-8")
