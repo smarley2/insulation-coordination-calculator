@@ -110,8 +110,6 @@ class ProjectPage(QWidget):
         self._revision_edit = QLineEdit()
         self._revision_edit.textChanged.connect(self._on_revision_changed)
         meta_layout.addRow("Revision:", self._revision_edit)
-        layout.addWidget(meta_group)
-
         defaults_group = QGroupBox("Project defaults")
         defaults_layout = QFormLayout(defaults_group)
         self._freq_edit = QLineEdit()
@@ -158,7 +156,10 @@ class ProjectPage(QWidget):
             )
         )
         defaults_layout.addRow("CTI / material group:", self._cti_combo)
-        layout.addWidget(defaults_group)
+        project_columns = QHBoxLayout()
+        project_columns.addWidget(meta_group, 1)
+        project_columns.addWidget(defaults_group, 1)
+        layout.addLayout(project_columns)
 
         rules_layout = QHBoxLayout()
         rules_layout.addWidget(QLabel("Rules package:"))
@@ -166,26 +167,29 @@ class ProjectPage(QWidget):
         rules_layout.addWidget(self._rules_label, 1)
         layout.addLayout(rules_layout)
 
-        layout.addWidget(QLabel("Net classes:"))
+        net_group = QGroupBox("Net classes")
+        net_layout = QHBoxLayout(net_group)
         self._net_list = QListWidget()
-        layout.addWidget(self._net_list)
+        net_layout.addWidget(self._net_list, 1)
 
+        net_controls = QVBoxLayout()
         self._description_edit = QLineEdit()
         self._description_edit.setPlaceholderText("Selected net description")
         self._description_edit.editingFinished.connect(self._on_description_changed)
-        layout.addWidget(self._description_edit)
+        net_controls.addWidget(self._description_edit)
 
-        button_layout = QHBoxLayout()
         self._add_button = QPushButton("Add")
         self._add_button.clicked.connect(self._on_add_clicked)
-        button_layout.addWidget(self._add_button)
+        net_controls.addWidget(self._add_button)
         self._rename_button = QPushButton("Rename")
         self._rename_button.clicked.connect(self._on_rename_clicked)
-        button_layout.addWidget(self._rename_button)
+        net_controls.addWidget(self._rename_button)
         self._delete_button = QPushButton("Delete")
         self._delete_button.clicked.connect(self._on_delete_clicked)
-        button_layout.addWidget(self._delete_button)
-        layout.addLayout(button_layout)
+        net_controls.addWidget(self._delete_button)
+        net_controls.addStretch(1)
+        net_layout.addLayout(net_controls)
+        layout.addWidget(net_group)
 
         self._net_list.currentRowChanged.connect(self._on_net_selection_changed)
 
@@ -276,7 +280,10 @@ class ProjectPage(QWidget):
         for combo in (self._impulse_combo, self._pollution_combo, self._cti_combo):
             combo.blockSignals(False)
         rules = project.required_rules
-        self._rules_label.setText(f"{rules.package_id} v{rules.version} ({rules.sha256[:12]}…)")
+        if rules is None:
+            self._rules_label.setText("(none)")
+        else:
+            self._rules_label.setText(f"{rules.package_id} v{rules.version} ({rules.sha256[:12]}…)")
         self._refresh_net_list()
 
     def open_project(self, path: Path) -> None:

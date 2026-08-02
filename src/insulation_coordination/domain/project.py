@@ -183,7 +183,7 @@ class Project(FrozenModel):
     id: UUID
     metadata: ProjectMetadata
     application_version: str
-    required_rules: RulePackageReference
+    required_rules: RulePackageReference | None = None
     defaults: ProjectDefaults
     net_classes: tuple[NetClass, ...]
     pairs: tuple[PairCase, ...]

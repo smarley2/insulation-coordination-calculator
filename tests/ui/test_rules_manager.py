@@ -48,6 +48,10 @@ def test_imported_package_is_usable_without_pdfs(
     assert rules_manager.pdf_required is False
 
 
+def test_rules_manager_exposes_draft_extraction(qtbot, rules_manager):
+    assert rules_manager._extract_draft_button.isEnabled()
+
+
 def test_audit_tree_enumerates_every_table_cell_and_formula(
     qtbot, rules_manager, synthetic_rule_package: RulePackage
 ) -> None:

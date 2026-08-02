@@ -206,6 +206,13 @@ def test_main_window_starts_with_new_project(qtbot):
 
     assert window.project is not None
     assert window.project.metadata.title == "Untitled"
+    assert window.project.required_rules is None
+    assert window._project_page._rules_label.text() == "(none)"
+    assert window.project.defaults.insulation_type.value == "reinforced"
+    assert window.project.defaults.field_condition.value == "inhomogeneous"
+    assert window.project.defaults.pollution_degree == 2
+    assert window.project.defaults.construction_type.value == "printed_wiring"
+    assert window.project.defaults.cti_or_material_group == "IIIb"
     window._project_page.add_net_class("HV")
     assert window.project.net_class_names == ("HV",)
 
@@ -274,15 +281,23 @@ def test_main_window_rules_label_and_add_flow(qtbot):
     assert window._project_page._net_list.count() == 1
 
 
-def test_main_window_reports_unsupported_pdf_without_crashing(qtbot, monkeypatch) -> None:
-    from insulation_coordination.rules.importer.identify import UnsupportedStandardError
-
+def test_main_window_rules_menu_has_no_extract_action(qtbot):
     window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert not hasattr(window, "_extract_pdf_action")
+
+
+def test_rules_manager_reports_unsupported_pdf_without_crashing(qtbot, monkeypatch) -> None:
+    from insulation_coordination.rules.importer.identify import UnsupportedStandardError
+    from insulation_coordination.ui.rules_manager import RulesManagerWindow
+
+    window = RulesManagerWindow()
     qtbot.addWidget(window)
     messages: list[tuple[str, str]] = []
 
     monkeypatch.setattr(
-        "insulation_coordination.ui.main_window.QFileDialog.getOpenFileNames",
+        "insulation_coordination.ui.rules_manager.QFileDialog.getOpenFileNames",
         lambda *_args, **_kwargs: (["unsupported.pdf"], "PDF files (*.pdf)"),
     )
 
@@ -294,10 +309,10 @@ def test_main_window_reports_unsupported_pdf_without_crashing(qtbot, monkeypatch
         reject,
     )
     monkeypatch.setattr(
-        "insulation_coordination.ui.main_window.QMessageBox.critical",
+        "insulation_coordination.ui.rules_manager.QMessageBox.critical",
         lambda _parent, title, message: messages.append((title, message)),
     )
 
-    window._on_extract_pdf()
+    window._on_extract_draft_clicked()
 
     assert messages == [("Extract Draft", "PDF is not a recognized supported IEC edition")]

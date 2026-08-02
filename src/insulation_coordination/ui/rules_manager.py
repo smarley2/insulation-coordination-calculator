@@ -82,6 +82,10 @@ class RulesManagerWindow(QWidget):
         self._import_button.clicked.connect(self._on_import_clicked)
         import_row.addWidget(self._import_button)
 
+        self._extract_draft_button = QPushButton("Extract draft from IEC PDFs…")
+        self._extract_draft_button.clicked.connect(self._on_extract_draft_clicked)
+        import_row.addWidget(self._extract_draft_button)
+
         self._approve_button = QPushButton("Export approved package…")
         self._approve_button.setEnabled(False)
         self._approve_button.clicked.connect(self._on_export_approved_clicked)
@@ -479,6 +483,25 @@ class RulesManagerWindow(QWidget):
             self.import_package(Path(path))
         except RulePackageError as error:
             QMessageBox.critical(self, "Import Rules", str(error))
+
+    def _on_extract_draft_clicked(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select IEC 60664-1 and 60664-4 PDFs",
+            "",
+            "PDF files (*.pdf)",
+        )
+        if not paths:
+            return
+        from insulation_coordination.rules.importer.extract import ExtractionError, extract_draft
+        from insulation_coordination.rules.importer.identify import StandardIdentificationError
+
+        try:
+            draft = extract_draft(tuple(Path(path) for path in paths))
+        except (ExtractionError, StandardIdentificationError) as error:
+            QMessageBox.critical(self, "Extract Draft", str(error))
+            return
+        self.set_draft(draft)
 
     def _on_export_approved_clicked(self) -> None:
         if self._package is None:

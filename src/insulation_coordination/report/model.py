@@ -199,6 +199,8 @@ def build_report_model(
         rules.manifest.version,
         package_sha256,
     )
+    if project.required_rules is None:
+        raise ReportBuildError("project has no rules package pin")
     project_rules_identity = (
         project.required_rules.package_id,
         project.required_rules.version,

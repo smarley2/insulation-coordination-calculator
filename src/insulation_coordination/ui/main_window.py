@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insulation_coordination.domain.enums import ConstructionType, FieldCondition, InsulationType
 from insulation_coordination.domain.project import Project
 from insulation_coordination.domain.rules import RulePackage
 from insulation_coordination.project.persistence import (
@@ -116,6 +117,18 @@ class MainWindow(QMainWindow):
 
     def load_rules(self, rules: RulePackage) -> None:
         self._rules = rules
+        if self._project is not None and rules.package_sha256 is not None:
+            from insulation_coordination.domain.project import RulePackageReference
+
+            reference = RulePackageReference(
+                package_id=str(rules.manifest.package_id),
+                version=rules.manifest.version,
+                sha256=rules.package_sha256,
+            )
+            if self._project.required_rules != reference:
+                self._project = self._project.model_copy(update={"required_rules": reference})
+                self._project_page.load_project(self._project)
+                self._dirty = True
         self._project_page.set_rules_package(rules)
         self._pair_page.load_rules(rules)
         self._report_page.load_rules(rules)
@@ -184,10 +197,6 @@ class MainWindow(QMainWindow):
         self._import_icrules_action.triggered.connect(self._on_import_icrules)
         rules_menu.addAction(self._import_icrules_action)
 
-        self._extract_pdf_action = QAction("&Extract draft from IEC PDFs…", self)
-        self._extract_pdf_action.triggered.connect(self._on_extract_pdf)
-        rules_menu.addAction(self._extract_pdf_action)
-
         file_menu.addSeparator()
 
         quit_action = QAction("&Quit", self)
@@ -230,53 +239,25 @@ class MainWindow(QMainWindow):
             f"Rules package {rules.manifest.package_id} v{rules.manifest.version} loaded.",
         )
 
-    def _on_extract_pdf(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Select IEC 60664-1 and 60664-4 PDFs",
-            "",
-            "PDF files (*.pdf)",
-        )
-        if not paths:
-            return
-        from insulation_coordination.rules.importer.extract import ExtractionError, extract_draft
-        from insulation_coordination.rules.importer.identify import StandardIdentificationError
-
-        try:
-            draft = extract_draft(tuple(Path(path) for path in paths))
-        except (ExtractionError, StandardIdentificationError) as error:
-            QMessageBox.critical(self, "Extract Draft", str(error))
-            return
-        from insulation_coordination.ui.rules_manager import RulesManagerWindow
-
-        window = RulesManagerWindow()
-        window.package_activated.connect(self._on_rules_changed)
-        window.set_draft(draft)
-        self._rules_manager_window = window
-        window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        window.show()
-
     def _on_new(self) -> None:
         if self._dirty and not self._confirm_discard():
             return
         from uuid import UUID
 
-        from insulation_coordination.domain.project import (
-            ProjectDefaults,
-            ProjectMetadata,
-            RulePackageReference,
-        )
+        from insulation_coordination.domain.project import ProjectDefaults, ProjectMetadata
 
         project = Project(
             id=UUID(int=0),
             metadata=ProjectMetadata(title="Untitled"),
             application_version="0.1.0",
-            required_rules=RulePackageReference(
-                package_id="iec-60664",
-                version="2020.1",
-                sha256="0" * 64,
+            required_rules=None,
+            defaults=ProjectDefaults(
+                insulation_type=InsulationType.REINFORCED,
+                field_condition=FieldCondition.INHOMOGENEOUS,
+                pollution_degree=2,
+                construction_type=ConstructionType.PRINTED_WIRING,
+                cti_or_material_group="IIIb",
             ),
-            defaults=ProjectDefaults(),
             net_classes=(),
             pairs=(),
         )
