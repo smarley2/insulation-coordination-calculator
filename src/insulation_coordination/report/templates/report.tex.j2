@@ -89,6 +89,7 @@ Name & Description & Notes \\
 \bottomrule
 \end{longtable}
 
+\clearpage
 \section{Pair Comparison Matrices}
 {% if human.common_values %}
 \paragraph{Common values.}
@@ -121,6 +122,7 @@ There are no characteristics common to every pair.
 All comparison characteristics are common to every pair; no difference matrices are required.
 {% endif %}
 
+\clearpage
 \section{Grouped Calculations}
 {% for group in human.groups %}
 \clearpage
@@ -140,7 +142,7 @@ Condition & Value & Source \\
 \end{tabularx}
 
 \textbf{Voltage stresses.}\par
-\begin{tabularx}{\linewidth}{@{}XXXX@{}}
+\begin{tabularx}{\linewidth}{@{}XrrX@{}}
 \toprule
 Stress & Applicability & Value & Justification \\
 \midrule
@@ -151,7 +153,7 @@ Stress & Applicability & Value & Justification \\
 \end{tabularx}
 
 \textbf{Clearance candidates.}\par
-\begin{tabularx}{\linewidth}{@{}XXXX@{}}
+\begin{tabularx}{\linewidth}{@{}XrrX@{}}
 \toprule
 Candidate & Stress & Distance & Why it was selected \\
 \midrule
@@ -174,8 +176,7 @@ Candidate & Stress & Distance & Why it was selected \\
 
 \textbf{Calculation summary.}\par
 {{ calculation.clearance_explanation|tex }} The pre-altitude
-clearance was {{ calculation.pre_altitude_clearance|tex }}; altitude correction was
-{{ calculation.altitude_correction_applied|yesno }}. The required clearance is
+clearance was {{ calculation.pre_altitude_clearance|tex }}; altitude correction was {% if calculation.altitude_correction_applied %}applied{% else %}not needed{% endif %}. The required clearance is
 \textbf{ {{- calculation.clearance|tex -}} }.
 
 {{ calculation.creepage_explanation|tex }} The required
