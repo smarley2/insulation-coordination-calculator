@@ -34,6 +34,7 @@ from insulation_coordination.domain.project import (
     Project,
     ProjectDefaults,
 )
+from insulation_coordination.domain.rules import RulePackage
 from insulation_coordination.project.pairs import reconcile_pairs
 from insulation_coordination.project.persistence import (
     ProjectLoadError,
@@ -200,6 +201,12 @@ class ProjectPage(QWidget):
 
     def mark_saved(self) -> None:
         self._dirty = False
+
+    def set_rules_package(self, package: RulePackage) -> None:
+        self._rules_label.setText(
+            f"{package.manifest.package_id} v{package.manifest.version} "
+            f"({package.package_sha256 or 'no digest'})"
+        )
 
     def load_project(self, project: Project) -> None:
         self._project = project

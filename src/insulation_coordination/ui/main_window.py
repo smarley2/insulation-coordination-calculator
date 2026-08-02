@@ -106,6 +106,8 @@ class MainWindow(QMainWindow):
         self._project = project
         self._dirty = False
         self._project_page.load_project(project)
+        if self._rules is not None:
+            self._project_page.set_rules_package(self._rules)
         self._pair_page.load_project(project)
         self._report_page.load_project(project)
         self.statusBar().showMessage(f"Project: {project.metadata.title}")
@@ -113,6 +115,7 @@ class MainWindow(QMainWindow):
 
     def load_rules(self, rules: RulePackage) -> None:
         self._rules = rules
+        self._project_page.set_rules_package(rules)
         self._pair_page.load_rules(rules)
         self._report_page.load_rules(rules)
         self.statusBar().showMessage("Rules package loaded")

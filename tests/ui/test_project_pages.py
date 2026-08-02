@@ -6,7 +6,7 @@ from uuid import UUID
 
 import pytest
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialogButtonBox, QInputDialog
 
 from insulation_coordination.domain.project import (
     Project,
@@ -17,6 +17,7 @@ from insulation_coordination.domain.project import (
 from insulation_coordination.ui.app import create_application
 from insulation_coordination.ui.main_window import MainWindow
 from insulation_coordination.ui.project_pages import ProjectPage
+from tests.fixtures.synthetic_rules import synthetic_rule_package
 
 
 @pytest.fixture
@@ -223,6 +224,44 @@ def test_main_window_open_save(qtbot, tmp_path):
     path = tmp_path / "window.icproj"
     window.save_project(path)
     assert path.exists()
+
+
+def test_main_window_rules_label_and_add_flow(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    project = Project(
+        id=UUID(int=1),
+        metadata=ProjectMetadata(title="Window Test"),
+        application_version="0.1.0",
+        required_rules=RulePackageReference(
+            package_id="project-required", version="2020.1", sha256="b" * 64
+        ),
+        defaults=ProjectDefaults(),
+        net_classes=(),
+        pairs=(),
+    )
+    window.open_project_from_project(project)
+    rules = synthetic_rule_package()
+    window.load_rules(rules)
+    assert window._project_page._rules_label.text().startswith(
+        f"{rules.manifest.package_id} v{rules.manifest.version}"
+    )
+
+    def accept_dialog() -> None:
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, QInputDialog)
+        dialog.setTextValue("HVP")
+        buttons = dialog.findChild(QDialogButtonBox)
+        assert buttons is not None
+        qtbot.mouseClick(
+            buttons.button(QDialogButtonBox.StandardButton.Ok), Qt.MouseButton.LeftButton
+        )
+
+    QTimer.singleShot(0, accept_dialog)
+    qtbot.mouseClick(window._project_page._add_button, Qt.MouseButton.LeftButton)
+    assert window.project is not None
+    assert window.project.net_class_names == ("HVP",)
+    assert window._project_page._net_list.count() == 1
 
 
 def test_main_window_reports_unsupported_pdf_without_crashing(qtbot, monkeypatch) -> None:
