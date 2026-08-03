@@ -14,16 +14,20 @@ Download the desired artifact and the accompanying `SHA256SUMS` file into the sa
 
 ## 2. Verify the SHA-256 checksum
 
+Replace `<version>` with the release version shown on GitHub.
+
 ### Linux
 
 ```bash
-sha256sum --check SHA256SUMS --ignore-missing
+artifact="insulation-coordination-<version>-linux-x86_64.AppImage"
+grep "  $artifact$" SHA256SUMS | sha256sum --check -
 ```
 
 ### macOS
 
 ```bash
-shasum -a 256 -c SHA256SUMS
+artifact="insulation-coordination-<version>-macos-arm64.dmg"
+grep "  $artifact$" SHA256SUMS | shasum -a 256 -c -
 ```
 
 ### Windows PowerShell
@@ -31,7 +35,7 @@ shasum -a 256 -c SHA256SUMS
 Find the expected value for the downloaded filename in `SHA256SUMS`, then run:
 
 ```powershell
-Get-FileHash .\insulation-coordination-0.1.1-windows-x86_64-setup.exe -Algorithm SHA256
+Get-FileHash .\insulation-coordination-<version>-windows-x86_64-setup.exe -Algorithm SHA256
 ```
 
 The computed value must exactly match the value published in `SHA256SUMS`.
@@ -48,10 +52,10 @@ gh attestation verify <downloaded-file> \
 Examples:
 
 ```bash
-gh attestation verify insulation-coordination-0.1.1-linux-x86_64.AppImage \
+gh attestation verify insulation-coordination-<version>-linux-x86_64.AppImage \
   --repo smarley2/insulation-coordination-calculator
 
-gh attestation verify insulation-coordination-0.1.1-macos-arm64.dmg \
+gh attestation verify insulation-coordination-<version>-macos-arm64.dmg \
   --repo smarley2/insulation-coordination-calculator
 ```
 
