@@ -17,7 +17,7 @@ List the commands and workflows used to verify the change.
 
 - [ ] `uv run ruff check .`
 - [ ] `uv run mypy`
-- [ ] `uv run pytest --cov=insulation_coordination --cov-branch --cov-report=term-missing`
+- [ ] `uv run pytest --cov=insulation_coordination --cov-branch --cov-report=term-missing --cov-fail-under=80`
 - [ ] Relevant packaging or smoke test, when applicable
 
 ## Engineering impact
@@ -46,5 +46,6 @@ Add screenshots or example output for UI/report changes. Remove confidential or 
 
 - [ ] The change is documented where necessary.
 - [ ] Tests were added or updated for changed behavior.
+- [ ] Total branch-aware coverage remains at least 80%.
 - [ ] Existing project and rule-package compatibility was considered.
 - [ ] Review conversations can be resolved before merge.
