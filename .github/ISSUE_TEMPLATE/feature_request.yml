@@ -1,0 +1,101 @@
+name: Feature request
+description: Suggest an improvement or new capability
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting an improvement.
+
+        Please describe the problem and the desired outcome, not only the proposed implementation.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or limitation
+      description: What problem are you trying to solve?
+      placeholder: |
+        I have difficulty doing ... because ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed solution
+      description: Describe how you think the feature should work.
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: Provide a realistic example of how this feature would be used.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Relevant area
+      options:
+        - Insulation coordination calculations
+        - Input data and validation
+        - Reports and PDF export
+        - Project files
+        - User interface
+        - Installation and packaging
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platforms
+    attributes:
+      label: Platforms affected
+      multiple: true
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - All platforms
+        - Not applicable
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe any current workaround or alternative solution.
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Suggested acceptance criteria
+      description: What conditions would demonstrate that the feature is complete?
+      placeholder: |
+        - The user can ...
+        - Invalid values display ...
+        - The result appears in ...
+        - Existing project files remain compatible
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Add mockups, references, standards, screenshots, or examples.
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: This request describes a single feature or related set of changes.
+          required: true
