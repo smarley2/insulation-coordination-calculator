@@ -6,7 +6,7 @@ on:
     tags: ["v*"]
 
 env:
-  VERSION: "0.1.0"
+  VERSION: "0.1.1"
   TECTONIC_STAGE_ROOT: ${{ github.workspace }}/.release-tectonic
 
 jobs:

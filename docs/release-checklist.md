@@ -4,6 +4,17 @@ Record evidence for the exact commit and workflow run before publishing. Do not 
 licensed PDFs, private `.icrules`/`.icproj` files, extracted values, or audit exports in
 the release workspace.
 
+## Version bump
+
+Bumping the release version touches these, and CI fails if any is missed:
+
+- [ ] `version` in `pyproject.toml`
+- [ ] `__version__` in `src/insulation_coordination/__init__.py`
+- [ ] `env.VERSION` in `.github/workflows/release.yml` (must equal the `v*` tag)
+- [ ] `uv lock` re-run and `uv.lock` committed — it records the project's own
+      version, and CI installs with `uv sync --locked`. Verify with
+      `uv sync --locked --all-groups`, not `uv run --frozen`, which skips the check.
+
 ## Automated evidence
 
 | Gate | Result | Evidence URL / SHA |
