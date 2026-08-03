@@ -1,0 +1,139 @@
+name: Bug report
+description: Report an error or unexpected behavior
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a problem.
+
+        Please provide enough information for the issue to be reproduced.
+
+  - type: input
+    id: version
+    attributes:
+      label: Application version
+      description: Which version of the application are you using?
+      placeholder: "Example: 0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system
+      options:
+        - Windows 10
+        - Windows 11
+        - macOS Intel
+        - macOS Apple Silicon
+        - Ubuntu / Debian
+        - Other Linux distribution
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: Operating system version
+      placeholder: "Example: Windows 11 24H2 or macOS 15.6"
+
+  - type: dropdown
+    id: installation-method
+    attributes:
+      label: Installation method
+      options:
+        - Windows installer
+        - macOS DMG
+        - Linux AppImage
+        - Linux tar.gz
+        - Python source
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem description
+      description: Clearly describe what went wrong.
+      placeholder: Describe the error or unexpected behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: List the exact steps needed to reproduce the problem.
+      placeholder: |
+        1. Open the application
+        2. Select ...
+        3. Enter ...
+        4. Click ...
+        5. Observe the error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: regression
+    attributes:
+      label: Did this work in a previous version?
+      options:
+        - "Yes"
+        - "No"
+        - "I do not know"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error messages
+      description: Paste relevant logs or error messages here.
+      render: shell
+
+  - type: textarea
+    id: attachments
+    attributes:
+      label: Screenshots or files
+      description: Drag screenshots, project files, or other supporting files here.
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Minor inconvenience
+        - Important functionality is affected
+        - Application cannot complete the calculation
+        - Application crashes or cannot start
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I removed sensitive or confidential information from the report.
+          required: true
