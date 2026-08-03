@@ -130,6 +130,8 @@ jobs:
   assemble:
     needs: [windows, macos, linux]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -149,3 +151,24 @@ jobs:
         with:
           name: release-complete
           path: dist/release/*
+
+      # A tag push is what publishes: the workflow-artifact steps above only keep
+      # the build for 90 days and are invisible on the Releases page.
+      - name: Check the tag matches the built version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          if [ "$tag" != "$VERSION" ]; then
+            echo "Tag v$tag does not match VERSION $VERSION in release.yml" >&2
+            exit 1
+          fi
+      - name: Publish the GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          --repo "$GITHUB_REPOSITORY"
+          --title "Insulation Coordination Calculator $VERSION"
+          --generate-notes
+          dist/release/*

@@ -113,7 +113,7 @@ def test_release_diagnostic_reports_compiler_failure(
 
 
 def test_release_diagnostic_rejects_symlink_tex_output(
-    tmp_path: Path, release_fixture: tuple[Path, Path]
+    tmp_path: Path, release_fixture: tuple[Path, Path], symlinks_allowed: None
 ) -> None:
     project_path, rules_path = release_fixture
     output = tmp_path / "output"

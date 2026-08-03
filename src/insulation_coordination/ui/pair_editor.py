@@ -75,6 +75,26 @@ def _parse_frequency(text: str) -> Decimal:
     return Decimal(text)
 
 
+#: Pair inputs hold short values, so they stay narrow and hug the right edge.
+_FIELD_WIDTH = 220
+
+
+def _field_row(widget: QWidget) -> QHBoxLayout:
+    """Start a form row whose control keeps its minimum width, aligned right."""
+    widget.setMaximumWidth(_FIELD_WIDTH)
+    row = QHBoxLayout()
+    row.setContentsMargins(0, 0, 0, 0)
+    row.addStretch(1)
+    row.addWidget(widget)
+    return row
+
+
+def _wrap(row: QHBoxLayout) -> QWidget:
+    container = QWidget()
+    container.setLayout(row)
+    return container
+
+
 def _override_row(
     widget: QWidget,
     label: QLabel,
@@ -82,8 +102,7 @@ def _override_row(
     object_name: str,
 ) -> QWidget:
     """Wrap a control plus a Default/Override provenance label."""
-    row = QHBoxLayout()
-    row.addWidget(widget, 1)
+    row = _field_row(widget)
     row.addWidget(label)
     reset_button = QPushButton("Default")
     reset_button.setObjectName(object_name)
@@ -91,18 +110,13 @@ def _override_row(
     reset_button.setAutoDefault(False)
     reset_button.clicked.connect(reset_slot)
     row.addWidget(reset_button)
-    container = QWidget()
-    container.setLayout(row)
-    return container
+    return _wrap(row)
 
 
 def _voltage_row(edit: QLineEdit, na_button: QPushButton) -> QWidget:
-    row = QHBoxLayout()
-    row.addWidget(edit, 1)
+    row = _field_row(edit)
     row.addWidget(na_button)
-    container = QWidget()
-    container.setLayout(row)
-    return container
+    return _wrap(row)
 
 
 class PairEditor(QWidget):
@@ -280,7 +294,7 @@ class PairEditor(QWidget):
 
         self._notes_edit = QLineEdit()
         self._notes_edit.editingFinished.connect(self._on_notes_changed)
-        params_layout.addRow("Notes:", self._notes_edit)
+        params_layout.addRow("Notes:", _wrap(_field_row(self._notes_edit)))
 
         layout.addWidget(params_group)
 
@@ -782,36 +796,34 @@ class PairPage(QWidget):
         self.editor = PairEditor()
         self.editor.pair_changed.connect(self._on_pair_changed)
 
-        from insulation_coordination.ui.calculation_review import CalculationReviewPage
+        from insulation_coordination.ui.calculation_review import (
+            CalculationReviewPage,
+            titled_panel,
+        )
 
         self.calculation_review = CalculationReviewPage()
 
         matrix_panel = QWidget()
         matrix_layout = QVBoxLayout(matrix_panel)
+        matrix_layout.setContentsMargins(0, 0, 0, 0)
         parameter_row = QHBoxLayout()
         parameter_row.addWidget(QLabel("Show in matrix:"))
         self._matrix_parameter_combo = QComboBox()
         for key, label in MATRIX_PARAMETERS:
             self._matrix_parameter_combo.addItem(label, key)
+        self._matrix_parameter_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToContents
+        )
         self._matrix_parameter_combo.currentIndexChanged.connect(
             self._on_matrix_parameter_changed
         )
-        parameter_row.addWidget(self._matrix_parameter_combo, 1)
+        parameter_row.addWidget(self._matrix_parameter_combo)
+        parameter_row.addStretch(1)
         matrix_layout.addLayout(parameter_row)
         matrix_layout.addWidget(QLabel("Coverage Matrix:"))
         matrix_layout.addWidget(self._matrix_view)
 
-        pairs_panel = QWidget()
-        pairs_layout = QVBoxLayout(pairs_panel)
-        pairs_layout.addWidget(QLabel("Pairs:"))
-        pairs_layout.addWidget(self._pair_list_view)
-
-        self._left_splitter = QSplitter(Qt.Orientation.Vertical)
-        self._left_splitter.setChildrenCollapsible(False)
-        self._left_splitter.addWidget(matrix_panel)
-        self._left_splitter.addWidget(pairs_panel)
-        self._left_splitter.setStretchFactor(0, 3)
-        self._left_splitter.setStretchFactor(1, 1)
+        pairs_panel = titled_panel("Pairs", self._pair_list_view)
 
         self._editor_scroll = QScrollArea()
         self._editor_scroll.setWidgetResizable(True)
@@ -822,17 +834,26 @@ class PairPage(QWidget):
 
         self._top_splitter = QSplitter(Qt.Orientation.Horizontal)
         self._top_splitter.setChildrenCollapsible(False)
-        self._top_splitter.addWidget(self._left_splitter)
+        self._top_splitter.addWidget(matrix_panel)
         self._top_splitter.addWidget(self._editor_scroll)
         self._top_splitter.setStretchFactor(0, 2)
         self._top_splitter.setStretchFactor(1, 3)
 
+        # Pairs | Calculation Groups | Results, with Recalculate spanning all three.
+        self._lower_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._lower_splitter.setChildrenCollapsible(False)
+        self._lower_splitter.addWidget(pairs_panel)
+        self._lower_splitter.addWidget(self.calculation_review)
+        self._lower_splitter.setStretchFactor(0, 1)
+        self._lower_splitter.setStretchFactor(1, 2)
+
         lower_panel = QWidget()
         lower_layout = QVBoxLayout(lower_panel)
+        lower_layout.setContentsMargins(0, 0, 0, 0)
         self.recalc_button = QPushButton("Recalculate")
         self.recalc_button.clicked.connect(self.recalculate)
         lower_layout.addWidget(self.recalc_button)
-        lower_layout.addWidget(self.calculation_review)
+        lower_layout.addWidget(self._lower_splitter)
 
         self._main_splitter = QSplitter(Qt.Orientation.Vertical)
         self._main_splitter.addWidget(self._top_splitter)
@@ -853,10 +874,19 @@ class PairPage(QWidget):
     def _set_initial_splitter_sizes(self) -> None:
         width = max(self.width(), 1)
         height = max(self.height(), 1)
-        self._top_splitter.setSizes([int(width * 0.44), int(width * 0.56)])
-        self._main_splitter.setSizes([int(height * 0.72), int(height * 0.28)])
-        top_height = max(self._left_splitter.height(), 1)
-        self._left_splitter.setSizes([int(top_height * 0.68), int(top_height * 0.32)])
+        editor_width = self._preferred_editor_width(width)
+        self._top_splitter.setSizes([width - editor_width, editor_width])
+        self._main_splitter.setSizes([int(height * 0.6), int(height * 0.4)])
+        third = max(width // 3, 1)
+        self._lower_splitter.setSizes([third, width - third])
+        self.calculation_review.balance_columns(width - third)
+
+    def _preferred_editor_width(self, width: int) -> int:
+        """Open the editor no wider than its inputs need, so they sit far right."""
+        hint = self.editor.sizeHint().width()
+        scrollbar = self._editor_scroll.verticalScrollBar().sizeHint().width()
+        needed = hint + scrollbar + 2 * self._editor_scroll.frameWidth()
+        return max(min(needed, int(width * 0.5)), int(width * 0.25))
 
     @property
     def project(self) -> Project:

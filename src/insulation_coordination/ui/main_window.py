@@ -5,6 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insulation_coordination import __version__
 from insulation_coordination.domain.enums import ConstructionType, FieldCondition, InsulationType
 from insulation_coordination.domain.project import Project
 from insulation_coordination.domain.rules import RulePackage
@@ -31,6 +33,12 @@ from insulation_coordination.startup import StartupKind, classify_startup_path
 from insulation_coordination.ui.pair_editor import PairPage
 from insulation_coordination.ui.project_pages import ProjectPage
 from insulation_coordination.ui.report_page import ReportPage
+from insulation_coordination.update_check import (
+    REPOSITORY_URL,
+    UpdateCheckError,
+    UpdateStatus,
+    check_for_update,
+)
 
 
 class MainWindow(QMainWindow):
@@ -81,6 +89,7 @@ class MainWindow(QMainWindow):
         self._stack.addWidget(self._pair_page)
 
         self._report_page = ReportPage()
+        self._report_page.project_changed.connect(self._on_project_changed)
         self._stack.addWidget(self._report_page)
 
         self.setStatusBar(QStatusBar())
@@ -174,8 +183,12 @@ class MainWindow(QMainWindow):
         self._dirty = True
         self.statusBar().showMessage(f"Project: {project.metadata.title} *")
         self.project_changed.emit(project)
-        self._pair_page.load_project(project)
-        self._report_page.load_project(project)
+        # Every page but the one that raised the edit: reloading the origin would
+        # reset the caret in the field being typed into.
+        origin = self.sender()
+        for page in (self._project_page, self._pair_page, self._report_page):
+            if page is not origin:
+                page.load_project(project)
         self._update_actions()
 
     def _show_page(self, index: int) -> None:
@@ -235,6 +248,66 @@ class MainWindow(QMainWindow):
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
 
+        help_menu = self.menuBar().addMenu("&Help")
+        self._about_action = QAction("&About…", self)
+        self._about_action.triggered.connect(self._on_about)
+        help_menu.addAction(self._about_action)
+
+        self._update_action = QAction("Check for &Updates…", self)
+        self._update_action.triggered.connect(self.check_for_updates)
+        help_menu.addAction(self._update_action)
+
+    def about_text(self) -> str:
+        """Version and provenance shown by Help → About."""
+        return (
+            f"<b>Insulation Coordination Calculator</b><br>Version {__version__}<br><br>"
+            f'Repository: <a href="{REPOSITORY_URL}">{REPOSITORY_URL}</a><br><br>'
+            "Calculates clearance and creepage requirements from an approved "
+            "rules package. The rules package, not this application, carries the "
+            "standard content."
+        )
+
+    def _on_about(self) -> None:
+        box = QMessageBox(self)
+        box.setWindowTitle("About Insulation Coordination Calculator")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText(self.about_text())
+        update_button = box.addButton("Check for Updates…", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        if box.clickedButton() is update_button:
+            self.check_for_updates()
+
+    @staticmethod
+    def update_message(status: UpdateStatus) -> str:
+        """Wording shown after an update check."""
+        if status.update_available:
+            return (
+                f"Version {status.latest_version} is available "
+                f"(this build is {status.current_version}).<br><br>"
+                f'Download: <a href="{status.release_url}">{status.release_url}</a>'
+            )
+        return (
+            f"This build ({status.current_version}) is up to date. "
+            f"The newest published release is {status.latest_version}."
+        )
+
+    def check_for_updates(self) -> None:
+        """Compare this build against the newest published GitHub release."""
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            status = check_for_update()
+        except UpdateCheckError as error:
+            QMessageBox.warning(self, "Check for Updates", str(error))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        box = QMessageBox(self)
+        box.setWindowTitle("Check for Updates")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText(self.update_message(status))
+        box.exec()
+
     def _update_actions(self) -> None:
         has_project = self._project is not None
         self._save_action.setEnabled(has_project and self._dirty)
@@ -281,7 +354,7 @@ class MainWindow(QMainWindow):
         project = Project(
             id=UUID(int=0),
             metadata=ProjectMetadata(title="Untitled"),
-            application_version="0.1.0",
+            application_version=__version__,
             required_rules=None,
             defaults=ProjectDefaults(
                 insulation_type=InsulationType.REINFORCED,

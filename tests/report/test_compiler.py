@@ -235,6 +235,7 @@ def test_compile_pdf_rejects_unsafe_path_contracts(
 def test_compile_pdf_rejects_symlink_leaves_without_touching_victim(
     tmp_path: Path,
     leaf: str,
+    symlinks_allowed: None,
 ) -> None:
     tex = tmp_path / "source.tex"
     tex.write_text("synthetic", encoding="utf-8")

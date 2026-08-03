@@ -184,3 +184,115 @@ def test_split_group_persists_split(qtbot, complete_workspace) -> None:
     assert page.group_count >= before + 1
     assert page._project is not None and page._project.group_splits
     assert page._split_button.isEnabled() is True
+
+
+def test_groups_are_listed_with_human_labels(qtbot, complete_workspace) -> None:
+    page = complete_workspace.report_page
+    qtbot.addWidget(page)
+    labels = [page._groups_list.item(row).text() for row in range(page._groups_list.count())]
+    assert labels
+    assert all(label.startswith("Group ") for label in labels)
+    assert any("↔" in label for label in labels)
+    for group in page._groups:
+        assert group.group_id[:8] not in " ".join(labels)
+
+
+def test_blocking_summary_names_the_pair_not_its_uuid(qtbot, complete_workspace) -> None:
+    page = complete_workspace.report_page
+    qtbot.addWidget(page)
+    pair = complete_workspace.project.pairs[0]
+    blank = pair.model_copy(
+        update={
+            "voltages": pair.voltages.model_copy(update={"long_term_rms_v": PairVoltage.blank()})
+        }
+    )
+    page.load_project(
+        complete_workspace.project.model_copy(
+            update={"pairs": (blank, *complete_workspace.project.pairs[1:])}
+        )
+    )
+    assert str(pair.id) not in page.blocking_summary
+    assert "↔" in page.blocking_summary
+
+
+def test_groups_list_height_follows_the_row_count(qtbot, complete_workspace) -> None:
+    page = complete_workspace.report_page
+    qtbot.addWidget(page)
+    rows = page._groups_list.count()
+    row_height = page._groups_list.sizeHintForRow(0)
+    assert page._groups_list.maximumHeight() <= rows * row_height + 16
+
+
+def test_selected_earlier_revision_generates_a_difference_only_pdf(
+    qtbot, complete_workspace
+) -> None:
+    page = complete_workspace.report_page
+    qtbot.addWidget(page)
+    destination = complete_workspace.tmp_path / "revisions"
+
+    first = page.generate(destination)
+    assert first.diff_pdf_path is None
+    archived = complete_workspace.tmp_path / "revision-A.tex"
+    archived.write_text(first.tex_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+    revised = complete_workspace.project.model_copy(
+        update={
+            "metadata": complete_workspace.project.metadata.model_copy(update={"revision": "B"})
+        }
+    )
+    page.load_project(revised)
+    second = page.generate(destination, archived)
+
+    assert second.diff_pdf_path is not None
+    assert second.diff_pdf_path.exists()
+    assert second.diff_pdf_path.name == "icc-report-SYN-001-diff-revA-revB.pdf"
+    diff_tex = second.diff_pdf_path.with_suffix(".tex").read_text(encoding="utf-8")
+    assert "revision A to revision B" in diff_tex
+
+
+def test_baseline_may_be_the_file_that_is_overwritten(qtbot, complete_workspace) -> None:
+    page = complete_workspace.report_page
+    qtbot.addWidget(page)
+    destination = complete_workspace.tmp_path / "in-place"
+    first = page.generate(destination)
+
+    revised = complete_workspace.project.model_copy(
+        update={
+            "metadata": complete_workspace.project.metadata.model_copy(update={"revision": "C"})
+        }
+    )
+    page.load_project(revised)
+    second = page.generate(destination, first.tex_path)
+
+    assert second.diff_pdf_path is not None
+    assert "revision A to revision C" in second.diff_pdf_path.with_suffix(".tex").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_regenerating_without_a_baseline_produces_no_diff(qtbot, complete_workspace) -> None:
+    page = complete_workspace.report_page
+    qtbot.addWidget(page)
+    destination = complete_workspace.tmp_path / "no-baseline"
+    page.generate(destination)
+    assert page.generate(destination).diff_pdf_path is None
+
+
+def test_unreadable_baseline_is_reported(qtbot, complete_workspace) -> None:
+    page = complete_workspace.report_page
+    qtbot.addWidget(page)
+    with pytest.raises(RuntimeError, match="earlier revision"):
+        page.generate(complete_workspace.tmp_path / "missing", Path("does-not-exist.tex"))
+
+
+def test_generate_button_sits_above_the_validation_summary(qtbot, complete_workspace) -> None:
+    page = complete_workspace.report_page
+    qtbot.addWidget(page)
+    page.resize(900, 700)
+    page.show()
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.processEvents()
+    button_bottom = page._generate_button.mapTo(page, page._generate_button.rect().bottomLeft()).y()
+    summary_top = page._summary_label.mapTo(page, page._summary_label.rect().topLeft()).y()
+    assert button_bottom <= summary_top

@@ -40,7 +40,6 @@ def render_latex(model: ReportModel) -> str:
         tex=escape_latex_text,
         value=_value,
         reference=_reference,
-        breakable=_breakable,
         yesno=lambda value: "yes" if value else "no",
     )
     return environment.get_template("report.tex.j2").render(
@@ -83,6 +82,13 @@ def _reference(reference: SourceReference | None) -> str:
     return escape_latex_text(", ".join(parts))
 
 
-def _breakable(value: object) -> str:
-    text = escape_latex_text(value)
-    return r"\allowbreak{}".join(text[index : index + 12] for index in range(0, len(text), 12))
+def breakable_latex_text(value: object) -> str:
+    """Escape text and allow line breaks inside long unbreakable runs.
+
+    Chunking happens before escaping so a break can never land inside an
+    escape sequence such as ``\\textbackslash{}``.
+    """
+    text = str(value)
+    return r"\allowbreak{}".join(
+        escape_latex_text(text[index : index + 12]) for index in range(0, len(text), 12)
+    )

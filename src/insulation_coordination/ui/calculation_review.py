@@ -2,17 +2,33 @@
 
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
 
 from insulation_coordination.calculation.engine import PairResult
-from insulation_coordination.domain.display import pair_label
+from insulation_coordination.domain.display import group_label, pair_label
 from insulation_coordination.domain.project import Project
+
+
+def titled_panel(title: str, body: QWidget) -> QWidget:
+    """One labelled column of the lower Pairs-page row.
+
+    Margins are zero so every column's heading and list line up across the
+    splitter, whichever module builds the column.
+    """
+    panel = QWidget()
+    layout = QVBoxLayout(panel)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.addWidget(QLabel(title))
+    layout.addWidget(body)
+    return panel
 
 
 class CalculationReviewPage(QWidget):
@@ -24,14 +40,24 @@ class CalculationReviewPage(QWidget):
         self._results: tuple[PairResult, ...] = ()
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        layout.addWidget(QLabel("Calculation Groups"))
         self._groups_list = QListWidget()
-        layout.addWidget(self._groups_list)
-
-        layout.addWidget(QLabel("Results"))
         self._results_list = QListWidget()
-        layout.addWidget(self._results_list)
+        self._review_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._review_splitter.setChildrenCollapsible(False)
+        self._review_splitter.addWidget(titled_panel("Calculation Groups", self._groups_list))
+        self._review_splitter.addWidget(titled_panel("Results", self._results_list))
+        layout.addWidget(self._review_splitter)
+
+    def balance_columns(self, total_width: int | None = None) -> None:
+        """Give the group and result columns equal width.
+
+        ``total_width`` is the width the page is about to receive; pass it when
+        the enclosing splitter has just been resized and has not laid out yet.
+        """
+        half = max((total_width if total_width is not None else self.width()) // 2, 1)
+        self._review_splitter.setSizes([half, half])
 
     @property
     def groups(self) -> tuple[object, ...]:
@@ -72,26 +98,7 @@ class CalculationReviewPage(QWidget):
 
         for group_index, group in enumerate(self._groups, start=1):
             pair_ids = getattr(group, "pair_ids", ())
-            labels = [
-                pair_label(project, pair)
-                for pair_id in pair_ids
-                if (
-                    pair := next(
-                        (
-                            candidate
-                            for candidate in project.pairs
-                            if str(candidate.id) == str(pair_id)
-                        ),
-                        None,
-                    )
-                )
-            ]
-            count = len(pair_ids)
-            members = ", ".join(labels)
-            group_label = f"Group {group_index} — {count} pair{'s' if count != 1 else ''}"
-            if members:
-                group_label += f": {members}"
-            item = QListWidgetItem(group_label)
+            item = QListWidgetItem(group_label(project, pair_ids, group_index))
             item.setToolTip(f"Internal group: {getattr(group, 'group_id', '?')}")
             self._groups_list.addItem(item)
 
