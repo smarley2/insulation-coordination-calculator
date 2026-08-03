@@ -110,7 +110,7 @@ def test_verify_bundled_tectonic_rejects_changed_cache(
         verify_bundled_tectonic(base, "linux-x86_64", manifest_path)
 
 
-def test_canonical_tree_hash_rejects_symlink(tmp_path: Path) -> None:
+def test_canonical_tree_hash_rejects_symlink(tmp_path: Path, symlinks_allowed: None) -> None:
     root = tmp_path / "cache"
     root.mkdir()
     target = tmp_path / "target"

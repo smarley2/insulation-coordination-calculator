@@ -315,9 +315,9 @@ def test_pairs_page_separates_matrix_pairs_and_editor_scroll(qtbot, pair_page):
     pair_page.show()
     QApplication.processEvents()
 
-    assert isinstance(pair_page._left_splitter, QSplitter)
-    assert pair_page._left_splitter.sizes()[0] >= 160
-    assert pair_page._left_splitter.sizes()[1] >= 80
+    assert isinstance(pair_page._lower_splitter, QSplitter)
+    assert pair_page._lower_splitter.sizes()[0] >= 80
+    assert pair_page._lower_splitter.sizes()[1] >= 160
     assert pair_page._editor_scroll.verticalScrollBar().maximum() > 0
     matrix_rect = pair_page._matrix_view.rect()
     matrix_rect.moveTopLeft(pair_page._matrix_view.mapTo(pair_page, matrix_rect.topLeft()))
@@ -332,3 +332,73 @@ def test_pair_editor_does_not_force_horizontal_page_growth(qtbot, pair_page):
     assert pair_page.editor.minimumWidth() == 0
     assert pair_page._editor_scroll.minimumWidth() == 0
     assert pair_page.editor.sizePolicy().horizontalPolicy().name == "Expanding"
+
+
+def test_pair_inputs_stay_narrow_and_hug_the_right_edge(qtbot, pair_page):
+    from PySide6.QtWidgets import QApplication, QWidget
+
+    pair_page.resize(1600, 900)
+    pair_page.show()
+    pair_page.select_pair_by_id(str(pair_page.project.pairs[0].id))
+    QApplication.processEvents()
+
+    editor = pair_page.editor
+    for field in (editor._rms_edit, editor._freq_edit, editor._insulation_combo):
+        assert field.width() <= 220
+        row = field.parentWidget()
+        assert field.x() > 0, "a leading stretch should push the input to the right"
+        rightmost = max(child.geometry().right() for child in row.findChildren(QWidget))
+        assert row.width() - rightmost <= 4, "the row must not leave slack on the right"
+
+
+def test_lower_area_shows_pairs_groups_and_results_side_by_side(qtbot, pair_page):
+    from PySide6.QtWidgets import QApplication
+
+    pair_page.resize(1600, 900)
+    pair_page.show()
+    QApplication.processEvents()
+
+    review = pair_page.calculation_review
+    assert pair_page._lower_splitter.orientation().name == "Horizontal"
+    assert review._review_splitter.orientation().name == "Horizontal"
+    assert pair_page._lower_splitter.widget(0).isAncestorOf(pair_page._pair_list_view)
+    assert pair_page._lower_splitter.widget(1) is review
+    assert review._review_splitter.widget(0).isAncestorOf(review._groups_list)
+    assert review._review_splitter.widget(1).isAncestorOf(review._results_list)
+
+    columns = [
+        pair_page._pair_list_view,
+        review._groups_list,
+        review._results_list,
+    ]
+    corners = [column.mapTo(pair_page, column.rect().topLeft()) for column in columns]
+    lefts = [corner.x() for corner in corners]
+    assert lefts == sorted(lefts), "pairs, groups, results must read left to right"
+    assert len(set(lefts)) == 3, "the three columns must not overlap"
+    assert len({corner.y() for corner in corners}) == 1, "the three columns must share a top edge"
+    # Recalculate spans the three columns rather than sitting inside one.
+    assert pair_page.recalc_button.width() > review._groups_list.width()
+
+
+def test_matrix_parameter_combo_is_only_as_wide_as_its_entries(qtbot, pair_page):
+    from PySide6.QtWidgets import QApplication
+
+    pair_page.resize(1600, 900)
+    pair_page.show()
+    QApplication.processEvents()
+
+    combo = pair_page._matrix_parameter_combo
+    assert combo.width() <= combo.sizeHint().width() + 4
+    assert combo.width() < pair_page._matrix_view.width()
+
+
+def test_editor_opens_no_wider_than_its_inputs_need(qtbot, pair_page):
+    from PySide6.QtWidgets import QApplication
+
+    pair_page.resize(1900, 1000)
+    pair_page.show()
+    QApplication.processEvents()
+
+    matrix_width, editor_width = pair_page._top_splitter.sizes()
+    assert editor_width <= pair_page.editor.sizeHint().width() + 40
+    assert editor_width < matrix_width, "the matrix should keep the wider half"
