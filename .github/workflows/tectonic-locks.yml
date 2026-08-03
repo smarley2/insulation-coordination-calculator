@@ -3,10 +3,14 @@ name: Refresh Native Tectonic Locks
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   lock:
     name: Lock ${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -18,14 +22,16 @@ jobs:
           - platform: linux-x86_64
             os: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install Linux Qt dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libdbus-1-3
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.16"
       - run: uv sync --locked --all-groups
       - run: uv run python scripts/create_release_fixtures.py release-smoke
       - name: Refresh native lock
@@ -41,7 +47,7 @@ jobs:
           --platform ${{ matrix.platform }}
           --destination build/tectonic/${{ matrix.platform }}
           --fixtures release-smoke
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: tectonic-lock-${{ matrix.platform }}
           path: build/tectonic/${{ matrix.platform }}/tectonic-locks/${{ matrix.platform }}.json
