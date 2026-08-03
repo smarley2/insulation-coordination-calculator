@@ -40,8 +40,10 @@ Run these commands before submitting a pull request:
 ```bash
 uv run ruff check .
 uv run mypy
-uv run pytest --cov=insulation_coordination --cov-branch --cov-report=term-missing
+uv run pytest --cov=insulation_coordination --cov-branch --cov-report=term-missing --cov-fail-under=80
 ```
+
+The test suite must maintain at least 80% total branch-aware coverage. New or changed behavior should be covered directly rather than relying only on the repository-wide percentage.
 
 Packaging or release changes should also run the relevant platform packaging and smoke-test workflow.
 
