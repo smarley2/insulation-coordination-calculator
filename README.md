@@ -198,14 +198,14 @@ blocks an unsigned installer, use right-click → Open and confirm the publisher
 only after checking the checksum. Verify with:
 
 ```powershell
-Get-FileHash .\insulation-coordination-0.1.0-windows-x86_64-setup.exe -Algorithm SHA256
+Get-FileHash .\insulation-coordination-0.1.1-windows-x86_64-setup.exe -Algorithm SHA256
 ```
 
 On macOS, open the DMG and use Finder right-click → Open for the first launch because
 the free artifact is ad-hoc signed and not notarized. Verify with:
 
 ```sh
-shasum -a 256 insulation-coordination-0.1.0-macos-arm64.dmg
+shasum -a 256 insulation-coordination-0.1.1-macos-arm64.dmg
 ```
 
 On Linux, verify the AppImage, then run `chmod +x insulation-coordination-*.AppImage`

@@ -1,15 +1,21 @@
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 from insulation_coordination import __version__, cli
 from insulation_coordination.startup import StartupKind
 
 
+def test_package_version_matches_the_project_metadata() -> None:
+    """A release tags one version; the two declarations must not drift apart."""
+    pyproject = (Path(__file__).parents[1] / "pyproject.toml").read_bytes()
+    assert tomllib.loads(pyproject.decode("utf-8"))["project"]["version"] == __version__
+
+
 def test_package_exposes_version(capsys):
-    assert __version__ == "0.1.0"
     assert cli.main(["--version"]) == 0
-    assert capsys.readouterr().out.strip() == "0.1.0"
+    assert capsys.readouterr().out.strip() == __version__
 
 
 def test_cli_module_runs_as_a_direct_script() -> None:
@@ -25,7 +31,7 @@ def test_cli_module_runs_as_a_direct_script() -> None:
     )
 
     assert result.returncode == 0
-    assert result.stdout.strip() == "0.1.0"
+    assert result.stdout.strip() == __version__
 
 
 def test_normal_invocations_route_to_gui(monkeypatch, tmp_path: Path) -> None:
