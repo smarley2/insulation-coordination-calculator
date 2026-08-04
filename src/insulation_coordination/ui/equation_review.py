@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from insulation_coordination.domain.display import render_expression
 from insulation_coordination.rules.importer.extract import ImportedRuleDraft
 from insulation_coordination.rules.importer.identify import (
     FormulaAuditSpec,
@@ -94,6 +95,42 @@ class EquationReviewDialog(QDialog):
             {spec.id: spec for recipe in RECIPES for spec in recipe.mappings},
         )
 
+    def _calculation_text(self, spec: FormulaAuditSpec) -> str:
+        """Render the expression the engine will actually evaluate.
+
+        The recipe shape string is the audit contract, not something a reviewer
+        can check a standard against; projecting the formula here shows the same
+        arithmetic the calculation performs.
+        """
+        from insulation_coordination.rules.importer.projection import project_formula
+        from insulation_coordination.rules.importer.recipes import RECIPES
+
+        recipe_id = next(
+            (
+                recipe.id
+                for recipe in RECIPES
+                for candidate in recipe.formulas
+                if candidate.semantic_id == spec.semantic_id
+            ),
+            None,
+        )
+        identity = next(
+            (item for item in self._draft.source_identities if item.recipe_id == recipe_id),
+            None,
+        )
+        if identity is None:
+            return "not available until both standards are recognized"
+        equations = {equation.id: equation for equation in self._draft.extracted_equations}
+        try:
+            formula = project_formula(identity, spec, equations)
+        except (ValueError, KeyError) as error:
+            return f"cannot be built yet: {error}"
+        rendered = render_expression(formula.expression)
+        if not spec.variables:
+            # A bare value reads as a stray number without saying it takes no input.
+            return f"fixed value {rendered} {spec.unit}, taken from the standard, no inputs"
+        return rendered
+
     def _reload_selector(self) -> None:
         current = str(self._formula_selector.currentData() or "")
         self._formula_selector.blockSignals(True)
@@ -161,11 +198,19 @@ class EquationReviewDialog(QDialog):
         raw = extracted.raw_text if extracted is not None else "recipe-defined table selection"
         applicability = extracted.applicability if extracted is not None else spec.applicability
         parse_status = extracted.parse_status if extracted is not None else "parsed"
+        numbers = (
+            ", ".join(str(literal) for literal in extracted.literals)
+            if extracted is not None and extracted.literals
+            else "none — this shape carries no PDF number"
+        )
         self._details.setPlainText(
             "\n".join(
                 (
                     f"ID: {formula_id}",
+                    f"Calculation: {self._calculation_text(spec)}",
+                    f"Numbers read from the PDF (check these): {numbers}",
                     f"Canonical expression: {rendered}",
+                    f"Canonical shape (audit contract): {spec.expression_shape}",
                     f"Raw source: {raw}",
                     f"Variables: {', '.join(spec.variables) or 'none'}",
                     f"Unit: {spec.unit}",
@@ -242,4 +287,7 @@ class EquationReviewDialog(QDialog):
             return
         self._notes_edit.clear()
         self.draft_changed.emit(self._draft)
+        if not unresolved_equation_items(self._draft) and not unresolved_mapping_items(self._draft):
+            self.accept()
+            return
         self._reload_selector()

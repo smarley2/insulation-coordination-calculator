@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from decimal import Decimal
 from typing import Any
 
@@ -39,6 +39,7 @@ from insulation_coordination.rules.importer.extract import (
     ImportReviewItem,
     RawGrid,
     RawGridCell,
+    is_recipe_derived,
 )
 from insulation_coordination.rules.importer.identify import (
     FormulaAuditSpec,
@@ -97,6 +98,11 @@ def unresolved_equation_items(draft: ImportedRuleDraft) -> tuple[ImportReviewIte
 
 def unresolved_mapping_items(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
     return _unresolved_items(draft, "mapping")
+
+
+def recipe_derived_items(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
+    """Review items the importer resolved itself because no PDF content backs them."""
+    return tuple(item for item in draft.review_items if is_recipe_derived(item))
 
 
 def _table_from_spec(
@@ -271,6 +277,66 @@ def unresolved_raw_review_items(
     )
 
 
+def flagged_coordinates(items: Iterable[ImportReviewItem]) -> set[tuple[int, int]]:
+    """Grid coordinates carried by raw-cell review items."""
+    coordinates: set[tuple[int, int]] = set()
+    for item in items:
+        row, column = item.semantic_id.rsplit(":", 2)[-2:]
+        coordinates.add((int(row), int(column)))
+    return coordinates
+
+
+def correctable_coordinates(
+    grid: RawGrid,
+    flagged: set[tuple[int, int]],
+) -> set[tuple[int, int]]:
+    """Data cells a maintainer may retype.
+
+    Parser confidence is not correctness: a cell read as a clean number can
+    still be the wrong number, so every numeric data cell is correctable, not
+    only the ones the parser flagged.  Cells the parser could not turn into a
+    number at all stay correctable through their flag, and a value can never be
+    removed, so the count of numeric cells backing a typed table cannot change.
+    """
+    return {
+        (cell.row, cell.column)
+        for cell in grid.cells
+        if cell.role == "data" and ((cell.row, cell.column) in flagged or cell.value is not None)
+    }
+
+
+def _corrected_cells(
+    grid: RawGrid,
+    corrections: Mapping[tuple[int, int], Decimal],
+    flagged: set[tuple[int, int]],
+) -> tuple[RawGridCell, ...]:
+    """Apply retyped values and clear the parser's flag on every flagged cell."""
+    correctable = correctable_coordinates(grid, flagged)
+    unexpected = set(corrections) - correctable
+    if unexpected:
+        raise ValueError(f"raw grid cell is not correctable: {sorted(unexpected)!r}")
+    cells: list[RawGridCell] = []
+    for cell in grid.cells:
+        coordinate = (cell.row, cell.column)
+        if coordinate not in flagged and coordinate not in corrections:
+            cells.append(cell)
+            continue
+        value = corrections.get(coordinate, cell.value)
+        if value is None or not value.is_finite():
+            raise ValueError(f"raw grid correction must be a finite decimal: {coordinate}")
+        cells.append(
+            cell.model_copy(
+                update={
+                    "value": value,
+                    "qualifier": None,
+                    "suffix": None,
+                    "parse_status": "numeric",
+                }
+            )
+        )
+    return tuple(cells)
+
+
 def accept_raw_table(
     draft: ImportedRuleDraft,
     *,
@@ -294,30 +360,10 @@ def accept_raw_table(
     )
     if not table_items and not raw_items:
         raise ValueError(f"raw table {grid_id} is already accepted")
-    coordinates = {tuple(map(int, item.semantic_id.rsplit(":", 2)[-2:])) for item in raw_items}
-    unexpected = set(corrections) - coordinates
-    if unexpected:
-        raise ValueError(f"raw grid correction is not flagged: {sorted(unexpected)!r}")
-    changed_cells: list[RawGridCell] = []
-    for cell in grid.cells:
-        coordinate = (cell.row, cell.column)
-        if coordinate not in coordinates:
-            changed_cells.append(cell)
-            continue
-        value = corrections.get(coordinate, cell.value)
-        if value is None or not value.is_finite():
-            raise ValueError(f"raw grid correction must be a finite decimal: {coordinate}")
-        changed_cells.append(
-            cell.model_copy(
-                update={
-                    "value": value,
-                    "qualifier": None,
-                    "suffix": None,
-                    "parse_status": "numeric",
-                }
-            )
-        )
-    changed_grid = grid.model_copy(update={"cells": tuple(changed_cells)})
+    coordinates = flagged_coordinates(raw_items)
+    changed_grid = grid.model_copy(
+        update={"cells": _corrected_cells(grid, corrections, coordinates)}
+    )
     changed = draft.model_copy(
         update={
             "raw_grids": tuple(
@@ -386,31 +432,9 @@ def accept_raw_grid(
     )
     if not pending:
         raise ValueError(f"raw grid {grid_id} has no unresolved raw cells")
-    coordinates = {tuple(map(int, item.semantic_id.rsplit(":", 2)[-2:])) for item in pending}
-    unexpected = set(corrections) - coordinates
-    if unexpected:
-        raise ValueError(f"raw grid correction is not flagged: {sorted(unexpected)!r}")
-
-    changed_cells: list[RawGridCell] = []
-    for cell in grid.cells:
-        coordinate = (cell.row, cell.column)
-        if coordinate not in coordinates:
-            changed_cells.append(cell)
-            continue
-        value = corrections.get(coordinate, cell.value)
-        if value is None or not value.is_finite():
-            raise ValueError(f"raw grid correction must be a finite decimal: {coordinate}")
-        changed_cells.append(
-            cell.model_copy(
-                update={
-                    "value": value,
-                    "qualifier": None,
-                    "suffix": None,
-                    "parse_status": "numeric",
-                }
-            )
-        )
-    changed_grid = grid.model_copy(update={"cells": tuple(changed_cells)})
+    changed_grid = grid.model_copy(
+        update={"cells": _corrected_cells(grid, corrections, flagged_coordinates(pending))}
+    )
     changed = draft.model_copy(
         update={
             "raw_grids": tuple(

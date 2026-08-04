@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QDialog
 
 from insulation_coordination.domain.rules import SourceReference
+from insulation_coordination.rules.importer import extract
 from insulation_coordination.rules.importer import recipes as recipe_registry
 from insulation_coordination.rules.importer.extract import ExtractedEquation
 from insulation_coordination.rules.importer.review import (
@@ -20,8 +22,18 @@ def injected_recipes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(recipe_registry, "RECIPES", _test_recipes())
 
 
-@pytest.fixture
-def tables_accepted(tmp_path):
+@pytest.fixture(autouse=True)
+def maintainer_reviews_every_equation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Extract drafts whose equations and mappings all await a human.
+
+    The synthetic recipes declare no PDF-extracted equation, so a real draft
+    leaves this dialog nothing to show; treating every item as PDF-derived puts
+    the dialog in the state a maintainer sees for IEC 60664-4.
+    """
+    monkeypatch.setattr(extract, "is_recipe_derived", lambda _item: False)
+
+
+def _tables_accepted(tmp_path):
     draft = _compound_draft(tmp_path)
     for grid in draft.raw_grids:
         draft = accept_raw_table(
@@ -34,6 +46,11 @@ def tables_accepted(tmp_path):
     return draft
 
 
+@pytest.fixture
+def tables_accepted(tmp_path):
+    return _tables_accepted(tmp_path)
+
+
 def test_dialog_shows_canonical_formula_source_and_dependent_mappings(
     qtbot,
     tables_accepted,
@@ -41,10 +58,13 @@ def test_dialog_shows_canonical_formula_source_and_dependent_mappings(
     dialog = EquationReviewDialog(tables_accepted, actor="Maintainer")
     qtbot.addWidget(dialog)
 
+    details = dialog._details.toPlainText()
     assert dialog._formula_selector.count() == 2
-    assert "synthetic-part1-formula" in dialog._details.toPlainText()
-    assert "linear_interpolate" in dialog._details.toPlainText()
-    assert "SYNTHETIC" in dialog._details.toPlainText()
+    assert "synthetic-part1-formula" in details
+    assert "Calculation: table synthetic-part1-table[row stress (interpolated)" in details
+    assert "Canonical shape (audit contract): table_select:" in details
+    assert "Numbers read from the PDF (check these): none" in details
+    assert "SYNTHETIC" in details
     assert dialog._mappings.count() == 1
     assert dialog._notes_edit.text() == ""
     assert not hasattr(dialog, "_edits")
@@ -73,6 +93,22 @@ def test_accept_requires_notes_and_resolves_only_current_formula_and_mappings(
     assert len(unresolved_equation_items(dialog.reviewed_draft)) == 1
     assert len(unresolved_mapping_items(dialog.reviewed_draft)) == 1
     assert dialog._formula_selector.currentData() == "synthetic-part4-formula"
+
+
+def test_accepting_the_last_equation_closes_the_dialog(qtbot, tables_accepted) -> None:
+    dialog = EquationReviewDialog(tables_accepted, actor="Maintainer")
+    qtbot.addWidget(dialog)
+
+    dialog._notes_edit.setText("Verified against the source clause")
+    qtbot.mouseClick(dialog._accept_button, Qt.MouseButton.LeftButton)
+    assert dialog.result() != QDialog.DialogCode.Accepted
+
+    dialog._notes_edit.setText("Verified against the source clause")
+    qtbot.mouseClick(dialog._accept_button, Qt.MouseButton.LeftButton)
+
+    assert unresolved_equation_items(dialog.reviewed_draft) == ()
+    assert unresolved_mapping_items(dialog.reviewed_draft) == ()
+    assert dialog.result() == QDialog.DialogCode.Accepted
 
 
 def test_unresolved_extracted_equation_cannot_be_accepted(qtbot, tables_accepted) -> None:
@@ -116,17 +152,8 @@ def test_dialog_exposes_mapping_without_formula_dependency(
         }
     )
     monkeypatch.setattr(recipe_registry, "RECIPES", (part1, recipes[1]))
-    from tests.rules.test_importer import _compound_draft
 
-    draft = _compound_draft(tmp_path)
-    for grid in draft.raw_grids:
-        draft = accept_raw_table(
-            draft,
-            grid_id=grid.id,
-            corrections={},
-            actor="Maintainer",
-            notes="Verified table",
-        )
+    draft = _tables_accepted(tmp_path)
 
     dialog = EquationReviewDialog(draft, actor="Maintainer")
     qtbot.addWidget(dialog)
