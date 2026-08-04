@@ -24,6 +24,7 @@ dev = [
   "pytest>=8,<10",
   "pytest-cov>=6,<8",
   "pytest-qt>=4.4,<5",
+  "pytest-timeout>=2.3,<3",
   "ruff>=0.16.1,<1",
 ]
 
@@ -36,7 +37,9 @@ packages = ["src/insulation_coordination"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--strict-markers"
+# A modal dialog nobody can answer blocks a UI test forever; without this the
+# whole job hangs until the 30-minute CI timeout and names no test.
+addopts = "--strict-markers --timeout=120"
 markers = ["private_standard: requires ignored licensed PDFs"]
 
 [tool.ruff]
