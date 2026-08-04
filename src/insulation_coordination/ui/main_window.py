@@ -42,6 +42,7 @@ from insulation_coordination.update_check import (
 )
 
 _STARTUP_CHECK_KEY = "updates/check_on_startup"
+_SKIPPED_VERSION_KEY = "updates/skipped_version"
 
 
 def _settings() -> QSettings:
@@ -334,12 +335,19 @@ class MainWindow(QMainWindow):
             QApplication.restoreOverrideCursor()
         self._show_update_message(status)
 
-    def _show_update_message(self, status: UpdateStatus) -> None:
+    def _show_update_message(self, status: UpdateStatus, *, allow_skip: bool = False) -> None:
         box = QMessageBox(self)
         box.setWindowTitle("Check for Updates")
         box.setTextFormat(Qt.TextFormat.RichText)
         box.setText(self.update_message(status))
+        skip_button = (
+            box.addButton("Skip This Version", QMessageBox.ButtonRole.ActionRole)
+            if allow_skip
+            else None
+        )
         box.exec()
+        if skip_button is not None and box.clickedButton() is skip_button:
+            self.set_skipped_version(status.latest_version)
 
     def update_check_on_startup(self) -> bool:
         """Whether startup asks GitHub for a newer release. On by default."""
@@ -347,6 +355,13 @@ class MainWindow(QMainWindow):
 
     def set_update_check_on_startup(self, enabled: bool) -> None:
         _settings().setValue(_STARTUP_CHECK_KEY, enabled)
+
+    def skipped_version(self) -> str:
+        """Release the user asked not to be reminded about again."""
+        return str(_settings().value(_SKIPPED_VERSION_KEY, "", type=str))
+
+    def set_skipped_version(self, version: str) -> None:
+        _settings().setValue(_SKIPPED_VERSION_KEY, version)
 
     def start_startup_update_check(self) -> None:
         """Check for a newer release without blocking the window, unless turned off."""
@@ -366,9 +381,10 @@ class MainWindow(QMainWindow):
             pass  # Window closed while the check was still running.
 
     def _on_startup_update_ready(self, status: UpdateStatus) -> None:
-        """Only interrupt the user when there is actually a newer release."""
-        if status.update_available:
-            self._show_update_message(status)
+        """Only interrupt the user about a newer release they have not skipped."""
+        if not status.update_available or status.latest_version == self.skipped_version():
+            return
+        self._show_update_message(status, allow_skip=True)
 
     def _update_actions(self) -> None:
         has_project = self._project is not None

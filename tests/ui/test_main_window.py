@@ -199,7 +199,7 @@ def test_help_menu_offers_a_bug_report_link(qtbot, monkeypatch) -> None:
 
     assert window._report_issue_action.text() == "&Report a Bug or Request a Feature…"
     assert opened == [NEW_ISSUE_URL]
-    assert NEW_ISSUE_URL == f"{REPOSITORY_URL}/issues/new"
+    assert NEW_ISSUE_URL == f"{REPOSITORY_URL}/issues/new/choose"
 
 
 def test_startup_update_check_is_on_by_default_and_can_be_turned_off(
@@ -247,31 +247,68 @@ def test_startup_update_check_stays_silent_without_internet(qtbot, monkeypatch) 
     assert shown == []
 
 
+def _status(update_available: bool, latest: str = "0.2.0"):
+    from insulation_coordination.update_check import UpdateStatus
+
+    return UpdateStatus(
+        current_version="0.1.0",
+        latest_version=latest if update_available else "0.1.0",
+        release_url="https://github.com/smarley2/insulation-coordination-calculator/releases",
+        update_available=update_available,
+    )
+
+
 def test_startup_update_check_reports_only_a_newer_release(qtbot, monkeypatch) -> None:
     from insulation_coordination.ui import main_window as main_window_module
-    from insulation_coordination.update_check import UpdateStatus
 
     window = MainWindow()
     qtbot.addWidget(window)
     shown: list[object] = []
-    monkeypatch.setattr(window, "_show_update_message", shown.append)
+    monkeypatch.setattr(window, "_show_update_message", lambda status, **_: shown.append(status))
 
-    def status(update_available: bool) -> UpdateStatus:
-        return UpdateStatus(
-            current_version="0.1.0",
-            latest_version="0.2.0" if update_available else "0.1.0",
-            release_url="https://github.com/smarley2/insulation-coordination-calculator/releases",
-            update_available=update_available,
-        )
-
-    monkeypatch.setattr(main_window_module, "check_for_update", lambda: status(False))
+    monkeypatch.setattr(main_window_module, "check_for_update", lambda: _status(False))
     window._run_startup_update_check()
     assert shown == []
 
-    up_to_date = status(True)
-    monkeypatch.setattr(main_window_module, "check_for_update", lambda: up_to_date)
+    newer = _status(True)
+    monkeypatch.setattr(main_window_module, "check_for_update", lambda: newer)
     window._run_startup_update_check()
-    assert shown == [up_to_date]
+    assert shown == [newer]
+
+
+def test_skipped_version_is_not_announced_again_at_startup(qtbot, monkeypatch, tmp_path) -> None:
+    _file_settings(monkeypatch, tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    shown: list[object] = []
+    monkeypatch.setattr(window, "_show_update_message", lambda status, **_: shown.append(status))
+    assert window.skipped_version() == ""
+
+    window.set_skipped_version("0.2.0")
+    window._on_startup_update_ready(_status(True, latest="0.2.0"))
+    assert shown == []
+
+    # A release after the skipped one still gets announced.
+    later = _status(True, latest="0.3.0")
+    window._on_startup_update_ready(later)
+    assert shown == [later]
+
+
+def test_manual_update_check_ignores_a_skipped_version(qtbot, monkeypatch, tmp_path) -> None:
+    from insulation_coordination.ui import main_window as main_window_module
+
+    _file_settings(monkeypatch, tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.set_skipped_version("0.2.0")
+    shown: list[object] = []
+    monkeypatch.setattr(window, "_show_update_message", lambda status, **_: shown.append(status))
+    skipped = _status(True, latest="0.2.0")
+    monkeypatch.setattr(main_window_module, "check_for_update", lambda: skipped)
+
+    window.check_for_updates()
+
+    assert shown == [skipped]
 
 
 def _project_with_metadata() -> Project:

@@ -17,7 +17,7 @@ LATEST_RELEASE_API = (
     "https://api.github.com/repos/smarley2/insulation-coordination-calculator/releases/latest"
 )
 RELEASES_URL = f"{REPOSITORY_URL}/releases"
-NEW_ISSUE_URL = f"{REPOSITORY_URL}/issues/new"
+NEW_ISSUE_URL = f"{REPOSITORY_URL}/issues/new/choose"
 
 _MAX_RESPONSE_BYTES = 1_000_000
 _NUMBERS = re.compile(r"\d+")
