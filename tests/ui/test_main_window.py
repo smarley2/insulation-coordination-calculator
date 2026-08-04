@@ -247,6 +247,22 @@ def test_save_writes_back_to_the_opened_file_without_asking(qtbot, tmp_path, mon
     assert load_project(path).metadata.title == "Renamed in place"
 
 
+def test_a_new_project_has_nothing_to_discard_but_can_still_be_saved(qtbot, monkeypatch) -> None:
+    from insulation_coordination.ui import main_window as main_window_module
+
+    def fail_question(*args: object, **kwargs: object) -> object:
+        raise AssertionError("An untouched new project has no changes to discard")
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    monkeypatch.setattr(main_window_module.QMessageBox, "question", fail_question)
+
+    window._on_new()
+
+    assert window.is_dirty is False
+    assert window._save_action.isEnabled() is True
+
+
 def test_save_asks_for_a_name_only_while_the_project_has_no_file(qtbot, tmp_path, monkeypatch) -> None:
     from insulation_coordination.project.persistence import load_project
     from insulation_coordination.ui import main_window as main_window_module

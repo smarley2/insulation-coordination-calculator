@@ -318,7 +318,9 @@ class MainWindow(QMainWindow):
 
     def _update_actions(self) -> None:
         has_project = self._project is not None
-        self._save_action.setEnabled(has_project and self._dirty)
+        # A project that was never written to disk is savable even before the
+        # first edit; only an opened one needs changes to be worth saving.
+        self._save_action.setEnabled(has_project and (self._dirty or self._project_path is None))
         self._save_as_action.setEnabled(has_project)
         self._close_action.setEnabled(has_project)
 
@@ -375,7 +377,7 @@ class MainWindow(QMainWindow):
             pairs=(),
         )
         self.open_project_from_project(project)
-        self._dirty = True
+        self._dirty = False
         self._update_actions()
 
     def _on_open(self) -> None:
