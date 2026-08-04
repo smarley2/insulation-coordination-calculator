@@ -41,10 +41,14 @@ from insulation_coordination.domain.rules import Maximum, RulePackage, SourceRef
 from insulation_coordination.domain.trace import Quantity, TraceStep
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_formula
 
-CALCULATION_ENGINE_VERSION = "pcb-annex-gh-2"
+CALCULATION_ENGINE_VERSION = "pcb-annex-gh-3"
+
+INNER_LAYER_POLLUTION_DEGREE = 1
+"""Inner printed-wiring layers are dimensioned in pollution degree 1."""
 
 __all__ = [
     "CALCULATION_ENGINE_VERSION",
+    "INNER_LAYER_POLLUTION_DEGREE",
     "CalculationError",
     "CalculationRangeError",
     "CalculationTrace",
@@ -142,6 +146,8 @@ class PairResult(FrozenModel):
     calculation_engine_version: str
     clearance_mm: DecimalValue
     creepage_mm: DecimalValue
+    inner_clearance_mm: DecimalValue
+    inner_creepage_mm: DecimalValue
     effective_inputs: EffectiveInputSnapshot
     trace: CalculationTrace
     warnings: tuple[CalculationWarning, ...] = ()
@@ -242,6 +248,7 @@ def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
         steps,
         rules,
     )
+    inner = _inner_layer_result(effective, rules)
     return PairResult(
         pair_id=effective.id,
         pair_key=effective.key,
@@ -251,6 +258,8 @@ def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
         calculation_engine_version=CALCULATION_ENGINE_VERSION,
         clearance_mm=final_clearance,
         creepage_mm=final_creepage,
+        inner_clearance_mm=final_clearance if inner is None else inner.clearance_mm,
+        inner_creepage_mm=final_creepage if inner is None else inner.creepage_mm,
         effective_inputs=_snapshot_effective_inputs(effective),
         warnings=warnings,
         verification_requirements=verification_requirements,
@@ -276,6 +285,29 @@ def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
             verification_requirements=verification_requirements,
         ),
     )
+
+
+def _inner_layer_result(effective: EffectiveCase, rules: RulePackage) -> PairResult | None:
+    """Recalculate the pair in pollution degree 1 for its inner printed-wiring layers.
+
+    Inner layers are sealed inside the board, so their creepage distances are
+    dimensioned as creepage in pollution degree 1 and their clearances as
+    clearances in air for that same condition. A pair already in pollution
+    degree 1 needs no second calculation; ``None`` reports that its outer
+    distances also apply to its inner layers.
+    """
+    if effective.pollution_degree.value == INNER_LAYER_POLLUTION_DEGREE:
+        return None
+    inner_case = effective.model_copy(
+        update={
+            "pollution_degree": EffectiveValue[int | None](
+                value=INNER_LAYER_POLLUTION_DEGREE,
+                provenance=effective.pollution_degree.provenance,
+            )
+        }
+    )
+    # The recursion stops at one level: inner_case is already pollution degree 1.
+    return calculate_pair(inner_case, rules)
 
 
 def _snapshot_effective_inputs(effective: EffectiveCase) -> EffectiveInputSnapshot:

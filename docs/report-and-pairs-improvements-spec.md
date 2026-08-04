@@ -16,8 +16,12 @@ of net-class pairs rather than internal identifiers.
 - Calculation groups and results use `net-class ↔ net-class` labels. UUIDs and
   result hashes are implementation details and are not shown in the human
   report or primary calculation lists.
-- The matrix parameter selector includes required clearance and required
-  creepage. Their cells show an em dash until a successful calculation exists.
+- The matrix parameter selector includes required clearance, required creepage,
+  and the inner-layer clearance and creepage. Their cells show an em dash until
+  a successful calculation exists.
+- Inner printed-wiring layers are dimensioned in pollution degree 1, with their
+  clearances taken as clearances in air. Every pair is therefore calculated a
+  second time in pollution degree 1, and both results are reported.
 - An explicit project default of `printed_wiring` confirms the construction
   classification. It must not create the PCB construction warning or its
   duplicate verification requirement.
@@ -40,6 +44,14 @@ The page keeps three independent regions:
 1. a coverage matrix and pair list;
 2. a vertically scrollable selected-pair editor;
 3. calculation groups and results.
+
+The pair list takes only the width its longest pair name needs; the calculation
+groups and results share the rest of the row equally, since their lines are far
+longer.
+
+`File → Save` writes back to the file the project was opened from or last saved
+to. Only a project without a file yet asks for a name. `File → Save As…` always
+asks, and the chosen file becomes the project's file.
 
 The coverage matrix and pair list must not overlap. The editor's vertical
 scrollbar must expose all voltage and parameter controls at laptop-height
@@ -65,7 +77,8 @@ The calculation review uses labels such as:
 
 - `Group 1 — 2 pairs`
 - `HVP ↔ HVN`
-- `HVP ↔ PE: clearance 3.0 mm, creepage 5.0 mm`
+- `HVP ↔ PE: clearance 3.0 mm, creepage 5.0 mm, inner clearance 2.8 mm, inner
+  creepage 4.0 mm`
 
 Group membership is visible to a human without opening a tooltip or decoding
 a hash. Internal IDs may remain in tooltips or diagnostic logs only if needed
@@ -78,6 +91,8 @@ options plus:
 
 - `Required clearance`
 - `Required creepage`
+- `Inner-layer clearance`
+- `Inner-layer creepage`
 
 After calculation, each applicable pair cell displays the calculated value in
 millimetres. Before calculation or when no result is available, it displays
@@ -96,8 +111,9 @@ there only when its effective value is identical for all pairs.
 For each characteristic whose value differs, the report renders a square
 net-class × net-class matrix. Diagonal cells contain an em dash; pair cells
 contain the value for that net-class pair. The generated matrices cover the
-effective inputs, voltage stresses, required clearance, and required creepage.
-Only matrices with a real difference are rendered.
+effective inputs, voltage stresses, required clearance, required creepage, and
+the required inner-layer clearance and creepage. Only matrices with a real
+difference are rendered.
 
 The matrix layout uses bounded, wrapping columns and ordinary portrait pages
 where possible. It must not contain unbreakable UUIDs, hashes, or raw semantic
@@ -112,6 +128,8 @@ human-readable pair members. Each pair section contains:
 - concise effective conditions and voltage stresses;
 - candidate distances with readable labels;
 - the selected clearance and creepage values;
+- the inner-layer clearance and creepage values with their pollution-degree-1
+  basis;
 - short paragraphs explaining the rule selection, corrections, and governing
   result;
 - standards and table references where they support the decision.
@@ -156,6 +174,8 @@ Automated tests cover:
 - all-or-nothing missing-frequency validation;
 - human group and result labels;
 - calculated clearance and creepage matrix values;
+- inner-layer distances calculated in pollution degree 1 and shown in the
+  matrix, the report matrices, and the grouped calculations;
 - common-versus-different Chapter 4 matrix generation;
 - readable Chapter 5 output with no UUIDs, hashes, or raw paths;
 - suppression and deduplication of printed-wiring advisories;

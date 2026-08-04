@@ -877,9 +877,22 @@ class PairPage(QWidget):
         editor_width = self._preferred_editor_width(width)
         self._top_splitter.setSizes([width - editor_width, editor_width])
         self._main_splitter.setSizes([int(height * 0.6), int(height * 0.4)])
-        third = max(width // 3, 1)
-        self._lower_splitter.setSizes([third, width - third])
-        self.calculation_review.balance_columns(width - third)
+        pairs_width = self._preferred_pairs_width(width)
+        self._lower_splitter.setSizes([pairs_width, width - pairs_width])
+        self.calculation_review.balance_columns(width - pairs_width)
+
+    def _preferred_pairs_width(self, width: int) -> int:
+        """Keep the pair list as narrow as its longest pair name allows.
+
+        The groups and results beside it carry far longer lines, so every pixel
+        the names do not need belongs to them.
+        """
+        needed = (
+            self._pair_list_view.sizeHintForColumn(0)
+            + self._pair_list_view.verticalScrollBar().sizeHint().width()
+            + 2 * self._pair_list_view.frameWidth()
+        )
+        return max(min(needed, width // 3), self._pair_list_view.minimumSizeHint().width())
 
     def _preferred_editor_width(self, width: int) -> int:
         """Open the editor no wider than its inputs need, so they sit far right."""

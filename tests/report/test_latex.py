@@ -196,6 +196,8 @@ def test_matrix_and_group_chapter_snapshot_all_audit_fields(report_model) -> Non
     assert row.altitude_provenance == "project_default"
     assert row.clearance_mm == calculation.clearance_mm
     assert row.creepage_mm == calculation.creepage_mm
+    assert row.inner_clearance_mm == calculation.inner_clearance_mm
+    assert row.inner_creepage_mm == calculation.inner_creepage_mm
     assert calculation.clearance_candidates
     assert calculation.creepage_candidates
     assert len(calculation.stresses) == 4
@@ -466,3 +468,16 @@ def test_report_rejects_dangerous_formula_from_otherwise_valid_approved_package(
             group_results((unsafe_result,), ()),
             unsafe_rules,
         )
+
+
+def test_grouped_calculation_states_the_inner_layer_distances(report_model) -> None:
+    calculation = report_model.groups[0].calculations[0]
+    tex = render_latex(report_model)
+
+    grouped_tex = tex.split(r"\section{Grouped Calculations}", 1)[1]
+    inner_tex = grouped_tex.split("Inner printed-wiring layers", 1)[1]
+
+    assert "dimensioned in pollution degree 1" in inner_tex
+    assert "clearances taken as clearances in air" in inner_tex
+    assert rf"\textbf{{{calculation.inner_clearance_mm} mm}}" in inner_tex
+    assert rf"\textbf{{{calculation.inner_creepage_mm} mm}}" in inner_tex

@@ -115,6 +115,8 @@ class MatrixRow(FrozenModel):
     altitude_provenance: str
     clearance_mm: Decimal
     creepage_mm: Decimal
+    inner_clearance_mm: Decimal
+    inner_creepage_mm: Decimal
     governing_clearance_path: str
     governing_creepage_path: str
     group_id: str
@@ -138,6 +140,8 @@ class PairCalculationReport(FrozenModel):
     governing_creepage_reason: str
     clearance_mm: Decimal
     creepage_mm: Decimal
+    inner_clearance_mm: Decimal
+    inner_creepage_mm: Decimal
     steps: tuple[ReportStep, ...]
     warnings: tuple[CalculationWarning, ...]
     verification_requirements: tuple[VerificationRequirement, ...]
@@ -436,6 +440,8 @@ def _matrix_row(
         altitude_provenance=effective.altitude_m.provenance.value,
         clearance_mm=result.clearance_mm,
         creepage_mm=result.creepage_mm,
+        inner_clearance_mm=result.inner_clearance_mm,
+        inner_creepage_mm=result.inner_creepage_mm,
         governing_clearance_path=result.trace.governing_clearance_candidate_id,
         governing_creepage_path=result.trace.governing_creepage_candidate_id,
         group_id=group_id,
@@ -478,6 +484,8 @@ def _calculation(result: PairResult) -> PairCalculationReport:
         governing_creepage_reason=result.trace.governing_creepage_reason,
         clearance_mm=result.clearance_mm,
         creepage_mm=result.creepage_mm,
+        inner_clearance_mm=result.inner_clearance_mm,
+        inner_creepage_mm=result.inner_creepage_mm,
         steps=tuple(
             _report_step(step, governing_sources.get(step.semantic_rule_id))
             for step in result.trace.steps

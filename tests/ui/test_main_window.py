@@ -363,3 +363,84 @@ def test_report_metadata_edit_keeps_the_caret_in_place(qtbot) -> None:
 
     assert edit.text() == "XDOC-1"
     assert edit.cursorPosition() == 1
+
+
+def test_save_writes_back_to_the_opened_file_without_asking(qtbot, tmp_path, monkeypatch) -> None:
+    from insulation_coordination.project.persistence import load_project, save_project_atomic
+    from insulation_coordination.ui import main_window as main_window_module
+
+    path = tmp_path / "design.icproj"
+    save_project_atomic(path, _project())
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.open_project(path)
+    assert window.project_path == path
+
+    def fail_dialog(*args: object, **kwargs: object) -> tuple[str, str]:
+        raise AssertionError("Save must not ask for a file name for an opened project")
+
+    monkeypatch.setattr(main_window_module.QFileDialog, "getSaveFileName", fail_dialog)
+    renamed = window.project.model_copy(
+        update={"metadata": ProjectMetadata(title="Renamed in place")}
+    )
+    window._on_project_changed(renamed)
+    window._on_save()
+
+    assert window.is_dirty is False
+    assert load_project(path).metadata.title == "Renamed in place"
+
+
+def test_a_new_project_has_nothing_to_discard_but_can_still_be_saved(qtbot, monkeypatch) -> None:
+    from insulation_coordination.ui import main_window as main_window_module
+
+    def fail_question(*args: object, **kwargs: object) -> object:
+        raise AssertionError("An untouched new project has no changes to discard")
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    monkeypatch.setattr(main_window_module.QMessageBox, "question", fail_question)
+
+    window._on_new()
+
+    assert window.is_dirty is False
+    assert window._save_action.isEnabled() is True
+
+
+def test_save_asks_for_a_name_only_while_the_project_has_no_file(qtbot, tmp_path, monkeypatch) -> None:
+    from insulation_coordination.project.persistence import load_project
+    from insulation_coordination.ui import main_window as main_window_module
+
+    path = tmp_path / "new-design.icproj"
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._on_new()
+    assert window.project_path is None
+
+    asked: list[str] = []
+
+    def dialog(*args: object, **kwargs: object) -> tuple[str, str]:
+        asked.append("asked")
+        return str(path), ""
+
+    monkeypatch.setattr(main_window_module.QFileDialog, "getSaveFileName", dialog)
+    window._on_save()
+
+    assert asked == ["asked"]
+    assert window.project_path == path
+    assert load_project(path).id == window.project.id
+
+    window._on_save()
+    assert asked == ["asked"]
+
+
+def test_closing_a_project_forgets_its_file(qtbot, tmp_path) -> None:
+    from insulation_coordination.project.persistence import save_project_atomic
+
+    path = tmp_path / "design.icproj"
+    save_project_atomic(path, _project())
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.open_project(path)
+    window._on_close_project()
+
+    assert window.project_path is None

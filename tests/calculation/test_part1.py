@@ -615,19 +615,21 @@ def test_clearance_floor_candidate_has_evaluator_trace_before_final_maximum(
 def test_printed_wiring_project_selection_counts_as_construction_confirmation(
     case_factory, synthetic_rules: RulePackage, tmp_path: Path
 ) -> None:
-    original = next(
-        mapping for mapping in synthetic_rules.mappings if mapping.id == "basic_creepage"
-    )
-    printed = original.model_copy(
-        update={
-            "id": "basic_creepage_printed_wiring",
-            "source_rule_id": original.source_rule_id.replace(
-                "construction=other", "construction=printed_wiring"
-            ),
-        }
+    # Both pollution degrees are routed: the inner layers are calculated in degree 1.
+    printed = tuple(
+        mapping.model_copy(
+            update={
+                "id": f"{mapping.id}_printed_wiring",
+                "source_rule_id": mapping.source_rule_id.replace(
+                    "construction=other", "construction=printed_wiring"
+                ),
+            }
+        )
+        for mapping in synthetic_rules.mappings
+        if mapping.id in ("basic_creepage", "basic_creepage_pd1")
     )
     rules = _seal_rules(
-        synthetic_rules.model_copy(update={"mappings": (*synthetic_rules.mappings, printed)}),
+        synthetic_rules.model_copy(update={"mappings": (*synthetic_rules.mappings, *printed)}),
         tmp_path / "printed-wiring.icrules",
     )
 
@@ -873,3 +875,61 @@ def test_f5_voltage_outside_joined_table_blocks(
             ),
             semantic_annex_g_rules,
         )
+
+
+def test_inner_layers_are_dimensioned_in_pollution_degree_1(
+    case_factory,
+    semantic_annex_g_rules: RulePackage,
+) -> None:
+    case = case_factory(construction_type=ConstructionType.PRINTED_WIRING, pollution_degree=2)
+
+    result = calculate_pair(case, semantic_annex_g_rules)
+    pollution_1 = calculate_pair(
+        case.model_copy(
+            update={
+                "pollution_degree": EffectiveValue[int | None](
+                    value=1,
+                    provenance=Provenance.PROJECT_DEFAULT,
+                )
+            }
+        ),
+        semantic_annex_g_rules,
+    )
+
+    assert result.inner_clearance_mm == pollution_1.clearance_mm
+    assert result.inner_creepage_mm == pollution_1.creepage_mm
+    assert result.inner_clearance_mm < result.clearance_mm
+    assert result.inner_creepage_mm < result.creepage_mm
+
+
+def test_pollution_degree_1_pairs_reuse_their_outer_distances_for_inner_layers(
+    case_factory,
+    semantic_annex_g_rules: RulePackage,
+) -> None:
+    result = calculate_pair(
+        case_factory(construction_type=ConstructionType.PRINTED_WIRING, pollution_degree=1),
+        semantic_annex_g_rules,
+    )
+
+    assert result.inner_clearance_mm == result.clearance_mm
+    assert result.inner_creepage_mm == result.creepage_mm
+
+
+def test_inner_layer_distances_require_their_own_approved_route(
+    case_factory, synthetic_rules: RulePackage, tmp_path: Path
+) -> None:
+    without_pd1 = _seal_rules(
+        synthetic_rules.model_copy(
+            update={
+                "mappings": tuple(
+                    mapping
+                    for mapping in synthetic_rules.mappings
+                    if mapping.id != "basic_creepage_pd1"
+                )
+            }
+        ),
+        tmp_path / "no-inner-route.icrules",
+    )
+
+    with pytest.raises(RuleMappingError, match="pollution=1"):
+        calculate_pair(case_factory(), without_pd1)

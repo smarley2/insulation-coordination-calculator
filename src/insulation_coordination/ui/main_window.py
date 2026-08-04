@@ -64,6 +64,7 @@ class MainWindow(QMainWindow):
         self.resize(1000, 700)
 
         self._project: Project | None = None
+        self._project_path: Path | None = None
         self._rules: RulePackage | None = None
         self._dirty = False
         self._current_page = 0
@@ -121,6 +122,11 @@ class MainWindow(QMainWindow):
         return self._dirty
 
     @property
+    def project_path(self) -> Path | None:
+        """File the open project came from, or None until it has one."""
+        return self._project_path
+
+    @property
     def rules(self) -> RulePackage | None:
         return self._rules
 
@@ -130,7 +136,7 @@ class MainWindow(QMainWindow):
         except ProjectLoadError as error:
             QMessageBox.critical(self, "Open Project", str(error))
             return
-        self.open_project_from_project(project)
+        self.open_project_from_project(project, Path(path))
 
     def open_document(self, path: Path) -> bool:
         try:
@@ -139,7 +145,7 @@ class MainWindow(QMainWindow):
                 raise ValueError("startup document path is missing")
             if request.kind is StartupKind.PROJECT:
                 project = load_project(request.path)
-                self.open_project_from_project(project)
+                self.open_project_from_project(project, request.path)
             else:
                 installed = install_rule_package(request.path)
                 self.load_rules(installed.package)
@@ -148,8 +154,9 @@ class MainWindow(QMainWindow):
             return False
         return True
 
-    def open_project_from_project(self, project: Project) -> None:
+    def open_project_from_project(self, project: Project, path: Path | None = None) -> None:
         self._project = project
+        self._project_path = None if path is None else Path(path)
         self._dirty = False
         self._project_page.load_project(project)
         if self._rules is not None:
@@ -186,6 +193,7 @@ class MainWindow(QMainWindow):
         if self._project is None:
             raise RuntimeError("No project loaded")
         save_project_atomic(Path(path), self._project)
+        self._project_path = Path(path)
         self._dirty = False
         self._project_page.mark_saved()
         self._update_actions()
@@ -388,7 +396,9 @@ class MainWindow(QMainWindow):
 
     def _update_actions(self) -> None:
         has_project = self._project is not None
-        self._save_action.setEnabled(has_project and self._dirty)
+        # A project that was never written to disk is savable even before the
+        # first edit; only an opened one needs changes to be worth saving.
+        self._save_action.setEnabled(has_project and (self._dirty or self._project_path is None))
         self._save_as_action.setEnabled(has_project)
         self._close_action.setEnabled(has_project)
 
@@ -445,7 +455,7 @@ class MainWindow(QMainWindow):
             pairs=(),
         )
         self.open_project_from_project(project)
-        self._dirty = True
+        self._dirty = False
         self._update_actions()
 
     def _on_open(self) -> None:
@@ -458,28 +468,31 @@ class MainWindow(QMainWindow):
             self.open_project(Path(path))
 
     def _on_save(self) -> None:
+        """Save straight back to the open file; only a new project needs a name."""
         if self._project is None:
             return
-        path = getattr(self, "_last_save_path", None)
-        if path is None:
+        if self._project_path is None:
             self._on_save_as()
             return
-        self.save_project(Path(path))
+        self.save_project(self._project_path)
 
     def _on_save_as(self) -> None:
         if self._project is None:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Project", "", "Insulation Coordination Project (*.icproj)"
+            self,
+            "Save Project As",
+            "" if self._project_path is None else str(self._project_path),
+            "Insulation Coordination Project (*.icproj)",
         )
         if path:
-            self._last_save_path = path
             self.save_project(Path(path))
 
     def _on_close_project(self) -> None:
         if self._dirty and not self._confirm_discard():
             return
         self._project = None
+        self._project_path = None
         self._rules = None
         self._dirty = False
         self.statusBar().showMessage("Ready")

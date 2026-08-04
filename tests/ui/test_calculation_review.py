@@ -99,6 +99,28 @@ def test_review_shows_candidates_traces_warnings(qtbot, project, rules) -> None:
     assert page.groups
 
 
+def test_review_reports_inner_layer_distances_per_pair(qtbot, project, rules) -> None:
+    from insulation_coordination.ui.calculation_review import CalculationReviewPage
+
+    result = calculate_pair(resolve_effective_case(project.defaults, project.pairs[0]), rules)
+    page = CalculationReviewPage()
+    qtbot.addWidget(page)
+    page.update_results((result,), project)
+
+    item = page._results_list.item(0)
+    assert item is not None
+    assert f"inner clearance={result.inner_clearance_mm} mm" in item.text()
+    assert f"inner creepage={result.inner_creepage_mm} mm" in item.text()
+    assert (
+        f"Inner-layer clearance (pollution degree 1): {result.inner_clearance_mm} mm"
+        in item.toolTip()
+    )
+    assert (
+        f"Inner-layer creepage (pollution degree 1): {result.inner_creepage_mm} mm"
+        in item.toolTip()
+    )
+
+
 def test_invalid_change_clears_stale_results(qtbot, project, rules) -> None:
     from insulation_coordination.ui.calculation_review import CalculationReviewPage
 
