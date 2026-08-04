@@ -63,3 +63,45 @@ def test_human_view_deduplicates_warning_and_matching_verification(report_inputs
 
     assert [item.code for item in view.advisories] == ["CHECK"]
     assert view.verification_requirements == ()
+
+
+def test_human_view_reports_inner_layer_distances(report_inputs) -> None:
+    project, results, groups, rules = report_inputs
+    report_model = build_report_model(project, results, groups, rules)
+    row = report_model.matrix_rows[0]
+    inner_clearance = row.inner_clearance_mm + Decimal(1)
+    inner_creepage = row.inner_creepage_mm + Decimal(1)
+    changed_model = report_model.model_copy(
+        update={
+            "net_classes": (*report_model.net_classes, NetClass(id=UUID(int=5), name="PE")),
+            "matrix_rows": (
+                row,
+                row.model_copy(
+                    update={
+                        "pair_id": "synthetic-second-pair",
+                        "net_a": "PE",
+                        "net_b": "LV%2",
+                        "inner_clearance_mm": inner_clearance,
+                        "inner_creepage_mm": inner_creepage,
+                    }
+                ),
+            ),
+        }
+    )
+
+    view = build_human_report_view(changed_model)
+
+    clearance = next(
+        item
+        for item in view.comparison_matrices
+        if item.name == "Required inner-layer clearance"
+    )
+    creepage = next(
+        item for item in view.comparison_matrices if item.name == "Required inner-layer creepage"
+    )
+    assert (clearance.unit, creepage.unit) == ("mm", "mm")
+    assert clearance.values[2][1] == f"{inner_clearance} mm"
+    assert creepage.values[2][1] == f"{inner_creepage} mm"
+    calculation = view.groups[0].calculations[0]
+    assert calculation.inner_clearance == f"{row.inner_clearance_mm} mm"
+    assert calculation.inner_creepage == f"{row.inner_creepage_mm} mm"

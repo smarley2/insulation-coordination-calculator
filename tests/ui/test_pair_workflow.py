@@ -278,6 +278,25 @@ def test_matrix_parameter_displays_calculated_distances(qtbot, pair_page):
     )
 
 
+def test_matrix_parameter_displays_inner_layer_distances(qtbot, pair_page):
+    pair_page._matrix_parameter_combo.setCurrentText("Inner-layer clearance")
+    assert pair_page.matrix_model.data(pair_page.matrix_model.index(0, 1)) == "—"
+
+    _set_valid_inputs(pair_page)
+    pair_page.recalculate()
+    result = pair_page.result_by_id(pair_page.project.pairs[0].id)
+
+    assert result is not None
+    assert pair_page.matrix_model.data(pair_page.matrix_model.index(0, 1)) == (
+        f"{result.inner_clearance_mm} mm"
+    )
+
+    pair_page._matrix_parameter_combo.setCurrentText("Inner-layer creepage")
+    assert pair_page.matrix_model.data(pair_page.matrix_model.index(0, 1)) == (
+        f"{format(result.inner_creepage_mm, 'f').rstrip('0').rstrip('.')} mm"
+    )
+
+
 def test_clicking_matrix_cell_loads_pair_editor(qtbot, pair_page):
     pair_page._on_matrix_clicked(pair_page.matrix_model.index(1, 0))
     assert pair_page.editor.pair is pair_page.project.pairs[0]

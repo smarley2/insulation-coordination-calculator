@@ -65,6 +65,8 @@ class HumanPairCalculation:
     altitude_correction_applied: bool
     clearance: str
     creepage: str
+    inner_clearance: str
+    inner_creepage: str
     warnings: tuple[HumanAdvisory, ...]
     verification_requirements: tuple[HumanAdvisory, ...]
 
@@ -124,6 +126,18 @@ def build_human_report_view(model: ReportModel) -> HumanReportView:
             lambda row: _effective_text(row.clearance_mm, "mm"),
         ),
         ("Required creepage", "mm", "creepage", lambda row: _effective_text(row.creepage_mm, "mm")),
+        (
+            "Required inner-layer clearance",
+            "mm",
+            "inner clearance",
+            lambda row: _effective_text(row.inner_clearance_mm, "mm"),
+        ),
+        (
+            "Required inner-layer creepage",
+            "mm",
+            "inner creepage",
+            lambda row: _effective_text(row.inner_creepage_mm, "mm"),
+        ),
     )
     for name, unit, _key, value_getter in default_specs:
         values = tuple(value_getter(row) for row in model.matrix_rows)
@@ -262,6 +276,8 @@ def _human_calculation(row: MatrixRow, calculation: PairCalculationReport) -> Hu
         altitude_correction_applied=calculation.altitude_correction_applied,
         clearance=_effective_text(calculation.clearance_mm, "mm"),
         creepage=_effective_text(calculation.creepage_mm, "mm"),
+        inner_clearance=_effective_text(calculation.inner_clearance_mm, "mm"),
+        inner_creepage=_effective_text(calculation.inner_creepage_mm, "mm"),
         warnings=tuple(_advisory(item) for item in calculation.warnings),
         verification_requirements=tuple(
             _advisory(item) for item in calculation.verification_requirements

@@ -321,25 +321,28 @@ def synthetic_part1_rule_package() -> RulePackage:
         )
         for table in tables
     )
-    mapping_specs = (
+    route_specs = (
         (
             "functional_clearance_impulse",
             (
                 "iec60664-1:5.2.4:functional_clearance:"
-                "candidate=impulse:field=inhomogeneous:pollution=2"
+                "candidate=impulse:field=inhomogeneous:pollution={pollution}"
             ),
             "synthetic-clearance-functional-impulse-formula",
         ),
         (
             "basic_clearance_impulse",
-            ("iec60664-1:5.2.5:basic_clearance:candidate=impulse:field=inhomogeneous:pollution=2"),
+            (
+                "iec60664-1:5.2.5:basic_clearance:"
+                "candidate=impulse:field=inhomogeneous:pollution={pollution}"
+            ),
             "synthetic-clearance-basic-impulse-formula",
         ),
         (
             "reinforced_clearance_impulse",
             (
                 "iec60664-1:5.2.5:reinforced_clearance:"
-                "candidate=impulse:field=inhomogeneous:pollution=2"
+                "candidate=impulse:field=inhomogeneous:pollution={pollution}"
             ),
             "synthetic-clearance-reinforced-impulse-formula",
         ),
@@ -347,38 +350,58 @@ def synthetic_part1_rule_package() -> RulePackage:
             "functional_clearance_periodic",
             (
                 "iec60664-1:5.2.4:functional_clearance:"
-                "candidate=periodic:field=inhomogeneous:pollution=2"
+                "candidate=periodic:field=inhomogeneous:pollution={pollution}"
             ),
             "synthetic-clearance-functional-periodic-formula",
         ),
         (
             "basic_clearance_periodic",
-            ("iec60664-1:5.2.5:basic_clearance:candidate=periodic:field=inhomogeneous:pollution=2"),
+            (
+                "iec60664-1:5.2.5:basic_clearance:"
+                "candidate=periodic:field=inhomogeneous:pollution={pollution}"
+            ),
             "synthetic-clearance-basic-periodic-formula",
         ),
         (
             "reinforced_clearance_periodic",
             (
                 "iec60664-1:5.2.5:reinforced_clearance:"
-                "candidate=periodic:field=inhomogeneous:pollution=2"
+                "candidate=periodic:field=inhomogeneous:pollution={pollution}"
             ),
             "synthetic-clearance-reinforced-periodic-formula",
         ),
         (
             "functional_creepage",
-            ("iec60664-1:5.3.4:functional_creepage:construction=other:pollution=2:material=I"),
+            (
+                "iec60664-1:5.3.4:functional_creepage:"
+                "construction=other:pollution={pollution}:material=I"
+            ),
             "synthetic-creepage-functional-formula",
         ),
         (
             "basic_creepage",
-            ("iec60664-1:5.3.5:basic_creepage:construction=other:pollution=2:material=I"),
+            "iec60664-1:5.3.5:basic_creepage:construction=other:pollution={pollution}:material=I",
             "synthetic-creepage-basic-formula",
         ),
         (
             "reinforced_creepage",
-            ("iec60664-1:5.3.5:reinforced_creepage:construction=other:pollution=2:material=I"),
+            (
+                "iec60664-1:5.3.5:reinforced_creepage:"
+                "construction=other:pollution={pollution}:material=I"
+            ),
             "synthetic-creepage-reinforced-formula",
         ),
+    )
+    # Real packages carry every pollution degree; inner layers are dimensioned in
+    # pollution degree 1, so the fixture routes both like the importer recipes do.
+    mapping_specs = tuple(
+        (
+            mapping_id if pollution == 2 else f"{mapping_id}_pd{pollution}",
+            source_rule_id.format(pollution=pollution),
+            target_rule_id,
+        )
+        for pollution in (2, 1)
+        for mapping_id, source_rule_id, target_rule_id in route_specs
     )
     return RulePackage(
         manifest=Manifest(
@@ -753,54 +776,58 @@ def synthetic_hf_rule_package() -> RulePackage:
             )
         )
     for kind in ("functional", "basic", "reinforced"):
-        for field in (
-            "inhomogeneous",
-            "homogeneous",
-            "approximately_homogeneous",
-        ):
-            target = direct.id if field == "inhomogeneous" else homogeneous.id
-            mapping_specs.append(
-                (
-                    f"{kind}_hf_clearance_{field}",
-                    (
-                        f"iec60664-4:clearance:{kind}:stress=periodic_peak_v:"
-                        f"frequency=frequency_hz:field={field}:pollution=2"
-                    ),
-                    target,
-                )
-            )
-        mapping_specs.append(
-            (
-                f"{kind}_hf_creepage",
-                (
-                    f"iec60664-4:creepage:{kind}:stress=periodic_peak_v:"
-                    "frequency=frequency_hz:construction=other:pollution=2:material=I"
-                ),
-                hf_creepage.id,
-            )
-        )
-        part1_clause = "5.2.4" if kind == "functional" else "5.2.5"
-        for field in ("homogeneous", "approximately_homogeneous"):
-            for treatment in ("impulse", "periodic"):
-                target = next(
-                    mapping.target_rule_id
-                    for mapping in base.mappings
-                    if mapping.source_rule_id
-                    == (
-                        f"iec60664-1:{part1_clause}:{kind}_clearance:"
-                        f"candidate={treatment}:field=inhomogeneous:pollution=2"
-                    )
-                )
+        # Pollution degree 1 routes cover the inner-layer recalculation.
+        for pollution in (2, 1):
+            suffix = "" if pollution == 2 else f"_pd{pollution}"
+            for field in (
+                "inhomogeneous",
+                "homogeneous",
+                "approximately_homogeneous",
+            ):
+                target = direct.id if field == "inhomogeneous" else homogeneous.id
                 mapping_specs.append(
                     (
-                        f"{kind}_part1_{treatment}_{field}",
+                        f"{kind}_hf_clearance_{field}{suffix}",
                         (
-                            f"iec60664-1:{part1_clause}:{kind}_clearance:"
-                            f"candidate={treatment}:field={field}:pollution=2"
+                            f"iec60664-4:clearance:{kind}:stress=periodic_peak_v:"
+                            f"frequency=frequency_hz:field={field}:pollution={pollution}"
                         ),
                         target,
                     )
                 )
+            mapping_specs.append(
+                (
+                    f"{kind}_hf_creepage{suffix}",
+                    (
+                        f"iec60664-4:creepage:{kind}:stress=periodic_peak_v:"
+                        f"frequency=frequency_hz:construction=other:"
+                        f"pollution={pollution}:material=I"
+                    ),
+                    hf_creepage.id,
+                )
+            )
+            part1_clause = "5.2.4" if kind == "functional" else "5.2.5"
+            for field in ("homogeneous", "approximately_homogeneous"):
+                for treatment in ("impulse", "periodic"):
+                    target = next(
+                        mapping.target_rule_id
+                        for mapping in base.mappings
+                        if mapping.source_rule_id
+                        == (
+                            f"iec60664-1:{part1_clause}:{kind}_clearance:"
+                            f"candidate={treatment}:field=inhomogeneous:pollution={pollution}"
+                        )
+                    )
+                    mapping_specs.append(
+                        (
+                            f"{kind}_part1_{treatment}_{field}{suffix}",
+                            (
+                                f"iec60664-1:{part1_clause}:{kind}_clearance:"
+                                f"candidate={treatment}:field={field}:pollution={pollution}"
+                            ),
+                            target,
+                        )
+                    )
 
     return base.model_copy(
         update={

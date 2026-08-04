@@ -127,13 +127,19 @@ class CalculationReviewPage(QWidget):
         self.update_results(tuple(valid), project)
 
     def _summarise(self, result: PairResult, label: str) -> str:
-        return f"{label}: clearance={result.clearance_mm} mm, creepage={result.creepage_mm} mm"
+        return (
+            f"{label}: clearance={result.clearance_mm} mm, creepage={result.creepage_mm} mm, "
+            f"inner clearance={result.inner_clearance_mm} mm, "
+            f"inner creepage={result.inner_creepage_mm} mm"
+        )
 
     def _detail(self, result: PairResult) -> str:
         lines: list[str] = []
         lines.append(f"Pair {result.pair_id}  [{result.pair_key}]")
         lines.append(f"Final clearance: {result.clearance_mm} mm")
         lines.append(f"Final creepage: {result.creepage_mm} mm")
+        lines.append(f"Inner-layer clearance (pollution degree 1): {result.inner_clearance_mm} mm")
+        lines.append(f"Inner-layer creepage (pollution degree 1): {result.inner_creepage_mm} mm")
 
         lines.append("")
         lines.append("Clearance candidates:")

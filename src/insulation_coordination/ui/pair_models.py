@@ -30,6 +30,8 @@ MATRIX_PARAMETERS = (
     ("cti_or_material_group", "CTI/material group"),
     ("required_clearance_mm", "Required clearance"),
     ("required_creepage_mm", "Required creepage"),
+    ("inner_clearance_mm", "Inner-layer clearance"),
+    ("inner_creepage_mm", "Inner-layer creepage"),
 )
 
 _MATRIX_PARAMETER_KEYS = {key for key, _label in MATRIX_PARAMETERS}
@@ -38,6 +40,12 @@ _VOLTAGE_FIELDS = {
     "steady_state_peak_v": ("steady_state_peak_v", "V"),
     "recurring_peak_v": ("recurring_peak_v", "V"),
     "temporary_overvoltage_peak_v": ("temporary_overvoltage_peak_v", "V"),
+}
+_RESULT_FIELDS = {
+    "required_clearance_mm": "clearance_mm",
+    "required_creepage_mm": "creepage_mm",
+    "inner_clearance_mm": "inner_clearance_mm",
+    "inner_creepage_mm": "inner_creepage_mm",
 }
 _DEFAULTABLE_UNITS = {
     "impulse_v": "V",
@@ -146,16 +154,11 @@ class CoverageMatrixModel(QAbstractTableModel):
                 return "—"
             return _format_value(voltage.value, unit)
 
-        if self._parameter in {"required_clearance_mm", "required_creepage_mm"}:
+        if self._parameter in _RESULT_FIELDS:
             result = self._results_by_pair.get(str(pair.id))
             if result is None:
                 return "—"
-            field = (
-                "clearance_mm"
-                if self._parameter == "required_clearance_mm"
-                else "creepage_mm"
-            )
-            return _format_value(getattr(result, field), "mm")
+            return _format_value(getattr(result, _RESULT_FIELDS[self._parameter]), "mm")
 
         if self._project is None:
             return "—"

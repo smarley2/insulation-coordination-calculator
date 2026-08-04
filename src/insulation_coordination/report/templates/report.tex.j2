@@ -198,6 +198,11 @@ clearance was {{ calculation.pre_altitude_clearance|tex }}; altitude correction 
 {{ calculation.creepage_explanation|tex }} The required
 creepage is \textbf{ {{- calculation.creepage|tex -}} }.
 
+Inner printed-wiring layers are dimensioned in pollution degree 1, with their
+clearances taken as clearances in air. The required inner-layer clearance is
+\textbf{ {{- calculation.inner_clearance|tex -}} } and the required inner-layer
+creepage is \textbf{ {{- calculation.inner_creepage|tex -}} }.
+
 {% endfor %}
 
 {% if human.advisories or human.verification_requirements %}
