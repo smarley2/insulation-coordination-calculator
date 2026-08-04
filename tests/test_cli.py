@@ -83,12 +83,16 @@ class _FakeWindow:
     def __init__(self) -> None:
         self.opened: list[Path] = []
         self.shown = False
+        self.update_check_started = False
 
     def open_document(self, path: Path) -> None:
         self.opened.append(path)
 
     def show(self) -> None:
         self.shown = True
+
+    def start_startup_update_check(self) -> None:
+        self.update_check_started = True
 
 
 class _FakeDesktopApplication:
@@ -135,6 +139,7 @@ def test_the_gui_opens_the_startup_document_and_returns_the_exit_code(
     assert exit_code == 3
     assert window.opened[0] == Path("design.icproj")
     assert window.shown is True
+    assert window.update_check_started is True
 
 
 def test_the_gui_drains_the_paths_the_desktop_queued_before_startup(
