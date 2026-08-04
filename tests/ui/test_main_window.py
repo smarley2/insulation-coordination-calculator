@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+import pytest
 from PySide6.QtWidgets import QApplication
 
 from insulation_coordination.domain.project import (
@@ -166,6 +167,111 @@ def test_failed_update_check_warns_without_raising(qtbot, monkeypatch) -> None:
     window.check_for_updates()
 
     assert captured == ["offline"]
+
+
+def _file_settings(monkeypatch, tmp_path):
+    """Keep preference reads and writes out of the real user settings store."""
+    from PySide6.QtCore import QSettings
+
+    from insulation_coordination.ui import main_window as main_window_module
+
+    path = str(tmp_path / "settings.ini")
+    monkeypatch.setattr(
+        main_window_module,
+        "_settings",
+        lambda: QSettings(path, QSettings.Format.IniFormat),
+    )
+
+
+def test_help_menu_offers_a_bug_report_link(qtbot, monkeypatch) -> None:
+    from PySide6.QtGui import QDesktopServices
+
+    from insulation_coordination.update_check import NEW_ISSUE_URL, REPOSITORY_URL
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    opened: list[str] = []
+    monkeypatch.setattr(
+        QDesktopServices, "openUrl", staticmethod(lambda url: opened.append(url.toString()))
+    )
+
+    window._report_issue_action.trigger()
+
+    assert window._report_issue_action.text() == "&Report a Bug or Request a Feature…"
+    assert opened == [NEW_ISSUE_URL]
+    assert NEW_ISSUE_URL == f"{REPOSITORY_URL}/issues/new"
+
+
+def test_startup_update_check_is_on_by_default_and_can_be_turned_off(
+    qtbot, monkeypatch, tmp_path
+) -> None:
+    _file_settings(monkeypatch, tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window.update_check_on_startup() is True
+
+    window.set_update_check_on_startup(False)
+
+    assert window.update_check_on_startup() is False
+
+
+def test_startup_update_check_is_skipped_when_turned_off(qtbot, monkeypatch, tmp_path) -> None:
+    from insulation_coordination.ui import main_window as main_window_module
+
+    _file_settings(monkeypatch, tmp_path)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.set_update_check_on_startup(False)
+    monkeypatch.setattr(
+        main_window_module, "check_for_update", lambda: pytest.fail("network was contacted")
+    )
+
+    window.start_startup_update_check()
+
+
+def test_startup_update_check_stays_silent_without_internet(qtbot, monkeypatch) -> None:
+    from insulation_coordination.ui import main_window as main_window_module
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    shown: list[object] = []
+
+    def fail() -> None:
+        raise main_window_module.UpdateCheckError("Could not reach GitHub: no route to host")
+
+    monkeypatch.setattr(main_window_module, "check_for_update", fail)
+    monkeypatch.setattr(window, "_show_update_message", shown.append)
+
+    window._run_startup_update_check()
+
+    assert shown == []
+
+
+def test_startup_update_check_reports_only_a_newer_release(qtbot, monkeypatch) -> None:
+    from insulation_coordination.ui import main_window as main_window_module
+    from insulation_coordination.update_check import UpdateStatus
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    shown: list[object] = []
+    monkeypatch.setattr(window, "_show_update_message", shown.append)
+
+    def status(update_available: bool) -> UpdateStatus:
+        return UpdateStatus(
+            current_version="0.1.0",
+            latest_version="0.2.0" if update_available else "0.1.0",
+            release_url="https://github.com/smarley2/insulation-coordination-calculator/releases",
+            update_available=update_available,
+        )
+
+    monkeypatch.setattr(main_window_module, "check_for_update", lambda: status(False))
+    window._run_startup_update_check()
+    assert shown == []
+
+    up_to_date = status(True)
+    monkeypatch.setattr(main_window_module, "check_for_update", lambda: up_to_date)
+    window._run_startup_update_check()
+    assert shown == [up_to_date]
 
 
 def _project_with_metadata() -> Project:
