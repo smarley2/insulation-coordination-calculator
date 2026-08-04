@@ -45,6 +45,14 @@ The page keeps three independent regions:
 2. a vertically scrollable selected-pair editor;
 3. calculation groups and results.
 
+The pair list takes only the width its longest pair name needs; the calculation
+groups and results share the rest of the row equally, since their lines are far
+longer.
+
+`File → Save` writes back to the file the project was opened from or last saved
+to. Only a project without a file yet asks for a name. `File → Save As…` always
+asks, and the chosen file becomes the project's file.
+
 The coverage matrix and pair list must not overlap. The editor's vertical
 scrollbar must expose all voltage and parameter controls at laptop-height
 windows. N/A controls remain in the voltage rows, aligned to the right of the

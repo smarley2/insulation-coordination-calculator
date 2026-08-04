@@ -278,6 +278,22 @@ def test_matrix_parameter_displays_calculated_distances(qtbot, pair_page):
     )
 
 
+def test_pairs_column_stays_as_narrow_as_its_pair_names(qtbot, pair_page):
+    pair_page.resize(1600, 900)
+    pair_page.show()
+    qtbot.waitExposed(pair_page)
+    pair_page._set_initial_splitter_sizes()
+
+    pairs_width, review_width = pair_page._lower_splitter.sizes()
+    names_width = pair_page._pair_list_view.sizeHintForColumn(0)
+
+    assert names_width <= pairs_width <= names_width + 80
+    assert pairs_width < 1600 // 3
+    assert review_width > 2 * pairs_width
+    groups_width, results_width = pair_page.calculation_review._review_splitter.sizes()
+    assert abs(groups_width - results_width) <= 1
+
+
 def test_matrix_parameter_displays_inner_layer_distances(qtbot, pair_page):
     pair_page._matrix_parameter_combo.setCurrentText("Inner-layer clearance")
     assert pair_page.matrix_model.data(pair_page.matrix_model.index(0, 1)) == "—"
