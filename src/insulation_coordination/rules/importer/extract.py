@@ -61,6 +61,7 @@ __all__ = [
     "StandardRecipe",
     "TableAuditSpec",
     "extract_draft",
+    "is_recipe_derived",
     "parse_data_cell",
 ]
 
@@ -648,6 +649,27 @@ def _extract_layout_table(
     return grid, reviews
 
 
+def is_recipe_derived(item: ImportReviewItem) -> bool:
+    """True when the item's content comes from this app's recipe, not from a PDF.
+
+    Semantic mappings and table-selection formulas are constants declared in
+    ``recipes/``; the PDF contributes nothing to them, so a maintainer clicking
+    through them proves nothing about the extraction.  The importer resolves
+    them itself and names the recipe contract in the resolution notes.
+    """
+    from insulation_coordination.rules.importer.recipes import RECIPES
+
+    if item.kind == "mapping":
+        return True
+    if item.kind != "formula":
+        return False
+    return any(
+        spec.semantic_id == item.semantic_id and not spec.extract_from_pdf
+        for recipe in RECIPES
+        for spec in recipe.formulas
+    )
+
+
 def _manual_review_items(
     identity: StandardIdentity,
     recipe: StandardRecipe,
@@ -880,8 +902,7 @@ def extract_draft(
             "IEC 60664-1 and IEC 60664-4 must be loaded together; no PDFs were selected"
         )
     identified = tuple(
-        (path, identify_standard(path, password=(passwords or {}).get(path)))
-        for path in paths
+        (path, identify_standard(path, password=(passwords or {}).get(path))) for path in paths
     )
     recipe_ids = tuple(identity.recipe_id for _, identity in identified)
     if len(recipe_ids) != len(set(recipe_ids)):
@@ -918,6 +939,16 @@ def extract_draft(
     _require_unique_ids(tables, formulas, mappings)
 
     recorded_at = datetime.now(UTC)
+    review_resolutions = tuple(
+        ImportReviewResolution(
+            review_item_sha256=item.sha256,
+            actor=f"icc-importer/{IMPORTER_VERSION}",
+            recorded_at=recorded_at,
+            notes=f"recipe-defined, no PDF content: {item.expected_contract}",
+        )
+        for item in review_items
+        if is_recipe_derived(item)
+    )
     records = tuple(
         ApprovalRecord(
             action="extraction",
@@ -962,6 +993,7 @@ def extract_draft(
         raw_grids,
         sources,
         ordered_identities,
+        review_resolutions,
         extracted_equations=extracted_equations,
     )
     records = tuple(
@@ -987,6 +1019,7 @@ def extract_draft(
         formulas=formulas,
         mappings=mappings,
         review_items=review_items,
+        review_resolutions=review_resolutions,
         raw_grids=raw_grids,
         extracted_equations=extracted_equations,
         source_identities=ordered_identities,

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import Qt
 
+from insulation_coordination.rules.importer import extract
 from insulation_coordination.rules.importer import recipes as recipe_registry
 from insulation_coordination.rules.importer.approval import (
     approve_draft,
@@ -13,6 +14,7 @@ from insulation_coordination.rules.importer.approval import (
 from insulation_coordination.rules.importer.extract import extract_draft
 from insulation_coordination.rules.importer.review import (
     accept_raw_table,
+    recipe_derived_items,
     unresolved_equation_items,
     unresolved_mapping_items,
 )
@@ -68,13 +70,46 @@ def test_draft_requires_review_and_blocks_approve(qtbot, rules_manager, supporte
     draft = extract_draft(supported_pdfs)
     rules_manager.set_draft(draft)
     assert rules_manager.review_count == len(draft.review_items)
-    assert rules_manager.resolved_count == 0
+    assert rules_manager.resolved_count == len(recipe_derived_items(draft))
     assert rules_manager.is_fully_resolved is False
     assert rules_manager.export_approved_enabled is False
     assert rules_manager.can_approve is False
 
 
-def test_raw_review_gates_build_button(rules_manager, tmp_path: Path) -> None:
+def test_recipe_derived_items_are_not_shown_as_maintainer_work(
+    qtbot, rules_manager, supported_pdfs
+) -> None:
+    """Mappings and table-selection formulas come from the recipe, not the PDF."""
+    draft = extract_draft(supported_pdfs)
+    rules_manager.set_draft(draft)
+
+    listed = [
+        rules_manager._review_list.item(index).text()
+        for index in range(rules_manager._review_list.count())
+    ]
+    derived = {item.semantic_id for item in recipe_derived_items(draft)}
+    assert derived
+    assert not [row for row in listed if any(name in row for name in derived)]
+    assert "no PDF content" in rules_manager._recipe_status.text()
+
+
+def test_loading_a_package_clears_the_draft_review_panel(
+    rules_manager, supported_pdfs, tmp_path: Path
+) -> None:
+    """Review actions must not stay live once a draft is replaced by a package."""
+    rules_manager.set_draft(_accept_all_source_artifacts(extract_draft(supported_pdfs)))
+    assert rules_manager.review_approve_enabled is True
+
+    rules_manager.approve_reviewed_draft("Maintainer", "Approved for use")
+
+    assert rules_manager.review_approve_enabled is False
+    assert rules_manager.review_tables_enabled is False
+    assert rules_manager.formula_review_enabled is False
+    assert rules_manager._recipe_status.text() == ""
+    assert rules_manager._review_list.count() == 0
+
+
+def test_accepting_every_table_leaves_only_approval(rules_manager, tmp_path: Path) -> None:
     draft = _compound_draft(tmp_path)
     rules_manager.set_draft(draft)
 
@@ -98,8 +133,9 @@ def test_raw_review_gates_build_button(rules_manager, tmp_path: Path) -> None:
     rules_manager.set_draft(accepted)
 
     assert rules_manager.review_tables_enabled is False
-    assert rules_manager.formula_review_enabled is True
-    assert rules_manager.build_review_enabled is False
+    assert rules_manager.formula_review_enabled is False
+    assert rules_manager.can_approve is True
+    assert rules_manager.build_review_enabled is True
 
 
 def test_review_tables_opens_without_global_resolution_notes(
@@ -125,11 +161,18 @@ def test_review_tables_opens_without_global_resolution_notes(
     assert warnings == []
 
 
-def test_build_waits_for_equation_and_mapping_review(
+def test_equation_review_waits_for_table_review(
     rules_manager,
     supported_pdfs,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Equations stay locked until every table is accepted."""
+    monkeypatch.setattr(extract, "is_recipe_derived", lambda _item: False)
     draft = extract_draft(supported_pdfs)
+    rules_manager.set_draft(draft)
+
+    assert rules_manager.formula_review_enabled is False
+
     for grid in draft.raw_grids:
         draft = accept_raw_table(
             draft,
@@ -141,7 +184,7 @@ def test_build_waits_for_equation_and_mapping_review(
     rules_manager.set_draft(draft)
 
     assert rules_manager.formula_review_enabled is True
-    assert rules_manager.build_review_enabled is False
+    assert rules_manager.can_approve is False
 
     from insulation_coordination.rules.importer.review import accept_equation_mapping
 
@@ -155,7 +198,7 @@ def test_build_waits_for_equation_and_mapping_review(
     rules_manager.set_draft(draft)
 
     assert rules_manager.formula_review_enabled is False
-    assert rules_manager.build_review_enabled is True
+    assert rules_manager.can_approve is True
 
 
 def test_build_reviewed_content_unlocks_approval(
@@ -174,7 +217,7 @@ def test_build_reviewed_content_unlocks_approval(
     assert rules_manager.can_approve is True
 
 
-def test_build_reviewed_content_projects_typed_rules_after_source_review(
+def test_approve_projects_typed_rules_without_a_separate_build_step(
     qtbot, rules_manager, supported_pdfs, injected_recipes, monkeypatch
 ) -> None:
     draft = _accept_all_source_artifacts(extract_draft(supported_pdfs))
@@ -190,12 +233,28 @@ def test_build_reviewed_content_projects_typed_rules_after_source_review(
     assert rules_manager._draft is not None
     assert rules_manager._draft.tables == ()
 
-    rules_manager._on_build_review_clicked()
+    rules_manager._on_review_approve_clicked()
 
-    assert rules_manager._draft is not None
-    assert rules_manager._draft.tables
-    assert rules_manager._draft.formulas
-    assert rules_manager._draft.mappings
+    package = rules_manager.active_package
+    assert package is not None
+    assert package.manifest.approved is True
+    assert package.tables
+    assert package.formulas
+    assert package.mappings
+
+
+def test_approve_requires_notes(qtbot, rules_manager, supported_pdfs, monkeypatch) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "insulation_coordination.ui.rules_manager.QMessageBox.warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    rules_manager.set_draft(_accept_all_source_artifacts(extract_draft(supported_pdfs)))
+
+    rules_manager._on_review_approve_clicked()
+
+    assert warnings == ["Approval notes are required."]
+    assert rules_manager.active_package is None
 
 
 def test_resolving_all_items_enables_approval(

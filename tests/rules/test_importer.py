@@ -16,7 +16,6 @@ from insulation_coordination.domain.rules import (
     CompatibilityMapping,
     DraftRulePackage,
     Formula,
-    LinearInterpolate,
     Literal,
     Parameter,
     ParameterSet,
@@ -24,6 +23,7 @@ from insulation_coordination.domain.rules import (
     Table,
     TableAxis,
     TableCell,
+    TableSelect,
     Variable,
 )
 from insulation_coordination.rules.archive import load_rule_package, write_rule_package
@@ -65,6 +65,7 @@ from insulation_coordination.rules.importer.review import (
     build_reviewed_draft,
     missing_required_content,
     placeholder_formula_ids,
+    recipe_derived_items,
     required_content_report,
     unresolved_equation_items,
     unresolved_mapping_items,
@@ -282,8 +283,8 @@ def _test_recipes() -> tuple[StandardRecipe, StandardRecipe]:
                 FormulaAuditSpec(
                     semantic_id=formula_id,
                     unit="mm",
-                    variables=("stress",),
-                    expression_shape=(f"linear_interpolate:{table_id}(variable:stress,literal)"),
+                    variables=("stress", "branch"),
+                    expression_shape=f"table_select:{table_id}(linear,exact)",
                     page_number=1,
                     clause="SYNTHETIC",
                     table=table_name,
@@ -421,16 +422,20 @@ def _reviewed_content(
         )
         formula = Formula(
             id=formula_spec.semantic_id,
-            expression=LinearInterpolate(
+            expression=TableSelect(
                 table_id=table.id,
-                x=Variable(name=table_spec.row_axis_id),
-                column=Literal(value=Decimal(10)),
+                row=Variable(name=table_spec.row_axis_id),
+                column=Variable(name=table_spec.column_axis_id),
+                row_mode="linear",
+                column_mode="exact",
             ),
             unit=formula_spec.unit,
             parameter_sets=(
                 ParameterSet(
                     id="reviewed",
-                    parameters=(Parameter(name=table_spec.row_axis_id, unit="V"),),
+                    parameters=tuple(
+                        Parameter(name=name, unit="1") for name in formula_spec.variables
+                    ),
                     source=source,
                 ),
             ),
@@ -457,12 +462,13 @@ def _review_all(
     changed = draft.model_copy(
         update={"tables": tables, "formulas": formulas, "mappings": mappings}
     )
+    resolved = {resolution.review_item_sha256 for resolution in draft.review_resolutions}
     return record_correction(
         draft,
         changed,
         actor="Synthetic Reviewer",
         notes="Reviewed generated geometry and semantic contracts.",
-        resolve=draft.review_items,
+        resolve=tuple(item for item in draft.review_items if item.sha256 not in resolved),
     )
 
 
@@ -870,9 +876,9 @@ def test_accept_raw_grid_resolves_only_selected_grid_and_preserves_raw_text(
     assert reviewed.qualifier is None
     assert reviewed.suffix is None
     assert unresolved_raw_review_items(accepted) == ()
-    assert {resolution.review_item_sha256 for resolution in accepted.review_resolutions} == {
-        pending[0].sha256
-    }
+    before = {resolution.review_item_sha256 for resolution in draft.review_resolutions}
+    after = {resolution.review_item_sha256 for resolution in accepted.review_resolutions}
+    assert after - before == {pending[0].sha256}
 
 
 def test_accept_raw_grid_applies_finite_decimal_correction(tmp_path: Path) -> None:
@@ -904,7 +910,7 @@ def test_accept_raw_grid_applies_finite_decimal_correction(tmp_path: Path) -> No
         (
             "raw-synthetic-part1-table",
             {(9, 9): Decimal(1)},
-            "not flagged",
+            "not correctable",
         ),
         (
             "raw-synthetic-part1-table",
@@ -1069,8 +1075,16 @@ def test_recorded_resolution_uses_original_full_review_item_digest(
     assert {resolution.review_item_sha256 for resolution in corrected.review_resolutions} == {
         item.sha256 for item in draft.review_items
     }
+    importer_resolved = {
+        resolution.review_item_sha256
+        for resolution in corrected.review_resolutions
+        if resolution.actor.startswith("icc-importer/")
+    }
+    assert importer_resolved == {item.sha256 for item in recipe_derived_items(draft)}
     assert all(
-        resolution.actor == "Synthetic Reviewer" for resolution in corrected.review_resolutions
+        resolution.actor == "Synthetic Reviewer"
+        for resolution in corrected.review_resolutions
+        if resolution.review_item_sha256 not in importer_resolved
     )
 
 
@@ -1143,18 +1157,10 @@ def test_staged_review_requires_tables_then_equations_and_mappings(
         )
 
     assert unresolved_table_items(reviewed) == ()
-    assert unresolved_equation_items(reviewed)
-    assert unresolved_mapping_items(reviewed)
-    with pytest.raises(ValueError, match="Review equations and mappings first"):
-        build_reviewed_draft(reviewed, actor="Maintainer", notes="Build")
-
-    reviewed = accept_equation_mapping(
-        reviewed,
-        equation_ids=tuple(item.semantic_id for item in unresolved_equation_items(reviewed)),
-        mapping_ids=tuple(item.semantic_id for item in unresolved_mapping_items(reviewed)),
-        actor="Maintainer",
-        notes="Reviewed equation and mapping contracts",
-    )
+    # The synthetic recipes declare no PDF-extracted equations, so the importer
+    # has already resolved every equation and mapping item itself.
+    assert unresolved_equation_items(reviewed) == ()
+    assert unresolved_mapping_items(reviewed) == ()
     built = build_reviewed_draft(reviewed, actor="Maintainer", notes="Build typed rules")
 
     assert is_fully_resolved(built)
@@ -1162,6 +1168,32 @@ def test_staged_review_requires_tables_then_equations_and_mappings(
     assert "raw_sequence" not in str(
         tuple(formula.expression.model_dump(mode="json") for formula in built.formulas)
     )
+
+
+def test_build_reviewed_draft_requires_equation_review(tmp_path: Path) -> None:
+    """An equation item the importer did not resolve still blocks projection."""
+    draft = _compound_draft(tmp_path)
+    for grid in draft.raw_grids:
+        draft = accept_raw_table(
+            draft,
+            grid_id=grid.id,
+            corrections={},
+            actor="Maintainer",
+            notes="Compared semantic table with PDF",
+        )
+    formula_digests = {item.sha256 for item in draft.review_items if item.kind == "formula"}
+    pending_equations = draft.model_copy(
+        update={
+            "review_resolutions": tuple(
+                resolution
+                for resolution in draft.review_resolutions
+                if resolution.review_item_sha256 not in formula_digests
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="Review equations and mappings first"):
+        build_reviewed_draft(pending_equations, actor="Maintainer", notes="Build")
 
 
 def test_build_reviewed_draft_requires_raw_grid_acceptance(tmp_path: Path) -> None:
