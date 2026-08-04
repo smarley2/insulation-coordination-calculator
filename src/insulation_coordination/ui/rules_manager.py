@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
 
@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insulation_coordination.domain.display import render_expression
 from insulation_coordination.domain.rules import (
     Manifest,
     RulePackage,
@@ -42,7 +43,7 @@ from insulation_coordination.rules.importer.approval import is_fully_resolved
 from insulation_coordination.rules.importer.extract import ImportedRuleDraft
 from insulation_coordination.rules.installation import install_rule_package
 from insulation_coordination.ui.equation_review import EquationReviewDialog
-from insulation_coordination.ui.raw_grid_review import RawGridReviewDialog
+from insulation_coordination.ui.raw_grid_review import RawGridReviewDialog, source_pdf_paths
 
 _SECTIONS = ("Manifest", "Checksums", "Tables", "Formulas", "Mappings", "Validation")
 
@@ -84,16 +85,6 @@ class RulesManagerWindow(QWidget):
         self._extract_draft_button = QPushButton("Extract draft from IEC PDFs…")
         self._extract_draft_button.clicked.connect(self._on_extract_draft_clicked)
         import_row.addWidget(self._extract_draft_button)
-
-        self._approve_button = QPushButton("Export approved package…")
-        self._approve_button.setEnabled(False)
-        self._approve_button.clicked.connect(self._on_export_approved_clicked)
-        import_row.addWidget(self._approve_button)
-
-        self._inventory_button = QPushButton("Export audit inventory…")
-        self._inventory_button.setEnabled(False)
-        self._inventory_button.clicked.connect(self._on_export_inventory_clicked)
-        import_row.addWidget(self._inventory_button)
         layout.addLayout(import_row)
 
         search_row = QHBoxLayout()
@@ -122,35 +113,48 @@ class RulesManagerWindow(QWidget):
             "No draft loaded. Import a draft package or set one programmatically."
         )
         review_layout.addWidget(self._review_status)
-        self._required_status = QLabel("Required IEC content: unknown")
-        review_layout.addWidget(self._required_status)
-        self._required_list = QListWidget()
-        review_layout.addWidget(self._required_list)
+        review_layout.addWidget(QLabel("Needs your review:"))
         self._review_list = QListWidget()
         review_layout.addWidget(self._review_list)
+        self._recipe_status = QLabel("")
+        self._recipe_status.setWordWrap(True)
+        review_layout.addWidget(self._recipe_status)
         self._review_notes = QLineEdit()
         self._review_notes.setPlaceholderText("Resolution / approval notes (required)")
         review_layout.addWidget(self._review_notes)
+
+        review_actions = QHBoxLayout()
         self._review_tables_button = QPushButton("Review extracted tables…")
         self._review_tables_button.setEnabled(False)
         self._review_tables_button.clicked.connect(self._on_review_tables_clicked)
-        review_layout.addWidget(self._review_tables_button)
-        self._build_review_button = QPushButton("Build reviewed content…")
-        self._build_review_button.setEnabled(False)
-        self._build_review_button.clicked.connect(self._on_build_review_clicked)
-        review_layout.addWidget(self._build_review_button)
+        review_actions.addWidget(self._review_tables_button)
         self._review_equations_button = QPushButton("Review equations and mappings…")
         self._review_equations_button.setEnabled(False)
         self._review_equations_button.clicked.connect(self._on_review_equations_clicked)
-        review_layout.addWidget(self._review_equations_button)
-        self._review_approve_button = QPushButton("Approve reviewed draft…")
+        review_actions.addWidget(self._review_equations_button)
+        review_layout.addLayout(review_actions)
+
+        self._review_approve_button = QPushButton("Approve draft and build package…")
         self._review_approve_button.clicked.connect(self._on_review_approve_clicked)
         self._review_approve_button.setEnabled(False)
         review_layout.addWidget(self._review_approve_button)
         layout.addWidget(review_group)
 
+        export_row = QHBoxLayout()
+        self._approve_button = QPushButton("Export approved package…")
+        self._approve_button.setEnabled(False)
+        self._approve_button.clicked.connect(self._on_export_approved_clicked)
+        export_row.addWidget(self._approve_button)
+
+        self._inventory_button = QPushButton("Export audit inventory…")
+        self._inventory_button.setEnabled(False)
+        self._inventory_button.clicked.connect(self._on_export_inventory_clicked)
+        export_row.addWidget(self._inventory_button)
+        layout.addLayout(export_row)
+
         self._draft: ImportedRuleDraft | None = None
-        self._draft_sources: tuple[object, ...] = ()
+        self._draft_pdfs: dict[str, Path] = {}
+        self._draft_passwords: dict[Path, str] = {}
 
     # -- Package state -----------------------------------------------------
 
@@ -208,10 +212,7 @@ class RulesManagerWindow(QWidget):
         )
         self._approve_button.setEnabled(package.manifest.approved and package.manifest.compatible)
         self._inventory_button.setEnabled(True)
-        self._review_status.setText(
-            "No draft loaded. Import a draft package or set one programmatically."
-        )
-        self._review_list.clear()
+        self._refresh_review()
         self._review_notes.clear()
         self._populate_tree()
         self._apply_search()
@@ -234,11 +235,20 @@ class RulesManagerWindow(QWidget):
 
     @property
     def build_review_enabled(self) -> bool:
-        return self._build_review_button.isEnabled()
+        """True when approving would still have to project typed rule content."""
+        if self._draft is None:
+            return False
+        from insulation_coordination.rules.importer.review import missing_required_content
+
+        return self.is_fully_resolved and bool(missing_required_content(self._draft))
 
     @property
     def formula_review_enabled(self) -> bool:
         return self._review_equations_button.isEnabled()
+
+    @property
+    def review_approve_enabled(self) -> bool:
+        return self._review_approve_button.isEnabled()
 
     @property
     def resolved_count(self) -> int:
@@ -257,25 +267,17 @@ class RulesManagerWindow(QWidget):
 
     def _refresh_review(self) -> None:
         self._review_list.clear()
-        self._required_list.clear()
         if self._draft is None:
             self._review_status.setText(
                 "No draft loaded. Import a draft package or set one programmatically."
             )
-            self._required_status.setText("Required IEC content: unknown")
+            self._recipe_status.setText("")
             self._review_approve_button.setEnabled(False)
             self._review_tables_button.setEnabled(False)
-            self._build_review_button.setEnabled(False)
             self._review_equations_button.setEnabled(False)
             return
         from insulation_coordination.rules.importer.review import (
-            missing_required_content,
-            required_content_report,
-        )
-
-        report = required_content_report(self._draft)
-        missing = missing_required_content(self._draft)
-        from insulation_coordination.rules.importer.review import (
+            recipe_derived_items,
             unresolved_equation_items,
             unresolved_mapping_items,
             unresolved_raw_review_items,
@@ -286,32 +288,42 @@ class RulesManagerWindow(QWidget):
         table_pending = unresolved_table_items(self._draft)
         equation_pending = unresolved_equation_items(self._draft)
         mapping_pending = unresolved_mapping_items(self._draft)
-        for required in report:
-            mark = "[x]" if required.present else "[ ]"
-            table = f" (table {required.source_table})" if required.source_table else ""
-            self._required_list.addItem(
-                f"{mark} {required.kind}: {required.semantic_id}{table} — "
-                f"{required.standard} clause {required.clause} page {required.page_number}"
-            )
-        self._required_status.setText(
-            f"Required IEC content: {len(report) - len(missing)} of {len(report)} present"
-        )
-        self._review_tables_button.setEnabled(bool(table_pending or raw_pending))
         tables_done = not table_pending and not raw_pending
+        self._review_tables_button.setEnabled(not tables_done)
         self._review_equations_button.setEnabled(
             tables_done and bool(equation_pending or mapping_pending)
         )
-        self._build_review_button.setEnabled(
-            tables_done and not equation_pending and not mapping_pending and bool(missing)
-        )
-        resolved = {r.review_item_sha256 for r in self._draft.review_resolutions}
-        for item in self._draft.review_items:
-            mark = "[x]" if item.sha256 in resolved else "[ ]"
+        for item in table_pending:
+            flagged = sum(
+                candidate.semantic_id.startswith(f"raw-{item.semantic_id}:")
+                for candidate in raw_pending
+            )
             self._review_list.addItem(
-                f"{mark} {item.code} {item.semantic_id} — {item.expected_contract}"
+                f"Table {item.source.table or item.semantic_id} — "
+                f"{item.source.standard} {item.source.clause}, {item.source.note}"
+                f" — {flagged} cell(s) unclear"
+            )
+        for item in (*equation_pending, *mapping_pending):
+            self._review_list.addItem(
+                f"{item.kind.capitalize()} {item.semantic_id} — "
+                f"{item.source.standard} {item.source.clause}, {item.source.note}"
+            )
+        if not self._review_list.count():
+            self._review_list.addItem(
+                "Nothing left to review. Add approval notes, then approve the draft."
             )
         self._review_status.setText(
-            f"Manual review items: {self.resolved_count} of {self.review_count} resolved."
+            f"① Tables {len(self._draft.raw_grids) - len(table_pending)}"
+            f" of {len(self._draft.raw_grids)} accepted"
+            f"  ·  ② Equations and mappings {len(equation_pending) + len(mapping_pending)} pending"
+            f"  ·  ③ Approve{' — ready' if self.can_approve else ''}"
+        )
+        derived = recipe_derived_items(self._draft)
+        formulas = sum(item.kind == "formula" for item in derived)
+        mappings = sum(item.kind == "mapping" for item in derived)
+        self._recipe_status.setText(
+            f"Taken from this app's recipe, no PDF content: {formulas} formula(s), "
+            f"{mappings} mapping(s) — resolved by the importer, see the audit tree."
         )
         self._review_approve_button.setEnabled(self.can_approve)
 
@@ -321,34 +333,11 @@ class RulesManagerWindow(QWidget):
         dialog = RawGridReviewDialog(
             self._draft,
             actor="maintainer",
+            pdf_paths=self._draft_pdfs,
+            pdf_passwords=self._draft_passwords,
         )
         dialog.draft_changed.connect(self.set_draft)
         dialog.exec()
-
-    def _on_build_review_clicked(self) -> None:
-        if self._draft is None:
-            return
-        from insulation_coordination.rules.importer.review import build_reviewed_draft
-
-        notes = self._review_notes.text().strip()
-        if not notes:
-            QMessageBox.warning(self, "Build Reviewed Content", "Resolution notes are required.")
-            return
-        try:
-            reviewed = build_reviewed_draft(self._draft, actor="maintainer", notes=notes)
-        except (ValueError, KeyError) as error:
-            QMessageBox.critical(self, "Build Reviewed Content", str(error))
-            return
-        self.set_draft(reviewed)
-        self._review_notes.clear()
-        remaining = self.review_count - self.resolved_count
-        QMessageBox.information(
-            self,
-            "Build Reviewed Content",
-            f"Built required content. {self.resolved_count} of "
-            f"{self.review_count} review items resolved; {remaining} remain. "
-            "Validate the reviewed package, then approve.",
-        )
 
     def _on_review_equations_clicked(self) -> None:
         if self._draft is None:
@@ -358,17 +347,29 @@ class RulesManagerWindow(QWidget):
         dialog.exec()
 
     def approve_reviewed_draft(self, approver: str, notes: str) -> None:
-        """Approve a fully-resolved draft and switch the manager to the approved package."""
+        """Project reviewed content, approve, and switch to the approved package.
+
+        Projection is a deterministic function of the accepted source artifacts,
+        so it is part of approving rather than a separate button the maintainer
+        has to know to press first.
+        """
         if self._draft is None:
             raise RuntimeError("No draft loaded")
         from insulation_coordination.rules.importer.approval import approve_draft
+        from insulation_coordination.rules.importer.review import (
+            build_reviewed_draft,
+            missing_required_content,
+        )
 
-        package = approve_draft(self._draft, approver, notes)
+        draft = self._draft
+        if missing_required_content(draft):
+            draft = build_reviewed_draft(draft, actor=approver, notes=notes)
+            self.set_draft(draft)
+        package = approve_draft(draft, approver, notes)
         self.set_package(package)
 
-    def set_draft(self, draft: ImportedRuleDraft, sources: Iterable[object] = ()) -> None:
+    def set_draft(self, draft: ImportedRuleDraft) -> None:
         self._draft = draft
-        self._draft_sources = tuple(sources)
         self._package = None
         self._inventory = None
         self._identity_label.setText(
@@ -448,7 +449,11 @@ class RulesManagerWindow(QWidget):
         from insulation_coordination.rules.importer.recipes import RECIPES
 
         for spec in (spec for recipe in RECIPES for spec in recipe.mappings):
-            state = "pending" if spec.id in pending_mappings else "accepted"
+            state = (
+                "pending"
+                if spec.id in pending_mappings
+                else "accepted (recipe-defined, resolved by importer)"
+            )
             mappings.addChild(QTreeWidgetItem((f"{spec.id}: {state} — {spec.semantic_route}",)))
         self._tree.expandToDepth(0)
 
@@ -511,6 +516,9 @@ class RulesManagerWindow(QWidget):
                 QMessageBox.critical(self, "Extract Draft", str(error))
                 return
         self.set_draft(draft)
+        # Keep the sources reachable so table review can show each grid's PDF page.
+        self._draft_pdfs = source_pdf_paths(draft, selected_paths)
+        self._draft_passwords = dict(passwords)
 
     def _on_export_approved_clicked(self) -> None:
         if self._package is None:
@@ -539,15 +547,19 @@ class RulesManagerWindow(QWidget):
     def _on_review_approve_clicked(self) -> None:
         if self._draft is None or not self.is_fully_resolved:
             return
+        notes = self._review_notes.text().strip()
+        if not notes:
+            QMessageBox.warning(self, "Approve Draft", "Approval notes are required.")
+            return
         try:
-            self.approve_reviewed_draft("maintainer", self._review_notes.text())
-        except ValueError as error:
+            self.approve_reviewed_draft("maintainer", notes)
+        except (ValueError, KeyError) as error:
             QMessageBox.critical(self, "Approve Draft", str(error))
             return
         QMessageBox.information(
             self,
             "Draft Approved",
-            "Draft approved and ready to export.",
+            "Draft approved, rule content built, and ready to export.",
         )
 
     def _populate_tree(self) -> None:
@@ -657,11 +669,14 @@ class RulesManagerWindow(QWidget):
             formula_item = QTreeWidgetItem((f"Formula {formula.id} ({formula.unit})",))
             formula_item.setData(0, Qt.ItemDataRole.UserRole, f"formula:{formula.id}")
             top.addChild(formula_item)
+            formula_item.addChild(
+                QTreeWidgetItem((f"calculation: {render_expression(formula.expression)}",))
+            )
             for node in inventory.formula_nodes:
                 if node.formula_id != formula.id:
                     continue
                 formula_item.addChild(
-                    QTreeWidgetItem((f"{node.path}: {_format_expression(node.node)}",))
+                    QTreeWidgetItem((f"{node.path}: {render_expression(node.node)}",))
                 )
             formula_item.addChild(QTreeWidgetItem((f"latex: {formula.latex}",)))
             formula_item.addChild(
@@ -754,18 +769,3 @@ def _format_reference(reference: SourceReference) -> str:
     if reference.note:
         parts.append(f"Note {reference.note}")
     return ", ".join(parts)
-
-
-def _format_expression(node: object) -> str:
-    op = getattr(node, "op", "?")
-    if op == "literal":
-        return str(getattr(node, "value", ""))
-    if op == "variable":
-        return str(getattr(node, "name", ""))
-    if op == "lookup":
-        return f"lookup({getattr(node, 'table_id', '?')})"
-    if op == "linear_interpolate":
-        return f"linear_interpolate({getattr(node, 'table_id', '?')})"
-    if op == "round":
-        return f"round:{getattr(node, 'places', '?')}:{getattr(node, 'mode', '?')}"
-    return str(op)
