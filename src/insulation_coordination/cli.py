@@ -82,6 +82,7 @@ def _run_gui(request: StartupRequest) -> int:
     if request.path is not None:
         window.open_document(request.path)
     window.show()
+    window.start_startup_update_check()
     if isinstance(app, DesktopApplication):
         app.file_open_requested.connect(window.open_document)
         for path in app.take_pending_open_paths():

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QSettings, Qt, QThreadPool, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -34,17 +34,27 @@ from insulation_coordination.ui.pair_editor import PairPage
 from insulation_coordination.ui.project_pages import ProjectPage
 from insulation_coordination.ui.report_page import ReportPage
 from insulation_coordination.update_check import (
+    NEW_ISSUE_URL,
     REPOSITORY_URL,
     UpdateCheckError,
     UpdateStatus,
     check_for_update,
 )
 
+_STARTUP_CHECK_KEY = "updates/check_on_startup"
+_SKIPPED_VERSION_KEY = "updates/skipped_version"
+
+
+def _settings() -> QSettings:
+    """User preferences, stored wherever Qt keeps them for this platform."""
+    return QSettings("insulation-coordination-calculator", "icc")
+
 
 class MainWindow(QMainWindow):
     """Main desktop shell with navigation between pages."""
 
     project_changed = Signal(object)
+    _startup_update_ready = Signal(object)
 
     _PAGES = ("Project", "Pairs", "Report")
 
@@ -94,6 +104,8 @@ class MainWindow(QMainWindow):
 
         self.setStatusBar(QStatusBar())
         self.statusBar().addWidget(QLabel("Ready"))
+
+        self._startup_update_ready.connect(self._on_startup_update_ready)
 
         self._build_menu()
         self._show_page(0)
@@ -257,6 +269,18 @@ class MainWindow(QMainWindow):
         self._update_action.triggered.connect(self.check_for_updates)
         help_menu.addAction(self._update_action)
 
+        self._startup_check_action = QAction("Check for Updates at &Startup", self)
+        self._startup_check_action.setCheckable(True)
+        self._startup_check_action.setChecked(self.update_check_on_startup())
+        self._startup_check_action.toggled.connect(self.set_update_check_on_startup)
+        help_menu.addAction(self._startup_check_action)
+
+        help_menu.addSeparator()
+
+        self._report_issue_action = QAction("&Report a Bug or Request a Feature…", self)
+        self._report_issue_action.triggered.connect(self.report_issue)
+        help_menu.addAction(self._report_issue_action)
+
     def about_text(self) -> str:
         """Version and provenance shown by Help → About."""
         return (
@@ -273,10 +297,17 @@ class MainWindow(QMainWindow):
         box.setTextFormat(Qt.TextFormat.RichText)
         box.setText(self.about_text())
         update_button = box.addButton("Check for Updates…", QMessageBox.ButtonRole.ActionRole)
+        issue_button = box.addButton("Report a Bug…", QMessageBox.ButtonRole.ActionRole)
         box.addButton(QMessageBox.StandardButton.Close)
         box.exec()
         if box.clickedButton() is update_button:
             self.check_for_updates()
+        elif box.clickedButton() is issue_button:
+            self.report_issue()
+
+    def report_issue(self) -> None:
+        """Open the GitHub new-issue form for bug reports and feature requests."""
+        QDesktopServices.openUrl(QUrl(NEW_ISSUE_URL))
 
     @staticmethod
     def update_message(status: UpdateStatus) -> str:
@@ -302,11 +333,58 @@ class MainWindow(QMainWindow):
             return
         finally:
             QApplication.restoreOverrideCursor()
+        self._show_update_message(status)
+
+    def _show_update_message(self, status: UpdateStatus, *, allow_skip: bool = False) -> None:
         box = QMessageBox(self)
         box.setWindowTitle("Check for Updates")
         box.setTextFormat(Qt.TextFormat.RichText)
         box.setText(self.update_message(status))
+        skip_button = (
+            box.addButton("Skip This Version", QMessageBox.ButtonRole.ActionRole)
+            if allow_skip
+            else None
+        )
         box.exec()
+        if skip_button is not None and box.clickedButton() is skip_button:
+            self.set_skipped_version(status.latest_version)
+
+    def update_check_on_startup(self) -> bool:
+        """Whether startup asks GitHub for a newer release. On by default."""
+        return bool(_settings().value(_STARTUP_CHECK_KEY, True, type=bool))
+
+    def set_update_check_on_startup(self, enabled: bool) -> None:
+        _settings().setValue(_STARTUP_CHECK_KEY, enabled)
+
+    def skipped_version(self) -> str:
+        """Release the user asked not to be reminded about again."""
+        return str(_settings().value(_SKIPPED_VERSION_KEY, "", type=str))
+
+    def set_skipped_version(self, version: str) -> None:
+        _settings().setValue(_SKIPPED_VERSION_KEY, version)
+
+    def start_startup_update_check(self) -> None:
+        """Check for a newer release without blocking the window, unless turned off."""
+        if not self.update_check_on_startup():
+            return
+        QThreadPool.globalInstance().start(self._run_startup_update_check)
+
+    def _run_startup_update_check(self) -> None:
+        try:
+            status = check_for_update()
+        except UpdateCheckError:
+            # ponytail: no network at startup stays silent; Help → Check for Updates explains why.
+            return
+        try:
+            self._startup_update_ready.emit(status)
+        except RuntimeError:
+            pass  # Window closed while the check was still running.
+
+    def _on_startup_update_ready(self, status: UpdateStatus) -> None:
+        """Only interrupt the user about a newer release they have not skipped."""
+        if not status.update_available or status.latest_version == self.skipped_version():
+            return
+        self._show_update_message(status, allow_skip=True)
 
     def _update_actions(self) -> None:
         has_project = self._project is not None
