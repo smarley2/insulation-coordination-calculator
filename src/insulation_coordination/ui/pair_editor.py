@@ -48,6 +48,14 @@ from insulation_coordination.ui.pair_models import (
     CoverageMatrixModel,
     PairListModel,
 )
+from insulation_coordination.ui.value_options import (
+    IMPULSE_OPTIONS,
+    MATERIAL_OPTIONS,
+    POLLUTION_OPTIONS,
+    impulse_display,
+    populate_combo,
+    select_combo_value,
+)
 
 
 def _parse_voltage(text: str) -> Decimal:
@@ -131,11 +139,10 @@ def _voltage_row(edit: QLineEdit, na_button: QPushButton) -> QWidget:
 
 
 #: What Ctrl+C/Ctrl+V carries between cells: every pair field except the ones that
-#: say *which* pair it is. Notes stay put — they justify one pair, not its neighbours.
+#: say *which* pair it is. Notes travel too — a reason that applies to one pair
+#: usually applies to every pair it is pasted onto.
 _COPIED_PAIR_FIELDS = tuple(
-    name
-    for name in PairCase.model_fields
-    if name not in {"id", "key", "net_a", "net_b", "notes"}
+    name for name in PairCase.model_fields if name not in {"id", "key", "net_a", "net_b"}
 )
 
 
@@ -234,13 +241,14 @@ class PairEditor(QWidget):
             ),
         )
 
-        self._impulse_edit = QLineEdit()
-        self._impulse_edit.editingFinished.connect(self._on_impulse_changed)
+        self._impulse_combo = QComboBox()
+        populate_combo(self._impulse_combo, IMPULSE_OPTIONS)
+        self._impulse_combo.currentIndexChanged.connect(self._on_impulse_selected)
         self._impulse_source_label = QLabel("Default")
         params_layout.addRow(
             "Impulse:",
             _override_row(
-                self._impulse_edit,
+                self._impulse_combo,
                 self._impulse_source_label,
                 self.clear_impulse_override,
                 "_impulse_default_button",
@@ -289,13 +297,14 @@ class PairEditor(QWidget):
             ),
         )
 
-        self._pollution_edit = QLineEdit()
-        self._pollution_edit.editingFinished.connect(self._on_pollution_changed)
+        self._pollution_combo = QComboBox()
+        populate_combo(self._pollution_combo, POLLUTION_OPTIONS)
+        self._pollution_combo.currentIndexChanged.connect(self._on_pollution_selected)
         self._pollution_source_label = QLabel("Default")
         params_layout.addRow(
             "Pollution degree:",
             _override_row(
-                self._pollution_edit,
+                self._pollution_combo,
                 self._pollution_source_label,
                 self.clear_pollution_override,
                 "_pollution_default_button",
@@ -318,13 +327,14 @@ class PairEditor(QWidget):
             ),
         )
 
-        self._cti_edit = QLineEdit()
-        self._cti_edit.editingFinished.connect(self._on_cti_changed)
+        self._cti_combo = QComboBox()
+        populate_combo(self._cti_combo, MATERIAL_OPTIONS)
+        self._cti_combo.currentIndexChanged.connect(self._on_cti_selected)
         self._cti_source_label = QLabel("Default")
         params_layout.addRow(
             "CTI / material group:",
             _override_row(
-                self._cti_edit,
+                self._cti_combo,
                 self._cti_source_label,
                 self.clear_cti_override,
                 "_cti_default_button",
@@ -355,13 +365,13 @@ class PairEditor(QWidget):
         self._to_peak_edit.blockSignals(True)
         self._freq_edit.blockSignals(True)
         self._insulation_combo.blockSignals(True)
-        self._impulse_edit.blockSignals(True)
+        self._impulse_combo.blockSignals(True)
         self._field_combo.blockSignals(True)
         self._radius_edit.blockSignals(True)
         self._altitude_edit.blockSignals(True)
-        self._pollution_edit.blockSignals(True)
+        self._pollution_combo.blockSignals(True)
         self._construction_combo.blockSignals(True)
-        self._cti_edit.blockSignals(True)
+        self._cti_combo.blockSignals(True)
         self._notes_edit.blockSignals(True)
 
         for edit, voltage in (
@@ -392,7 +402,12 @@ class PairEditor(QWidget):
         )
 
         impulse_value = effective.impulse_v.value if effective is not None else pair.impulse_v.value
-        self._impulse_edit.setText(str(impulse_value) if impulse_value is not None else "")
+        select_combo_value(
+            self._impulse_combo,
+            IMPULSE_OPTIONS,
+            impulse_value,
+            None if impulse_value is None else impulse_display(impulse_value),
+        )
         self._impulse_source_label.setText("Override" if pair.impulse_v.is_override else "Default")
         field_value = effective.field_condition.value if effective is not None else pair.field_condition.value
         self._field_combo.setCurrentText(
@@ -422,7 +437,12 @@ class PairEditor(QWidget):
             if effective is not None
             else pair.pollution_degree.value
         )
-        self._pollution_edit.setText(str(pollution_value) if pollution_value is not None else "")
+        select_combo_value(
+            self._pollution_combo,
+            POLLUTION_OPTIONS,
+            pollution_value,
+            None if pollution_value is None else str(pollution_value),
+        )
         self._pollution_source_label.setText(
             "Override" if pair.pollution_degree.is_override else "Default"
         )
@@ -442,7 +462,7 @@ class PairEditor(QWidget):
             if effective is not None
             else pair.cti_or_material_group.value
         )
-        self._cti_edit.setText(cti_value or "")
+        select_combo_value(self._cti_combo, MATERIAL_OPTIONS, cti_value, cti_value)
         self._cti_source_label.setText(
             "Override" if pair.cti_or_material_group.is_override else "Default"
         )
@@ -454,13 +474,13 @@ class PairEditor(QWidget):
         self._recurring_peak_edit.blockSignals(False)
         self._to_peak_edit.blockSignals(False)
         self._freq_edit.blockSignals(False)
-        self._impulse_edit.blockSignals(False)
+        self._impulse_combo.blockSignals(False)
         self._field_combo.blockSignals(False)
         self._radius_edit.blockSignals(False)
         self._altitude_edit.blockSignals(False)
-        self._pollution_edit.blockSignals(False)
+        self._pollution_combo.blockSignals(False)
         self._construction_combo.blockSignals(False)
-        self._cti_edit.blockSignals(False)
+        self._cti_combo.blockSignals(False)
         self._notes_edit.blockSignals(False)
 
     def set_long_term_rms(self, text: str) -> None:
@@ -687,14 +707,10 @@ class PairEditor(QWidget):
             return
         self._update_pair(notes=(text.strip() or None))
 
-    def _on_impulse_changed(self) -> None:
-        text = self._impulse_edit.text().strip()
-        if not text:
-            return
-        try:
-            self.set_impulse_override(text)
-        except (InvalidOperation, ValueError):
-            pass
+    def _on_impulse_selected(self, index: int) -> None:
+        value = self._impulse_combo.itemData(index)
+        if value is not None:
+            self.set_impulse_override(str(value))
 
     def _on_field_changed(self, text: str) -> None:
         if self._pair is None or not text:
@@ -722,14 +738,10 @@ class PairEditor(QWidget):
         except (InvalidOperation, ValueError):
             pass
 
-    def _on_pollution_changed(self) -> None:
-        text = self._pollution_edit.text().strip()
-        if not text:
-            return
-        try:
-            self.set_pollution_override(text)
-        except (InvalidOperation, ValueError):
-            pass
+    def _on_pollution_selected(self, index: int) -> None:
+        value = self._pollution_combo.itemData(index)
+        if value is not None:
+            self.set_pollution_override(str(value))
 
     def _on_construction_changed(self, text: str) -> None:
         if self._pair is None or not text:
@@ -739,14 +751,10 @@ class PairEditor(QWidget):
         except ValueError:
             pass
 
-    def _on_cti_changed(self) -> None:
-        text = self._cti_edit.text().strip()
-        if not text:
-            return
-        try:
-            self.set_cti_override(text)
-        except ValueError:
-            pass
+    def _on_cti_selected(self, index: int) -> None:
+        value = self._cti_combo.itemData(index)
+        if value is not None:
+            self.set_cti_override(str(value))
 
     def _on_notes_changed(self) -> None:
         if self._pair is None:

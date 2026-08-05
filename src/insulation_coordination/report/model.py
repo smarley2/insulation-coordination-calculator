@@ -175,7 +175,6 @@ class ExcludedPair(FrozenModel):
     pair_key: str
     net_a: str
     net_b: str
-    reasons: tuple[str, ...]
     notes: str | None
 
 
@@ -697,24 +696,12 @@ def _report_stresses(voltages: PairVoltages) -> tuple[ReportStress, ...]:
 
 
 def _excluded_pair(pair: PairCase, net_names: dict[str, str]) -> ExcludedPair:
-    """Describe an excluded pair by its recorded N/A justifications.
-
-    Identical justifications across the four stresses collapse to one line — the
-    usual case is one reason given for the whole pair.
-    """
-    # A not-applicable stress is validated to carry a justification, so an excluded
-    # pair always yields at least one reason.
-    reasons: list[str] = []
-    for voltage in pair.voltages.stresses():
-        justification = (voltage.justification or "").strip()
-        if justification and justification not in reasons:
-            reasons.append(justification)
+    """Describe an excluded pair. Its note is the reason it carries."""
     return ExcludedPair(
         pair_id=str(pair.id),
         pair_key=pair.key,
         net_a=net_names[str(pair.net_a)],
         net_b=net_names[str(pair.net_b)],
-        reasons=tuple(reasons),
         notes=pair.notes,
     )
 

@@ -93,20 +93,20 @@ Name & Description & Notes \\
 \section{Pairs Excluded from the Analysis}
 Every voltage stress of the pairs below is recorded as not applicable, so no
 clearance or creepage is dimensioned for them and they carry no calculation. The
-recorded justification for each pair is reproduced verbatim. In the comparison
-matrices these pairs appear as N/A.
+reason recorded for each pair is its note. In the comparison matrices these pairs
+appear as N/A.
 
-\begin{longtable}{@{}p{40mm}p{75mm}p{35mm}@{}}
+\begin{longtable}{@{}p{60mm}p{90mm}@{}}
 \toprule
-Pair & Recorded justification & Notes \\
+Pair & Reason recorded \\
 \midrule
 \endfirsthead
 \toprule
-Pair & Recorded justification & Notes \\
+Pair & Reason recorded \\
 \midrule
 \endhead
 {% for pair in model.excluded_pairs %}
-{{ pair.net_a|tex }} ↔ {{ pair.net_b|tex }} & {% for reason in pair.reasons %}{{ reason|tex }}{% if not loop.last %}; {% endif %}{% endfor %} & {{ pair.notes|value }} \\
+{{ pair.net_a|tex }} ↔ {{ pair.net_b|tex }} & {{ pair.notes|value }} \\
 {% endfor %}
 \bottomrule
 \end{longtable}

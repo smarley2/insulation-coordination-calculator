@@ -61,7 +61,6 @@ def test_excluded_pairs_are_reported_without_a_calculation(inputs_with_excluded_
         ("HV_1", "FAR"),
         ("LV%2", "FAR"),
     }
-    assert all(pair.reasons == (_REASON,) for pair in model.excluded_pairs)
     assert all(pair.notes == "Far apart by construction." for pair in model.excluded_pairs)
     # Excluded pairs must not leak into the grouped calculations.
     grouped = {pair_id for group in model.groups for pair_id in group.pair_ids}
@@ -72,8 +71,9 @@ def test_excluded_pairs_get_their_own_report_section(inputs_with_excluded_pair) 
     tex = render_latex(build_report_model(*inputs_with_excluded_pair))
 
     assert "Pairs Excluded from the Analysis" in tex
-    assert _REASON in tex
     assert "Far apart by construction." in tex
+    # The hardcoded N/A justification has no UI field, so it stays out of the table.
+    assert _REASON not in tex
 
 
 def test_comparison_matrices_mark_excluded_pairs_as_na(inputs_with_excluded_pair) -> None:

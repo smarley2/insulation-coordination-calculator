@@ -322,7 +322,7 @@ def test_pair_editor_shows_inherited_default_values(qtbot, pair_page):
     pair_page.select_pair_by_id(str(pair_page.project.pairs[0].id))
     assert pair_page.editor._freq_edit.text() == "50"
     assert pair_page.editor._freq_source_label.text() == "Default"
-    assert pair_page.editor._impulse_edit.text() == "1200"
+    assert pair_page.editor._impulse_combo.currentText() == "1.2 kV"
     assert pair_page.editor._impulse_source_label.text() == "Default"
 
 
@@ -524,7 +524,7 @@ def test_copy_paste_moves_configuration_to_another_pair(qtbot, pair_page):
     assert pasted.voltages.recurring_peak_v.applicability is Applicability.NOT_APPLICABLE
     assert pasted.frequency_hz.value == Decimal(100_000)
     assert pasted.construction_type.value is ConstructionType.PRINTED_WIRING
-    assert pasted.notes is None
+    assert pasted.notes == "Belongs to the source pair only"
     assert (pasted.id, pasted.net_a, pasted.net_b) == (target.id, target.net_a, target.net_b)
     assert page.editor.pair.id == target.id
     assert page.editor.frequency_source_text == "Override"
@@ -672,3 +672,51 @@ def test_coverage_matrix_marks_excluded_pairs(qtbot, pair_page):
 
     assert page.matrix_model.data(page.matrix_model.index(0, 1)) == "N/A"
     assert page.matrix_model.data(page.matrix_model.index(0, 2)) == "✓"
+
+
+def test_pair_editor_offers_the_same_dropdowns_as_the_project_defaults(qtbot, pair_page):
+    from insulation_coordination.ui.value_options import (
+        IMPULSE_OPTIONS,
+        MATERIAL_OPTIONS,
+        POLLUTION_OPTIONS,
+    )
+
+    page = pair_page
+    page.select_pair_by_id(str(page.project.pairs[0].id))
+
+    for combo, options in (
+        (page.editor._impulse_combo, IMPULSE_OPTIONS),
+        (page.editor._pollution_combo, POLLUTION_OPTIONS),
+        (page.editor._cti_combo, MATERIAL_OPTIONS),
+    ):
+        texts = [combo.itemText(index) for index in range(combo.count())]
+        assert texts == ["", *(text for text, _value in options)]
+
+
+def test_choosing_a_dropdown_value_overrides_the_project_default(qtbot, pair_page):
+    page = pair_page
+    pair = page.project.pairs[0]
+    page.select_pair_by_id(str(pair.id))
+    assert page.editor._impulse_source_label.text() == "Default"
+
+    page.editor._impulse_combo.setCurrentText("2.5 kV")
+    page.editor._pollution_combo.setCurrentText("1")
+    page.editor._cti_combo.setCurrentText("IIIa")
+
+    updated = page.project.pair_by_id(pair.id)
+    assert updated.impulse_v.value == Decimal(2500)
+    assert updated.pollution_degree.value == 1
+    assert updated.cti_or_material_group.value == "IIIa"
+    assert page.editor._impulse_source_label.text() == "Override"
+
+
+def test_an_off_list_override_is_offered_back_as_legacy(qtbot, pair_page):
+    page = pair_page
+    pair = page.project.pairs[0]
+    page.select_pair_by_id(str(pair.id))
+
+    page.editor.set_pollution_override("3")
+    page.select_pair_by_id(str(pair.id))
+
+    assert page.editor._pollution_combo.currentText() == "3 (legacy)"
+    assert page.project.pair_by_id(pair.id).pollution_degree.value == 3
