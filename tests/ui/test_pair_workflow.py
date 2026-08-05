@@ -517,7 +517,7 @@ def test_copy_paste_moves_configuration_to_another_pair(qtbot, pair_page):
     page.copy_selected_pair()
 
     page.select_pair_by_id(str(target.id))
-    page.paste_into_selected_pair()
+    page.paste_into_selection()
 
     pasted = page.project.pair_by_id(target.id)
     assert pasted.voltages.long_term_rms_v.value == Decimal(700)
@@ -539,7 +539,7 @@ def test_copy_paste_leaves_the_source_pair_untouched(qtbot, pair_page):
 
     page.select_pair_by_id(str(target.id))
     page.editor.set_long_term_rms("120 V")
-    page.paste_into_selected_pair()
+    page.paste_into_selection()
 
     assert page.project.pair_by_id(source.id).voltages.long_term_rms_v.value == Decimal(700)
 
@@ -549,7 +549,7 @@ def test_paste_without_a_copy_changes_nothing(qtbot, pair_page):
     target = page.project.pairs[0]
     page.select_pair_by_id(str(target.id))
 
-    page.paste_into_selected_pair()
+    page.paste_into_selection()
 
     assert page.project.pair_by_id(target.id) == target
 
@@ -559,7 +559,7 @@ def test_copy_without_a_selected_pair_leaves_paste_inert(qtbot, pair_page):
     before = page.project
 
     page.copy_selected_pair()
-    page.paste_into_selected_pair()
+    page.paste_into_selection()
 
     assert page.project is before
 
@@ -578,3 +578,59 @@ def test_matrix_ctrl_c_ctrl_v_copies_configuration(qtbot, pair_page):
     qtbot.keyClick(view, Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier)
 
     assert page.project.pair_by_id(target.id).voltages.long_term_rms_v.value == Decimal(700)
+
+
+def _select_matrix_cells(page, cells: tuple[tuple[int, int], ...]) -> None:
+    from PySide6.QtCore import QItemSelectionModel
+
+    selection_model = page._matrix_view.selectionModel()
+    selection_model.clearSelection()
+    for row, column in cells:
+        selection_model.select(
+            page.matrix_model.index(row, column), QItemSelectionModel.SelectionFlag.Select
+        )
+
+
+def test_paste_fills_every_selected_matrix_cell(qtbot, pair_page):
+    page = pair_page
+    source = page.matrix_model.pair_at(0, 1)
+    page.select_pair_by_id(str(source.id))
+    page.editor.set_long_term_rms("700 V")
+    page.copy_selected_pair()
+
+    # The diagonal carries no pair, and (2, 0) mirrors (0, 2) — both must be tolerated.
+    _select_matrix_cells(page, ((0, 0), (0, 2), (2, 0), (1, 2)))
+    page.paste_into_selection()
+
+    for row, column in ((0, 2), (1, 2)):
+        pasted = page.project.pair_by_id(page.matrix_model.pair_at(row, column).id)
+        assert pasted.voltages.long_term_rms_v.value == Decimal(700)
+
+
+def test_paste_without_a_selection_falls_back_to_the_clicked_pair(qtbot, pair_page):
+    page = pair_page
+    source, target = page.project.pairs[0], page.project.pairs[1]
+    page.select_pair_by_id(str(source.id))
+    page.editor.set_long_term_rms("700 V")
+    page.copy_selected_pair()
+
+    page.select_pair_by_id(str(target.id))
+    page._matrix_view.selectionModel().clearSelection()
+    page.paste_into_selection()
+
+    assert page.project.pair_by_id(target.id).voltages.long_term_rms_v.value == Decimal(700)
+
+
+def test_not_applicable_voltage_shows_na_instead_of_an_empty_box(qtbot, pair_page):
+    page = pair_page
+    pair = page.project.pairs[0]
+    page.select_pair_by_id(str(pair.id))
+
+    page.editor._on_rms_na()
+
+    assert page.editor._rms_edit.text() == "N/A"
+    # And it survives a reload from the project, not just the button click.
+    page.select_pair_by_id(str(pair.id))
+    assert page.editor._rms_edit.text() == "N/A"
+    assert page.editor._rms_edit.toolTip() == "Not applicable per design review"
+    assert page.editor._steady_peak_edit.text() == ""

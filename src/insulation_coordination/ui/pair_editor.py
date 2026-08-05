@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from insulation_coordination.calculation.engine import PairResult
 from insulation_coordination.domain.display import pair_label
 from insulation_coordination.domain.enums import (
+    Applicability,
     ConstructionType,
     FieldCondition,
     InsulationType,
@@ -77,6 +78,16 @@ def _parse_frequency(text: str) -> Decimal:
 
 #: Pair inputs hold short values, so they stay narrow and hug the right edge.
 _FIELD_WIDTH = 220
+
+#: Shown in a voltage field that was marked not applicable, because an empty box
+#: is indistinguishable from a stress nobody has filled in yet.
+_NOT_APPLICABLE_TEXT = "N/A"
+
+
+def _voltage_text(voltage: PairVoltage) -> str:
+    if voltage.applicability is Applicability.NOT_APPLICABLE:
+        return _NOT_APPLICABLE_TEXT
+    return "" if voltage.value is None else str(voltage.value)
 
 
 def _field_row(widget: QWidget) -> QHBoxLayout:
@@ -353,26 +364,15 @@ class PairEditor(QWidget):
         self._cti_edit.blockSignals(True)
         self._notes_edit.blockSignals(True)
 
-        self._rms_edit.setText(
-            str(pair.voltages.long_term_rms_v.value)
-            if pair.voltages.long_term_rms_v.value is not None
-            else ""
-        )
-        self._steady_peak_edit.setText(
-            str(pair.voltages.steady_state_peak_v.value)
-            if pair.voltages.steady_state_peak_v.value
-            else ""
-        )
-        self._recurring_peak_edit.setText(
-            str(pair.voltages.recurring_peak_v.value)
-            if pair.voltages.recurring_peak_v.value
-            else ""
-        )
-        self._to_peak_edit.setText(
-            str(pair.voltages.temporary_overvoltage_peak_v.value)
-            if pair.voltages.temporary_overvoltage_peak_v.value
-            else ""
-        )
+        for edit, voltage in (
+            (self._rms_edit, pair.voltages.long_term_rms_v),
+            (self._steady_peak_edit, pair.voltages.steady_state_peak_v),
+            (self._recurring_peak_edit, pair.voltages.recurring_peak_v),
+            (self._to_peak_edit, pair.voltages.temporary_overvoltage_peak_v),
+        ):
+            edit.setText(_voltage_text(voltage))
+            # The N/A justification has no other home in the UI.
+            edit.setToolTip(voltage.justification or "")
         frequency_value = effective.frequency_hz.value if effective is not None else pair.frequency_hz.value
         self._freq_edit.setText(str(frequency_value) if frequency_value is not None else "")
         self._freq_source_label.setText(
@@ -757,25 +757,25 @@ class PairEditor(QWidget):
         if self._pair is None:
             return
         self.set_long_term_rms_not_applicable("Not applicable per design review")
-        self._rms_edit.clear()
+        self._rms_edit.setText(_NOT_APPLICABLE_TEXT)
 
     def _on_steady_na(self) -> None:
         if self._pair is None:
             return
         self.set_steady_state_peak_not_applicable("Not applicable per design review")
-        self._steady_peak_edit.clear()
+        self._steady_peak_edit.setText(_NOT_APPLICABLE_TEXT)
 
     def _on_recurring_na(self) -> None:
         if self._pair is None:
             return
         self.set_recurring_peak_not_applicable("Not applicable per design review")
-        self._recurring_peak_edit.clear()
+        self._recurring_peak_edit.setText(_NOT_APPLICABLE_TEXT)
 
     def _on_to_na(self) -> None:
         if self._pair is None:
             return
         self.set_temporary_overvoltage_not_applicable()
-        self._to_peak_edit.clear()
+        self._to_peak_edit.setText(_NOT_APPLICABLE_TEXT)
 
     def _update_pair(self, **updates: object) -> None:
         if self._pair is None:
@@ -822,10 +822,11 @@ class PairPage(QWidget):
         self._matrix_view.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self._matrix_view.clicked.connect(self._on_matrix_clicked)
         self._matrix_view.setToolTip(
-            "Ctrl+C copies the clicked pair's configuration, Ctrl+V applies it to another pair."
+            "Ctrl+C copies the clicked pair's configuration, Ctrl+V applies it to every "
+            "selected pair."
         )
         self._matrix_view.copy_requested.connect(self.copy_selected_pair)
-        self._matrix_view.paste_requested.connect(self.paste_into_selected_pair)
+        self._matrix_view.paste_requested.connect(self.paste_into_selection)
         # One hook for every reset — load, parameter change, results, pair edit.
         self.matrix_model.modelReset.connect(self._apply_hidden_columns)
 
@@ -1027,19 +1028,40 @@ class PairPage(QWidget):
                 name: getattr(pair, name) for name in _COPIED_PAIR_FIELDS
             }
 
-    def paste_into_selected_pair(self) -> None:
-        """Overwrite the selected pair's configuration with the copied one."""
-        pair = self._selected_pair()
-        if pair is None or self._copied_pair_fields is None:
+    def paste_into_selection(self) -> None:
+        """Overwrite every selected pair's configuration with the copied one."""
+        if self._copied_pair_fields is None:
             return
-        self._on_pair_changed(pair.model_copy(update=self._copied_pair_fields))
+        targets = self._selected_pairs()
+        if not targets:
+            return
+        self._replace_pairs(
+            tuple(pair.model_copy(update=self._copied_pair_fields) for pair in targets)
+        )
         # Reload from the updated project so the editor shows the pasted values.
-        self.select_pair_by_id(str(pair.id))
+        self.select_pair_by_id(self._selected_pair_id or str(targets[0].id))
 
     def _selected_pair(self) -> PairCase | None:
         if self._selected_pair_id is None:
             return None
         return self._pair_by_id(UUID(self._selected_pair_id))
+
+    def _selected_pairs(self) -> tuple[PairCase, ...]:
+        """Every distinct pair under the matrix selection, clicked cell as fallback.
+
+        A rubber-band or ctrl-click selection covers diagonal cells and both halves
+        of the mirrored matrix, so the ids are deduplicated.
+        """
+        selected: dict[UUID, PairCase] = {}
+        for index in self._matrix_view.selectionModel().selectedIndexes():
+            pair = self.matrix_model.pair_at(index.row(), index.column())
+            if pair is not None:
+                selected[pair.id] = pair
+        if not selected:
+            pair = self._selected_pair()
+            if pair is not None:
+                selected[pair.id] = pair
+        return tuple(selected.values())
 
     def _on_matrix_clicked(self, index: QModelIndex) -> None:
         pair = self.matrix_model.pair_at(index.row(), index.column())
@@ -1055,9 +1077,14 @@ class PairPage(QWidget):
             self.select_pair_by_id(str(pair.id))
 
     def _on_pair_changed(self, updated_pair: PairCase) -> None:
-        if self._project is None:
+        self._replace_pairs((updated_pair,))
+
+    def _replace_pairs(self, updated: tuple[PairCase, ...]) -> None:
+        """Swap the given pairs into the project and refresh every view once."""
+        if self._project is None or not updated:
             return
-        pairs = tuple(updated_pair if p.id == updated_pair.id else p for p in self._project.pairs)
+        replacements = {pair.id: pair for pair in updated}
+        pairs = tuple(replacements.get(pair.id, pair) for pair in self._project.pairs)
         self._project = self._project.model_copy(update={"pairs": pairs})
         parameter = self.matrix_model.parameter
         self.matrix_model.load_project(self._project)
