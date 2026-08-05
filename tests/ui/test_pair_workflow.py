@@ -437,3 +437,69 @@ def test_editor_opens_no_wider_than_its_inputs_need(qtbot, pair_page):
     matrix_width, editor_width = pair_page._top_splitter.sizes()
     assert editor_width <= pair_page.editor.sizeHint().width() + 40
     assert editor_width < matrix_width, "the matrix should keep the wider half"
+
+
+def _select_matrix_columns(page, columns: tuple[int, ...]) -> None:
+    from PySide6.QtCore import QItemSelection, QItemSelectionModel
+
+    model = page.matrix_model
+    selection_model = page._matrix_view.selectionModel()
+    selection_model.clearSelection()
+    last_row = model.rowCount() - 1
+    for column in columns:
+        selection = QItemSelection(model.index(0, column), model.index(last_row, column))
+        selection_model.select(selection, QItemSelectionModel.SelectionFlag.Select)
+
+
+def test_hiding_selected_matrix_columns_leaves_the_rest_visible(qtbot, pair_page):
+    page = pair_page
+    _select_matrix_columns(page, (0, 2))
+
+    page.hide_selected_columns()
+
+    assert page.hidden_column_names == ("HV+", "PE")
+    assert page._matrix_view.isColumnHidden(0)
+    assert not page._matrix_view.isColumnHidden(1)
+    assert page._matrix_view.isColumnHidden(2)
+
+
+def test_hidden_columns_survive_a_matrix_refresh(qtbot, pair_page):
+    page = pair_page
+    _select_matrix_columns(page, (1,))
+    page.hide_selected_columns()
+
+    page.load_project(page.project)
+
+    assert page.hidden_column_names == ("HV-",)
+    assert page._matrix_view.isColumnHidden(1)
+
+
+def test_showing_all_columns_clears_every_hidden_column(qtbot, pair_page):
+    page = pair_page
+    _select_matrix_columns(page, (0, 1))
+    page.hide_selected_columns()
+
+    page.show_all_columns()
+
+    assert page.hidden_column_names == ()
+    assert not any(page._matrix_view.isColumnHidden(i) for i in range(3))
+
+
+def test_hiding_without_a_selection_changes_nothing(qtbot, pair_page):
+    page = pair_page
+    page._matrix_view.selectionModel().clearSelection()
+
+    page.hide_selected_columns()
+
+    assert page.hidden_column_names == ()
+
+
+def test_matrix_columns_are_resizable_by_dragging(qtbot, pair_page):
+    from PySide6.QtWidgets import QHeaderView
+
+    page = pair_page
+    header = page._matrix_view.horizontalHeader()
+    assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.Interactive
+    assert page._matrix_view.verticalHeader().sectionResizeMode(0) == (
+        QHeaderView.ResizeMode.Interactive
+    )

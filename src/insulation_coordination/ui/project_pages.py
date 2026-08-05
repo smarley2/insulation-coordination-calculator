@@ -70,6 +70,8 @@ _IMPULSE_OPTIONS = (
     ("80 kV", Decimal(80000)),
     ("100 kV", Decimal(100000)),
 )
+#: Upper bound on one bulk net-class add, so a mistyped amount cannot flood the pair set.
+MAX_BULK_NET_CLASSES = 64
 _POLLUTION_OPTIONS = (("1", 1), ("2", 2))
 _MATERIAL_OPTIONS = (("I", "I"), ("II", "II"), ("IIIa", "IIIa"), ("IIIb", "IIIb"))
 
@@ -181,6 +183,9 @@ class ProjectPage(QWidget):
         self._add_button = QPushButton("Add")
         self._add_button.clicked.connect(self._on_add_clicked)
         net_controls.addWidget(self._add_button)
+        self._add_many_button = QPushButton("Add Many…")
+        self._add_many_button.clicked.connect(self._on_add_many_clicked)
+        net_controls.addWidget(self._add_many_button)
         self._rename_button = QPushButton("Rename")
         self._rename_button.clicked.connect(self._on_rename_clicked)
         net_controls.addWidget(self._rename_button)
@@ -311,6 +316,25 @@ class ProjectPage(QWidget):
             raise ValueError(f"Net-class name '{name}' already exists")
         net_class = NetClass(id=uuid4(), name=name, description=description or None)
         net_classes = (*self._project.net_classes, net_class)
+        pairs = reconcile_pairs(net_classes, self._project.pairs)
+        self._update_project(net_classes=net_classes, pairs=pairs)
+
+    def add_net_classes(self, base: str, amount: int) -> None:
+        """Append `amount` net classes named base_1 … base_amount."""
+        if self._project is None:
+            raise RuntimeError("No project loaded")
+        base = base.strip().removesuffix("_")
+        if not base:
+            raise ValueError("Net-class name must not be empty")
+        if not 1 <= amount <= MAX_BULK_NET_CLASSES:
+            raise ValueError(f"Amount must be between 1 and {MAX_BULK_NET_CLASSES}")
+        names = [f"{base}_{position}" for position in range(1, amount + 1)]
+        existing_names = self._project.net_class_names
+        for name in names:
+            if name in existing_names:
+                raise ValueError(f"Net-class name '{name}' already exists")
+        added = tuple(NetClass(id=uuid4(), name=name) for name in names)
+        net_classes = (*self._project.net_classes, *added)
         pairs = reconcile_pairs(net_classes, self._project.pairs)
         self._update_project(net_classes=net_classes, pairs=pairs)
 
@@ -486,6 +510,22 @@ class ProjectPage(QWidget):
                 self.add_net_class(name.strip())
             except ValueError as error:
                 QMessageBox.warning(self, "Add Net Class", str(error))
+
+    def _on_add_many_clicked(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        base, ok = QInputDialog.getText(self, "Add Many Net Classes", "Base name:")
+        if not ok or not base.strip():
+            return
+        amount, ok = QInputDialog.getInt(
+            self, "Add Many Net Classes", "Amount:", 4, 1, MAX_BULK_NET_CLASSES
+        )
+        if not ok:
+            return
+        try:
+            self.add_net_classes(base, amount)
+        except ValueError as error:
+            QMessageBox.warning(self, "Add Many Net Classes", str(error))
 
     def _on_rename_clicked(self) -> None:
         from PySide6.QtWidgets import QInputDialog
