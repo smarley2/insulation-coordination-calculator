@@ -634,3 +634,41 @@ def test_not_applicable_voltage_shows_na_instead_of_an_empty_box(qtbot, pair_pag
     assert page.editor._rms_edit.text() == "N/A"
     assert page.editor._rms_edit.toolTip() == "Not applicable per design review"
     assert page.editor._steady_peak_edit.text() == ""
+
+
+def _exclude_pair(page, pair) -> None:
+    page.select_pair_by_id(str(pair.id))
+    page.editor.set_long_term_rms_not_applicable("Nets cannot come near each other.")
+    page.editor.set_steady_state_peak_not_applicable("Nets cannot come near each other.")
+    page.editor.set_recurring_peak_not_applicable("Nets cannot come near each other.")
+    page.editor.set_temporary_overvoltage_not_applicable()
+
+
+def test_recalculate_skips_pairs_whose_every_stress_is_na(qtbot, pair_page, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    page = pair_page
+    _set_valid_inputs(page)
+    excluded, calculated = page.project.pairs[0], page.project.pairs[1]
+    _exclude_pair(page, excluded)
+    captured: list[object] = []
+    monkeypatch.setattr(
+        QMessageBox, "critical", staticmethod(lambda *args: captured.append(args))
+    )
+
+    page.recalculate()
+
+    assert captured == []
+    assert page.result_by_id(excluded.id) is None
+    assert page.result_by_id(calculated.id) is not None
+
+
+def test_coverage_matrix_marks_excluded_pairs(qtbot, pair_page):
+    page = pair_page
+    excluded = page.matrix_model.pair_at(0, 1)
+    _exclude_pair(page, excluded)
+
+    page.matrix_model.set_parameter("coverage")
+
+    assert page.matrix_model.data(page.matrix_model.index(0, 1)) == "N/A"
+    assert page.matrix_model.data(page.matrix_model.index(0, 2)) == "✓"

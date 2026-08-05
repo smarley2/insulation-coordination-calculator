@@ -144,7 +144,7 @@ class CoverageMatrixModel(QAbstractTableModel):
 
     def _display_pair_value(self, pair: PairCase) -> str:
         if self._parameter == "coverage":
-            return "✓"
+            return "N/A" if pair.is_excluded else "✓"
         if self._parameter in _VOLTAGE_FIELDS:
             field, unit = _VOLTAGE_FIELDS[self._parameter]
             voltage = getattr(pair.voltages, field)

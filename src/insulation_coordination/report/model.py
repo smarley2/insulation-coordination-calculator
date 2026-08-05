@@ -168,6 +168,17 @@ class RulesProvenance(FrozenModel):
     notes: str
 
 
+class ExcludedPair(FrozenModel):
+    """A pair left out of the analysis because every stress is not applicable."""
+
+    pair_id: str
+    pair_key: str
+    net_a: str
+    net_b: str
+    reasons: tuple[str, ...]
+    notes: str | None
+
+
 class ReportModel(FrozenModel):
     project_id: str
     project_sha256: str
@@ -178,6 +189,7 @@ class ReportModel(FrozenModel):
     defaults: ProjectDefaults
     net_classes: tuple[NetClass, ...]
     matrix_rows: tuple[MatrixRow, ...]
+    excluded_pairs: tuple[ExcludedPair, ...] = ()
     groups: tuple[ReportGroup, ...]
     warnings: tuple[CalculationWarning, ...]
     verification_requirements: tuple[VerificationRequirement, ...]
@@ -215,9 +227,17 @@ def build_report_model(
             "project rules package pin does not match the supplied rules package"
         )
 
-    project_pair_ids = tuple(str(pair.id) for pair in project.pairs)
-    if len(project_pair_ids) != len(set(project_pair_ids)):
+    all_pair_ids = tuple(str(pair.id) for pair in project.pairs)
+    if len(all_pair_ids) != len(set(all_pair_ids)):
         raise ReportBuildError("duplicate pair ID in project")
+    # Excluded pairs carry no result: they are reported under their own heading.
+    net_names = {str(net.id): net.name for net in project.net_classes}
+    excluded_pairs = tuple(
+        _excluded_pair(pair, net_names) for pair in project.pairs if pair.is_excluded
+    )
+    project_pair_ids = tuple(str(pair.id) for pair in project.pairs if not pair.is_excluded)
+    if not project_pair_ids:
+        raise ReportBuildError("every pair is excluded from the analysis; there is nothing to report")
     result_pair_ids = tuple(str(result.pair_id) for result in results)
     if len(result_pair_ids) != len(set(result_pair_ids)):
         raise ReportBuildError("duplicate pair result")
@@ -253,7 +273,6 @@ def build_report_model(
         authoritative_by_pair[pair_id] = authoritative
 
     group_by_pair = _validate_groups(groups, authoritative_by_pair, project_pair_ids)
-    net_names = {str(net.id): net.name for net in project.net_classes}
     matrix_rows = tuple(
         _matrix_row(
             pair_by_id[pair_id],
@@ -292,6 +311,7 @@ def build_report_model(
         defaults=project.defaults.model_copy(deep=True),
         net_classes=tuple(net.model_copy(deep=True) for net in project.net_classes),
         matrix_rows=matrix_rows,
+        excluded_pairs=excluded_pairs,
         groups=report_groups,
         warnings=tuple(warning for result in ordered_results for warning in result.warnings),
         verification_requirements=tuple(
@@ -654,6 +674,15 @@ def _report_effective(value: EffectiveValue[Decimal | None]) -> ReportEffectiveV
     return ReportEffectiveValue(value=value.value, provenance=value.provenance.value)
 
 
+#: Stress display names, in the order :meth:`PairVoltages.stresses` returns them.
+_STRESS_NAMES = (
+    "long-term RMS",
+    "steady-state peak",
+    "recurring peak",
+    "temporary overvoltage peak",
+)
+
+
 def _report_stresses(voltages: PairVoltages) -> tuple[ReportStress, ...]:
     return tuple(
         ReportStress(
@@ -663,15 +692,30 @@ def _report_stresses(voltages: PairVoltages) -> tuple[ReportStress, ...]:
             justification=voltage.justification,
             provenance="pair_input",
         )
-        for name, voltage in (
-            ("long-term RMS", voltages.long_term_rms_v),
-            ("steady-state peak", voltages.steady_state_peak_v),
-            ("recurring peak", voltages.recurring_peak_v),
-            (
-                "temporary overvoltage peak",
-                voltages.temporary_overvoltage_peak_v,
-            ),
-        )
+        for name, voltage in zip(_STRESS_NAMES, voltages.stresses(), strict=True)
+    )
+
+
+def _excluded_pair(pair: PairCase, net_names: dict[str, str]) -> ExcludedPair:
+    """Describe an excluded pair by its recorded N/A justifications.
+
+    Identical justifications across the four stresses collapse to one line — the
+    usual case is one reason given for the whole pair.
+    """
+    # A not-applicable stress is validated to carry a justification, so an excluded
+    # pair always yields at least one reason.
+    reasons: list[str] = []
+    for voltage in pair.voltages.stresses():
+        justification = (voltage.justification or "").strip()
+        if justification and justification not in reasons:
+            reasons.append(justification)
+    return ExcludedPair(
+        pair_id=str(pair.id),
+        pair_key=pair.key,
+        net_a=net_names[str(pair.net_a)],
+        net_b=net_names[str(pair.net_b)],
+        reasons=tuple(reasons),
+        notes=pair.notes,
     )
 
 

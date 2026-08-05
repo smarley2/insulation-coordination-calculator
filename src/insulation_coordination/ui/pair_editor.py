@@ -1111,6 +1111,8 @@ class PairPage(QWidget):
         self.calculation_review.update_results((), self._project)
         errors: list[str] = []
         for pair in self._project.pairs:
+            if pair.is_excluded:
+                continue
             try:
                 effective = resolve_effective_case(self._project.defaults, pair)
                 result = calculate_pair(effective, self._rules)
