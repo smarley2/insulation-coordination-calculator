@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QShowEvent
 from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
@@ -73,6 +73,7 @@ class ReportPage(QWidget):
         self._results: tuple[PairResult, ...] = ()
         self._groups: tuple[CalculationGroup, ...] = ()
         self._blocking: tuple[str, ...] = ()
+        self._stale: bool = False
         self._tectonic = tectonic
 
         layout = QVBoxLayout(self)
@@ -116,14 +117,17 @@ class ReportPage(QWidget):
 
     @property
     def generate_enabled(self) -> bool:
+        self._ensure_fresh()
         return self._generate_button.isEnabled()
 
     @property
     def blocking_summary(self) -> str:
+        self._ensure_fresh()
         return "; ".join(self._blocking) if self._blocking else ""
 
     @property
     def validation_summary(self) -> str:
+        self._ensure_fresh()
         if self._project is None:
             return "No project loaded"
         if self._blocking:
@@ -132,6 +136,7 @@ class ReportPage(QWidget):
 
     @property
     def group_count(self) -> int:
+        self._ensure_fresh()
         return len(self._groups)
 
     def load_project(self, project: Project) -> None:
@@ -142,7 +147,21 @@ class ReportPage(QWidget):
         self._revision_edit.setText(project.metadata.revision)
         for edit in (self._document_number_edit, self._revision_edit):
             edit.blockSignals(False)
-        self._refresh()
+        self._mark_stale()
+
+    def _mark_stale(self) -> None:
+        self._stale = True
+        if self.isVisible():
+            self._ensure_fresh()
+
+    def _ensure_fresh(self) -> None:
+        if self._stale:
+            self._stale = False
+            self._refresh()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        self._ensure_fresh()
 
     def _on_document_number_changed(self, text: str) -> None:
         self._update_metadata(document_number=text)
@@ -163,7 +182,7 @@ class ReportPage(QWidget):
 
     def load_rules(self, rules: RulePackage) -> None:
         self._rules = rules
-        self._refresh()
+        self._mark_stale()
 
     def generate(self, destination: Path, baseline_tex: Path | None = None) -> ReportOutput:
         """Recalculate every pair against the installed rules and render + compile.
@@ -175,6 +194,7 @@ class ReportPage(QWidget):
         destination.mkdir(parents=True, exist_ok=True)
         if self._project is None or self._rules is None:
             raise RuntimeError("Report generation requires a project and rules")
+        self._ensure_fresh()
         if self._blocking:
             raise RuntimeError(self.blocking_summary)
         try:
@@ -322,6 +342,7 @@ class ReportPage(QWidget):
         """Split the first multi-pair group by moving its last pair out."""
         if self._project is None or self._groups is None:
             return
+        self._ensure_fresh()
         target = next((g for g in self._groups if len(g.pair_ids) > 1), None)
         if target is None:
             raise GroupingError("no group with more than one pair to split")
