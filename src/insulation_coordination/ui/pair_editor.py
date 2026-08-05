@@ -768,21 +768,32 @@ class PairPage(QWidget):
         self._rules: RulePackage | None = None
         self._results: dict[str, PairResult] = {}
         self._selected_pair_id: str | None = None
+        # Hidden columns are keyed by net-class name, not index: the model resets on
+        # every pair edit, and an index would then hide whatever moved into its place.
+        self._hidden_nets: set[str] = set()
 
         layout = QVBoxLayout(self)
 
         self.matrix_model = CoverageMatrixModel()
         self._matrix_view = QTableView()
         self._matrix_view.setModel(self.matrix_model)
-        self._matrix_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # Extended selection so a click on one header and ctrl-click on the next
+        # gather several columns for one Hide.
+        self._matrix_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._matrix_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         self._matrix_view.setMinimumHeight(160)
         self._matrix_view.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-        self._matrix_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self._matrix_view.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        # Interactive is the drag-the-border mode; Stretch squeezed 20 net names
+        # into unreadable stubs.
+        self._matrix_view.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
+        self._matrix_view.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self._matrix_view.clicked.connect(self._on_matrix_clicked)
+        # One hook for every reset — load, parameter change, results, pair edit.
+        self.matrix_model.modelReset.connect(self._apply_hidden_columns)
 
         self.pair_list_model = PairListModel()
         self._pair_list_view = QListView()
@@ -818,6 +829,12 @@ class PairPage(QWidget):
             self._on_matrix_parameter_changed
         )
         parameter_row.addWidget(self._matrix_parameter_combo)
+        self._hide_columns_button = QPushButton("Hide selected columns")
+        self._hide_columns_button.clicked.connect(self.hide_selected_columns)
+        parameter_row.addWidget(self._hide_columns_button)
+        self._show_columns_button = QPushButton("Show all")
+        self._show_columns_button.clicked.connect(self.show_all_columns)
+        parameter_row.addWidget(self._show_columns_button)
         parameter_row.addStretch(1)
         matrix_layout.addLayout(parameter_row)
         matrix_layout.addWidget(QLabel("Coverage Matrix:"))
@@ -916,6 +933,40 @@ class PairPage(QWidget):
         if self.isVisible():
             self._splitters_initialized = True
             QTimer.singleShot(0, self._set_initial_splitter_sizes)
+
+    @property
+    def hidden_column_names(self) -> tuple[str, ...]:
+        """Hidden net classes, in matrix order."""
+        if self._project is None:
+            return ()
+        return tuple(
+            net.name for net in self._project.net_classes if net.name in self._hidden_nets
+        )
+
+    def hide_selected_columns(self) -> None:
+        """Hide every fully selected matrix column, leaving its row in place."""
+        if self._project is None:
+            return
+        nets = self._project.net_classes
+        for index in self._matrix_view.selectionModel().selectedColumns():
+            if 0 <= index.column() < len(nets):
+                self._hidden_nets.add(nets[index.column()].name)
+        self._apply_hidden_columns()
+
+    def show_all_columns(self) -> None:
+        """Bring every hidden matrix column back."""
+        self._hidden_nets.clear()
+        self._apply_hidden_columns()
+
+    def _apply_hidden_columns(self) -> None:
+        hidden = 0
+        if self._project is not None:
+            for column, net in enumerate(self._project.net_classes):
+                is_hidden = net.name in self._hidden_nets
+                self._matrix_view.setColumnHidden(column, is_hidden)
+                hidden += is_hidden
+        self._matrix_view.resizeColumnsToContents()
+        self._show_columns_button.setText(f"Show all ({hidden})" if hidden else "Show all")
 
     def _on_matrix_parameter_changed(self, index: int) -> None:
         parameter = self._matrix_parameter_combo.itemData(index)
