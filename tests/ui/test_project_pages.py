@@ -353,3 +353,64 @@ def test_rules_manager_retries_encrypted_pdf_with_masked_password(qtbot, monkeyp
 
     assert calls == [{}, {selected[0]: "secret"}]
     assert len(installed) == 1
+
+
+def test_bulk_add_creates_numbered_net_classes(qtbot, qtbot_project):
+    page = qtbot_project
+    page.add_net_class("HVP")
+    page.add_net_classes("DIV_HV", 4)
+    assert page.project.net_class_names == (
+        "HVP",
+        "DIV_HV_1",
+        "DIV_HV_2",
+        "DIV_HV_3",
+        "DIV_HV_4",
+    )
+    assert len(page.project.pairs) == 10
+
+
+def test_bulk_add_strips_a_trailing_underscore(qtbot, qtbot_project):
+    page = qtbot_project
+    page.add_net_classes("DIV_HV_", 2)
+    assert page.project.net_class_names == ("DIV_HV_1", "DIV_HV_2")
+
+
+def test_bulk_add_keeps_data_on_an_existing_pair(qtbot, qtbot_project):
+    page = qtbot_project
+    page.add_net_class("HVP")
+    page.add_net_class("HVN")
+    annotated = page.project.pairs[0].model_copy(update={"notes": "endpoint span"})
+    page.load_project(page.project.model_copy(update={"pairs": (annotated,)}))
+
+    page.add_net_classes("DIV_HV", 4)
+
+    kept = page.project.pair_by_id(annotated.id)
+    assert kept is not None
+    assert kept.notes == "endpoint span"
+
+
+def test_bulk_add_refuses_the_whole_batch_on_a_collision(qtbot, qtbot_project):
+    page = qtbot_project
+    page.add_net_class("DIV_HV_2")
+    before = page.project
+
+    with pytest.raises(ValueError, match="DIV_HV_2"):
+        page.add_net_classes("DIV_HV", 4)
+
+    assert page.project.net_class_names == before.net_class_names
+    assert len(page.project.pairs) == len(before.pairs)
+
+
+@pytest.mark.parametrize("amount", [0, -1, 65])
+def test_bulk_add_rejects_an_amount_outside_the_range(qtbot, qtbot_project, amount):
+    page = qtbot_project
+    with pytest.raises(ValueError):
+        page.add_net_classes("DIV_HV", amount)
+    assert page.project.net_class_names == ()
+
+
+def test_bulk_add_rejects_an_empty_base_name(qtbot, qtbot_project):
+    page = qtbot_project
+    with pytest.raises(ValueError):
+        page.add_net_classes("   ", 3)
+    assert page.project.net_class_names == ()
