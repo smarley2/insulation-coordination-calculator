@@ -68,6 +68,7 @@ def render_release_tex(
         results = tuple(
             calculate_pair(resolve_effective_case(project.defaults, pair), rules)
             for pair in project.pairs
+            if not pair.is_excluded
         )
         groups = group_results(results, project.group_splits)
         model = build_report_model(project, results, groups, rules)

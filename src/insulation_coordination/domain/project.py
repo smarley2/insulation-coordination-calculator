@@ -91,6 +91,15 @@ class PairVoltages(FrozenModel):
     recurring_peak_v: PairVoltage = Field(default_factory=PairVoltage.blank)
     temporary_overvoltage_peak_v: PairVoltage = Field(default_factory=PairVoltage.blank)
 
+    def stresses(self) -> tuple[PairVoltage, ...]:
+        """The four stresses in report order."""
+        return (
+            self.long_term_rms_v,
+            self.steady_state_peak_v,
+            self.recurring_peak_v,
+            self.temporary_overvoltage_peak_v,
+        )
+
 
 class ProjectDefaults(FrozenModel):
     frequency_hz: PositiveDecimal | None = None
@@ -177,6 +186,21 @@ class PairCase(FrozenModel):
         if self.net_a == self.net_b:
             raise ValueError("A pair requires two different net classes")
         return self
+
+    @property
+    def is_excluded(self) -> bool:
+        """True when every stress is explicitly not applicable.
+
+        Net classes that can never come near each other are recorded this way:
+        there is no stress to dimension against, so the pair is left out of the
+        calculation and reported under its recorded justifications instead. A pair
+        with a blank stress is *not* excluded — that is missing data, not a
+        decision, and it must still fail the calculation.
+        """
+        return all(
+            voltage.applicability is Applicability.NOT_APPLICABLE
+            for voltage in self.voltages.stresses()
+        )
 
 
 class Project(FrozenModel):

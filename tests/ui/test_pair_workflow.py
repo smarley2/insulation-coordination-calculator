@@ -322,7 +322,7 @@ def test_pair_editor_shows_inherited_default_values(qtbot, pair_page):
     pair_page.select_pair_by_id(str(pair_page.project.pairs[0].id))
     assert pair_page.editor._freq_edit.text() == "50"
     assert pair_page.editor._freq_source_label.text() == "Default"
-    assert pair_page.editor._impulse_edit.text() == "1200"
+    assert pair_page.editor._impulse_combo.currentText() == "1.2 kV"
     assert pair_page.editor._impulse_source_label.text() == "Default"
 
 
@@ -503,3 +503,334 @@ def test_matrix_columns_are_resizable_by_dragging(qtbot, pair_page):
     assert page._matrix_view.verticalHeader().sectionResizeMode(0) == (
         QHeaderView.ResizeMode.Interactive
     )
+
+
+def test_copy_paste_moves_configuration_to_another_pair(qtbot, pair_page):
+    page = pair_page
+    source, target = page.project.pairs[0], page.project.pairs[1]
+    page.select_pair_by_id(str(source.id))
+    page.editor.set_long_term_rms("700 V")
+    page.editor.set_recurring_peak_not_applicable("Source justification")
+    page.editor.set_frequency_override("100 kHz")
+    page.editor.set_construction_override(ConstructionType.PRINTED_WIRING)
+    page.editor.set_notes("Belongs to the source pair only")
+    page.copy_selected_pair()
+
+    page.select_pair_by_id(str(target.id))
+    page.paste_into_selection()
+
+    pasted = page.project.pair_by_id(target.id)
+    assert pasted.voltages.long_term_rms_v.value == Decimal(700)
+    assert pasted.voltages.recurring_peak_v.applicability is Applicability.NOT_APPLICABLE
+    assert pasted.frequency_hz.value == Decimal(100_000)
+    assert pasted.construction_type.value is ConstructionType.PRINTED_WIRING
+    assert pasted.notes == "Belongs to the source pair only"
+    assert (pasted.id, pasted.net_a, pasted.net_b) == (target.id, target.net_a, target.net_b)
+    assert page.editor.pair.id == target.id
+    assert page.editor.frequency_source_text == "Override"
+
+
+def test_copy_paste_leaves_the_source_pair_untouched(qtbot, pair_page):
+    page = pair_page
+    source, target = page.project.pairs[0], page.project.pairs[1]
+    page.select_pair_by_id(str(source.id))
+    page.editor.set_long_term_rms("700 V")
+    page.copy_selected_pair()
+
+    page.select_pair_by_id(str(target.id))
+    page.editor.set_long_term_rms("120 V")
+    page.paste_into_selection()
+
+    assert page.project.pair_by_id(source.id).voltages.long_term_rms_v.value == Decimal(700)
+
+
+def test_paste_without_a_copy_changes_nothing(qtbot, pair_page):
+    page = pair_page
+    target = page.project.pairs[0]
+    page.select_pair_by_id(str(target.id))
+
+    page.paste_into_selection()
+
+    assert page.project.pair_by_id(target.id) == target
+
+
+def test_copy_without_a_selected_pair_leaves_paste_inert(qtbot, pair_page):
+    page = pair_page
+    before = page.project
+
+    page.copy_selected_pair()
+    page.paste_into_selection()
+
+    assert page.project is before
+
+
+def test_matrix_ctrl_c_ctrl_v_copies_configuration(qtbot, pair_page):
+    from PySide6.QtCore import Qt
+
+    page = pair_page
+    source, target = page.project.pairs[0], page.project.pairs[1]
+    page.select_pair_by_id(str(source.id))
+    page.editor.set_long_term_rms("700 V")
+
+    view = page._matrix_view
+    qtbot.keyClick(view, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+    page.select_pair_by_id(str(target.id))
+    qtbot.keyClick(view, Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier)
+
+    assert page.project.pair_by_id(target.id).voltages.long_term_rms_v.value == Decimal(700)
+
+
+def _select_matrix_cells(page, cells: tuple[tuple[int, int], ...]) -> None:
+    from PySide6.QtCore import QItemSelectionModel
+
+    selection_model = page._matrix_view.selectionModel()
+    selection_model.clearSelection()
+    for row, column in cells:
+        selection_model.select(
+            page.matrix_model.index(row, column), QItemSelectionModel.SelectionFlag.Select
+        )
+
+
+def test_paste_fills_every_selected_matrix_cell(qtbot, pair_page):
+    page = pair_page
+    source = page.matrix_model.pair_at(0, 1)
+    page.select_pair_by_id(str(source.id))
+    page.editor.set_long_term_rms("700 V")
+    page.copy_selected_pair()
+
+    # The diagonal carries no pair, and (2, 0) mirrors (0, 2) — both must be tolerated.
+    _select_matrix_cells(page, ((0, 0), (0, 2), (2, 0), (1, 2)))
+    page.paste_into_selection()
+
+    for row, column in ((0, 2), (1, 2)):
+        pasted = page.project.pair_by_id(page.matrix_model.pair_at(row, column).id)
+        assert pasted.voltages.long_term_rms_v.value == Decimal(700)
+
+
+def test_paste_without_a_selection_falls_back_to_the_clicked_pair(qtbot, pair_page):
+    page = pair_page
+    source, target = page.project.pairs[0], page.project.pairs[1]
+    page.select_pair_by_id(str(source.id))
+    page.editor.set_long_term_rms("700 V")
+    page.copy_selected_pair()
+
+    page.select_pair_by_id(str(target.id))
+    page._matrix_view.selectionModel().clearSelection()
+    page.paste_into_selection()
+
+    assert page.project.pair_by_id(target.id).voltages.long_term_rms_v.value == Decimal(700)
+
+
+def test_not_applicable_voltage_shows_na_instead_of_an_empty_box(qtbot, pair_page):
+    page = pair_page
+    pair = page.project.pairs[0]
+    page.select_pair_by_id(str(pair.id))
+
+    page.editor._on_rms_na()
+
+    assert page.editor._rms_edit.text() == "N/A"
+    # And it survives a reload from the project, not just the button click.
+    page.select_pair_by_id(str(pair.id))
+    assert page.editor._rms_edit.text() == "N/A"
+    assert page.editor._rms_edit.toolTip() == "Not applicable per design review"
+    assert page.editor._steady_peak_edit.text() == ""
+
+
+def _exclude_pair(page, pair) -> None:
+    page.select_pair_by_id(str(pair.id))
+    page.editor.set_long_term_rms_not_applicable("Nets cannot come near each other.")
+    page.editor.set_steady_state_peak_not_applicable("Nets cannot come near each other.")
+    page.editor.set_recurring_peak_not_applicable("Nets cannot come near each other.")
+    page.editor.set_temporary_overvoltage_not_applicable()
+
+
+def test_recalculate_skips_pairs_whose_every_stress_is_na(qtbot, pair_page, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    page = pair_page
+    _set_valid_inputs(page)
+    excluded, calculated = page.project.pairs[0], page.project.pairs[1]
+    _exclude_pair(page, excluded)
+    captured: list[object] = []
+    monkeypatch.setattr(
+        QMessageBox, "critical", staticmethod(lambda *args: captured.append(args))
+    )
+
+    page.recalculate()
+
+    assert captured == []
+    assert page.result_by_id(excluded.id) is None
+    assert page.result_by_id(calculated.id) is not None
+
+
+def test_coverage_matrix_marks_excluded_pairs(qtbot, pair_page):
+    page = pair_page
+    excluded = page.matrix_model.pair_at(0, 1)
+    _exclude_pair(page, excluded)
+
+    page.matrix_model.set_parameter("coverage")
+
+    assert page.matrix_model.data(page.matrix_model.index(0, 1)) == "N/A"
+    assert page.matrix_model.data(page.matrix_model.index(0, 2)) == "✓"
+
+
+def test_pair_editor_offers_the_same_dropdowns_as_the_project_defaults(qtbot, pair_page):
+    from insulation_coordination.ui.value_options import (
+        IMPULSE_OPTIONS,
+        MATERIAL_OPTIONS,
+        POLLUTION_OPTIONS,
+    )
+
+    page = pair_page
+    page.select_pair_by_id(str(page.project.pairs[0].id))
+
+    for combo, options in (
+        (page.editor._impulse_combo, IMPULSE_OPTIONS),
+        (page.editor._pollution_combo, POLLUTION_OPTIONS),
+        (page.editor._cti_combo, MATERIAL_OPTIONS),
+    ):
+        texts = [combo.itemText(index) for index in range(combo.count())]
+        # No blank entry: "use the project default" is the Default button, not a value.
+        assert texts == [text for text, _value in options]
+
+
+def test_choosing_a_dropdown_value_overrides_the_project_default(qtbot, pair_page):
+    page = pair_page
+    pair = page.project.pairs[0]
+    page.select_pair_by_id(str(pair.id))
+    assert page.editor._impulse_source_label.text() == "Default"
+
+    page.editor._impulse_combo.setCurrentText("2.5 kV")
+    page.editor._pollution_combo.setCurrentText("1")
+    page.editor._cti_combo.setCurrentText("IIIa")
+
+    updated = page.project.pair_by_id(pair.id)
+    assert updated.impulse_v.value == Decimal(2500)
+    assert updated.pollution_degree.value == 1
+    assert updated.cti_or_material_group.value == "IIIa"
+    assert page.editor._impulse_source_label.text() == "Override"
+
+
+def test_an_off_list_override_is_offered_back_as_legacy(qtbot, pair_page):
+    page = pair_page
+    pair = page.project.pairs[0]
+    page.select_pair_by_id(str(pair.id))
+
+    page.editor.set_pollution_override("3")
+    page.select_pair_by_id(str(pair.id))
+
+    assert page.editor._pollution_combo.currentText() == "3 (legacy)"
+    assert page.project.pair_by_id(pair.id).pollution_degree.value == 3
+
+
+def test_pair_dropdown_is_empty_when_no_value_resolves(qtbot, pair_page, monkeypatch):
+    """A missing project default must stay visibly missing, not fall back silently."""
+    from PySide6.QtWidgets import QMessageBox
+
+    page = pair_page
+    _set_valid_inputs(page)
+    project = page.project
+    page.load_project(
+        project.model_copy(
+            update={
+                "defaults": project.defaults.model_copy(update={"insulation_type": None}),
+                "pairs": tuple(
+                    pair.model_copy(update={"insulation_type": pair.insulation_type.inherit()})
+                    for pair in project.pairs
+                ),
+            }
+        )
+    )
+    pair = page.project.pairs[0]
+    page.select_pair_by_id(str(pair.id))
+
+    assert page.editor._insulation_combo.currentIndex() == -1
+    assert page.editor._insulation_combo.currentText() == ""
+
+    captured: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        staticmethod(lambda _parent, _title, message: captured.append(message)),
+    )
+    page.recalculate()
+
+    assert "Insulation type is required" in captured[0]
+    assert page.result_by_id(pair.id) is None
+
+
+def test_default_button_restores_inheritance_and_shows_the_inherited_value(qtbot, pair_page):
+    page = pair_page
+    pair = page.project.pairs[0]
+    page.select_pair_by_id(str(pair.id))
+    page.editor._impulse_combo.setCurrentText("2.5 kV")
+    assert page.project.pair_by_id(pair.id).impulse_v.is_override
+
+    page.editor.clear_impulse_override()
+
+    assert not page.project.pair_by_id(pair.id).impulse_v.is_override
+    assert page.editor._impulse_combo.currentText() == "1.2 kV"
+    assert page.editor._impulse_source_label.text() == "Default"
+
+
+_OVERRIDE_CASES = (
+    ("frequency_hz", "set_frequency_override", "100 kHz", Decimal(100_000)),
+    ("impulse_v", "set_impulse_override", "2500 V", Decimal(2500)),
+    ("electrode_radius_mm", "set_radius_override", "2.5", Decimal("2.5")),
+    ("altitude_m", "set_altitude_override", "2000", Decimal(2000)),
+    ("pollution_degree", "set_pollution_override", "1", 1),
+    ("cti_or_material_group", "set_cti_override", "IIIa", "IIIa"),
+    ("insulation_type", "set_insulation_override", InsulationType.REINFORCED, None),
+    ("field_condition", "set_field_override", FieldCondition.HOMOGENEOUS, None),
+    ("construction_type", "set_construction_override", ConstructionType.PRINTED_WIRING, None),
+)
+
+
+@pytest.mark.parametrize(("field", "setter", "argument", "expected"), _OVERRIDE_CASES)
+def test_every_pair_override_reaches_the_effective_case(
+    qtbot, pair_page, field, setter, argument, expected
+) -> None:
+    """Each per-pair parameter the editor can set must win over the project default."""
+    from insulation_coordination.domain.enums import Provenance
+    from insulation_coordination.project.resolver import resolve_effective_case
+
+    page = pair_page
+    edited, untouched = page.project.pairs[0], page.project.pairs[1]
+    page.select_pair_by_id(str(edited.id))
+
+    getattr(page.editor, setter)(argument)
+
+    wanted = expected if expected is not None else argument
+    stored = getattr(page.project.pair_by_id(edited.id), field)
+    assert stored.is_override
+    assert stored.value == wanted
+
+    effective = resolve_effective_case(page.project.defaults, page.project.pair_by_id(edited.id))
+    resolved = getattr(effective, field)
+    assert resolved.value == wanted
+    assert resolved.provenance is Provenance.PAIR_OVERRIDE
+
+    neighbour = resolve_effective_case(
+        page.project.defaults, page.project.pair_by_id(untouched.id)
+    )
+    assert getattr(neighbour, field).provenance is Provenance.PROJECT_DEFAULT
+
+
+def test_a_pair_override_is_what_the_calculation_consumes(qtbot, pair_page):
+    """The engine must see each pair's own value, not the project default.
+
+    Asserted on the effective inputs the result records rather than on the
+    distances: the synthetic rule package carries one value per parameter, so most
+    overrides cannot move a number here. Numeric sensitivity needs the licensed IEC
+    tables, which only the private_standard tests have.
+    """
+    page = pair_page
+    _set_valid_inputs(page)
+    edited, untouched = page.project.pairs[0], page.project.pairs[1]
+    page.select_pair_by_id(str(edited.id))
+    page.editor.set_pollution_override("1")
+
+    page.recalculate()
+
+    assert page.result_by_id(edited.id).effective_inputs.pollution_degree.value == 1
+    assert page.result_by_id(untouched.id).effective_inputs.pollution_degree.value == 2
