@@ -189,6 +189,7 @@ def test_split_group_persists_split(qtbot, complete_workspace) -> None:
 def test_groups_are_listed_with_human_labels(qtbot, complete_workspace) -> None:
     page = complete_workspace.report_page
     qtbot.addWidget(page)
+    assert page.group_count >= 1
     labels = [page._groups_list.item(row).text() for row in range(page._groups_list.count())]
     assert labels
     assert all(label.startswith("Group ") for label in labels)
@@ -218,6 +219,7 @@ def test_blocking_summary_names_the_pair_not_its_uuid(qtbot, complete_workspace)
 def test_groups_list_height_follows_the_row_count(qtbot, complete_workspace) -> None:
     page = complete_workspace.report_page
     qtbot.addWidget(page)
+    assert page.group_count >= 1
     rows = page._groups_list.count()
     row_height = page._groups_list.sizeHintForRow(0)
     assert page._groups_list.maximumHeight() <= rows * row_height + 16
@@ -283,6 +285,63 @@ def test_unreadable_baseline_is_reported(qtbot, complete_workspace) -> None:
     qtbot.addWidget(page)
     with pytest.raises(RuntimeError, match="earlier revision"):
         page.generate(complete_workspace.tmp_path / "missing", Path("does-not-exist.tex"))
+
+
+def test_load_project_defers_calculation_until_shown(
+    qtbot, monkeypatch, complete_workspace
+) -> None:
+    from insulation_coordination.ui import report_page as report_page_module
+
+    calls = 0
+    real = report_page_module.calculate_pair
+
+    def counting(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(report_page_module, "calculate_pair", counting)
+
+    page = ReportPage()
+    qtbot.addWidget(page)
+    calls = 0
+    page.load_project(complete_workspace.project)
+    page.load_rules(complete_workspace.rules)
+    assert calls == 0
+
+    page.show()
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.processEvents()
+    assert calls > 0
+
+
+def test_generate_forces_calculation_when_never_shown(
+    qtbot, monkeypatch, complete_workspace
+) -> None:
+    from insulation_coordination.ui import report_page as report_page_module
+
+    calls = 0
+    real = report_page_module.calculate_pair
+
+    def counting(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(report_page_module, "calculate_pair", counting)
+
+    tectonic = _fake_tectonic(complete_workspace.tmp_path / "lazy-generate-tectonic")
+    page = ReportPage(tectonic=tectonic)
+    qtbot.addWidget(page)
+    calls = 0
+    page.load_project(complete_workspace.project)
+    page.load_rules(complete_workspace.rules)
+    assert calls == 0
+
+    result = page.generate(complete_workspace.tmp_path / "lazy-generate")
+    assert calls > 0
+    assert result.tex_path.exists()
 
 
 def test_generate_button_sits_above_the_validation_summary(qtbot, complete_workspace) -> None:
