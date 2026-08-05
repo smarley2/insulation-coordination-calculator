@@ -503,3 +503,78 @@ def test_matrix_columns_are_resizable_by_dragging(qtbot, pair_page):
     assert page._matrix_view.verticalHeader().sectionResizeMode(0) == (
         QHeaderView.ResizeMode.Interactive
     )
+
+
+def test_copy_paste_moves_configuration_to_another_pair(qtbot, pair_page):
+    page = pair_page
+    source, target = page.project.pairs[0], page.project.pairs[1]
+    page.select_pair_by_id(str(source.id))
+    page.editor.set_long_term_rms("700 V")
+    page.editor.set_recurring_peak_not_applicable("Source justification")
+    page.editor.set_frequency_override("100 kHz")
+    page.editor.set_construction_override(ConstructionType.PRINTED_WIRING)
+    page.editor.set_notes("Belongs to the source pair only")
+    page.copy_selected_pair()
+
+    page.select_pair_by_id(str(target.id))
+    page.paste_into_selected_pair()
+
+    pasted = page.project.pair_by_id(target.id)
+    assert pasted.voltages.long_term_rms_v.value == Decimal(700)
+    assert pasted.voltages.recurring_peak_v.applicability is Applicability.NOT_APPLICABLE
+    assert pasted.frequency_hz.value == Decimal(100_000)
+    assert pasted.construction_type.value is ConstructionType.PRINTED_WIRING
+    assert pasted.notes is None
+    assert (pasted.id, pasted.net_a, pasted.net_b) == (target.id, target.net_a, target.net_b)
+    assert page.editor.pair.id == target.id
+    assert page.editor.frequency_source_text == "Override"
+
+
+def test_copy_paste_leaves_the_source_pair_untouched(qtbot, pair_page):
+    page = pair_page
+    source, target = page.project.pairs[0], page.project.pairs[1]
+    page.select_pair_by_id(str(source.id))
+    page.editor.set_long_term_rms("700 V")
+    page.copy_selected_pair()
+
+    page.select_pair_by_id(str(target.id))
+    page.editor.set_long_term_rms("120 V")
+    page.paste_into_selected_pair()
+
+    assert page.project.pair_by_id(source.id).voltages.long_term_rms_v.value == Decimal(700)
+
+
+def test_paste_without_a_copy_changes_nothing(qtbot, pair_page):
+    page = pair_page
+    target = page.project.pairs[0]
+    page.select_pair_by_id(str(target.id))
+
+    page.paste_into_selected_pair()
+
+    assert page.project.pair_by_id(target.id) == target
+
+
+def test_copy_without_a_selected_pair_leaves_paste_inert(qtbot, pair_page):
+    page = pair_page
+    before = page.project
+
+    page.copy_selected_pair()
+    page.paste_into_selected_pair()
+
+    assert page.project is before
+
+
+def test_matrix_ctrl_c_ctrl_v_copies_configuration(qtbot, pair_page):
+    from PySide6.QtCore import Qt
+
+    page = pair_page
+    source, target = page.project.pairs[0], page.project.pairs[1]
+    page.select_pair_by_id(str(source.id))
+    page.editor.set_long_term_rms("700 V")
+
+    view = page._matrix_view
+    qtbot.keyClick(view, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+    page.select_pair_by_id(str(target.id))
+    qtbot.keyClick(view, Qt.Key.Key_V, Qt.KeyboardModifier.ControlModifier)
+
+    assert page.project.pair_by_id(target.id).voltages.long_term_rms_v.value == Decimal(700)

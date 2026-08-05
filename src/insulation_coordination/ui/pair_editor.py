@@ -5,7 +5,7 @@ from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
 from PySide6.QtCore import QModelIndex, Qt, QTimer, Signal
-from PySide6.QtGui import QShowEvent
+from PySide6.QtGui import QKeyEvent, QKeySequence, QShowEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -117,6 +117,34 @@ def _voltage_row(edit: QLineEdit, na_button: QPushButton) -> QWidget:
     row = _field_row(edit)
     row.addWidget(na_button)
     return _wrap(row)
+
+
+#: What Ctrl+C/Ctrl+V carries between cells: every pair field except the ones that
+#: say *which* pair it is. Notes stay put — they justify one pair, not its neighbours.
+_COPIED_PAIR_FIELDS = tuple(
+    name
+    for name in PairCase.model_fields
+    if name not in {"id", "key", "net_a", "net_b", "notes"}
+)
+
+
+class _MatrixView(QTableView):
+    """Coverage matrix whose Ctrl+C/Ctrl+V carry a whole pair configuration.
+
+    Handled here rather than with a ``QShortcut`` so the keys stay scoped to this
+    view — the editor's line edits keep their own text copy and paste.
+    """
+
+    copy_requested = Signal()
+    paste_requested = Signal()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.matches(QKeySequence.StandardKey.Copy):
+            self.copy_requested.emit()
+        elif event.matches(QKeySequence.StandardKey.Paste):
+            self.paste_requested.emit()
+        else:
+            super().keyPressEvent(event)
 
 
 class PairEditor(QWidget):
@@ -771,11 +799,12 @@ class PairPage(QWidget):
         # Hidden columns are keyed by net-class name, not index: the model resets on
         # every pair edit, and an index would then hide whatever moved into its place.
         self._hidden_nets: set[str] = set()
+        self._copied_pair_fields: dict[str, object] | None = None
 
         layout = QVBoxLayout(self)
 
         self.matrix_model = CoverageMatrixModel()
-        self._matrix_view = QTableView()
+        self._matrix_view = _MatrixView()
         self._matrix_view.setModel(self.matrix_model)
         # Extended selection so a click on one header and ctrl-click on the next
         # gather several columns for one Hide.
@@ -792,6 +821,11 @@ class PairPage(QWidget):
         )
         self._matrix_view.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self._matrix_view.clicked.connect(self._on_matrix_clicked)
+        self._matrix_view.setToolTip(
+            "Ctrl+C copies the clicked pair's configuration, Ctrl+V applies it to another pair."
+        )
+        self._matrix_view.copy_requested.connect(self.copy_selected_pair)
+        self._matrix_view.paste_requested.connect(self.paste_into_selected_pair)
         # One hook for every reset — load, parameter change, results, pair edit.
         self.matrix_model.modelReset.connect(self._apply_hidden_columns)
 
@@ -984,6 +1018,28 @@ class PairPage(QWidget):
             if str(pair.id) == pair_id:
                 self.editor.load_pair(pair, self._project.defaults)
                 return
+
+    def copy_selected_pair(self) -> None:
+        """Remember the selected pair's configuration for a later paste."""
+        pair = self._selected_pair()
+        if pair is not None:
+            self._copied_pair_fields = {
+                name: getattr(pair, name) for name in _COPIED_PAIR_FIELDS
+            }
+
+    def paste_into_selected_pair(self) -> None:
+        """Overwrite the selected pair's configuration with the copied one."""
+        pair = self._selected_pair()
+        if pair is None or self._copied_pair_fields is None:
+            return
+        self._on_pair_changed(pair.model_copy(update=self._copied_pair_fields))
+        # Reload from the updated project so the editor shows the pasted values.
+        self.select_pair_by_id(str(pair.id))
+
+    def _selected_pair(self) -> PairCase | None:
+        if self._selected_pair_id is None:
+            return None
+        return self._pair_by_id(UUID(self._selected_pair_id))
 
     def _on_matrix_clicked(self, index: QModelIndex) -> None:
         pair = self.matrix_model.pair_at(index.row(), index.column())
