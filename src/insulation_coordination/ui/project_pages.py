@@ -41,39 +41,17 @@ from insulation_coordination.project.persistence import (
     load_project,
     save_project_atomic,
 )
-
-_IMPULSE_OPTIONS = (
-    ("0.33 kV", Decimal(330)),
-    ("0.40 kV", Decimal(400)),
-    ("0.50 kV", Decimal(500)),
-    ("0.60 kV", Decimal(600)),
-    ("0.80 kV", Decimal(800)),
-    ("1.0 kV", Decimal(1000)),
-    ("1.2 kV", Decimal(1200)),
-    ("1.5 kV", Decimal(1500)),
-    ("2.0 kV", Decimal(2000)),
-    ("2.5 kV", Decimal(2500)),
-    ("3.0 kV", Decimal(3000)),
-    ("4.0 kV", Decimal(4000)),
-    ("5.0 kV", Decimal(5000)),
-    ("6.0 kV", Decimal(6000)),
-    ("8.0 kV", Decimal(8000)),
-    ("10 kV", Decimal(10000)),
-    ("12 kV", Decimal(12000)),
-    ("15 kV", Decimal(15000)),
-    ("20 kV", Decimal(20000)),
-    ("25 kV", Decimal(25000)),
-    ("30 kV", Decimal(30000)),
-    ("40 kV", Decimal(40000)),
-    ("50 kV", Decimal(50000)),
-    ("60 kV", Decimal(60000)),
-    ("80 kV", Decimal(80000)),
-    ("100 kV", Decimal(100000)),
+from insulation_coordination.ui.value_options import (
+    IMPULSE_OPTIONS,
+    MATERIAL_OPTIONS,
+    POLLUTION_OPTIONS,
+    impulse_display,
+    populate_combo,
+    select_combo_value,
 )
+
 #: Upper bound on one bulk net-class add, so a mistyped amount cannot flood the pair set.
 MAX_BULK_NET_CLASSES = 64
-_POLLUTION_OPTIONS = (("1", 1), ("2", 2))
-_MATERIAL_OPTIONS = (("I", "I"), ("II", "II"), ("IIIa", "IIIa"), ("IIIb", "IIIb"))
 
 
 class ProjectPage(QWidget):
@@ -118,7 +96,7 @@ class ProjectPage(QWidget):
         self._freq_edit.editingFinished.connect(self._on_freq_changed)
         defaults_layout.addRow("Frequency (Hz):", self._freq_edit)
         self._impulse_combo = QComboBox()
-        self._populate_combo(self._impulse_combo, _IMPULSE_OPTIONS)
+        populate_combo(self._impulse_combo, IMPULSE_OPTIONS)
         self._impulse_combo.currentIndexChanged.connect(
             lambda index: self._update_combo_default("impulse_v", self._impulse_combo, index)
         )
@@ -139,7 +117,7 @@ class ProjectPage(QWidget):
         self._altitude_edit.editingFinished.connect(self._on_altitude_changed)
         defaults_layout.addRow("Altitude (m):", self._altitude_edit)
         self._pollution_combo = QComboBox()
-        self._populate_combo(self._pollution_combo, _POLLUTION_OPTIONS)
+        populate_combo(self._pollution_combo, POLLUTION_OPTIONS)
         self._pollution_combo.currentIndexChanged.connect(
             lambda index: self._update_combo_default("pollution_degree", self._pollution_combo, index)
         )
@@ -151,7 +129,7 @@ class ProjectPage(QWidget):
         self._construction_combo.currentTextChanged.connect(self._on_construction_changed)
         defaults_layout.addRow("Construction:", self._construction_combo)
         self._cti_combo = QComboBox()
-        self._populate_combo(self._cti_combo, _MATERIAL_OPTIONS)
+        populate_combo(self._cti_combo, MATERIAL_OPTIONS)
         self._cti_combo.currentIndexChanged.connect(
             lambda index: self._update_combo_default(
                 "cti_or_material_group", self._cti_combo, index
@@ -238,23 +216,23 @@ class ProjectPage(QWidget):
         defaults = project.defaults
         self._freq_edit.setText("" if defaults.frequency_hz is None else str(defaults.frequency_hz))
         self._altitude_edit.setText("" if defaults.altitude_m is None else str(defaults.altitude_m))
-        self._restore_combo_value(
+        select_combo_value(
             self._impulse_combo,
-            _IMPULSE_OPTIONS,
+            IMPULSE_OPTIONS,
             defaults.impulse_v,
             None
             if defaults.impulse_v is None
-            else f"{defaults.impulse_v / Decimal(1000):g} kV",
+            else impulse_display(defaults.impulse_v),
         )
-        self._restore_combo_value(
+        select_combo_value(
             self._pollution_combo,
-            _POLLUTION_OPTIONS,
+            POLLUTION_OPTIONS,
             defaults.pollution_degree,
             None if defaults.pollution_degree is None else str(defaults.pollution_degree),
         )
-        self._restore_combo_value(
+        select_combo_value(
             self._cti_combo,
-            _MATERIAL_OPTIONS,
+            MATERIAL_OPTIONS,
             defaults.cti_or_material_group,
             defaults.cti_or_material_group,
         )
@@ -436,7 +414,7 @@ class ProjectPage(QWidget):
     def _update_default(self, field: str, text: str) -> None:
         if self._project is None:
             return
-        from decimal import Decimal, InvalidOperation
+        from decimal import InvalidOperation
 
         defaults = dict(self._project.defaults.model_dump(mode="python"))
         text = text.strip()
@@ -464,35 +442,6 @@ class ProjectPage(QWidget):
         defaults = dict(self._project.defaults.model_dump(mode="python"))
         defaults[field] = enum(text).value if text else None
         self._update_project(defaults=ProjectDefaults.model_validate(defaults))
-
-    @staticmethod
-    def _populate_combo(
-        combo: QComboBox,
-        options: tuple[tuple[str, Any], ...],
-    ) -> None:
-        combo.addItem("", None)
-        for text, value in options:
-            combo.addItem(text, value)
-
-    def _restore_combo_value(
-        self,
-        combo: QComboBox,
-        options: tuple[tuple[str, Any], ...],
-        value: Any,
-        legacy_display: str | None,
-    ) -> None:
-        combo.clear()
-        self._populate_combo(combo, options)
-        if value is None:
-            combo.setCurrentIndex(0)
-            return
-        index = combo.findData(value)
-        if index < 0:
-            if legacy_display is None:
-                raise ValueError("Legacy combo value requires a display label")
-            combo.addItem(f"{legacy_display} (legacy)", value)
-            index = combo.count() - 1
-        combo.setCurrentIndex(index)
 
     def _update_combo_default(self, field: str, combo: QComboBox, index: int) -> None:
         if self._project is None:

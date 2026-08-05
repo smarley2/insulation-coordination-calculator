@@ -92,6 +92,9 @@ class HumanReportView:
 def build_human_report_view(model: ReportModel) -> HumanReportView:
     """Derive display-only report data without weakening report validation."""
     headers = tuple(net.name for net in model.net_classes)
+    excluded = frozenset(
+        frozenset((pair.net_a, pair.net_b)) for pair in model.excluded_pairs
+    )
     common_values: list[HumanValue] = []
     matrices: list[HumanMatrix] = []
     default_specs: tuple[tuple[str, str, str, Callable[[MatrixRow], str]], ...] = (
@@ -146,7 +149,9 @@ def build_human_report_view(model: ReportModel) -> HumanReportView:
         if len(set(values)) == 1:
             common_values.append(HumanValue(name=name, value=values[0], provenance="common"))
         else:
-            matrices.append(_matrix_for(name, unit, headers, model.matrix_rows, value_getter))
+            matrices.append(
+                _matrix_for(name, unit, headers, model.matrix_rows, value_getter, excluded)
+            )
 
     voltage_specs = (
         ("Long-term RMS voltage", "V", "long-term RMS"),
@@ -162,6 +167,7 @@ def build_human_report_view(model: ReportModel) -> HumanReportView:
                 headers,
                 model.matrix_rows,
                 _stress_getter(stress_name),
+                excluded,
             )
         )
 
@@ -203,18 +209,30 @@ def _matrix_for(
     headers: tuple[str, ...],
     rows: tuple[MatrixRow, ...],
     value_getter: Callable[[MatrixRow], str],
+    excluded: frozenset[frozenset[str]] = frozenset(),
 ) -> HumanMatrix:
     by_pair = {frozenset((row.net_a, row.net_b)): value_getter(row) for row in rows}
     values = tuple(
         tuple(
             "—"
             if row_header == column_header
-            else by_pair.get(frozenset((row_header, column_header)), "—")
+            else _matrix_cell(frozenset((row_header, column_header)), by_pair, excluded)
             for column_header in headers
         )
         for row_header in headers
     )
     return HumanMatrix(name=name, unit=unit, headers=headers, values=values)
+
+
+def _matrix_cell(
+    key: frozenset[str],
+    by_pair: dict[frozenset[str], str],
+    excluded: frozenset[frozenset[str]],
+) -> str:
+    """Tell an excluded pair apart from a merely absent one."""
+    if key in by_pair:
+        return by_pair[key]
+    return "N/A" if key in excluded else "—"
 
 
 def _human_calculation(row: MatrixRow, calculation: PairCalculationReport) -> HumanPairCalculation:

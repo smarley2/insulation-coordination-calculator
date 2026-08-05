@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
+from enum import StrEnum
 from uuid import UUID
 
 from PySide6.QtCore import QModelIndex, Qt, QTimer, Signal
-from PySide6.QtGui import QShowEvent
+from PySide6.QtGui import QKeyEvent, QKeySequence, QShowEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
 from insulation_coordination.calculation.engine import PairResult
 from insulation_coordination.domain.display import pair_label
 from insulation_coordination.domain.enums import (
+    Applicability,
     ConstructionType,
     FieldCondition,
     InsulationType,
@@ -46,6 +48,14 @@ from insulation_coordination.ui.pair_models import (
     MATRIX_PARAMETERS,
     CoverageMatrixModel,
     PairListModel,
+)
+from insulation_coordination.ui.value_options import (
+    IMPULSE_OPTIONS,
+    MATERIAL_OPTIONS,
+    POLLUTION_OPTIONS,
+    impulse_display,
+    populate_combo,
+    select_combo_value,
 )
 
 
@@ -77,6 +87,16 @@ def _parse_frequency(text: str) -> Decimal:
 
 #: Pair inputs hold short values, so they stay narrow and hug the right edge.
 _FIELD_WIDTH = 220
+
+#: Shown in a voltage field that was marked not applicable, because an empty box
+#: is indistinguishable from a stress nobody has filled in yet.
+_NOT_APPLICABLE_TEXT = "N/A"
+
+
+def _voltage_text(voltage: PairVoltage) -> str:
+    if voltage.applicability is Applicability.NOT_APPLICABLE:
+        return _NOT_APPLICABLE_TEXT
+    return "" if voltage.value is None else str(voltage.value)
 
 
 def _field_row(widget: QWidget) -> QHBoxLayout:
@@ -113,10 +133,45 @@ def _override_row(
     return _wrap(row)
 
 
+def _select_enum(combo: QComboBox, value: object, enum: type[StrEnum]) -> None:
+    """Show an enum value, or nothing at all when none resolves for this pair."""
+    if isinstance(value, enum):
+        combo.setCurrentText(value.value)
+    else:
+        combo.setCurrentIndex(-1)
+
+
 def _voltage_row(edit: QLineEdit, na_button: QPushButton) -> QWidget:
     row = _field_row(edit)
     row.addWidget(na_button)
     return _wrap(row)
+
+
+#: What Ctrl+C/Ctrl+V carries between cells: every pair field except the ones that
+#: say *which* pair it is. Notes travel too — a reason that applies to one pair
+#: usually applies to every pair it is pasted onto.
+_COPIED_PAIR_FIELDS = tuple(
+    name for name in PairCase.model_fields if name not in {"id", "key", "net_a", "net_b"}
+)
+
+
+class _MatrixView(QTableView):
+    """Coverage matrix whose Ctrl+C/Ctrl+V carry a whole pair configuration.
+
+    Handled here rather than with a ``QShortcut`` so the keys stay scoped to this
+    view — the editor's line edits keep their own text copy and paste.
+    """
+
+    copy_requested = Signal()
+    paste_requested = Signal()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.matches(QKeySequence.StandardKey.Copy):
+            self.copy_requested.emit()
+        elif event.matches(QKeySequence.StandardKey.Paste):
+            self.paste_requested.emit()
+        else:
+            super().keyPressEvent(event)
 
 
 class PairEditor(QWidget):
@@ -180,7 +235,6 @@ class PairEditor(QWidget):
         )
 
         self._insulation_combo = QComboBox()
-        self._insulation_combo.addItem("")
         for t in InsulationType:
             self._insulation_combo.addItem(t.value)
         self._insulation_combo.currentTextChanged.connect(self._on_insulation_changed)
@@ -195,13 +249,14 @@ class PairEditor(QWidget):
             ),
         )
 
-        self._impulse_edit = QLineEdit()
-        self._impulse_edit.editingFinished.connect(self._on_impulse_changed)
+        self._impulse_combo = QComboBox()
+        populate_combo(self._impulse_combo, IMPULSE_OPTIONS, blank=False)
+        self._impulse_combo.currentIndexChanged.connect(self._on_impulse_selected)
         self._impulse_source_label = QLabel("Default")
         params_layout.addRow(
             "Impulse:",
             _override_row(
-                self._impulse_edit,
+                self._impulse_combo,
                 self._impulse_source_label,
                 self.clear_impulse_override,
                 "_impulse_default_button",
@@ -209,7 +264,6 @@ class PairEditor(QWidget):
         )
 
         self._field_combo = QComboBox()
-        self._field_combo.addItem("")
         for field in FieldCondition:
             self._field_combo.addItem(field.value)
         self._field_combo.currentTextChanged.connect(self._on_field_changed)
@@ -250,13 +304,14 @@ class PairEditor(QWidget):
             ),
         )
 
-        self._pollution_edit = QLineEdit()
-        self._pollution_edit.editingFinished.connect(self._on_pollution_changed)
+        self._pollution_combo = QComboBox()
+        populate_combo(self._pollution_combo, POLLUTION_OPTIONS, blank=False)
+        self._pollution_combo.currentIndexChanged.connect(self._on_pollution_selected)
         self._pollution_source_label = QLabel("Default")
         params_layout.addRow(
             "Pollution degree:",
             _override_row(
-                self._pollution_edit,
+                self._pollution_combo,
                 self._pollution_source_label,
                 self.clear_pollution_override,
                 "_pollution_default_button",
@@ -264,7 +319,6 @@ class PairEditor(QWidget):
         )
 
         self._construction_combo = QComboBox()
-        self._construction_combo.addItem("")
         for construction in ConstructionType:
             self._construction_combo.addItem(construction.value)
         self._construction_combo.currentTextChanged.connect(self._on_construction_changed)
@@ -279,13 +333,14 @@ class PairEditor(QWidget):
             ),
         )
 
-        self._cti_edit = QLineEdit()
-        self._cti_edit.editingFinished.connect(self._on_cti_changed)
+        self._cti_combo = QComboBox()
+        populate_combo(self._cti_combo, MATERIAL_OPTIONS, blank=False)
+        self._cti_combo.currentIndexChanged.connect(self._on_cti_selected)
         self._cti_source_label = QLabel("Default")
         params_layout.addRow(
             "CTI / material group:",
             _override_row(
-                self._cti_edit,
+                self._cti_combo,
                 self._cti_source_label,
                 self.clear_cti_override,
                 "_cti_default_button",
@@ -316,35 +371,24 @@ class PairEditor(QWidget):
         self._to_peak_edit.blockSignals(True)
         self._freq_edit.blockSignals(True)
         self._insulation_combo.blockSignals(True)
-        self._impulse_edit.blockSignals(True)
+        self._impulse_combo.blockSignals(True)
         self._field_combo.blockSignals(True)
         self._radius_edit.blockSignals(True)
         self._altitude_edit.blockSignals(True)
-        self._pollution_edit.blockSignals(True)
+        self._pollution_combo.blockSignals(True)
         self._construction_combo.blockSignals(True)
-        self._cti_edit.blockSignals(True)
+        self._cti_combo.blockSignals(True)
         self._notes_edit.blockSignals(True)
 
-        self._rms_edit.setText(
-            str(pair.voltages.long_term_rms_v.value)
-            if pair.voltages.long_term_rms_v.value is not None
-            else ""
-        )
-        self._steady_peak_edit.setText(
-            str(pair.voltages.steady_state_peak_v.value)
-            if pair.voltages.steady_state_peak_v.value
-            else ""
-        )
-        self._recurring_peak_edit.setText(
-            str(pair.voltages.recurring_peak_v.value)
-            if pair.voltages.recurring_peak_v.value
-            else ""
-        )
-        self._to_peak_edit.setText(
-            str(pair.voltages.temporary_overvoltage_peak_v.value)
-            if pair.voltages.temporary_overvoltage_peak_v.value
-            else ""
-        )
+        for edit, voltage in (
+            (self._rms_edit, pair.voltages.long_term_rms_v),
+            (self._steady_peak_edit, pair.voltages.steady_state_peak_v),
+            (self._recurring_peak_edit, pair.voltages.recurring_peak_v),
+            (self._to_peak_edit, pair.voltages.temporary_overvoltage_peak_v),
+        ):
+            edit.setText(_voltage_text(voltage))
+            # The N/A justification has no other home in the UI.
+            edit.setToolTip(voltage.justification or "")
         frequency_value = effective.frequency_hz.value if effective is not None else pair.frequency_hz.value
         self._freq_edit.setText(str(frequency_value) if frequency_value is not None else "")
         self._freq_source_label.setText(
@@ -356,20 +400,22 @@ class PairEditor(QWidget):
             if effective is not None
             else pair.insulation_type.value
         )
-        self._insulation_combo.setCurrentText(
-            insulation_value.value if isinstance(insulation_value, InsulationType) else ""
-        )
+        _select_enum(self._insulation_combo, insulation_value, InsulationType)
         self._insulation_source_label.setText(
             "Override" if pair.insulation_type.is_override else "Default"
         )
 
         impulse_value = effective.impulse_v.value if effective is not None else pair.impulse_v.value
-        self._impulse_edit.setText(str(impulse_value) if impulse_value is not None else "")
+        select_combo_value(
+            self._impulse_combo,
+            IMPULSE_OPTIONS,
+            impulse_value,
+            None if impulse_value is None else impulse_display(impulse_value),
+            blank=False,
+        )
         self._impulse_source_label.setText("Override" if pair.impulse_v.is_override else "Default")
         field_value = effective.field_condition.value if effective is not None else pair.field_condition.value
-        self._field_combo.setCurrentText(
-            field_value.value if isinstance(field_value, FieldCondition) else ""
-        )
+        _select_enum(self._field_combo, field_value, FieldCondition)
         self._field_source_label.setText(
             "Override" if pair.field_condition.is_override else "Default"
         )
@@ -394,7 +440,13 @@ class PairEditor(QWidget):
             if effective is not None
             else pair.pollution_degree.value
         )
-        self._pollution_edit.setText(str(pollution_value) if pollution_value is not None else "")
+        select_combo_value(
+            self._pollution_combo,
+            POLLUTION_OPTIONS,
+            pollution_value,
+            None if pollution_value is None else str(pollution_value),
+            blank=False,
+        )
         self._pollution_source_label.setText(
             "Override" if pair.pollution_degree.is_override else "Default"
         )
@@ -403,9 +455,7 @@ class PairEditor(QWidget):
             if effective is not None
             else pair.construction_type.value
         )
-        self._construction_combo.setCurrentText(
-            construction_value.value if isinstance(construction_value, ConstructionType) else ""
-        )
+        _select_enum(self._construction_combo, construction_value, ConstructionType)
         self._construction_source_label.setText(
             "Override" if pair.construction_type.is_override else "Default"
         )
@@ -414,7 +464,9 @@ class PairEditor(QWidget):
             if effective is not None
             else pair.cti_or_material_group.value
         )
-        self._cti_edit.setText(cti_value or "")
+        select_combo_value(
+            self._cti_combo, MATERIAL_OPTIONS, cti_value, cti_value, blank=False
+        )
         self._cti_source_label.setText(
             "Override" if pair.cti_or_material_group.is_override else "Default"
         )
@@ -426,13 +478,13 @@ class PairEditor(QWidget):
         self._recurring_peak_edit.blockSignals(False)
         self._to_peak_edit.blockSignals(False)
         self._freq_edit.blockSignals(False)
-        self._impulse_edit.blockSignals(False)
+        self._impulse_combo.blockSignals(False)
         self._field_combo.blockSignals(False)
         self._radius_edit.blockSignals(False)
         self._altitude_edit.blockSignals(False)
-        self._pollution_edit.blockSignals(False)
+        self._pollution_combo.blockSignals(False)
         self._construction_combo.blockSignals(False)
-        self._cti_edit.blockSignals(False)
+        self._cti_combo.blockSignals(False)
         self._notes_edit.blockSignals(False)
 
     def set_long_term_rms(self, text: str) -> None:
@@ -659,14 +711,10 @@ class PairEditor(QWidget):
             return
         self._update_pair(notes=(text.strip() or None))
 
-    def _on_impulse_changed(self) -> None:
-        text = self._impulse_edit.text().strip()
-        if not text:
-            return
-        try:
-            self.set_impulse_override(text)
-        except (InvalidOperation, ValueError):
-            pass
+    def _on_impulse_selected(self, index: int) -> None:
+        value = self._impulse_combo.itemData(index)
+        if value is not None:
+            self.set_impulse_override(str(value))
 
     def _on_field_changed(self, text: str) -> None:
         if self._pair is None or not text:
@@ -694,14 +742,10 @@ class PairEditor(QWidget):
         except (InvalidOperation, ValueError):
             pass
 
-    def _on_pollution_changed(self) -> None:
-        text = self._pollution_edit.text().strip()
-        if not text:
-            return
-        try:
-            self.set_pollution_override(text)
-        except (InvalidOperation, ValueError):
-            pass
+    def _on_pollution_selected(self, index: int) -> None:
+        value = self._pollution_combo.itemData(index)
+        if value is not None:
+            self.set_pollution_override(str(value))
 
     def _on_construction_changed(self, text: str) -> None:
         if self._pair is None or not text:
@@ -711,14 +755,10 @@ class PairEditor(QWidget):
         except ValueError:
             pass
 
-    def _on_cti_changed(self) -> None:
-        text = self._cti_edit.text().strip()
-        if not text:
-            return
-        try:
-            self.set_cti_override(text)
-        except ValueError:
-            pass
+    def _on_cti_selected(self, index: int) -> None:
+        value = self._cti_combo.itemData(index)
+        if value is not None:
+            self.set_cti_override(str(value))
 
     def _on_notes_changed(self) -> None:
         if self._pair is None:
@@ -729,25 +769,25 @@ class PairEditor(QWidget):
         if self._pair is None:
             return
         self.set_long_term_rms_not_applicable("Not applicable per design review")
-        self._rms_edit.clear()
+        self._rms_edit.setText(_NOT_APPLICABLE_TEXT)
 
     def _on_steady_na(self) -> None:
         if self._pair is None:
             return
         self.set_steady_state_peak_not_applicable("Not applicable per design review")
-        self._steady_peak_edit.clear()
+        self._steady_peak_edit.setText(_NOT_APPLICABLE_TEXT)
 
     def _on_recurring_na(self) -> None:
         if self._pair is None:
             return
         self.set_recurring_peak_not_applicable("Not applicable per design review")
-        self._recurring_peak_edit.clear()
+        self._recurring_peak_edit.setText(_NOT_APPLICABLE_TEXT)
 
     def _on_to_na(self) -> None:
         if self._pair is None:
             return
         self.set_temporary_overvoltage_not_applicable()
-        self._to_peak_edit.clear()
+        self._to_peak_edit.setText(_NOT_APPLICABLE_TEXT)
 
     def _update_pair(self, **updates: object) -> None:
         if self._pair is None:
@@ -771,11 +811,12 @@ class PairPage(QWidget):
         # Hidden columns are keyed by net-class name, not index: the model resets on
         # every pair edit, and an index would then hide whatever moved into its place.
         self._hidden_nets: set[str] = set()
+        self._copied_pair_fields: dict[str, object] | None = None
 
         layout = QVBoxLayout(self)
 
         self.matrix_model = CoverageMatrixModel()
-        self._matrix_view = QTableView()
+        self._matrix_view = _MatrixView()
         self._matrix_view.setModel(self.matrix_model)
         # Extended selection so a click on one header and ctrl-click on the next
         # gather several columns for one Hide.
@@ -792,6 +833,12 @@ class PairPage(QWidget):
         )
         self._matrix_view.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self._matrix_view.clicked.connect(self._on_matrix_clicked)
+        self._matrix_view.setToolTip(
+            "Ctrl+C copies the clicked pair's configuration, Ctrl+V applies it to every "
+            "selected pair."
+        )
+        self._matrix_view.copy_requested.connect(self.copy_selected_pair)
+        self._matrix_view.paste_requested.connect(self.paste_into_selection)
         # One hook for every reset — load, parameter change, results, pair edit.
         self.matrix_model.modelReset.connect(self._apply_hidden_columns)
 
@@ -985,6 +1032,49 @@ class PairPage(QWidget):
                 self.editor.load_pair(pair, self._project.defaults)
                 return
 
+    def copy_selected_pair(self) -> None:
+        """Remember the selected pair's configuration for a later paste."""
+        pair = self._selected_pair()
+        if pair is not None:
+            self._copied_pair_fields = {
+                name: getattr(pair, name) for name in _COPIED_PAIR_FIELDS
+            }
+
+    def paste_into_selection(self) -> None:
+        """Overwrite every selected pair's configuration with the copied one."""
+        if self._copied_pair_fields is None:
+            return
+        targets = self._selected_pairs()
+        if not targets:
+            return
+        self._replace_pairs(
+            tuple(pair.model_copy(update=self._copied_pair_fields) for pair in targets)
+        )
+        # Reload from the updated project so the editor shows the pasted values.
+        self.select_pair_by_id(self._selected_pair_id or str(targets[0].id))
+
+    def _selected_pair(self) -> PairCase | None:
+        if self._selected_pair_id is None:
+            return None
+        return self._pair_by_id(UUID(self._selected_pair_id))
+
+    def _selected_pairs(self) -> tuple[PairCase, ...]:
+        """Every distinct pair under the matrix selection, clicked cell as fallback.
+
+        A rubber-band or ctrl-click selection covers diagonal cells and both halves
+        of the mirrored matrix, so the ids are deduplicated.
+        """
+        selected: dict[UUID, PairCase] = {}
+        for index in self._matrix_view.selectionModel().selectedIndexes():
+            pair = self.matrix_model.pair_at(index.row(), index.column())
+            if pair is not None:
+                selected[pair.id] = pair
+        if not selected:
+            pair = self._selected_pair()
+            if pair is not None:
+                selected[pair.id] = pair
+        return tuple(selected.values())
+
     def _on_matrix_clicked(self, index: QModelIndex) -> None:
         pair = self.matrix_model.pair_at(index.row(), index.column())
         if pair is not None:
@@ -999,9 +1089,14 @@ class PairPage(QWidget):
             self.select_pair_by_id(str(pair.id))
 
     def _on_pair_changed(self, updated_pair: PairCase) -> None:
-        if self._project is None:
+        self._replace_pairs((updated_pair,))
+
+    def _replace_pairs(self, updated: tuple[PairCase, ...]) -> None:
+        """Swap the given pairs into the project and refresh every view once."""
+        if self._project is None or not updated:
             return
-        pairs = tuple(updated_pair if p.id == updated_pair.id else p for p in self._project.pairs)
+        replacements = {pair.id: pair for pair in updated}
+        pairs = tuple(replacements.get(pair.id, pair) for pair in self._project.pairs)
         self._project = self._project.model_copy(update={"pairs": pairs})
         parameter = self.matrix_model.parameter
         self.matrix_model.load_project(self._project)
@@ -1028,6 +1123,8 @@ class PairPage(QWidget):
         self.calculation_review.update_results((), self._project)
         errors: list[str] = []
         for pair in self._project.pairs:
+            if pair.is_excluded:
+                continue
             try:
                 effective = resolve_effective_case(self._project.defaults, pair)
                 result = calculate_pair(effective, self._rules)

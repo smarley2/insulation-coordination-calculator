@@ -82,3 +82,45 @@ def test_project_rejects_duplicate_pair_ids_even_for_distinct_net_pairs() -> Non
             net_classes=classes,
             pairs=tuple(pairs),
         )
+
+
+def _pair_with(**voltages) -> PairCase:
+    from insulation_coordination.domain.project import PairVoltages
+
+    return PairCase(
+        key="a::b",
+        net_a=UUID(int=1),
+        net_b=UUID(int=2),
+        voltages=PairVoltages(**voltages),
+    )
+
+
+def test_pair_with_every_stress_not_applicable_is_excluded() -> None:
+    from decimal import Decimal
+
+    from insulation_coordination.domain.project import PairVoltage
+
+    na = PairVoltage.not_applicable("Net classes are physically far apart.")
+    assert _pair_with(
+        long_term_rms_v=na,
+        steady_state_peak_v=na,
+        recurring_peak_v=na,
+        temporary_overvoltage_peak_v=na,
+    ).is_excluded
+
+    # A blank stress is missing data, not a decision, so the pair still calculates.
+    assert not _pair_with(
+        long_term_rms_v=na,
+        steady_state_peak_v=na,
+        recurring_peak_v=na,
+    ).is_excluded
+    assert not _pair_with(
+        long_term_rms_v=PairVoltage.applicable(Decimal(500)),
+        steady_state_peak_v=na,
+        recurring_peak_v=na,
+        temporary_overvoltage_peak_v=na,
+    ).is_excluded
+
+
+def test_blank_pair_is_not_excluded() -> None:
+    assert not _pair_with().is_excluded

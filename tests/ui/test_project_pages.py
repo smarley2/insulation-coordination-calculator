@@ -414,3 +414,22 @@ def test_bulk_add_rejects_an_empty_base_name(qtbot, qtbot_project):
     with pytest.raises(ValueError):
         page.add_net_classes("   ", 3)
     assert page.project.net_class_names == ()
+
+
+def test_reloading_a_project_shows_listed_defaults_without_a_legacy_marker(qtbot, qtbot_project):
+    page = qtbot_project
+    project = page.project.model_copy(
+        update={
+            "defaults": ProjectDefaults(
+                impulse_v=Decimal(1200),
+                pollution_degree=2,
+                cti_or_material_group="II",
+            )
+        }
+    )
+
+    page.load_project(project)
+
+    assert page._impulse_combo.currentText() == "1.2 kV"
+    assert page._pollution_combo.currentText() == "2"
+    assert page._cti_combo.currentText() == "II"

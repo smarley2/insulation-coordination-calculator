@@ -279,6 +279,8 @@ class ReportPage(QWidget):
         results: list[PairResult] = []
         blocking: list[str] = []
         for pair in self._project.pairs:
+            if pair.is_excluded:
+                continue
             try:
                 effective = resolve_effective_case(self._project.defaults, pair)
                 results.append(calculate_pair(effective, self._rules))
