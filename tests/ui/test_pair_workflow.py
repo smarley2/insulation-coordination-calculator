@@ -690,7 +690,8 @@ def test_pair_editor_offers_the_same_dropdowns_as_the_project_defaults(qtbot, pa
         (page.editor._cti_combo, MATERIAL_OPTIONS),
     ):
         texts = [combo.itemText(index) for index in range(combo.count())]
-        assert texts == ["", *(text for text, _value in options)]
+        # No blank entry: "use the project default" is the Default button, not a value.
+        assert texts == [text for text, _value in options]
 
 
 def test_choosing_a_dropdown_value_overrides_the_project_default(qtbot, pair_page):
@@ -720,3 +721,116 @@ def test_an_off_list_override_is_offered_back_as_legacy(qtbot, pair_page):
 
     assert page.editor._pollution_combo.currentText() == "3 (legacy)"
     assert page.project.pair_by_id(pair.id).pollution_degree.value == 3
+
+
+def test_pair_dropdown_is_empty_when_no_value_resolves(qtbot, pair_page, monkeypatch):
+    """A missing project default must stay visibly missing, not fall back silently."""
+    from PySide6.QtWidgets import QMessageBox
+
+    page = pair_page
+    _set_valid_inputs(page)
+    project = page.project
+    page.load_project(
+        project.model_copy(
+            update={
+                "defaults": project.defaults.model_copy(update={"insulation_type": None}),
+                "pairs": tuple(
+                    pair.model_copy(update={"insulation_type": pair.insulation_type.inherit()})
+                    for pair in project.pairs
+                ),
+            }
+        )
+    )
+    pair = page.project.pairs[0]
+    page.select_pair_by_id(str(pair.id))
+
+    assert page.editor._insulation_combo.currentIndex() == -1
+    assert page.editor._insulation_combo.currentText() == ""
+
+    captured: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        staticmethod(lambda _parent, _title, message: captured.append(message)),
+    )
+    page.recalculate()
+
+    assert "Insulation type is required" in captured[0]
+    assert page.result_by_id(pair.id) is None
+
+
+def test_default_button_restores_inheritance_and_shows_the_inherited_value(qtbot, pair_page):
+    page = pair_page
+    pair = page.project.pairs[0]
+    page.select_pair_by_id(str(pair.id))
+    page.editor._impulse_combo.setCurrentText("2.5 kV")
+    assert page.project.pair_by_id(pair.id).impulse_v.is_override
+
+    page.editor.clear_impulse_override()
+
+    assert not page.project.pair_by_id(pair.id).impulse_v.is_override
+    assert page.editor._impulse_combo.currentText() == "1.2 kV"
+    assert page.editor._impulse_source_label.text() == "Default"
+
+
+_OVERRIDE_CASES = (
+    ("frequency_hz", "set_frequency_override", "100 kHz", Decimal(100_000)),
+    ("impulse_v", "set_impulse_override", "2500 V", Decimal(2500)),
+    ("electrode_radius_mm", "set_radius_override", "2.5", Decimal("2.5")),
+    ("altitude_m", "set_altitude_override", "2000", Decimal(2000)),
+    ("pollution_degree", "set_pollution_override", "1", 1),
+    ("cti_or_material_group", "set_cti_override", "IIIa", "IIIa"),
+    ("insulation_type", "set_insulation_override", InsulationType.REINFORCED, None),
+    ("field_condition", "set_field_override", FieldCondition.HOMOGENEOUS, None),
+    ("construction_type", "set_construction_override", ConstructionType.PRINTED_WIRING, None),
+)
+
+
+@pytest.mark.parametrize(("field", "setter", "argument", "expected"), _OVERRIDE_CASES)
+def test_every_pair_override_reaches_the_effective_case(
+    qtbot, pair_page, field, setter, argument, expected
+) -> None:
+    """Each per-pair parameter the editor can set must win over the project default."""
+    from insulation_coordination.domain.enums import Provenance
+    from insulation_coordination.project.resolver import resolve_effective_case
+
+    page = pair_page
+    edited, untouched = page.project.pairs[0], page.project.pairs[1]
+    page.select_pair_by_id(str(edited.id))
+
+    getattr(page.editor, setter)(argument)
+
+    wanted = expected if expected is not None else argument
+    stored = getattr(page.project.pair_by_id(edited.id), field)
+    assert stored.is_override
+    assert stored.value == wanted
+
+    effective = resolve_effective_case(page.project.defaults, page.project.pair_by_id(edited.id))
+    resolved = getattr(effective, field)
+    assert resolved.value == wanted
+    assert resolved.provenance is Provenance.PAIR_OVERRIDE
+
+    neighbour = resolve_effective_case(
+        page.project.defaults, page.project.pair_by_id(untouched.id)
+    )
+    assert getattr(neighbour, field).provenance is Provenance.PROJECT_DEFAULT
+
+
+def test_a_pair_override_is_what_the_calculation_consumes(qtbot, pair_page):
+    """The engine must see each pair's own value, not the project default.
+
+    Asserted on the effective inputs the result records rather than on the
+    distances: the synthetic rule package carries one value per parameter, so most
+    overrides cannot move a number here. Numeric sensitivity needs the licensed IEC
+    tables, which only the private_standard tests have.
+    """
+    page = pair_page
+    _set_valid_inputs(page)
+    edited, untouched = page.project.pairs[0], page.project.pairs[1]
+    page.select_pair_by_id(str(edited.id))
+    page.editor.set_pollution_override("1")
+
+    page.recalculate()
+
+    assert page.result_by_id(edited.id).effective_inputs.pollution_degree.value == 1
+    assert page.result_by_id(untouched.id).effective_inputs.pollution_degree.value == 2

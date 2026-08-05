@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
+from enum import StrEnum
 from uuid import UUID
 
 from PySide6.QtCore import QModelIndex, Qt, QTimer, Signal
@@ -132,6 +133,14 @@ def _override_row(
     return _wrap(row)
 
 
+def _select_enum(combo: QComboBox, value: object, enum: type[StrEnum]) -> None:
+    """Show an enum value, or nothing at all when none resolves for this pair."""
+    if isinstance(value, enum):
+        combo.setCurrentText(value.value)
+    else:
+        combo.setCurrentIndex(-1)
+
+
 def _voltage_row(edit: QLineEdit, na_button: QPushButton) -> QWidget:
     row = _field_row(edit)
     row.addWidget(na_button)
@@ -226,7 +235,6 @@ class PairEditor(QWidget):
         )
 
         self._insulation_combo = QComboBox()
-        self._insulation_combo.addItem("")
         for t in InsulationType:
             self._insulation_combo.addItem(t.value)
         self._insulation_combo.currentTextChanged.connect(self._on_insulation_changed)
@@ -242,7 +250,7 @@ class PairEditor(QWidget):
         )
 
         self._impulse_combo = QComboBox()
-        populate_combo(self._impulse_combo, IMPULSE_OPTIONS)
+        populate_combo(self._impulse_combo, IMPULSE_OPTIONS, blank=False)
         self._impulse_combo.currentIndexChanged.connect(self._on_impulse_selected)
         self._impulse_source_label = QLabel("Default")
         params_layout.addRow(
@@ -256,7 +264,6 @@ class PairEditor(QWidget):
         )
 
         self._field_combo = QComboBox()
-        self._field_combo.addItem("")
         for field in FieldCondition:
             self._field_combo.addItem(field.value)
         self._field_combo.currentTextChanged.connect(self._on_field_changed)
@@ -298,7 +305,7 @@ class PairEditor(QWidget):
         )
 
         self._pollution_combo = QComboBox()
-        populate_combo(self._pollution_combo, POLLUTION_OPTIONS)
+        populate_combo(self._pollution_combo, POLLUTION_OPTIONS, blank=False)
         self._pollution_combo.currentIndexChanged.connect(self._on_pollution_selected)
         self._pollution_source_label = QLabel("Default")
         params_layout.addRow(
@@ -312,7 +319,6 @@ class PairEditor(QWidget):
         )
 
         self._construction_combo = QComboBox()
-        self._construction_combo.addItem("")
         for construction in ConstructionType:
             self._construction_combo.addItem(construction.value)
         self._construction_combo.currentTextChanged.connect(self._on_construction_changed)
@@ -328,7 +334,7 @@ class PairEditor(QWidget):
         )
 
         self._cti_combo = QComboBox()
-        populate_combo(self._cti_combo, MATERIAL_OPTIONS)
+        populate_combo(self._cti_combo, MATERIAL_OPTIONS, blank=False)
         self._cti_combo.currentIndexChanged.connect(self._on_cti_selected)
         self._cti_source_label = QLabel("Default")
         params_layout.addRow(
@@ -394,9 +400,7 @@ class PairEditor(QWidget):
             if effective is not None
             else pair.insulation_type.value
         )
-        self._insulation_combo.setCurrentText(
-            insulation_value.value if isinstance(insulation_value, InsulationType) else ""
-        )
+        _select_enum(self._insulation_combo, insulation_value, InsulationType)
         self._insulation_source_label.setText(
             "Override" if pair.insulation_type.is_override else "Default"
         )
@@ -407,12 +411,11 @@ class PairEditor(QWidget):
             IMPULSE_OPTIONS,
             impulse_value,
             None if impulse_value is None else impulse_display(impulse_value),
+            blank=False,
         )
         self._impulse_source_label.setText("Override" if pair.impulse_v.is_override else "Default")
         field_value = effective.field_condition.value if effective is not None else pair.field_condition.value
-        self._field_combo.setCurrentText(
-            field_value.value if isinstance(field_value, FieldCondition) else ""
-        )
+        _select_enum(self._field_combo, field_value, FieldCondition)
         self._field_source_label.setText(
             "Override" if pair.field_condition.is_override else "Default"
         )
@@ -442,6 +445,7 @@ class PairEditor(QWidget):
             POLLUTION_OPTIONS,
             pollution_value,
             None if pollution_value is None else str(pollution_value),
+            blank=False,
         )
         self._pollution_source_label.setText(
             "Override" if pair.pollution_degree.is_override else "Default"
@@ -451,9 +455,7 @@ class PairEditor(QWidget):
             if effective is not None
             else pair.construction_type.value
         )
-        self._construction_combo.setCurrentText(
-            construction_value.value if isinstance(construction_value, ConstructionType) else ""
-        )
+        _select_enum(self._construction_combo, construction_value, ConstructionType)
         self._construction_source_label.setText(
             "Override" if pair.construction_type.is_override else "Default"
         )
@@ -462,7 +464,9 @@ class PairEditor(QWidget):
             if effective is not None
             else pair.cti_or_material_group.value
         )
-        select_combo_value(self._cti_combo, MATERIAL_OPTIONS, cti_value, cti_value)
+        select_combo_value(
+            self._cti_combo, MATERIAL_OPTIONS, cti_value, cti_value, blank=False
+        )
         self._cti_source_label.setText(
             "Override" if pair.cti_or_material_group.is_override else "Default"
         )

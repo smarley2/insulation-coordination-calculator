@@ -52,9 +52,18 @@ def impulse_display(value: Decimal) -> str:
     return f"{value / Decimal(1000):g} kV"
 
 
-def populate_combo(combo: QComboBox, options: tuple[tuple[str, Any], ...]) -> None:
-    """Fill a combo with the options, preceded by a blank meaning "not set"."""
-    combo.addItem("", None)
+def populate_combo(
+    combo: QComboBox, options: tuple[tuple[str, Any], ...], *, blank: bool = True
+) -> None:
+    """Fill a combo with the options.
+
+    ``blank`` prepends an empty entry meaning "not set", which a project default
+    needs. A pair override must not offer it: a pair value is either an override or
+    inherited, so an empty choice would be a third state the model cannot hold — and
+    picking it would look like a change while silently leaving the value alone.
+    """
+    if blank:
+        combo.addItem("", None)
     for text, value in options:
         combo.addItem(text, value)
 
@@ -64,6 +73,8 @@ def select_combo_value(
     options: tuple[tuple[str, Any], ...],
     value: Any,
     legacy_display: str | None,
+    *,
+    blank: bool = True,
 ) -> None:
     """Show ``value``, appending it as a legacy entry when it is off the list.
 
@@ -71,9 +82,11 @@ def select_combo_value(
     unknown value is offered back rather than silently dropped.
     """
     combo.clear()
-    populate_combo(combo, options)
+    populate_combo(combo, options, blank=blank)
     if value is None:
-        combo.setCurrentIndex(0)
+        # No blank entry to land on: show nothing rather than inventing a value, so
+        # the missing input fails the calculation instead of passing silently.
+        combo.setCurrentIndex(0 if blank else -1)
         return
     # Not QComboBox.findData: it does not match a Decimal stored as item data, so a
     # listed value like 1200 V would be offered back as a legacy entry.
