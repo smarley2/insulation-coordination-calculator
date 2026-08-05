@@ -169,18 +169,13 @@ def test_failed_update_check_warns_without_raising(qtbot, monkeypatch) -> None:
     assert captured == ["offline"]
 
 
-def _file_settings(monkeypatch, tmp_path):
-    """Keep preference reads and writes out of the real user settings store."""
+def test_ui_tests_never_read_the_real_user_settings_store() -> None:
+    """Guards the autouse isolated_settings fixture in tests/ui/conftest.py."""
     from PySide6.QtCore import QSettings
 
     from insulation_coordination.ui import main_window as main_window_module
 
-    path = str(tmp_path / "settings.ini")
-    monkeypatch.setattr(
-        main_window_module,
-        "_settings",
-        lambda: QSettings(path, QSettings.Format.IniFormat),
-    )
+    assert main_window_module._settings().format() == QSettings.Format.IniFormat
 
 
 def test_help_menu_offers_a_bug_report_link(qtbot, monkeypatch) -> None:
@@ -202,10 +197,7 @@ def test_help_menu_offers_a_bug_report_link(qtbot, monkeypatch) -> None:
     assert NEW_ISSUE_URL == f"{REPOSITORY_URL}/issues/new/choose"
 
 
-def test_startup_update_check_is_on_by_default_and_can_be_turned_off(
-    qtbot, monkeypatch, tmp_path
-) -> None:
-    _file_settings(monkeypatch, tmp_path)
+def test_startup_update_check_is_on_by_default_and_can_be_turned_off(qtbot) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     assert window.update_check_on_startup() is True
@@ -215,10 +207,9 @@ def test_startup_update_check_is_on_by_default_and_can_be_turned_off(
     assert window.update_check_on_startup() is False
 
 
-def test_startup_update_check_is_skipped_when_turned_off(qtbot, monkeypatch, tmp_path) -> None:
+def test_startup_update_check_is_skipped_when_turned_off(qtbot, monkeypatch) -> None:
     from insulation_coordination.ui import main_window as main_window_module
 
-    _file_settings(monkeypatch, tmp_path)
     window = MainWindow()
     qtbot.addWidget(window)
     window.set_update_check_on_startup(False)
@@ -276,8 +267,7 @@ def test_startup_update_check_reports_only_a_newer_release(qtbot, monkeypatch) -
     assert shown == [newer]
 
 
-def test_skipped_version_is_not_announced_again_at_startup(qtbot, monkeypatch, tmp_path) -> None:
-    _file_settings(monkeypatch, tmp_path)
+def test_skipped_version_is_not_announced_again_at_startup(qtbot, monkeypatch) -> None:
     window = MainWindow()
     qtbot.addWidget(window)
     shown: list[object] = []
@@ -294,10 +284,9 @@ def test_skipped_version_is_not_announced_again_at_startup(qtbot, monkeypatch, t
     assert shown == [later]
 
 
-def test_manual_update_check_ignores_a_skipped_version(qtbot, monkeypatch, tmp_path) -> None:
+def test_manual_update_check_ignores_a_skipped_version(qtbot, monkeypatch) -> None:
     from insulation_coordination.ui import main_window as main_window_module
 
-    _file_settings(monkeypatch, tmp_path)
     window = MainWindow()
     qtbot.addWidget(window)
     window.set_skipped_version("0.2.0")
