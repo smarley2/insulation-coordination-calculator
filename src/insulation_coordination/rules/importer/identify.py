@@ -185,9 +185,14 @@ class StandardRecipe(FrozenModel):
     def detected_claims(
         self, *, first_page_text: str, metadata: dict[str, str]
     ) -> set[tuple[str, str]]:
-        """Every (standard, edition) pair this recipe's pattern finds in the document."""
+        """Every (standard, edition) pair this recipe's pattern finds in the document.
+
+        The standard is normalized because PDF text extraction produces irregular
+        whitespace: a document rendering "IEC  60664-1" would otherwise never equal the
+        recipe's own name, and the document would be rejected as unrecognized.
+        """
         return {
-            (standard.strip(), edition)
+            (_normalized(standard), edition)
             for value in (*metadata.values(), first_page_text)
             for standard, edition in re.findall(self.identity_claim_pattern, value)
         }
@@ -203,13 +208,10 @@ class StandardRecipe(FrozenModel):
         metadata_text = _normalized(
             " ".join(metadata.get(field, "") for field in self.metadata_identity_fields)
         )
-        identifying_claims = {
-            (standard.casefold(), edition)
-            for standard, edition in self.detected_claims(
-                first_page_text=first_page_text, metadata=metadata
-            )
-        }
-        if identifying_claims - {(self.standard.casefold(), self.edition)}:
+        identifying_claims = self.detected_claims(
+            first_page_text=first_page_text, metadata=metadata
+        )
+        if identifying_claims - {(_normalized(self.standard), self.edition)}:
             return False
         metadata_identifies_document = all(
             _normalized(anchor) in metadata_text for anchor in self.metadata_identity_anchors
@@ -286,7 +288,7 @@ def identify_standard(path: Path, password: str | None = None) -> StandardIdenti
                 first_page_text=first_page_text,
                 metadata=metadata,
             ):
-                if standard.casefold() == recipe.standard.casefold() and edition != recipe.edition:
+                if standard == _normalized(recipe.standard) and edition != recipe.edition:
                     raise UnsupportedEditionError(recipe.standard, edition)
         raise UnsupportedStandardError("PDF is not a recognized supported IEC edition")
     if len(matches) != 1:
