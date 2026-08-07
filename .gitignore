@@ -11,6 +11,7 @@
 
 # Local brainstorming artifacts
 /.superpowers/
+/.hermes/
 
 # Python and build artifacts
 __pycache__/
