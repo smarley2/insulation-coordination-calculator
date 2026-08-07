@@ -281,6 +281,23 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         and len(rule_ids) == len(set(rule_ids))
         and set(rule_ids).isdisjoint(legacy_ids)
     )
+    # A cross-standard pointer must name a real rule, never free text: an unresolved
+    # target would leave the reader to guess which rule was meant.
+    rule_references = (
+        *(
+            procedure.applicability_rule_id
+            for procedure in package.procedures
+            if procedure.applicability_rule_id is not None
+        ),
+        *(
+            value.reference
+            for decision in package.decisions
+            for row in decision.rows
+            for value in row.values
+            if value.reference is not None
+        ),
+    )
+    rule_references_valid = set(rule_references) <= set(identifiers)
     obsolete_markers = (
         "raw_sequence",
         "-f3",
@@ -445,6 +462,11 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
             "mapping_routes",
             len(mapping_source_ids) == len(set(mapping_source_ids)),
             "compatibility mapping source routes are unique",
+        ),
+        _result(
+            "rule_references",
+            rule_references_valid,
+            "procedure and decision rule references resolve to a rule in the package",
         ),
         _result(
             "formula_tables",

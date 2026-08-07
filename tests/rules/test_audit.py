@@ -7,7 +7,13 @@ from pathlib import Path
 import pytest
 
 from insulation_coordination.domain.rules import (
+    DecisionInput,
+    DecisionOutput,
+    DecisionRow,
+    DecisionRule,
+    DecisionValue,
     Literal,
+    Matcher,
     Parameter,
     ParameterSet,
     Power,
@@ -240,6 +246,52 @@ def test_validation_rejects_a_decision_id_colliding_with_a_formula_id(
     )
 
     assert _result(validate_rule_package(package), "unique_ids").passed is False
+
+
+def test_validation_rejects_a_dangling_applicability_rule_id(
+    synthetic_package: RulePackage,
+) -> None:
+    procedure = synthetic_package.procedures[0]
+    package = synthetic_package.model_copy(
+        update={
+            "procedures": (
+                procedure.model_copy(update={"applicability_rule_id": "synthetic-absent-rule"}),
+            )
+        }
+    )
+
+    assert _result(validate_rule_package(package), "rule_references").passed is False
+
+
+def test_validation_rejects_a_dangling_reference_output_value(
+    synthetic_package: RulePackage,
+) -> None:
+    source = synthetic_package.decisions[0].source
+    dangling = DecisionRule(
+        id="synthetic-reference-decision",
+        inputs=(
+            DecisionInput(
+                name="synthetic_category",
+                kind="categorical",
+                allowed_values=("alpha",),
+            ),
+        ),
+        outputs=(DecisionOutput(name="synthetic_target", kind="reference"),),
+        rows=(
+            DecisionRow(
+                matchers=(Matcher(input="synthetic_category", op="equals", values=("alpha",)),),
+                values=(DecisionValue(name="synthetic_target", reference="synthetic-absent-rule"),),
+                source=source,
+            ),
+        ),
+        exhaustive=False,
+        source=source,
+    )
+    package = synthetic_package.model_copy(
+        update={"decisions": (*synthetic_package.decisions, dangling)}
+    )
+
+    assert _result(validate_rule_package(package), "rule_references").passed is False
 
 
 def test_validation_accepts_a_sparse_table_with_unique_in_bounds_cells(
