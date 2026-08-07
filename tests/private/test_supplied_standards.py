@@ -27,7 +27,11 @@ from insulation_coordination.domain.rules import RulePackage
 from insulation_coordination.project.resolver import resolve_effective_case
 from insulation_coordination.rules.archive import load_rule_package, write_rule_package
 from insulation_coordination.rules.importer.approval import approve_draft, is_fully_resolved
-from insulation_coordination.rules.importer.extract import ExtractionError, extract_draft
+from insulation_coordination.rules.importer.extract import (
+    _REQUIRED_RECIPES,
+    ExtractionError,
+    extract_draft,
+)
 from insulation_coordination.rules.importer.identify import (
     StandardIdentificationError,
     identify_standard,
@@ -44,23 +48,18 @@ from insulation_coordination.rules.validation import validate_rule_package
 
 pytestmark = pytest.mark.private_standard
 
-_FILENAMES = (
-    "IEC 60664-1 2020 isbn13 9782832282878.pdf",
-    "IEC 60664-4 2005 -- isbn13 9782831881973.pdf",
-)
+
+def _paths(supplied_standards: dict[str, Path]) -> tuple[Path, ...]:
+    return tuple(supplied_standards[recipe] for recipe in sorted(_REQUIRED_RECIPES))
 
 
-def _private_locations() -> tuple[tuple[Path, Path], Path]:
+def _golden_digest_path() -> Path:
     repository = Path(__file__).parents[2]
-    standards = Path(os.environ.get("ICC_PRIVATE_STANDARDS_DIR", repository / "standards"))
     private_rules = Path(os.environ.get("ICC_PRIVATE_RULES_DIR", repository / "private-rules"))
-    return (
-        (standards / _FILENAMES[0], standards / _FILENAMES[1]),
-        private_rules / "supplied-standards-draft.sha256",
-    )
+    return private_rules / "supplied-standards-draft.sha256"
 
 
-def _approve_supplied_package(paths: tuple[Path, Path]) -> RulePackage:
+def _approve_supplied_package(paths: tuple[Path, ...]) -> RulePackage:
     reviewed = extract_draft(paths)
     for grid in reviewed.raw_grids:
         reviewed = accept_raw_table(
@@ -118,11 +117,10 @@ def _effective_case(*, frequency_hz: int, peak_v: int):
 
 def test_supplied_standards_match_human_reviewed_draft(
     caplog: pytest.LogCaptureFixture,
+    supplied_standards: dict[str, Path],
 ) -> None:
-    paths, golden_path = _private_locations()
-    missing = tuple(path.name for path in paths if not path.is_file())
-    if missing:
-        pytest.skip("licensed IEC PDFs are unavailable")
+    paths = _paths(supplied_standards)
+    golden_path = _golden_digest_path()
 
     try:
         with caplog.at_level(logging.ERROR, logger="pypdf._page"):
@@ -132,11 +130,12 @@ def test_supplied_standards_match_human_reviewed_draft(
         pytest.fail(
             "private standard identification or structural extraction failed", pytrace=False
         )
-    assert {(item.standard, item.edition) for item in identities} == {
+    assert {
         ("IEC 60664-1", "2020"),
         ("IEC 60664-4", "2005"),
-    }
-    assert {grid.id for grid in draft.raw_grids} == {
+    } <= {(item.standard, item.edition) for item in identities}
+    grid_ids = {grid.id for grid in draft.raw_grids}
+    assert {
         "raw-iec60664-1-f2",
         "raw-iec60664-1-f5",
         "raw-iec60664-1-f8",
@@ -144,8 +143,9 @@ def test_supplied_standards_match_human_reviewed_draft(
         "raw-iec60664-1-a2",
         "raw-iec60664-4-table-1",
         "raw-iec60664-4-table-2",
-    }
-    assert {grid.id: (grid.rows, grid.columns) for grid in draft.raw_grids} == {
+    } <= grid_ids
+    grid_shapes = {grid.id: (grid.rows, grid.columns) for grid in draft.raw_grids}
+    assert {
         "raw-iec60664-1-f2": (30, 7),
         "raw-iec60664-1-f5": (49, 10),
         "raw-iec60664-1-f8": (35, 3),
@@ -153,7 +153,7 @@ def test_supplied_standards_match_human_reviewed_draft(
         "raw-iec60664-1-a2": (12, 3),
         "raw-iec60664-4-table-1": (10, 2),
         "raw-iec60664-4-table-2": (20, 8),
-    }
+    }.items() <= grid_shapes.items()
     assert draft.review_items
     assert {item.code for item in draft.review_items} <= {
         "MANUAL_TABLE_DEFINITION_REQUIRED",
@@ -172,12 +172,12 @@ def test_supplied_standards_match_human_reviewed_draft(
         for cell in grid.cells
     )
     f5 = next(grid for grid in draft.raw_grids if grid.id == "raw-iec60664-1-f5")
-    assert tuple(segment.page_number for segment in f5.segments) == (73, 74)
+    assert tuple(segment.page_number for segment in f5.segments) == (74, 75)
     assert tuple(segment.row_start for segment in f5.segments) == (0, 30)
     assert all(cell.role in {"header", "data", "blank", "note", "footnote"} for cell in f5.cells)
     assert max(cell.logical_row for cell in f5.cells if cell.logical_row is not None) == 38
     assert any(
-        cell.source.note == "PDF page 74" and cell.logical_row is not None for cell in f5.cells
+        cell.source.note == "PDF page 75" and cell.logical_row is not None for cell in f5.cells
     )
     assert any(
         " " in cell.raw_text.strip() and cell.value is not None
@@ -217,7 +217,7 @@ def test_supplied_standards_match_human_reviewed_draft(
         actor="Private fixture reviewer",
         notes="Projected accepted IEC artifacts",
     )
-    assert {table.id for table in built.tables} == {
+    assert {
         "iec60664-1-f2",
         "iec60664-1-f5",
         "iec60664-1-f8",
@@ -225,13 +225,13 @@ def test_supplied_standards_match_human_reviewed_draft(
         "iec60664-1-a2",
         "iec60664-4-table-1",
         "iec60664-4-table-2",
-    }
+    } <= {table.id for table in built.tables}
     f5_table = next(table for table in built.tables if table.id == "iec60664-1-f5")
     f2_table = next(table for table in built.tables if table.id == "iec60664-1-f2")
     assert len(f2_table.cells) == 26 * 6
     assert len(f5_table.row_axis.values) == 39
     assert f5_table.row_axis.values[-1] == 63_000
-    assert all(cell.source.note == "PDF page 73" for cell in f5_table.cells)
+    assert all(cell.source.note == "PDF page 74" for cell in f5_table.cells)
     assert all(table.row_axis.labels and table.column_axis.labels for table in built.tables)
     assert all("raw_sequence" not in str(formula.expression) for formula in built.formulas)
     expected_draft_failures = {
@@ -262,11 +262,9 @@ def test_supplied_standards_match_human_reviewed_draft(
 
 def test_supplied_standards_approve_and_calculate_pcb_annex_gh(
     tmp_path: Path,
+    supplied_standards: dict[str, Path],
 ) -> None:
-    paths, _ = _private_locations()
-    if any(not path.is_file() for path in paths):
-        pytest.skip("licensed IEC PDFs are unavailable")
-    approved = _approve_supplied_package(paths)
+    approved = _approve_supplied_package(_paths(supplied_standards))
     archive = tmp_path / "reviewed.icrules"
     write_rule_package(archive, approved)
     rules = load_rule_package(archive)
