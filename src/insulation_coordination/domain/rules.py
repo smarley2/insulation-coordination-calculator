@@ -191,6 +191,13 @@ class TableSelect(FrozenModel):
     column_mode: AxisSelectionMode = "exact"
 
 
+class Power(FrozenModel):
+    op: TypingLiteral["power"] = "power"
+    base: Expression
+    numerator: int = Field(strict=True)
+    denominator: TypingLiteral[1, 2] = 1
+
+
 Expression = Annotated[
     Literal
     | Variable
@@ -204,7 +211,8 @@ Expression = Annotated[
     | Round
     | Lookup
     | LinearInterpolate
-    | TableSelect,
+    | TableSelect
+    | Power,
     Field(discriminator="op"),
 ]
 
@@ -220,6 +228,7 @@ for _recursive_node in (
     Lookup,
     LinearInterpolate,
     TableSelect,
+    Power,
 ):
     _recursive_node.model_rebuild(_types_namespace={"Expression": Expression})
 

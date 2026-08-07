@@ -38,6 +38,7 @@ from insulation_coordination.domain.rules import (
     Maximum,
     Minimum,
     Multiply,
+    Power,
     Round,
     Select,
     SourceReference,
@@ -133,6 +134,8 @@ class _Evaluator:
             return self._interpolate(expression)
         if isinstance(expression, TableSelect):
             return self._table_select(expression)
+        if isinstance(expression, Power):
+            return self._power(expression)
         raise EvaluationError(f"unsupported typed expression {type(expression).__name__}")
 
     def _literal(self, expression: Literal) -> _Result:
@@ -245,6 +248,9 @@ class _Evaluator:
                 )
             ),
         )
+        rendered_denominator = _render_child(
+            denominator, "substituted", _MULTIPLY_PRECEDENCE, group_equal=True
+        )
         return self._result(
             expression,
             quantity,
@@ -255,7 +261,7 @@ class _Evaluator:
             ),
             substituted=(
                 f"{_render_child(numerator, 'substituted', _MULTIPLY_PRECEDENCE)} / "
-                f"{_render_child(denominator, 'substituted', _MULTIPLY_PRECEDENCE, group_equal=True)}"
+                f"{rendered_denominator}"
             ),
             reason="quotient evaluated",
             symbolic_precedence=_ATOM_PRECEDENCE,
@@ -583,6 +589,54 @@ class _Evaluator:
             cell_references=tuple(cell.source for cell in cells),
             unrounded=unrounded,
             rounded=rounded if table.rounding_mode is not None else None,
+        )
+
+    def _power(self, expression: Power) -> _Result:
+        child = self.evaluate(expression.base)
+        _require_numeric((child,))
+        if child.quantity.unit != _DIMENSIONLESS:
+            raise EvaluationError("power requires a dimensionless operand")
+        base = child.quantity.value
+        if expression.numerator < 0 and base == 0:
+            raise EvaluationError("negative exponent on a zero base")
+        if expression.denominator == 2 and base < 0:
+            raise EvaluationError("negative operand under a square root")
+        precision = (
+            self.formula.precision if self.formula is not None else DEFAULT_DECIMAL_PRECISION
+        )
+        try:
+            with localcontext(
+                Context(
+                    prec=precision,
+                    traps=[InvalidOperation, DivisionByZero, Overflow, FloatOperation],
+                )
+            ):
+                raised = base**expression.numerator
+                value = raised.sqrt() if expression.denominator == 2 else +raised
+        except DecimalException as error:
+            raise EvaluationError(f"power could not be evaluated: {error}") from error
+        quantity = _quantity(value, child.quantity.unit)
+        exponent = (
+            str(expression.numerator)
+            if expression.denominator == 1
+            else rf"\frac{{{expression.numerator}}}{{{expression.denominator}}}"
+        )
+        substituted_base = _render_child(
+            child, "substituted", _MULTIPLY_PRECEDENCE, group_equal=True
+        )
+        return self._result(
+            expression,
+            quantity,
+            (child,),
+            symbolic=f"{{{child.embedded_symbolic}}}^{{{exponent}}}",
+            substituted=(
+                f"{substituted_base} ^ ({expression.numerator}/{expression.denominator})"
+            ),
+            reason=(
+                f"raised to {expression.numerator}/{expression.denominator} "
+                f"at precision {precision}"
+            ),
+            label=child.label,
         )
 
     def _table(self, table_id: str) -> Table:
