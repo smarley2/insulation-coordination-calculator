@@ -26,9 +26,7 @@ def _pdf_string(value: str) -> bytes:
 
 
 def _text_command(x: float, y: float, value: str) -> bytes:
-    return f"BT /F1 9 Tf {x:.1f} {y:.1f} Td (".encode() + _pdf_string(
-        value
-    ) + b") Tj ET"
+    return f"BT /F1 9 Tf {x:.1f} {y:.1f} Td (".encode() + _pdf_string(value) + b") Tj ET"
 
 
 def _table_commands(
