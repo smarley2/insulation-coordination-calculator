@@ -534,6 +534,52 @@ def _row_admits(row: DecisionRow, assignment: dict[str, str]) -> bool:
     return True
 
 
+class ProcedureStep(FrozenModel):
+    order: int = Field(ge=1, strict=True)
+    text: ReferenceText
+    source: SourceReference
+
+
+def _require_consecutive(steps: tuple[ProcedureStep, ...], label: str) -> None:
+    if tuple(step.order for step in steps) != tuple(range(1, len(steps) + 1)):
+        raise ValueError(f"{label} must be numbered consecutively from one")
+
+
+class ProcedureRule(FrozenModel):
+    id: Identifier
+    test_kind: Identifier
+    classifications: tuple[Identifier, ...] = ()
+    waveform: ReferenceText | None = None
+    polarity: ReferenceText | None = None
+    duration: ReferenceText | None = None
+    repetitions: ReferenceText | None = None
+    preparation_steps: tuple[ProcedureStep, ...] = ()
+    procedure_steps: tuple[ProcedureStep, ...] = ()
+    acceptance_reference: SourceReference | None = None
+    applicability_rule_id: Identifier | None = None
+    applicability: ApplicabilityText = ""
+    source: SourceReference
+
+    @model_validator(mode="after")
+    def _steps_are_ordered(self) -> Self:
+        if not self.procedure_steps:
+            raise ValueError("A procedure rule needs at least one procedure step")
+        _require_consecutive(self.preparation_steps, "Preparation steps")
+        _require_consecutive(self.procedure_steps, "Procedure steps")
+        if len(set(self.classifications)) != len(self.classifications):
+            raise ValueError("Procedure classifications must be unique")
+        return self
+
+
+class GuidanceRule(FrozenModel):
+    id: Identifier
+    title: ReferenceText
+    summary: NotesText
+    warnings: tuple[NotesText, ...] = ()
+    examples: tuple[NotesText, ...] = ()
+    source: SourceReference
+
+
 class RulePackage(FrozenModel):
     manifest: Manifest
     tables: tuple[Table, ...]
