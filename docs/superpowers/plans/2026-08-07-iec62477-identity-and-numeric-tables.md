@@ -634,11 +634,12 @@ def test_altitude_tables_share_one_semantic_family() -> None:
     assert len(altitude) == 2
 
 
-def test_no_column_heading_repeats_source_wording() -> None:
+def test_column_headings_are_neutral_internal_descriptions() -> None:
     for spec in RECIPE.tables:
         for column in spec.columns:
-            assert column.heading == column.heading.lower().replace("_", " ").strip() or True
-            assert len(column.heading) <= 60
+            assert column.heading == column.heading.strip()
+            assert column.heading == column.heading.lower()
+            assert 0 < len(column.heading) <= 60
 ```
 
 - [ ] **Step 3: Run the test to verify it fails**
