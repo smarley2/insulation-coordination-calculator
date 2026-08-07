@@ -182,6 +182,9 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
     table_ids = [table.id for table in package.tables]
     formula_ids = [formula.id for formula in package.formulas]
     mapping_ids = [mapping.id for mapping in package.mappings]
+    decision_ids = [decision.id for decision in package.decisions]
+    procedure_ids = [procedure.id for procedure in package.procedures]
+    guidance_ids = [guidance.id for guidance in package.guidance]
     try:
         expected_checksums = {
             name: hashlib.sha256(payload).hexdigest()
@@ -265,7 +268,19 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         expected_table_ids = set(table_ids)
         expected_formula_ids = set(formula_ids)
         expected_mapping_ids = set(mapping_ids)
-    identifiers = (*table_ids, *formula_ids, *mapping_ids)
+    legacy_ids = (*table_ids, *formula_ids, *mapping_ids)
+    rule_ids = (*decision_ids, *procedure_ids, *guidance_ids)
+    identifiers = (*legacy_ids, *rule_ids)
+    # A decision, procedure or guidance id is what applicability_rule_id and a
+    # reference output resolve against, so it must be unique against every other
+    # id in the package, not merely within its own kind.
+    unique_ids = (
+        len(table_ids) == len(set(table_ids))
+        and len(formula_ids) == len(set(formula_ids))
+        and len(mapping_ids) == len(set(mapping_ids))
+        and len(rule_ids) == len(set(rule_ids))
+        and set(rule_ids).isdisjoint(legacy_ids)
+    )
     obsolete_markers = (
         "raw_sequence",
         "-f3",
@@ -383,9 +398,7 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         ),
         _result(
             "unique_ids",
-            len(table_ids) == len(set(table_ids))
-            and len(formula_ids) == len(set(formula_ids))
-            and len(mapping_ids) == len(set(mapping_ids)),
+            unique_ids,
             "semantic IDs are unique",
         ),
         _result("table_cells", valid_table_cells, "table cells are unique and in bounds"),

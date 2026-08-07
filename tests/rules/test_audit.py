@@ -221,6 +221,26 @@ def test_validation_rejects_obsolete_or_incomplete_iec_imports(
     assert _result(validate_rule_package(obsolete), "obsolete_rule_content").passed is False
 
 
+def test_validation_rejects_a_duplicate_decision_id(synthetic_package: RulePackage) -> None:
+    decision = synthetic_package.decisions[0]
+    package = synthetic_package.model_copy(update={"decisions": (decision, decision)})
+
+    assert _result(validate_rule_package(package), "unique_ids").passed is False
+
+
+def test_validation_rejects_a_decision_id_colliding_with_a_formula_id(
+    synthetic_package: RulePackage,
+) -> None:
+    # DecisionOutput(kind="reference") resolves a rule by id, so an id shared with
+    # another kind would be resolved against whichever comes first — a guess.
+    decision = synthetic_package.decisions[0]
+    package = synthetic_package.model_copy(
+        update={"decisions": (decision.model_copy(update={"id": "synthetic-formula"}),)}
+    )
+
+    assert _result(validate_rule_package(package), "unique_ids").passed is False
+
+
 def test_validation_accepts_a_sparse_table_with_unique_in_bounds_cells(
     synthetic_package: RulePackage,
 ) -> None:
