@@ -132,6 +132,7 @@ class TableAuditSpec(FrozenModel):
     segments: tuple[TableSegmentSpec, ...] = ()
     columns: tuple[TableColumnSpec, ...] = ()
     page_search_radius: int = Field(default=0, ge=0, le=5)
+    interpolation: Literal["none", "linear"] = "none"
 
 
 class EquationAuditSpec(FrozenModel):

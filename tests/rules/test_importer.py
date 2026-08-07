@@ -49,6 +49,7 @@ from insulation_coordination.rules.importer.identify import (
     UnsupportedStandardError,
     identify_standard,
 )
+from insulation_coordination.rules.importer.projection import project_table
 from insulation_coordination.rules.importer.recipes.iec60664_1_2020 import (
     RECIPE as PART1_RECIPE,
 )
@@ -1043,6 +1044,22 @@ def _accept_all_source_artifacts(draft: ImportedRuleDraft) -> ImportedRuleDraft:
             notes="Reviewed equations and mappings",
         )
     return accepted
+
+
+def test_project_table_honours_the_declared_interpolation_mode(
+    supported_pdfs: tuple[Path, Path],
+    injected_recipes: tuple[StandardRecipe, ...],
+) -> None:
+    """project_table must read interpolation from the spec, not assume "linear"."""
+    draft = extract_draft(supported_pdfs)
+    recipe = injected_recipes[0]
+    identity = next(i for i in draft.source_identities if i.recipe_id == recipe.id)
+    table_spec = recipe.tables[0].model_copy(update={"interpolation": "none"})
+    grid = next(grid for grid in draft.raw_grids if grid.id == f"raw-{table_spec.semantic_id}")
+
+    projected = project_table(identity, table_spec, grid)
+
+    assert projected.interpolation == "none"
 
 
 def test_build_reviewed_draft_resolves_every_item(

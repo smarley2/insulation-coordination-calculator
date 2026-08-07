@@ -168,7 +168,7 @@ def _table_from_spec(
             labels=tuple(f"column-{index + 1}" for index in range(len(column_values))),
         ),
         cells=tuple(cells),
-        interpolation="linear",
+        interpolation=spec.interpolation,
         source=source,
     )
 

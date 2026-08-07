@@ -146,7 +146,7 @@ def project_table(
                 source=source,
             ),
         ),
-        interpolation="linear",
+        interpolation=spec.interpolation,
         source=source,
     )
 
@@ -207,7 +207,7 @@ def _project_legacy_table(
                 source=source,
             ),
         ),
-        interpolation="linear",
+        interpolation=spec.interpolation,
         source=source,
     )
 
