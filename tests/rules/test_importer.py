@@ -19,6 +19,7 @@ from insulation_coordination.domain.rules import (
     Literal,
     Parameter,
     ParameterSet,
+    Power,
     SourceReference,
     Table,
     TableAxis,
@@ -59,12 +60,14 @@ from insulation_coordination.rules.importer.recipes.iec60664_4_2005 import (
     RECIPE as PART4_RECIPE,
 )
 from insulation_coordination.rules.importer.review import (
+    _fill_expression_literals,
     accept_equation_mapping,
     accept_raw_grid,
     accept_raw_table,
     build_reviewed_draft,
     missing_required_content,
     placeholder_formula_ids,
+    placeholder_formula_values,
     recipe_derived_items,
     required_content_report,
     unresolved_equation_items,
@@ -1231,6 +1234,34 @@ def test_corrected_part4_recipe_has_no_placeholder_formula_gate() -> None:
     assert all(
         formula.semantic_id not in placeholder_formula_ids() for formula in PART4_RECIPE.formulas
     )
+
+
+@pytest.mark.parametrize(
+    "expression",
+    (
+        Power(base=Literal(value=Decimal(2)), numerator=3, denominator=2),
+        TableSelect(
+            table_id="synthetic-table",
+            row=Literal(value=Decimal(1)),
+            column=Literal(value=Decimal(2)),
+            row_mode="ceiling",
+        ),
+    ),
+)
+def test_placeholder_literals_rebuild_through_power_and_table_select(
+    expression: Power | TableSelect,
+) -> None:
+    # confirm_placeholder_formula rebuilds a formula's literals in place, so every
+    # op that can carry a Literal child must be traversed, not refused.
+    current = placeholder_formula_values(expression)
+    assert current
+
+    unchanged = _fill_expression_literals(expression.model_dump(mode="python"), list(current))
+    assert unchanged == expression
+
+    replaced = tuple(value + 1 for value in current)
+    rebuilt = _fill_expression_literals(expression.model_dump(mode="python"), list(replaced))
+    assert placeholder_formula_values(rebuilt) == replaced
 
 
 def test_required_content_report_tracks_missing_then_present(
