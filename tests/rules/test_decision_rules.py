@@ -134,7 +134,9 @@ def test_duplicate_input_or_output_names_are_rejected() -> None:
                 DecisionInput(name="colour", kind="numeric", unit="V"),
             ),
             outputs=(
-                DecisionOutput(name="protection", kind="categorical", allowed_values=("basic", "none")),
+                DecisionOutput(
+                    name="protection", kind="categorical", allowed_values=("basic", "none")
+                ),
             ),
             rows=(_row("red", "basic"),),
             exhaustive=False,
@@ -147,13 +149,43 @@ def test_duplicate_input_or_output_names_are_rejected() -> None:
                 DecisionInput(name="colour", kind="categorical", allowed_values=("red", "blue")),
             ),
             outputs=(
-                DecisionOutput(name="protection", kind="categorical", allowed_values=("basic", "none")),
+                DecisionOutput(
+                    name="protection", kind="categorical", allowed_values=("basic", "none")
+                ),
                 DecisionOutput(name="protection", kind="numeric"),
             ),
             rows=(_row("red", "basic"),),
             exhaustive=False,
             source=SOURCE,
         )
+
+
+def _boolean_input_rule(*, exhaustive: bool) -> DecisionRule:
+    row = DecisionRow(
+        matchers=(Matcher(input="engaged", op="any"),),
+        values=(DecisionValue(name="protection", categorical="basic"),),
+        source=SOURCE,
+    )
+    return DecisionRule(
+        id="synthetic-boolean-decision",
+        inputs=(DecisionInput(name="engaged", kind="boolean"),),
+        outputs=(
+            DecisionOutput(name="protection", kind="categorical", allowed_values=("basic", "none")),
+        ),
+        rows=(row,),
+        exhaustive=exhaustive,
+        source=SOURCE,
+    )
+
+
+def test_exhaustive_rule_with_boolean_input_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="boolean exhaustiveness is not supported"):
+        _boolean_input_rule(exhaustive=True)
+
+
+def test_non_exhaustive_rule_with_boolean_input_is_accepted() -> None:
+    rule = _boolean_input_rule(exhaustive=False)
+    assert rule.exhaustive is False
 
 
 def test_decision_value_kind_mismatch_is_rejected() -> None:

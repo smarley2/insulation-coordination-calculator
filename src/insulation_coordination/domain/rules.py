@@ -507,6 +507,12 @@ class DecisionRule(FrozenModel):
         return self
 
     def _require_full_coverage(self, inputs: dict[str, DecisionInput]) -> None:
+        for item in inputs.values():
+            if item.kind == "boolean":
+                raise ValueError(
+                    f"Input {item.name!r} is boolean; an exhaustive rule cannot be claimed "
+                    "over a boolean input because boolean exhaustiveness is not supported"
+                )
         categorical = tuple(item for item in inputs.values() if item.kind == "categorical")
         if not categorical:
             return
@@ -524,8 +530,6 @@ def _row_admits(row: DecisionRow, assignment: dict[str, str]) -> bool:
         if matcher.op == "any":
             continue
         if matcher.op in ("equals", "in") and value not in matcher.values:
-            return False
-        if matcher.op == "range":
             return False
     return True
 
