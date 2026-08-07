@@ -231,6 +231,19 @@ def test_migration_creates_new_unapproved_identity(
     assert migrated.package_sha256 is None
 
 
+def test_migration_preserves_decisions_procedures_and_guidance(
+    synthetic_package: RulePackage,
+) -> None:
+    migrated = migrate_rule_package(synthetic_package, target_schema=2)
+
+    assert migrated.decisions == synthetic_package.decisions
+    assert migrated.procedures == synthetic_package.procedures
+    assert migrated.guidance == synthetic_package.guidance
+    assert migrated.decisions != ()
+    assert migrated.procedures != ()
+    assert migrated.guidance != ()
+
+
 def test_draft_package_cannot_be_written_or_loaded(
     synthetic_package: RulePackage, tmp_path: Path
 ) -> None:

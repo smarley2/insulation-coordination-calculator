@@ -285,4 +285,7 @@ def migrate_rule_package(package: RulePackage, target_schema: int) -> DraftRuleP
         mappings=tuple(
             mapping.model_copy(update={"approved": False}) for mapping in package.mappings
         ),
+        decisions=package.decisions,
+        procedures=package.procedures,
+        guidance=package.guidance,
     )
