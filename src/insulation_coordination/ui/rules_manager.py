@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
 
@@ -779,19 +778,6 @@ class RulesManagerWindow(QWidget):
             lines.append(item.text(0))
             stack.extend(item.child(index) for index in range(item.childCount()))
         return tuple(lines)
-
-    def _collect_references(self) -> Iterator[SourceReference]:
-        if self._package is None:
-            return
-        for table in self._package.tables:
-            yield table.source
-            yield from (cell.source for cell in table.cells)
-            yield from (item.source for item in table.supported_ranges)
-        for formula in self._package.formulas:
-            yield formula.source
-            yield from (item.source for item in formula.parameter_sets)
-            yield from (item.source for item in formula.supported_ranges)
-        yield from (mapping.source for mapping in self._package.mappings)
 
 
 def _format_reference(reference: SourceReference) -> str:

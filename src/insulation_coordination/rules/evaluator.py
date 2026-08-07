@@ -600,6 +600,8 @@ class _Evaluator:
     def _power(self, expression: Power) -> _Result:
         child = self.evaluate(expression.base)
         _require_numeric((child,))
+        # ponytail: dimensionless-only ceiling, deliberate. Carry unit^n through
+        # _combine_units when denominator == 1 if a dimensioned power is ever needed.
         if child.quantity.unit != _DIMENSIONLESS:
             raise EvaluationError("power requires a dimensionless operand")
         base = child.quantity.value
