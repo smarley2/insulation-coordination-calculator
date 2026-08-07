@@ -117,3 +117,96 @@ def test_no_match_on_a_non_exhaustive_rule_reports_no_match() -> None:
     assert result.status == "no_match"
     assert result.matched_row is None
     assert result.values == ()
+
+
+def test_exhaustive_numeric_only_rule_raises_when_no_row_matches() -> None:
+    # DecisionRule's own coverage check (_require_full_coverage) only walks
+    # categorical inputs; a rule with a purely numeric input constructs fine
+    # under exhaustive=True even though its single row leaves values above 100
+    # uncovered. The runtime raise in evaluate_decision is what catches that,
+    # not construction-time validation.
+    rule = DecisionRule(
+        id="synthetic-exhaustive-numeric",
+        inputs=(DecisionInput(name="level", kind="numeric", unit="V"),),
+        outputs=(DecisionOutput(name="protection", kind="categorical", allowed_values=("basic",)),),
+        rows=(
+            DecisionRow(
+                matchers=(
+                    Matcher(input="level", op="range", minimum=Decimal(0), maximum=Decimal(100)),
+                ),
+                values=(DecisionValue(name="protection", categorical="basic"),),
+                source=SOURCE,
+            ),
+        ),
+        exhaustive=True,
+        source=SOURCE,
+    )
+    with pytest.raises(EvaluationError, match="matched no row"):
+        evaluate_decision(rule, {"level": Decimal(200)})
+
+
+def _range_rule(
+    *,
+    minimum: Decimal | None,
+    maximum: Decimal | None,
+    minimum_inclusive: bool = True,
+    maximum_inclusive: bool = True,
+) -> DecisionRule:
+    return DecisionRule(
+        id="synthetic-range",
+        inputs=(DecisionInput(name="level", kind="numeric", unit="V"),),
+        outputs=(DecisionOutput(name="protection", kind="categorical", allowed_values=("basic",)),),
+        rows=(
+            DecisionRow(
+                matchers=(
+                    Matcher(
+                        input="level",
+                        op="range",
+                        minimum=minimum,
+                        maximum=maximum,
+                        minimum_inclusive=minimum_inclusive,
+                        maximum_inclusive=maximum_inclusive,
+                    ),
+                ),
+                values=(DecisionValue(name="protection", categorical="basic"),),
+                source=SOURCE,
+            ),
+        ),
+        exhaustive=False,
+        source=SOURCE,
+    )
+
+
+@pytest.mark.parametrize(
+    ("minimum", "maximum", "minimum_inclusive", "maximum_inclusive", "level", "expect_matched"),
+    (
+        # Inclusive minimum: a value exactly at the bound matches.
+        (Decimal(10), Decimal(20), True, True, Decimal(10), True),
+        # Inclusive maximum: a value exactly at the bound matches.
+        (Decimal(10), Decimal(20), True, True, Decimal(20), True),
+        # Exclusive minimum: a value exactly at the bound does not match.
+        (Decimal(10), Decimal(20), False, True, Decimal(10), False),
+        # Exclusive maximum: a value exactly at the bound does not match.
+        (Decimal(10), Decimal(20), True, False, Decimal(20), False),
+        # One-sided range, minimum only: nothing caps the upper side.
+        (Decimal(10), None, True, True, Decimal(1_000_000), True),
+        # One-sided range, maximum only: nothing caps the lower side.
+        (None, Decimal(20), True, True, Decimal(-1_000_000), True),
+    ),
+)
+def test_range_matcher_boundaries(
+    minimum: Decimal | None,
+    maximum: Decimal | None,
+    minimum_inclusive: bool,
+    maximum_inclusive: bool,
+    level: Decimal,
+    expect_matched: bool,
+) -> None:
+    rule = _range_rule(
+        minimum=minimum,
+        maximum=maximum,
+        minimum_inclusive=minimum_inclusive,
+        maximum_inclusive=maximum_inclusive,
+    )
+    result = evaluate_decision(rule, {"level": level})
+    assert (result.status == "matched") is expect_matched

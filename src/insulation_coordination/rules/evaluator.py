@@ -784,6 +784,10 @@ def _matches(matcher: Matcher, value: Decimal | str | bool) -> bool:
     if matcher.op in ("equals", "in"):
         return value in matcher.values
     if not isinstance(value, Decimal):
+        # ponytail: defensive only. evaluate_decision's own type-validation loop
+        # already guarantees a range matcher's input is a Decimal before rows are
+        # checked, so this branch is unreachable through that call path. Kept as
+        # correct protection for a direct caller of _matches.
         raise EvaluationError(f"input {matcher.input!r} must be numeric for a range matcher")
     below_minimum = matcher.minimum is not None and (
         value < matcher.minimum or (value == matcher.minimum and not matcher.minimum_inclusive)
