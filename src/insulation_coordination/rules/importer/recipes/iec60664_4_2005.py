@@ -31,13 +31,13 @@ def _columns(
 def _frequency_columns() -> tuple[TableColumnSpec, ...]:
     columns = _columns(
         ("peak_voltage_kv", "Peak voltage", 0, "axis", "kV"),
-        ("frequency_30_100_khz_mm", "30 kHz to 100 kHz", 1, "data", "mm"),
-        ("frequency_200_khz_mm", "Up to 0.2 MHz", 2, "data", "mm"),
-        ("frequency_400_khz_mm", "Up to 0.4 MHz", 3, "data", "mm"),
-        ("frequency_700_khz_mm", "Up to 0.7 MHz", 4, "data", "mm"),
-        ("frequency_1_mhz_mm", "Up to 1 MHz", 5, "data", "mm"),
-        ("frequency_2_mhz_mm", "Up to 2 MHz", 6, "data", "mm"),
-        ("frequency_3_mhz_mm", "Up to 3 MHz", 7, "data", "mm"),
+        ("frequency_30_100_khz_mm", "creepage distance for frequency band 1", 1, "data", "mm"),
+        ("frequency_200_khz_mm", "creepage distance for frequency band 2", 2, "data", "mm"),
+        ("frequency_400_khz_mm", "creepage distance for frequency band 3", 3, "data", "mm"),
+        ("frequency_700_khz_mm", "creepage distance for frequency band 4", 4, "data", "mm"),
+        ("frequency_1_mhz_mm", "creepage distance for frequency band 5", 5, "data", "mm"),
+        ("frequency_2_mhz_mm", "creepage distance for frequency band 6", 6, "data", "mm"),
+        ("frequency_3_mhz_mm", "creepage distance for frequency band 7", 7, "data", "mm"),
     )
     frequencies = (
         None,

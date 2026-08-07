@@ -253,8 +253,8 @@ RECIPE = StandardRecipe(
             ),
             columns=_columns(
                 ("peak_voltage_kv", "Voltage peak value", 0, "axis", "kV"),
-                ("case_a_mm", "Case A inhomogeneous field", 1, "data", "mm"),
-                ("case_b_mm", "Case B homogeneous field", 2, "data", "mm"),
+                ("case_a_mm", "clearance for field configuration A", 1, "data", "mm"),
+                ("case_b_mm", "clearance for field configuration B", 2, "data", "mm"),
             ),
         ),
         TableAuditSpec(
@@ -340,7 +340,7 @@ RECIPE = StandardRecipe(
             columns=_columns(
                 ("altitude_m", "Altitude", 0, "axis", "m"),
                 ("pressure_kpa", "Air pressure at this altitude", 1, "context", "kPa"),
-                ("clearance_factor", "Multiplication factor for clearances", 2, "data", "1"),
+                ("clearance_factor", "clearance multiplication factor", 2, "data", "1"),
             ),
         ),
     ),
