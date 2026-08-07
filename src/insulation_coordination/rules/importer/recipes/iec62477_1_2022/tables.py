@@ -1,4 +1,3 @@
-from decimal import Decimal
 from typing import Literal
 
 from insulation_coordination.rules.importer.identify import (
@@ -64,11 +63,14 @@ def _table_7_ac_dc_pair(
     axis_column_axis_unit: str,
     data_items: tuple[tuple[str, str, int, ColumnRole, str], ...],
     expected_data_columns: int,
+    interpolation: Literal["none", "linear"],
 ) -> tuple[TableAuditSpec, TableAuditSpec]:
     """One AC spec and one DC spec reading Table 7's two parallel row axes.
 
     Both read the same data columns; only the row-axis source column and the set of
-    data rows differ, per the AC/DC split.
+    data rows differ, per the AC/DC split. System voltage interpolation is not
+    permitted for the impulse lookup but is permitted for the TOV lookup (4.4.7.1.7);
+    the matching ``FormulaAuditSpec`` row mode is declared by the caller.
     """
     specs = []
     for supply, axis_source_column, data_rows, allowed_suffixes in (
@@ -85,7 +87,7 @@ def _table_7_ac_dc_pair(
                 page_number=_TABLE_7_PAGE,
                 clause=_TABLE_7_CLAUSE,
                 target_unit="V",
-                interpolation="none",
+                interpolation=interpolation,
                 page_search_radius=2,
                 expected_raw_rows=_TABLE_7_RAW_ROWS,
                 expected_raw_columns=len(source_columns),
@@ -132,6 +134,7 @@ _IMPULSE_AC, _IMPULSE_DC = _table_7_ac_dc_pair(
     axis_column_axis_unit="1",
     data_items=_IMPULSE_DATA_COLUMNS,
     expected_data_columns=5,
+    interpolation="none",
 )
 _TOV_AC, _TOV_DC = _table_7_ac_dc_pair(
     impulse_or_tov_id=ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE,
@@ -139,21 +142,31 @@ _TOV_AC, _TOV_DC = _table_7_ac_dc_pair(
     axis_column_axis_unit="1",
     data_items=_TOV_DATA_COLUMNS,
     expected_data_columns=2,
+    interpolation="linear",
 )
 
-#: Table E.2's data columns, physically ordered 2000/1000/500/200 m then the 0 m axis
-#: column; the column axis must be strictly increasing, so the logical column order
-#: (and matching ``source_columns`` on the segment below) runs ascending by altitude.
+#: Table E.2's four altitude-band data columns are physically ordered descending by
+#: altitude, with the reference axis column last; the column axis must be strictly
+#: increasing, so the logical column order (and matching ``source_columns`` on the
+#: segment below) runs ascending instead.
 _ALTITUDE_BAND_SOURCE_COLUMNS = (3, 2, 1, 0, 4)
+#: Physical row (within the E.2 segment) whose cells carry the four altitude bands'
+#: numeric header values; structural, not a licensed value.
+_ALTITUDE_BAND_HEADER_ROW = 2
 
 
 def _altitude_band_columns() -> tuple[TableColumnSpec, ...]:
-    """The four corrected-voltage columns of Table E.2, plus the reference (0 m) axis."""
+    """The four corrected-voltage columns of Table E.2, plus the reference altitude axis.
+
+    The altitude band values are licensed table content, so they are read from the
+    document's own header row via ``axis_value_source_row`` instead of being declared
+    here.
+    """
     columns = _columns(
-        ("corrected_impulse_200m_kv", "corrected impulse withstand at 200 m", 3, "data", "kV"),
-        ("corrected_impulse_500m_kv", "corrected impulse withstand at 500 m", 2, "data", "kV"),
-        ("corrected_impulse_1000m_kv", "corrected impulse withstand at 1000 m", 1, "data", "kV"),
-        ("corrected_impulse_2000m_kv", "corrected impulse withstand at 2000 m", 0, "data", "kV"),
+        ("corrected_impulse_band1_kv", "corrected impulse withstand at band 1", 3, "data", "kV"),
+        ("corrected_impulse_band2_kv", "corrected impulse withstand at band 2", 2, "data", "kV"),
+        ("corrected_impulse_band3_kv", "corrected impulse withstand at band 3", 1, "data", "kV"),
+        ("corrected_impulse_band4_kv", "corrected impulse withstand at band 4", 0, "data", "kV"),
         (
             "reference_impulse_withstand_kv",
             "reference impulse withstand at sea level",
@@ -162,16 +175,11 @@ def _altitude_band_columns() -> tuple[TableColumnSpec, ...]:
             "kV",
         ),
     )
-    altitudes: tuple[Decimal | None, ...] = (
-        Decimal(200),
-        Decimal(500),
-        Decimal(1000),
-        Decimal(2000),
-        None,
-    )
     return tuple(
-        column.model_copy(update={"axis_value": altitude})
-        for column, altitude in zip(columns, altitudes, strict=True)
+        column
+        if column.role == "axis"
+        else column.model_copy(update={"axis_value_source_row": _ALTITUDE_BAND_HEADER_ROW})
+        for column in columns
     )
 
 
@@ -290,7 +298,7 @@ FORMULAS: tuple[FormulaAuditSpec, ...] = (
         semantic_id=f"{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.ac.lookup",
         unit="V",
         variables=("system_voltage_ac_v", "tov_branch"),
-        expression_shape=f"table_select:{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.ac(ceiling,exact)",
+        expression_shape=f"table_select:{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.ac(linear,exact)",
         page_number=_TABLE_7_PAGE,
         clause=_TABLE_7_CLAUSE,
         table="Table 7",
@@ -299,7 +307,7 @@ FORMULAS: tuple[FormulaAuditSpec, ...] = (
         semantic_id=f"{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.dc.lookup",
         unit="V",
         variables=("system_voltage_dc_v", "tov_branch"),
-        expression_shape=f"table_select:{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.dc(ceiling,exact)",
+        expression_shape=f"table_select:{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.dc(linear,exact)",
         page_number=_TABLE_7_PAGE,
         clause=_TABLE_7_CLAUSE,
         table="Table 7",

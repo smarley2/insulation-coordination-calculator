@@ -59,8 +59,12 @@ def test_ac_specs_declare_fewer_data_rows_than_dc_specs() -> None:
         assert ac_spec.expected_data_rows < dc_spec.expected_data_rows
 
 
-def test_no_62477_table_permits_interpolation() -> None:
-    assert all(spec.interpolation == "none" for spec in RECIPE.tables)
+def test_impulse_specs_forbid_interpolation_and_tov_specs_permit_it() -> None:
+    for suffix in ("ac", "dc"):
+        impulse = _table_seven_spec(suffix, ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC)
+        tov = _table_seven_spec(suffix, ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE)
+        assert impulse.interpolation == "none"
+        assert tov.interpolation == "linear"
 
 
 def test_every_62477_table_searches_a_page_window() -> None:
@@ -85,3 +89,27 @@ def test_column_headings_are_neutral_internal_descriptions() -> None:
             assert column.heading == column.heading.strip()
             assert column.heading == column.heading.lower()
             assert 0 < len(column.heading) <= 60
+
+
+def test_no_column_hardcodes_a_licensed_axis_value() -> None:
+    """Licensed table values (e.g. Table E.2's altitude bands) must never live in this
+
+    public recipe as a declared ``axis_value``; they must be read from the document's
+    own header row instead.
+    """
+    for spec in RECIPE.tables:
+        for column in spec.columns:
+            assert column.axis_value is None
+
+    altitude_e2 = next(
+        spec
+        for spec in RECIPE.tables
+        if spec.semantic_id == f"{ids.ALTITUDE_TEST_VOLTAGE_CORRECTION}.e2"
+    )
+    altitude_data_columns = [
+        column for column in altitude_e2.columns if column.role == "data"
+    ]
+    assert altitude_data_columns
+    assert all(
+        column.axis_value_source_row is not None for column in altitude_data_columns
+    )
