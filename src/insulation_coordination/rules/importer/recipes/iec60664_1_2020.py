@@ -90,6 +90,7 @@ RECIPE = StandardRecipe(
     id="iec60664-1-2020",
     standard="IEC 60664-1",
     edition="2020",
+    identity_claim_pattern=r"(?i)(IEC\s*60664-[14]).{0,24}?\b((?:19|20)\d{2})\b",
     expected_page_count=172,
     accepted_page_counts=(171,),
     page_number_offsets=((172, 1),),

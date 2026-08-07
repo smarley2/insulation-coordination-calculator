@@ -45,6 +45,7 @@ from insulation_coordination.rules.importer.identify import (
     PasswordRequiredError,
     StandardRecipe,
     TableAuditSpec,
+    UnsupportedEditionError,
     UnsupportedStandardError,
     identify_standard,
 )
@@ -149,6 +150,7 @@ def _test_recipes() -> tuple[StandardRecipe, StandardRecipe]:
             standard=standard,
             edition=edition,
             expected_page_count=1,
+            identity_claim_pattern=r"(?i)(IEC\s*60664-[14]).{0,24}?\b((?:19|20)\d{2})\b",
             metadata_identity_fields=("/Title", "/Subject", "/Keywords"),
             metadata_identity_anchors=(standard, edition),
             identity_anchors=(standard, edition_anchor, topic_anchor),
@@ -497,6 +499,31 @@ def test_document_matching_two_recipes_is_rejected_as_ambiguous(tmp_path: Path) 
 
     with pytest.raises(AmbiguousStandardError):
         identify_standard(path)
+
+
+def test_wrong_edition_of_a_supported_standard_names_the_failed_check(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "part1-wrong-edition.pdf"
+    create_geometry_pdf(
+        path,
+        standard="IEC 60664-1",
+        edition="2007",
+        edition_anchor="Edition 2.0 2007-04",
+        topic_anchor="synthetic low-voltage geometry",
+        table_anchor="Table S1",
+    )
+    with pytest.raises(UnsupportedEditionError) as error:
+        identify_standard(path)
+    assert error.value.detected_standard == "IEC 60664-1"
+    assert error.value.detected_edition == "2007"
+
+
+def test_supported_edition_still_identifies_after_the_claim_change(
+    supported_pdfs: tuple[Path, Path],
+) -> None:
+    assert identify_standard(supported_pdfs[0]).edition == "2020"
+    assert identify_standard(supported_pdfs[1]).edition == "2005"
 
 
 def test_metadata_marker_cannot_embed_or_auto_approve_rule_content(

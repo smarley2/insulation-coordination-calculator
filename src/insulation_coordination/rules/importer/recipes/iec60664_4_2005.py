@@ -116,6 +116,7 @@ RECIPE = StandardRecipe(
     id="iec60664-4-2005",
     standard="IEC 60664-4",
     edition="2005",
+    identity_claim_pattern=r"(?i)(IEC\s*60664-[14]).{0,24}?\b((?:19|20)\d{2})\b",
     expected_page_count=138,
     accepted_page_counts=(144,),
     metadata_identity_fields=("/Title", "/Subject", "/Keywords"),
