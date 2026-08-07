@@ -197,11 +197,17 @@ logic, and no new decision content is expressed through it.
 
 ### Migration
 
-None. `load_rule_package` already rejects a schema mismatch at
-`src/insulation_coordination/rules/archive.py:61`. Bumping the constant makes every
-version 2 package fail to load. This slice only widens that error message so it names
-the required action: re-import the source PDFs and rebuild the package. Writing an
-upgrade path for a one-time maintainer-only event is not worth its own test surface.
+None. `load_rule_package` already rejects a schema mismatch and already names the
+required action, at `src/insulation_coordination/rules/archive.py:225`. Bumping the
+constant makes every version 2 package fail to load with that message. This slice adds a
+test proving it and nothing else. Writing an upgrade path for a one-time maintainer-only
+event is not worth its own test surface.
+
+The archive format is a fixed member list, `CORE_MEMBERS` at
+`src/insulation_coordination/rules/archive.py:19`. The three new package fields need
+three new members, `decisions.json`, `procedures.json` and `guidance.json`, each
+checksummed like the existing ones. Without that, decisions written into a package would
+vanish on the next load without any error.
 
 ## Expression node: Power
 
@@ -296,7 +302,12 @@ All public, all synthetic.
 - Every required semantic ID appears in the inventory exactly once.
 - Every inventory item names at least one consumer issue.
 - Every consumer issue in 35, 36, 37 has at least one item.
-- Every item declares a locator: clause, table, or figure.
+- Every item of kind `table` declares `expected_table`.
+
+Prose-derived items carry no locator in this slice. Issue #34 names them by description
+rather than clause number, and confirming a clause number requires the document. Their
+locator lands with their extraction recipe in slice D, where it can be verified against
+the source rather than guessed.
 
 `tests/rules/test_decision_rules.py`
 
