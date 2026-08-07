@@ -136,6 +136,13 @@ def _table_select() -> TableSelect:
             "(a + 1) ^ (1/2)",
         ),
         (
+            Power(
+                base=Power(base=Variable(name="a"), numerator=1, denominator=2),
+                numerator=2,
+            ),
+            "(a ^ (1/2)) ^ (2/1)",
+        ),
+        (
             _table_select(),
             (
                 "table iec60664-1-f2[row impulse_withstand_kv (next value up), "
