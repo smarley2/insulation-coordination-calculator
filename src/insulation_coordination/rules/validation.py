@@ -282,7 +282,12 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         and set(rule_ids).isdisjoint(legacy_ids)
     )
     # A cross-standard pointer must name a real rule, never free text: an unresolved
-    # target would leave the reader to guess which rule was meant.
+    # target would leave the reader to guess which rule was meant. It must resolve
+    # against rule_ids only (decisions, procedures, guidance) — those are the ids a
+    # previous check made globally unique. Resolving against every identifier in the
+    # package would let a reference name a table or mapping instead of a rule, and
+    # since legacy ids are only unique within their own kind, would let the gate
+    # report "resolved" for an id that denotes two different records.
     rule_references = (
         *(
             procedure.applicability_rule_id
@@ -297,7 +302,7 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
             if value.reference is not None
         ),
     )
-    rule_references_valid = set(rule_references) <= set(identifiers)
+    rule_references_valid = set(rule_references) <= set(rule_ids)
     obsolete_markers = (
         "raw_sequence",
         "-f3",
@@ -434,7 +439,8 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         _result(
             "unique_ids",
             unique_ids,
-            "semantic IDs are unique",
+            "decision, procedure and guidance IDs are globally unique; "
+            "table, formula and mapping IDs are unique within their own kind",
         ),
         _result("table_cells", valid_table_cells, "table cells are unique and in bounds"),
         _result("table_axes", table_axes_valid, "table axes are unique and monotonic"),

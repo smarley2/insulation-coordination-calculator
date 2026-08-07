@@ -294,6 +294,24 @@ def test_validation_rejects_a_dangling_reference_output_value(
     assert _result(validate_rule_package(package), "rule_references").passed is False
 
 
+def test_validation_rejects_an_applicability_rule_id_naming_a_table(
+    synthetic_package: RulePackage,
+) -> None:
+    # "synthetic-distance" is a real id in the package, but it names a table, not
+    # a rule. A resolution set that includes table ids would pass this reference;
+    # rule_references must resolve against decision/procedure/guidance ids only.
+    procedure = synthetic_package.procedures[0]
+    package = synthetic_package.model_copy(
+        update={
+            "procedures": (
+                procedure.model_copy(update={"applicability_rule_id": "synthetic-distance"}),
+            )
+        }
+    )
+
+    assert _result(validate_rule_package(package), "rule_references").passed is False
+
+
 def test_validation_accepts_a_sparse_table_with_unique_in_bounds_cells(
     synthetic_package: RulePackage,
 ) -> None:
