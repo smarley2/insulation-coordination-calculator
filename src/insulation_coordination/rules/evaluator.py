@@ -23,18 +23,24 @@ from decimal import (
 )
 from functools import reduce
 from itertools import pairwise
+from typing import Literal as TypingLiteral
 
 from pydantic import TypeAdapter, ValidationError
 
+from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import (
     Add,
     Compare,
+    DecisionRule,
+    DecisionValue,
     Divide,
     Expression,
     Formula,
+    Identifier,
     LinearInterpolate,
     Literal,
     Lookup,
+    Matcher,
     Maximum,
     Minimum,
     Multiply,
@@ -761,6 +767,62 @@ def evaluate_formula(
         raise
     except (DecimalException, OverflowError, TypeError, ValueError) as error:
         raise EvaluationError(f"invalid Decimal operation: {error}") from error
+
+
+class DecisionResult(FrozenModel):
+    rule_id: Identifier
+    status: TypingLiteral["matched", "no_match", "input_required"]
+    matched_row: int | None = None
+    values: tuple[DecisionValue, ...] = ()
+    missing_inputs: tuple[Identifier, ...] = ()
+    source: SourceReference | None = None
+
+
+def _matches(matcher: Matcher, value: Decimal | str | bool) -> bool:
+    if matcher.op == "any":
+        return True
+    if matcher.op in ("equals", "in"):
+        return value in matcher.values
+    if not isinstance(value, Decimal):
+        raise EvaluationError(f"input {matcher.input!r} must be numeric for a range matcher")
+    below_minimum = matcher.minimum is not None and (
+        value < matcher.minimum or (value == matcher.minimum and not matcher.minimum_inclusive)
+    )
+    above_maximum = matcher.maximum is not None and (
+        value > matcher.maximum or (value == matcher.maximum and not matcher.maximum_inclusive)
+    )
+    return not below_minimum and not above_maximum
+
+
+def evaluate_decision(
+    rule: DecisionRule,
+    inputs: Mapping[str, Decimal | str | bool],
+) -> DecisionResult:
+    """Resolve one reviewed decision rule without guessing a missing input."""
+
+    missing = tuple(item.name for item in rule.inputs if item.name not in inputs)
+    if missing:
+        return DecisionResult(rule_id=rule.id, status="input_required", missing_inputs=missing)
+    for declared in rule.inputs:
+        value = inputs[declared.name]
+        if declared.kind == "categorical" and value not in declared.allowed_values:
+            raise EvaluationError(f"input {declared.name!r} is outside its allowed values")
+        if declared.kind == "numeric" and not isinstance(value, Decimal):
+            raise EvaluationError(f"input {declared.name!r} must be numeric")
+        if declared.kind == "boolean" and not isinstance(value, bool):
+            raise EvaluationError(f"input {declared.name!r} must be boolean")
+    for index, row in enumerate(rule.rows):
+        if all(_matches(matcher, inputs[matcher.input]) for matcher in row.matchers):
+            return DecisionResult(
+                rule_id=rule.id,
+                status="matched",
+                matched_row=index,
+                values=row.values,
+                source=row.source,
+            )
+    if rule.exhaustive:
+        raise EvaluationError(f"exhaustive decision rule {rule.id!r} matched no row")
+    return DecisionResult(rule_id=rule.id, status="no_match")
 
 
 def _validated_formula(
