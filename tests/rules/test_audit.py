@@ -11,6 +11,7 @@ from insulation_coordination.domain.rules import (
     Parameter,
     ParameterSet,
     Power,
+    ProcedureStep,
     RulePackage,
     RulePackageError,
     Variable,
@@ -471,6 +472,51 @@ def test_validation_rejects_incomplete_source_locators(
                 )
             }
         )
+
+    assert _result(validate_rule_package(package), "source_references").passed is False
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "decision",
+        "decision_row",
+        "procedure",
+        "preparation_step",
+        "procedure_step",
+        "acceptance_reference",
+        "guidance",
+    ],
+)
+def test_validation_rejects_incomplete_source_locators_on_new_rule_kinds(
+    synthetic_package: RulePackage, location: str
+) -> None:
+    decision = synthetic_package.decisions[0]
+    procedure = synthetic_package.procedures[0]
+    guidance = synthetic_package.guidance[0]
+    # The same weakness a table cell already fails on: a source with no clause.
+    weak = decision.source.model_copy(update={"clause": None})
+    if location == "decision":
+        update = {"decisions": (decision.model_copy(update={"source": weak}),)}
+    elif location == "decision_row":
+        rows = (decision.rows[0].model_copy(update={"source": weak}), *decision.rows[1:])
+        update = {"decisions": (decision.model_copy(update={"rows": rows}),)}
+    elif location == "guidance":
+        update = {"guidance": (guidance.model_copy(update={"source": weak}),)}
+    elif location == "preparation_step":
+        step = ProcedureStep(order=1, text="Synthetic preparation.", source=weak)
+        update = {"procedures": (procedure.model_copy(update={"preparation_steps": (step,)}),)}
+    elif location == "procedure_step":
+        steps = (
+            procedure.procedure_steps[0].model_copy(update={"source": weak}),
+            *procedure.procedure_steps[1:],
+        )
+        update = {"procedures": (procedure.model_copy(update={"procedure_steps": steps}),)}
+    elif location == "acceptance_reference":
+        update = {"procedures": (procedure.model_copy(update={"acceptance_reference": weak}),)}
+    else:
+        update = {"procedures": (procedure.model_copy(update={"source": weak}),)}
+    package = synthetic_package.model_copy(update=update)
 
     assert _result(validate_rule_package(package), "source_references").passed is False
 

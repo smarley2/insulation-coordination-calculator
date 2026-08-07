@@ -350,6 +350,24 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
             for formula in package.formulas
         )
         and all(_record_source_valid(mapping.source) for mapping in package.mappings)
+        and all(
+            _record_source_valid(decision.source)
+            and all(_record_source_valid(row.source) for row in decision.rows)
+            for decision in package.decisions
+        )
+        and all(
+            _record_source_valid(procedure.source)
+            and all(
+                _record_source_valid(step.source)
+                for step in (*procedure.preparation_steps, *procedure.procedure_steps)
+            )
+            and (
+                procedure.acceptance_reference is None
+                or _record_source_valid(procedure.acceptance_reference)
+            )
+            for procedure in package.procedures
+        )
+        and all(_record_source_valid(guidance.source) for guidance in package.guidance)
     )
     results = (
         _result(
