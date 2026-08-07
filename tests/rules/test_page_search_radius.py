@@ -66,3 +66,29 @@ def test_radius_zero_keeps_the_existing_exact_page_behaviour(tmp_path: Path) -> 
     exact = _SEGMENT.model_copy(update={"page_number": 1, "page_search_radius": 0})
     with pytest.raises(ExtractionError):
         _resolve(_document(tmp_path, 1), exact)
+
+
+def _duplicated_document(tmp_path: Path) -> Path:
+    """A document holding the same table on two consecutive pages."""
+    table_page = tmp_path / "table.pdf"
+    create_geometry_pdf(
+        table_page,
+        standard="IEC 60664-1",
+        edition="2020",
+        edition_anchor="Edition 3.0 2020-05",
+        topic_anchor="synthetic low-voltage geometry",
+        table_anchor="Table S1",
+    )
+    writer = PdfWriter()
+    writer.append(str(table_page))
+    writer.append(str(table_page))
+    combined = tmp_path / "duplicated.pdf"
+    with combined.open("wb") as target:
+        writer.write(target)
+    return combined
+
+
+def test_table_matching_two_pages_in_the_window_is_refused(tmp_path: Path) -> None:
+    two_page_window = _SEGMENT.model_copy(update={"page_number": 1, "page_search_radius": 1})
+    with pytest.raises(ExtractionError, match="found on 2 pages"):
+        _resolve(_duplicated_document(tmp_path), two_page_window)

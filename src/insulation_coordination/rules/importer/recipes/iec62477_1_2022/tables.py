@@ -226,7 +226,7 @@ TABLES: tuple[TableAuditSpec, ...] = (
         ),
         columns=_columns(
             ("altitude_m", "altitude above sea level", 0, "axis", "m"),
-            ("pressure_kpa", "reference barometric pressure", 1, "context", "kPa"),
+            ("pressure_kpa", "air pressure at this altitude", 1, "context", "kPa"),
             ("clearance_factor", "clearance multiplication factor", 2, "data", "1"),
         ),
     ),

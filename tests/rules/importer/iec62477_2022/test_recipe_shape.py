@@ -1,7 +1,24 @@
+import re
+
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.recipes import RECIPES
 
 RECIPE = next(recipe for recipe in RECIPES if recipe.id == "iec62477-1-2022")
+
+_TABLE_SELECT = re.compile(
+    r"^table_select:(?P<table_id>.+)\((?P<row_mode>[a-z]+),(?P<column_mode>[a-z]+)\)$"
+)
+
+
+def _row_mode(base_id: str, suffix: str) -> str:
+    formula = next(
+        formula
+        for formula in RECIPE.formulas
+        if formula.expression_shape.startswith(f"table_select:{base_id}.{suffix}(")
+    )
+    match = _TABLE_SELECT.match(formula.expression_shape)
+    assert match is not None
+    return match["row_mode"]
 
 
 def test_recipe_targets_the_supported_edition_only() -> None:
@@ -65,6 +82,12 @@ def test_impulse_specs_forbid_interpolation_and_tov_specs_permit_it() -> None:
         tov = _table_seven_spec(suffix, ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE)
         assert impulse.interpolation == "none"
         assert tov.interpolation == "linear"
+
+
+def test_impulse_formulas_use_ceiling_row_mode_and_tov_formulas_use_linear() -> None:
+    for suffix in ("ac", "dc"):
+        assert _row_mode(ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC, suffix) == "ceiling"
+        assert _row_mode(ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE, suffix) == "linear"
 
 
 def test_every_62477_table_searches_a_page_window() -> None:

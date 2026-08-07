@@ -339,7 +339,7 @@ RECIPE = StandardRecipe(
             ),
             columns=_columns(
                 ("altitude_m", "Altitude", 0, "axis", "m"),
-                ("pressure_kpa", "Normal barometric pressure", 1, "context", "kPa"),
+                ("pressure_kpa", "Air pressure at this altitude", 1, "context", "kPa"),
                 ("clearance_factor", "Multiplication factor for clearances", 2, "data", "1"),
             ),
         ),
