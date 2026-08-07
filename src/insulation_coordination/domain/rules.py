@@ -13,8 +13,8 @@ from pydantic.config import ExtraValues
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.quantities import DecimalValue
 
-RULE_SCHEMA_VERSION = 2
-IEC_IMPORTER_VERSION = "iec-pdf-2"
+RULE_SCHEMA_VERSION = 3
+IEC_IMPORTER_VERSION = "iec-pdf-3"
 MAX_IDENTIFIER_LENGTH = 160
 MAX_REFERENCE_TEXT_LENGTH = 500
 MAX_NOTES_LENGTH = 2_000
@@ -585,6 +585,9 @@ class RulePackage(FrozenModel):
     tables: tuple[Table, ...]
     formulas: tuple[Formula, ...]
     mappings: tuple[CompatibilityMapping, ...]
+    decisions: tuple[DecisionRule, ...] = ()
+    procedures: tuple[ProcedureRule, ...] = ()
+    guidance: tuple[GuidanceRule, ...] = ()
     checksums: dict[str, str] = Field(default_factory=dict)
     package_sha256: str | None = Field(default=None, exclude=True)
 

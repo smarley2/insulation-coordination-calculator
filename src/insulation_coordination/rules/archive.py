@@ -16,7 +16,15 @@ from insulation_coordination.domain.rules import (
     RulePackageError,
 )
 
-CORE_MEMBERS = ("manifest.json", "tables.json", "formulas.json", "mappings.json")
+CORE_MEMBERS = (
+    "manifest.json",
+    "tables.json",
+    "formulas.json",
+    "mappings.json",
+    "decisions.json",
+    "procedures.json",
+    "guidance.json",
+)
 ARCHIVE_MEMBERS = (*CORE_MEMBERS, "checksums.json")
 FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 MAX_MEMBER_BYTES = 16 * 1024 * 1024
@@ -50,6 +58,15 @@ def _core_member_payloads(package: RulePackage) -> dict[str, bytes]:
         "mappings.json": _canonical_json(
             [mapping.model_dump(mode="json") for mapping in package.mappings]
         ),
+        "decisions.json": _canonical_json(
+            [decision.model_dump(mode="json") for decision in package.decisions]
+        ),
+        "procedures.json": _canonical_json(
+            [procedure.model_dump(mode="json") for procedure in package.procedures]
+        ),
+        "guidance.json": _canonical_json(
+            [guidance.model_dump(mode="json") for guidance in package.guidance]
+        ),
     }
 
 
@@ -60,7 +77,8 @@ def _member_checksums(payloads: dict[str, bytes]) -> dict[str, str]:
 def _require_usable_metadata(package: RulePackage) -> None:
     if package.manifest.schema_version != RULE_SCHEMA_VERSION:
         raise RulePackageError(
-            f"unsupported schema {package.manifest.schema_version}; expected {RULE_SCHEMA_VERSION}; "
+            f"unsupported schema {package.manifest.schema_version}; "
+            f"expected {RULE_SCHEMA_VERSION}; "
             "re-import the licensed IEC PDFs to regenerate the rules package"
         )
     if not package.manifest.approved:
@@ -233,6 +251,9 @@ def load_rule_package(path: Path) -> RulePackage:
             "tables": _decode_json(members["tables.json"], "tables.json"),
             "formulas": _decode_json(members["formulas.json"], "formulas.json"),
             "mappings": _decode_json(members["mappings.json"], "mappings.json"),
+            "decisions": _decode_json(members["decisions.json"], "decisions.json"),
+            "procedures": _decode_json(members["procedures.json"], "procedures.json"),
+            "guidance": _decode_json(members["guidance.json"], "guidance.json"),
             "checksums": checksums,
             "package_sha256": hashlib.sha256(content).hexdigest(),
         }

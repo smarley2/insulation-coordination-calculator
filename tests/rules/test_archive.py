@@ -85,6 +85,9 @@ def test_archive_is_byte_deterministic_and_has_only_canonical_members(
             "tables.json",
             "formulas.json",
             "mappings.json",
+            "decisions.json",
+            "procedures.json",
+            "guidance.json",
             "checksums.json",
         ]
         assert {member.date_time for member in archive.infolist()} == {(1980, 1, 1, 0, 0, 0)}
@@ -94,6 +97,9 @@ def test_archive_is_byte_deterministic_and_has_only_canonical_members(
             "tables.json",
             "formulas.json",
             "mappings.json",
+            "decisions.json",
+            "procedures.json",
+            "guidance.json",
         }
 
 
@@ -173,7 +179,7 @@ def test_load_rejects_malformed_checksum_set_and_unsupported_schema(
     with zipfile.ZipFile(original) as archive:
         members = {name: archive.read(name) for name in archive.namelist()}
     manifest = json.loads(members["manifest.json"])
-    manifest["schema_version"] = 3
+    manifest["schema_version"] = RULE_SCHEMA_VERSION + 1
     members["manifest.json"] = _canonical_json(manifest)
     checksums = json.loads(members["checksums.json"])
     checksums["manifest.json"] = hashlib.sha256(members["manifest.json"]).hexdigest()
@@ -185,8 +191,8 @@ def test_load_rejects_malformed_checksum_set_and_unsupported_schema(
 
 
 def test_current_rule_trust_versions_require_semantic_pcb_packages() -> None:
-    assert RULE_SCHEMA_VERSION == 2
-    assert IMPORTER_VERSION == "iec-pdf-2"
+    assert RULE_SCHEMA_VERSION == 3
+    assert IMPORTER_VERSION == "iec-pdf-3"
 
 
 def test_legacy_schema_tells_maintainer_to_regenerate_from_pdfs(
@@ -228,7 +234,7 @@ def test_migration_creates_new_unapproved_identity(
 def test_draft_package_cannot_be_written_or_loaded(
     synthetic_package: RulePackage, tmp_path: Path
 ) -> None:
-    draft = migrate_rule_package(synthetic_package, target_schema=2)
+    draft = migrate_rule_package(synthetic_package, target_schema=RULE_SCHEMA_VERSION)
 
     with pytest.raises(RulePackageError, match="approved"):
         write_rule_package(tmp_path / "draft.icrules", draft)
@@ -307,6 +313,9 @@ def test_high_compression_ratio_is_rejected_before_member_read(tmp_path: Path) -
             "tables.json",
             "formulas.json",
             "mappings.json",
+            "decisions.json",
+            "procedures.json",
+            "guidance.json",
             "checksums.json",
         ):
             archive.writestr(name, b"a" * 1_000_000)
@@ -388,3 +397,41 @@ def _write_members(path: Path, members: dict[str, bytes]) -> None:
     with zipfile.ZipFile(path, "w") as archive:
         for name, content in members.items():
             archive.writestr(name, content)
+
+
+def test_schema_version_two_package_is_rejected_with_a_rebuild_message(
+    tmp_path: Path,
+    synthetic_package: RulePackage,
+) -> None:
+    path = tmp_path / "legacy.icrules"
+    write_rule_package(path, synthetic_package)
+    with zipfile.ZipFile(path) as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    manifest = json.loads(members["manifest.json"])
+    manifest["schema_version"] = 2
+    members["manifest.json"] = (
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    checksums = json.loads(members["checksums.json"])
+    checksums["manifest.json"] = hashlib.sha256(members["manifest.json"]).hexdigest()
+    members["checksums.json"] = (
+        json.dumps(checksums, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, payload in members.items():
+            archive.writestr(name, payload)
+    with pytest.raises(RulePackageError, match="re-import the licensed IEC PDFs"):
+        load_rule_package(path)
+
+
+def test_decisions_procedures_and_guidance_survive_a_round_trip(
+    tmp_path: Path,
+    synthetic_package: RulePackage,
+) -> None:
+    path = tmp_path / "round-trip.icrules"
+    write_rule_package(path, synthetic_package)
+    restored = load_rule_package(path)
+    assert restored.decisions == synthetic_package.decisions
+    assert restored.procedures == synthetic_package.procedures
+    assert restored.guidance == synthetic_package.guidance
+    assert restored.decisions != ()

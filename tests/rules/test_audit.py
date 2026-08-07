@@ -42,7 +42,7 @@ def test_audit_inventory_enumerates_all_package_content(
     assert inventory.parameter_set_count == 1
     assert inventory.supported_range_count == 2
     assert inventory.source_reference_count == 10
-    assert inventory.checksum_count == 4
+    assert inventory.checksum_count == 7
     assert inventory.approval_record_count == 1
     assert len(inventory.table_cells) == inventory.table_cell_count
     assert len(inventory.formula_nodes) == inventory.formula_node_count
