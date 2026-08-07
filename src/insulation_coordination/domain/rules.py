@@ -391,7 +391,11 @@ class Matcher(FrozenModel):
         if self.op == "range":
             if self.minimum is None and self.maximum is None:
                 raise ValueError("A range matcher must declare a bound")
-            if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
+            if (
+                self.minimum is not None
+                and self.maximum is not None
+                and self.minimum > self.maximum
+            ):
                 raise ValueError("Range matcher minimum must not exceed maximum")
         elif self.minimum is not None or self.maximum is not None:
             raise ValueError(f"A {self.op} matcher must not declare bounds")
@@ -448,6 +452,13 @@ class DecisionRow(FrozenModel):
 
 
 class DecisionRule(FrozenModel):
+    """A decision rule that maps inputs to outputs.
+
+    Rows are ordered, and decision evaluation uses first-match-wins semantics:
+    the first row whose matchers are satisfied determines the outputs.
+    Row order mirrors the order in which the source standard states its exceptions.
+    """
+
     id: Identifier
     inputs: tuple[DecisionInput, ...] = Field(min_length=1)
     outputs: tuple[DecisionOutput, ...] = Field(min_length=1)

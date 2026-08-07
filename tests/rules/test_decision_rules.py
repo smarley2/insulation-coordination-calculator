@@ -123,3 +123,44 @@ def test_reference_output_survives_round_trip() -> None:
     )
     restored = DecisionRule.model_validate(rule.model_dump(mode="json"))
     assert restored.rows[0].values[0].reference == "synthetic-other-rule"
+
+
+def test_duplicate_input_or_output_names_are_rejected() -> None:
+    with pytest.raises(ValidationError, match="Decision input and output names must be unique"):
+        DecisionRule(
+            id="synthetic-decision",
+            inputs=(
+                DecisionInput(name="colour", kind="categorical", allowed_values=("red", "blue")),
+                DecisionInput(name="colour", kind="numeric", unit="V"),
+            ),
+            outputs=(
+                DecisionOutput(name="protection", kind="categorical", allowed_values=("basic", "none")),
+            ),
+            rows=(_row("red", "basic"),),
+            exhaustive=False,
+            source=SOURCE,
+        )
+    with pytest.raises(ValidationError, match="Decision input and output names must be unique"):
+        DecisionRule(
+            id="synthetic-decision",
+            inputs=(
+                DecisionInput(name="colour", kind="categorical", allowed_values=("red", "blue")),
+            ),
+            outputs=(
+                DecisionOutput(name="protection", kind="categorical", allowed_values=("basic", "none")),
+                DecisionOutput(name="protection", kind="numeric"),
+            ),
+            rows=(_row("red", "basic"),),
+            exhaustive=False,
+            source=SOURCE,
+        )
+
+
+def test_decision_value_kind_mismatch_is_rejected() -> None:
+    row = DecisionRow(
+        matchers=(Matcher(input="colour", op="equals", values=("red",)),),
+        values=(DecisionValue(name="protection", numeric=Decimal(42)),),
+        source=SOURCE,
+    )
+    with pytest.raises(ValidationError, match="is declared.*row supplies"):
+        _rule((row,))
