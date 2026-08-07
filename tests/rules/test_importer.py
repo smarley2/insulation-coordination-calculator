@@ -180,6 +180,9 @@ def _test_recipes() -> tuple[StandardRecipe, StandardRecipe]:
                     row_axis_unit="V",
                     column_axis_id="branch",
                     column_axis_unit="1",
+                    # The paired formula below selects with a linear row mode, which
+                    # package validation only accepts from an interpolable table.
+                    interpolation="linear",
                     assertions=(
                         "complete_grid",
                         "strictly_increasing_axes",
