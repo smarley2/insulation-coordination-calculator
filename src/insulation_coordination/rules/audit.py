@@ -83,6 +83,9 @@ class AuditInventory(FrozenModel):
     package_id: str
     version: str
     schema_version: int
+    decision_count: int
+    procedure_count: int
+    guidance_count: int
     package_sha256: str | None
     source_documents: tuple[SourceDocument, ...]
     tables: tuple[Table, ...]
@@ -233,6 +236,69 @@ def _source_references(package: RulePackage) -> tuple[OwnedSourceReference, ...]
         )
         for mapping in package.mappings
     )
+    for decision in package.decisions:
+        references.append(
+            OwnedSourceReference(
+                owner_type="decision",
+                owner_id=decision.id,
+                path="source",
+                reference=decision.source,
+            )
+        )
+        references.extend(
+            OwnedSourceReference(
+                owner_type="decision",
+                owner_id=decision.id,
+                path=f"rows.{index}.source",
+                reference=row.source,
+            )
+            for index, row in enumerate(decision.rows)
+        )
+    for procedure in package.procedures:
+        references.append(
+            OwnedSourceReference(
+                owner_type="procedure",
+                owner_id=procedure.id,
+                path="source",
+                reference=procedure.source,
+            )
+        )
+        if procedure.acceptance_reference is not None:
+            references.append(
+                OwnedSourceReference(
+                    owner_type="procedure",
+                    owner_id=procedure.id,
+                    path="acceptance_reference",
+                    reference=procedure.acceptance_reference,
+                )
+            )
+        references.extend(
+            OwnedSourceReference(
+                owner_type="procedure",
+                owner_id=procedure.id,
+                path=f"preparation_steps.{index}.source",
+                reference=step.source,
+            )
+            for index, step in enumerate(procedure.preparation_steps)
+        )
+        references.extend(
+            OwnedSourceReference(
+                owner_type="procedure",
+                owner_id=procedure.id,
+                path=f"procedure_steps.{index}.source",
+                reference=step.source,
+            )
+            for index, step in enumerate(procedure.procedure_steps)
+        )
+    references.extend(
+        OwnedSourceReference(
+            owner_type="guidance",
+            owner_id=guidance.id,
+            path="source",
+            reference=guidance.source,
+        )
+        for guidance in package.guidance
+    )
     return tuple(references)
 
 
@@ -263,6 +329,9 @@ def build_audit_inventory(package: RulePackage) -> AuditInventory:
         package_id=str(package.manifest.package_id),
         version=package.manifest.version,
         schema_version=package.manifest.schema_version,
+        decision_count=len(package.decisions),
+        procedure_count=len(package.procedures),
+        guidance_count=len(package.guidance),
         package_sha256=package.package_sha256,
         source_documents=package.manifest.source_documents,
         tables=package.tables,

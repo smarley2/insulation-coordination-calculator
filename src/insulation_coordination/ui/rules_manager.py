@@ -45,7 +45,17 @@ from insulation_coordination.rules.installation import install_rule_package
 from insulation_coordination.ui.equation_review import EquationReviewDialog
 from insulation_coordination.ui.raw_grid_review import RawGridReviewDialog, source_pdf_paths
 
-_SECTIONS = ("Manifest", "Checksums", "Tables", "Formulas", "Mappings", "Validation")
+_SECTIONS = (
+    "Manifest",
+    "Checksums",
+    "Tables",
+    "Formulas",
+    "Mappings",
+    "Validation",
+    "Decisions",
+    "Procedures",
+    "Guidance",
+)
 
 
 class ImportResult:
@@ -576,6 +586,9 @@ class RulesManagerWindow(QWidget):
         self._add_formulas_items()
         self._add_mappings_items()
         self._add_validation_items()
+        self._add_decisions_items()
+        self._add_procedures_items()
+        self._add_guidance_items()
         self._tree.expandToDepth(0)
 
     def _add_manifest_items(self, manifest: Manifest) -> None:
@@ -709,6 +722,33 @@ class RulesManagerWindow(QWidget):
         for result in inventory.validation.results:
             status = "PASS" if result.passed else "FAIL"
             top.addChild(QTreeWidgetItem((f"[{status}] {result.code}: {result.message}",)))
+
+    def _add_decisions_items(self) -> None:
+        top = self._tree.topLevelItem(6)
+        if top is None or self._package is None:
+            return
+        for decision in self._package.decisions:
+            top.addChild(
+                QTreeWidgetItem((f"{decision.id} — {_format_reference(decision.source)}",))
+            )
+
+    def _add_procedures_items(self) -> None:
+        top = self._tree.topLevelItem(7)
+        if top is None or self._package is None:
+            return
+        for procedure in self._package.procedures:
+            top.addChild(
+                QTreeWidgetItem((f"{procedure.id} — {_format_reference(procedure.source)}",))
+            )
+
+    def _add_guidance_items(self) -> None:
+        top = self._tree.topLevelItem(8)
+        if top is None or self._package is None:
+            return
+        for guidance in self._package.guidance:
+            top.addChild(
+                QTreeWidgetItem((f"{guidance.id} — {_format_reference(guidance.source)}",))
+            )
 
     def _require_inventory(self) -> AuditInventory:
         if self._inventory is None:

@@ -42,7 +42,7 @@ def test_audit_inventory_enumerates_all_package_content(
     assert inventory.mapping_count == 1
     assert inventory.parameter_set_count == 1
     assert inventory.supported_range_count == 2
-    assert inventory.source_reference_count == 10
+    assert inventory.source_reference_count == 17
     assert inventory.checksum_count == 7
     assert inventory.approval_record_count == 1
     assert len(inventory.table_cells) == inventory.table_cell_count
@@ -61,6 +61,42 @@ def test_audit_inventory_enumerates_all_package_content(
         "table",
     }
     assert all(item.owner_id and item.path for item in inventory.source_references)
+
+
+def test_inventory_counts_decisions_procedures_and_guidance(
+    synthetic_package: RulePackage,
+) -> None:
+    inventory = build_audit_inventory(synthetic_package)
+    assert inventory.decision_count == len(synthetic_package.decisions)
+    assert inventory.procedure_count == len(synthetic_package.procedures)
+    assert inventory.guidance_count == len(synthetic_package.guidance)
+
+
+def test_source_references_reach_decision_rows_and_procedure_steps(
+    synthetic_package: RulePackage,
+) -> None:
+    inventory = build_audit_inventory(synthetic_package)
+    decision = synthetic_package.decisions[0]
+    procedure = synthetic_package.procedures[0]
+    guidance = synthetic_package.guidance[0]
+
+    decision_refs = [item for item in inventory.source_references if item.owner_type == "decision"]
+    procedure_refs = [
+        item for item in inventory.source_references if item.owner_type == "procedure"
+    ]
+    guidance_refs = [item for item in inventory.source_references if item.owner_type == "guidance"]
+
+    # One reference for the rule-level source, plus one per row/step — not just the rule level.
+    assert len(decision_refs) == 1 + len(decision.rows)
+    assert len(procedure_refs) == 1 + len(procedure.procedure_steps)
+    assert len(guidance_refs) == 1
+    assert {item.owner_id for item in decision_refs} == {decision.id}
+    assert {item.owner_id for item in procedure_refs} == {procedure.id}
+    assert {item.owner_id for item in guidance_refs} == {guidance.id}
+    assert any(item.path == "rows.0.source" for item in decision_refs)
+    assert any(item.path == "rows.1.source" for item in decision_refs)
+    assert any(item.path == "procedure_steps.0.source" for item in procedure_refs)
+    assert any(item.path == "procedure_steps.1.source" for item in procedure_refs)
 
 
 def test_audit_inventory_includes_nodes_nested_under_power_base(

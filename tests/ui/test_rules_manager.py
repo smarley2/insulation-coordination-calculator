@@ -81,6 +81,41 @@ def test_import_copies_exact_package_and_rejects_altered_copy(
         rules_manager.import_package(altered)
 
 
+def test_audit_tree_lists_the_new_rule_sections(
+    qtbot, rules_manager, synthetic_rule_package: RulePackage
+) -> None:
+    rules_manager.set_package(synthetic_rule_package)
+    labels = {
+        rules_manager._tree.topLevelItem(index).text(0)
+        for index in range(rules_manager._tree.topLevelItemCount())
+    }
+    assert {"Decisions", "Procedures", "Guidance"} <= labels
+
+
+def test_audit_tree_decision_procedure_guidance_children_show_id_and_source(
+    qtbot, rules_manager, synthetic_rule_package: RulePackage
+) -> None:
+    rules_manager.set_package(synthetic_rule_package)
+    tree = rules_manager._tree
+    sections = {
+        tree.topLevelItem(index).text(0): tree.topLevelItem(index)
+        for index in range(tree.topLevelItemCount())
+    }
+    decision = synthetic_rule_package.decisions[0]
+    procedure = synthetic_rule_package.procedures[0]
+    guidance = synthetic_rule_package.guidance[0]
+
+    assert sections["Decisions"].childCount() == len(synthetic_rule_package.decisions)
+    assert decision.id in sections["Decisions"].child(0).text(0)
+    assert decision.source.standard in sections["Decisions"].child(0).text(0)
+
+    assert sections["Procedures"].childCount() == len(synthetic_rule_package.procedures)
+    assert procedure.id in sections["Procedures"].child(0).text(0)
+
+    assert sections["Guidance"].childCount() == len(synthetic_rule_package.guidance)
+    assert guidance.id in sections["Guidance"].child(0).text(0)
+
+
 def test_audit_browser_sections_and_semantic_search(
     qtbot, rules_manager, synthetic_rule_package: RulePackage
 ) -> None:

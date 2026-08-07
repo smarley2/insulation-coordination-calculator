@@ -159,6 +159,9 @@ class RulesProvenance(FrozenModel):
     version: str
     package_sha256: str
     schema_version: int
+    decision_count: int
+    procedure_count: int
+    guidance_count: int
     importer_version: str
     created_at: str
     approved: bool
@@ -323,6 +326,9 @@ def build_report_model(
             version=rules.manifest.version,
             package_sha256=package_sha256,
             schema_version=rules.manifest.schema_version,
+            decision_count=len(rules.decisions),
+            procedure_count=len(rules.procedures),
+            guidance_count=len(rules.guidance),
             importer_version=rules.manifest.importer_version,
             created_at=rules.manifest.created_at.isoformat(),
             approved=rules.manifest.approved,
