@@ -433,7 +433,7 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
                 edition=identity.edition,
                 clause=spec.clause,
                 table=spec.source_table,
-                note=f"PDF page {spec.page_number}",
+                note=f"PDF page {grid.segments[0].page_number}",
             )
             typed_column_count = (
                 sum(column.role == "data" for column in spec.columns)
@@ -581,6 +581,8 @@ def _expression_shape(expression: Expression) -> str:
             return f"linear_interpolate:{node['table_id']}({','.join(children)})"
         if op == "table_select":
             return f"table_select:{node['table_id']}({node['row_mode']},{node['column_mode']})"
+        if op == "power":
+            return f"power:{node['numerator']}/{node['denominator']}({shape(node['base'])})"  # type: ignore[arg-type]
         raise ApprovalError("formula expression has an unsupported recipe shape")
 
     return shape(value)

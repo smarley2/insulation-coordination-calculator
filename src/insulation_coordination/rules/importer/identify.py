@@ -30,6 +30,18 @@ class UnsupportedStandardError(StandardIdentificationError):
     """The PDF is not one of the explicitly supported editions."""
 
 
+class UnsupportedEditionError(UnsupportedStandardError):
+    """The PDF is a supported standard, but not the supported edition."""
+
+    def __init__(self, standard: str, edition: str) -> None:
+        self.detected_standard = standard
+        self.detected_edition = edition
+        super().__init__(
+            f"{standard} edition {edition} is not supported; this build supports one edition "
+            "per standard and will not mix editions"
+        )
+
+
 class PasswordRequiredError(StandardIdentificationError):
     """The PDF could not be unlocked with the available password."""
 
@@ -72,6 +84,7 @@ class TableSegmentSpec(FrozenModel):
     note_rows: tuple[int, ...] = ()
     footnote_rows: tuple[int, ...] = ()
     context_cells: tuple[tuple[int, int], ...] = ()
+    page_search_radius: int = Field(default=0, ge=0, le=5)
 
 
 class TableColumnSpec(FrozenModel):
@@ -81,6 +94,10 @@ class TableColumnSpec(FrozenModel):
     role: Literal["axis", "data", "context"]
     unit: Identifier
     axis_value: Decimal | None = None
+    #: This column's axis value is the number found in this row of its own header,
+    #: instead of a value declared in the recipe. Use this for axis values that come
+    #: from a licensed table's own header row rather than a value safe to hardcode.
+    axis_value_source_row: int | None = Field(default=None, ge=0)
     fill_down: bool = False
 
 
@@ -118,6 +135,8 @@ class TableAuditSpec(FrozenModel):
     ]
     segments: tuple[TableSegmentSpec, ...] = ()
     columns: tuple[TableColumnSpec, ...] = ()
+    page_search_radius: int = Field(default=0, ge=0, le=5)
+    interpolation: Literal["none", "linear"] = "none"
 
 
 class EquationAuditSpec(FrozenModel):
@@ -153,6 +172,7 @@ class StandardRecipe(FrozenModel):
     id: Identifier
     standard: Identifier
     edition: Identifier
+    identity_claim_pattern: str
     expected_page_count: int = Field(ge=1)
     accepted_page_counts: tuple[int, ...] = ()
     page_number_offsets: tuple[tuple[int, int], ...] = ()
@@ -166,6 +186,21 @@ class StandardRecipe(FrozenModel):
     def matches_text(self, text: str) -> bool:
         return all(_normalized(anchor) in text for anchor in self.identity_anchors)
 
+    def detected_claims(
+        self, *, first_page_text: str, metadata: dict[str, str]
+    ) -> set[tuple[str, str]]:
+        """Every (standard, edition) pair this recipe's pattern finds in the document.
+
+        The standard is normalized because PDF text extraction produces irregular
+        whitespace: a document rendering "IEC  60664-1" would otherwise never equal the
+        recipe's own name, and the document would be rejected as unrecognized.
+        """
+        return {
+            (_normalized(standard), edition)
+            for value in (*metadata.values(), first_page_text)
+            for standard, edition in re.findall(self.identity_claim_pattern, value)
+        }
+
     def matches_identity(
         self,
         *,
@@ -177,15 +212,10 @@ class StandardRecipe(FrozenModel):
         metadata_text = _normalized(
             " ".join(metadata.get(field, "") for field in self.metadata_identity_fields)
         )
-        identifying_claims = {
-            (f"IEC 60664-{part}", edition)
-            for value in (*metadata.values(), first_page_text)
-            for part, edition in re.findall(
-                r"(?i)IEC\s*60664-([14]).{0,24}?\b((?:19|20)\d{2})\b",
-                value,
-            )
-        }
-        if identifying_claims - {(self.standard, self.edition)}:
+        identifying_claims = self.detected_claims(
+            first_page_text=first_page_text, metadata=metadata
+        )
+        if identifying_claims - {(_normalized(self.standard), self.edition)}:
             return False
         metadata_identifies_document = all(
             _normalized(anchor) in metadata_text for anchor in self.metadata_identity_anchors
@@ -257,6 +287,13 @@ def identify_standard(path: Path, password: str | None = None) -> StandardIdenti
         )
     )
     if not matches:
+        for recipe in RECIPES:
+            for standard, edition in recipe.detected_claims(
+                first_page_text=first_page_text,
+                metadata=metadata,
+            ):
+                if standard == _normalized(recipe.standard) and edition != recipe.edition:
+                    raise UnsupportedEditionError(recipe.standard, edition)
         raise UnsupportedStandardError("PDF is not a recognized supported IEC edition")
     if len(matches) != 1:
         raise AmbiguousStandardError("PDF matches more than one supported standard recipe")

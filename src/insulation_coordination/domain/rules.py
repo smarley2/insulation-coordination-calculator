@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
-from itertools import pairwise
+from itertools import pairwise, product
 from typing import Annotated, Any, Self
 from typing import Literal as TypingLiteral
 from uuid import UUID
@@ -13,8 +13,8 @@ from pydantic.config import ExtraValues
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.quantities import DecimalValue
 
-RULE_SCHEMA_VERSION = 2
-IEC_IMPORTER_VERSION = "iec-pdf-2"
+RULE_SCHEMA_VERSION = 3
+IEC_IMPORTER_VERSION = "iec-pdf-3"
 MAX_IDENTIFIER_LENGTH = 160
 MAX_REFERENCE_TEXT_LENGTH = 500
 MAX_NOTES_LENGTH = 2_000
@@ -191,6 +191,13 @@ class TableSelect(FrozenModel):
     column_mode: AxisSelectionMode = "exact"
 
 
+class Power(FrozenModel):
+    op: TypingLiteral["power"] = "power"
+    base: Expression
+    numerator: int = Field(strict=True)
+    denominator: TypingLiteral[1, 2] = 1
+
+
 Expression = Annotated[
     Literal
     | Variable
@@ -204,7 +211,8 @@ Expression = Annotated[
     | Round
     | Lookup
     | LinearInterpolate
-    | TableSelect,
+    | TableSelect
+    | Power,
     Field(discriminator="op"),
 ]
 
@@ -220,6 +228,7 @@ for _recursive_node in (
     Lookup,
     LinearInterpolate,
     TableSelect,
+    Power,
 ):
     _recursive_node.model_rebuild(_types_namespace={"Expression": Expression})
 
@@ -332,11 +341,270 @@ class CompatibilityMapping(FrozenModel):
     notes: NotesText = ""
 
 
+DecisionValueKind = TypingLiteral["categorical", "numeric", "boolean"]
+# ponytail: a boolean input currently cannot influence row selection — `range` is
+# refused, `equals`/`in` are refused, `any` ignores it, and `exhaustive=True` with a
+# boolean input is refused — so all a boolean input can do is force `input_required`.
+# Narrowing DecisionValueKind to drop "boolean" is a separate maintainer decision.
+
+
+class DecisionInput(FrozenModel):
+    name: Identifier
+    kind: DecisionValueKind
+    unit: Identifier | None = None
+    allowed_values: tuple[Identifier, ...] = ()
+
+    @model_validator(mode="after")
+    def _kind_matches_declaration(self) -> Self:
+        if self.kind == "categorical" and not self.allowed_values:
+            raise ValueError("A categorical input must declare its allowed values")
+        if self.kind != "categorical" and self.allowed_values:
+            raise ValueError("Only a categorical input may declare allowed values")
+        if self.kind == "numeric" and self.unit is None:
+            raise ValueError("A numeric input must declare a unit")
+        if len(set(self.allowed_values)) != len(self.allowed_values):
+            raise ValueError("Allowed values must be unique")
+        return self
+
+
+class DecisionOutput(FrozenModel):
+    name: Identifier
+    kind: DecisionValueKind | TypingLiteral["reference"]
+    unit: Identifier | None = None
+    allowed_values: tuple[Identifier, ...] = ()
+
+    @model_validator(mode="after")
+    def _kind_matches_declaration(self) -> Self:
+        if self.kind == "categorical" and not self.allowed_values:
+            raise ValueError("A categorical output must declare its allowed values")
+        if self.kind != "categorical" and self.allowed_values:
+            raise ValueError("Only a categorical output may declare allowed values")
+        if len(set(self.allowed_values)) != len(self.allowed_values):
+            raise ValueError("Allowed values must be unique")
+        return self
+
+
+class Matcher(FrozenModel):
+    input: Identifier
+    op: TypingLiteral["any", "equals", "in", "range"]
+    values: tuple[Identifier, ...] = ()
+    minimum: DecimalValue | None = None
+    maximum: DecimalValue | None = None
+    minimum_inclusive: bool = True
+    maximum_inclusive: bool = True
+
+    @model_validator(mode="after")
+    def _operands_match_operator(self) -> Self:
+        if self.op in ("equals", "in") and not self.values:
+            raise ValueError(f"A {self.op} matcher must declare values")
+        if self.op == "equals" and len(self.values) != 1:
+            raise ValueError("An equals matcher must declare exactly one value")
+        if self.op in ("any", "range") and self.values:
+            raise ValueError(f"A {self.op} matcher must not declare values")
+        if self.op == "range":
+            if self.minimum is None and self.maximum is None:
+                raise ValueError("A range matcher must declare a bound")
+            if (
+                self.minimum is not None
+                and self.maximum is not None
+                and self.minimum > self.maximum
+            ):
+                raise ValueError("Range matcher minimum must not exceed maximum")
+        elif self.minimum is not None or self.maximum is not None:
+            raise ValueError(f"A {self.op} matcher must not declare bounds")
+        return self
+
+
+class DecisionValue(FrozenModel):
+    name: Identifier
+    categorical: Identifier | None = None
+    numeric: DecimalValue | None = None
+    boolean: bool | None = None
+    reference: Identifier | None = None
+    unit: Identifier | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_value(self) -> Self:
+        declared = tuple(
+            value
+            for value in (self.categorical, self.numeric, self.boolean, self.reference)
+            if value is not None
+        )
+        if len(declared) != 1:
+            raise ValueError("A decision value must declare exactly one value field")
+        if self.unit is not None and self.numeric is None:
+            raise ValueError("Only a numeric decision value may declare a unit")
+        return self
+
+    @property
+    def kind(self) -> str:
+        if self.categorical is not None:
+            return "categorical"
+        if self.numeric is not None:
+            return "numeric"
+        if self.boolean is not None:
+            return "boolean"
+        return "reference"
+
+
+class DecisionRow(FrozenModel):
+    matchers: tuple[Matcher, ...]
+    values: tuple[DecisionValue, ...]
+    source: SourceReference
+    notes: NotesText = ""
+
+    @model_validator(mode="after")
+    def _unique_targets(self) -> Self:
+        inputs = tuple(matcher.input for matcher in self.matchers)
+        if len(set(inputs)) != len(inputs):
+            raise ValueError("A decision row must match each input at most once")
+        names = tuple(value.name for value in self.values)
+        if len(set(names)) != len(names):
+            raise ValueError("A decision row must set each output at most once")
+        return self
+
+
+class DecisionRule(FrozenModel):
+    """A decision rule that maps inputs to outputs.
+
+    Rows are ordered, and decision evaluation uses first-match-wins semantics:
+    the first row whose matchers are satisfied determines the outputs.
+    Row order mirrors the order in which the source standard states its exceptions.
+    """
+
+    id: Identifier
+    inputs: tuple[DecisionInput, ...] = Field(min_length=1)
+    outputs: tuple[DecisionOutput, ...] = Field(min_length=1)
+    rows: tuple[DecisionRow, ...] = Field(min_length=1)
+    exhaustive: bool
+    applicability: ApplicabilityText = ""
+    source: SourceReference
+
+    @model_validator(mode="after")
+    def _rows_agree_with_declarations(self) -> Self:
+        inputs = {item.name: item for item in self.inputs}
+        outputs = {item.name: item for item in self.outputs}
+        if len(inputs) != len(self.inputs) or len(outputs) != len(self.outputs):
+            raise ValueError("Decision input and output names must be unique")
+        for row in self.rows:
+            for matcher in row.matchers:
+                declared = inputs.get(matcher.input)
+                if declared is None:
+                    raise ValueError(f"Matcher targets undeclared input {matcher.input!r}")
+                if matcher.op == "range" and declared.kind != "numeric":
+                    raise ValueError(f"A range matcher needs a numeric input, got {declared.kind}")
+                if matcher.op in ("equals", "in") and declared.kind != "categorical":
+                    raise ValueError(
+                        f"A {matcher.op} matcher needs a categorical input, got {declared.kind}"
+                    )
+                if declared.kind == "categorical" and any(
+                    value not in declared.allowed_values for value in matcher.values
+                ):
+                    raise ValueError(
+                        f"Matcher on {matcher.input!r} uses values outside its allowed values"
+                    )
+            if {value.name for value in row.values} != set(outputs):
+                raise ValueError("Every decision row must set exactly the declared outputs")
+            for value in row.values:
+                declared_output = outputs[value.name]
+                if value.kind != declared_output.kind:
+                    raise ValueError(
+                        f"Output {value.name!r} is declared {declared_output.kind}, "
+                        f"row supplies {value.kind}"
+                    )
+                if (
+                    declared_output.kind == "categorical"
+                    and value.categorical not in declared_output.allowed_values
+                ):
+                    raise ValueError(
+                        f"Output {value.name!r} uses a value outside its allowed values"
+                    )
+        if self.exhaustive:
+            self._require_full_coverage(inputs)
+        return self
+
+    def _require_full_coverage(self, inputs: dict[str, DecisionInput]) -> None:
+        for item in inputs.values():
+            if item.kind == "boolean":
+                raise ValueError(
+                    f"Input {item.name!r} is boolean; an exhaustive rule cannot be claimed "
+                    "over a boolean input because boolean exhaustiveness is not supported"
+                )
+        categorical = tuple(item for item in inputs.values() if item.kind == "categorical")
+        if not categorical:
+            return
+        for combination in product(*(item.allowed_values for item in categorical)):
+            assignment = dict(zip((item.name for item in categorical), combination, strict=True))
+            if not any(_row_admits(row, assignment) for row in self.rows):
+                raise ValueError(f"An exhaustive rule does not cover {assignment}")
+
+
+def _row_admits(row: DecisionRow, assignment: dict[str, str]) -> bool:
+    for matcher in row.matchers:
+        value = assignment.get(matcher.input)
+        if value is None:
+            continue
+        if matcher.op == "any":
+            continue
+        if matcher.op in ("equals", "in") and value not in matcher.values:
+            return False
+    return True
+
+
+class ProcedureStep(FrozenModel):
+    order: int = Field(ge=1, strict=True)
+    text: ReferenceText
+    source: SourceReference
+
+
+def _require_consecutive(steps: tuple[ProcedureStep, ...], label: str) -> None:
+    if tuple(step.order for step in steps) != tuple(range(1, len(steps) + 1)):
+        raise ValueError(f"{label} must be numbered consecutively from one")
+
+
+class ProcedureRule(FrozenModel):
+    id: Identifier
+    test_kind: Identifier
+    classifications: tuple[Identifier, ...] = ()
+    waveform: ReferenceText | None = None
+    polarity: ReferenceText | None = None
+    duration: ReferenceText | None = None
+    repetitions: ReferenceText | None = None
+    preparation_steps: tuple[ProcedureStep, ...] = ()
+    procedure_steps: tuple[ProcedureStep, ...] = ()
+    acceptance_reference: SourceReference | None = None
+    applicability_rule_id: Identifier | None = None
+    applicability: ApplicabilityText = ""
+    source: SourceReference
+
+    @model_validator(mode="after")
+    def _steps_are_ordered(self) -> Self:
+        if not self.procedure_steps:
+            raise ValueError("A procedure rule needs at least one procedure step")
+        _require_consecutive(self.preparation_steps, "Preparation steps")
+        _require_consecutive(self.procedure_steps, "Procedure steps")
+        if len(set(self.classifications)) != len(self.classifications):
+            raise ValueError("Procedure classifications must be unique")
+        return self
+
+
+class GuidanceRule(FrozenModel):
+    id: Identifier
+    title: ReferenceText
+    summary: NotesText
+    warnings: tuple[NotesText, ...] = ()
+    examples: tuple[NotesText, ...] = ()
+    source: SourceReference
+
+
 class RulePackage(FrozenModel):
     manifest: Manifest
     tables: tuple[Table, ...]
     formulas: tuple[Formula, ...]
     mappings: tuple[CompatibilityMapping, ...]
+    decisions: tuple[DecisionRule, ...] = ()
+    procedures: tuple[ProcedureRule, ...] = ()
+    guidance: tuple[GuidanceRule, ...] = ()
     checksums: dict[str, str] = Field(default_factory=dict)
     package_sha256: str | None = Field(default=None, exclude=True)
 

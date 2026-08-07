@@ -9,17 +9,26 @@ from insulation_coordination.domain.rules import (
     ApprovalRecord,
     Compare,
     CompatibilityMapping,
+    DecisionInput,
+    DecisionOutput,
+    DecisionRow,
+    DecisionRule,
+    DecisionValue,
     Divide,
     Formula,
+    GuidanceRule,
     LinearInterpolate,
     Literal,
     Lookup,
     Manifest,
+    Matcher,
     Maximum,
     Minimum,
     Multiply,
     Parameter,
     ParameterSet,
+    ProcedureRule,
+    ProcedureStep,
     Round,
     RulePackage,
     Select,
@@ -176,6 +185,57 @@ def synthetic_rule_package() -> RulePackage:
         latex="d = f(U)",
         source=reference,
     )
+    decision = DecisionRule(
+        id="synthetic-decision",
+        inputs=(
+            DecisionInput(
+                name="synthetic_category",
+                kind="categorical",
+                allowed_values=("alpha", "beta"),
+            ),
+        ),
+        outputs=(
+            DecisionOutput(
+                name="synthetic_protection",
+                kind="categorical",
+                allowed_values=("basic", "enhanced"),
+            ),
+        ),
+        rows=(
+            DecisionRow(
+                matchers=(Matcher(input="synthetic_category", op="equals", values=("alpha",)),),
+                values=(DecisionValue(name="synthetic_protection", categorical="basic"),),
+                source=reference,
+            ),
+            DecisionRow(
+                matchers=(Matcher(input="synthetic_category", op="equals", values=("beta",)),),
+                values=(DecisionValue(name="synthetic_protection", categorical="enhanced"),),
+                source=reference,
+            ),
+        ),
+        exhaustive=True,
+        applicability="Synthetic fixture only.",
+        source=reference,
+    )
+    procedure = ProcedureRule(
+        id="synthetic-procedure",
+        test_kind="synthetic-test",
+        classifications=("type",),
+        waveform="synthetic waveform",
+        procedure_steps=(
+            ProcedureStep(order=1, text="Synthetic preparation.", source=reference),
+            ProcedureStep(order=2, text="Synthetic application.", source=reference),
+        ),
+        applicability_rule_id="synthetic-decision",
+        source=reference,
+    )
+    guidance = GuidanceRule(
+        id="synthetic-guidance",
+        title="Synthetic guidance",
+        summary="Synthetic summary, no IEC content.",
+        warnings=("Synthetic warning.",),
+        source=reference,
+    )
     return RulePackage(
         manifest=Manifest(
             schema_version=RULE_SCHEMA_VERSION,
@@ -212,6 +272,9 @@ def synthetic_rule_package() -> RulePackage:
                 source=reference,
             ),
         ),
+        decisions=(decision,),
+        procedures=(procedure,),
+        guidance=(guidance,),
     )
 
 

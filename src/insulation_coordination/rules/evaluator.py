@@ -23,21 +23,28 @@ from decimal import (
 )
 from functools import reduce
 from itertools import pairwise
+from typing import Literal as TypingLiteral
 
 from pydantic import TypeAdapter, ValidationError
 
+from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import (
     Add,
     Compare,
+    DecisionRule,
+    DecisionValue,
     Divide,
     Expression,
     Formula,
+    Identifier,
     LinearInterpolate,
     Literal,
     Lookup,
+    Matcher,
     Maximum,
     Minimum,
     Multiply,
+    Power,
     Round,
     Select,
     SourceReference,
@@ -133,6 +140,8 @@ class _Evaluator:
             return self._interpolate(expression)
         if isinstance(expression, TableSelect):
             return self._table_select(expression)
+        if isinstance(expression, Power):
+            return self._power(expression)
         raise EvaluationError(f"unsupported typed expression {type(expression).__name__}")
 
     def _literal(self, expression: Literal) -> _Result:
@@ -245,6 +254,9 @@ class _Evaluator:
                 )
             ),
         )
+        rendered_denominator = _render_child(
+            denominator, "substituted", _MULTIPLY_PRECEDENCE, group_equal=True
+        )
         return self._result(
             expression,
             quantity,
@@ -255,7 +267,7 @@ class _Evaluator:
             ),
             substituted=(
                 f"{_render_child(numerator, 'substituted', _MULTIPLY_PRECEDENCE)} / "
-                f"{_render_child(denominator, 'substituted', _MULTIPLY_PRECEDENCE, group_equal=True)}"
+                f"{rendered_denominator}"
             ),
             reason="quotient evaluated",
             symbolic_precedence=_ATOM_PRECEDENCE,
@@ -585,6 +597,64 @@ class _Evaluator:
             rounded=rounded if table.rounding_mode is not None else None,
         )
 
+    def _power(self, expression: Power) -> _Result:
+        child = self.evaluate(expression.base)
+        _require_numeric((child,))
+        # ponytail: dimensionless-only ceiling, deliberate. Carry unit^n through
+        # _combine_units when denominator == 1 if a dimensioned power is ever needed.
+        if child.quantity.unit != _DIMENSIONLESS:
+            raise EvaluationError("power requires a dimensionless operand")
+        base = child.quantity.value
+        if expression.numerator < 0 and base == 0:
+            raise EvaluationError("negative exponent on a zero base")
+        if expression.denominator == 2 and base < 0:
+            raise EvaluationError("negative operand under a square root")
+        precision = (
+            self.formula.precision if self.formula is not None else DEFAULT_DECIMAL_PRECISION
+        )
+        try:
+            with localcontext(
+                Context(
+                    prec=precision,
+                    traps=[InvalidOperation, DivisionByZero, Overflow, FloatOperation],
+                )
+            ):
+                raised = base**expression.numerator
+                value = raised.sqrt() if expression.denominator == 2 else +raised
+        except DecimalException as error:
+            raise EvaluationError(f"power could not be evaluated: {error}") from error
+        quantity = _quantity(value, child.quantity.unit)
+        exponent = (
+            str(expression.numerator)
+            if expression.denominator == 1
+            else rf"\frac{{{expression.numerator}}}{{{expression.denominator}}}"
+        )
+        substituted_base = _render_child(
+            child, "substituted", _MULTIPLY_PRECEDENCE, group_equal=True
+        )
+        return self._result(
+            expression,
+            quantity,
+            (child,),
+            symbolic=f"{{{child.embedded_symbolic}}}^{{{exponent}}}",
+            substituted=(
+                f"{substituted_base} ^ ({expression.numerator}/{expression.denominator})"
+            ),
+            reason=(
+                f"raised to {expression.numerator}/{expression.denominator} "
+                f"at precision {precision}"
+            ),
+            label=child.label,
+            # The LaTeX form {base}^{exponent} is fully braced, so it is
+            # self-grouping regardless of nesting: atom precedence like `_divide`'s
+            # symbolic \frac{}{} form. The substituted form "base ^ (n/d)" is not
+            # self-grouping around the base, so a nested Power needs the same
+            # multiply-level precedence `_divide` uses for its substituted form,
+            # or `2 ^ (1/2) ^ (2/1)` reads ambiguously when self-nested.
+            symbolic_precedence=_ATOM_PRECEDENCE,
+            substituted_precedence=_MULTIPLY_PRECEDENCE,
+        )
+
     def _table(self, table_id: str) -> Table:
         table = self.tables.get(table_id)
         if not isinstance(table, Table) or table.id != table_id:
@@ -699,6 +769,66 @@ def evaluate_formula(
         raise
     except (DecimalException, OverflowError, TypeError, ValueError) as error:
         raise EvaluationError(f"invalid Decimal operation: {error}") from error
+
+
+class DecisionResult(FrozenModel):
+    rule_id: Identifier
+    status: TypingLiteral["matched", "no_match", "input_required"]
+    matched_row: int | None = None
+    values: tuple[DecisionValue, ...] = ()
+    missing_inputs: tuple[Identifier, ...] = ()
+    source: SourceReference | None = None
+
+
+def _matches(matcher: Matcher, value: Decimal | str | bool) -> bool:
+    if matcher.op == "any":
+        return True
+    if matcher.op in ("equals", "in"):
+        return value in matcher.values
+    if not isinstance(value, Decimal):
+        # ponytail: defensive only. evaluate_decision's own type-validation loop
+        # already guarantees a range matcher's input is a Decimal before rows are
+        # checked, so this branch is unreachable through that call path. Kept as
+        # correct protection for a direct caller of _matches.
+        raise EvaluationError(f"input {matcher.input!r} must be numeric for a range matcher")
+    below_minimum = matcher.minimum is not None and (
+        value < matcher.minimum or (value == matcher.minimum and not matcher.minimum_inclusive)
+    )
+    above_maximum = matcher.maximum is not None and (
+        value > matcher.maximum or (value == matcher.maximum and not matcher.maximum_inclusive)
+    )
+    return not below_minimum and not above_maximum
+
+
+def evaluate_decision(
+    rule: DecisionRule,
+    inputs: Mapping[str, Decimal | str | bool],
+) -> DecisionResult:
+    """Resolve one reviewed decision rule without guessing a missing input."""
+
+    missing = tuple(item.name for item in rule.inputs if item.name not in inputs)
+    if missing:
+        return DecisionResult(rule_id=rule.id, status="input_required", missing_inputs=missing)
+    for declared in rule.inputs:
+        value = inputs[declared.name]
+        if declared.kind == "categorical" and value not in declared.allowed_values:
+            raise EvaluationError(f"input {declared.name!r} is outside its allowed values")
+        if declared.kind == "numeric" and not isinstance(value, Decimal):
+            raise EvaluationError(f"input {declared.name!r} must be numeric")
+        if declared.kind == "boolean" and not isinstance(value, bool):
+            raise EvaluationError(f"input {declared.name!r} must be boolean")
+    for index, row in enumerate(rule.rows):
+        if all(_matches(matcher, inputs[matcher.input]) for matcher in row.matchers):
+            return DecisionResult(
+                rule_id=rule.id,
+                status="matched",
+                matched_row=index,
+                values=row.values,
+                source=row.source,
+            )
+    if rule.exhaustive:
+        raise EvaluationError(f"exhaustive decision rule {rule.id!r} matched no row")
+    return DecisionResult(rule_id=rule.id, status="no_match")
 
 
 def _validated_formula(

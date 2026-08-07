@@ -7,9 +7,17 @@ from pathlib import Path
 import pytest
 
 from insulation_coordination.domain.rules import (
+    DecisionInput,
+    DecisionOutput,
+    DecisionRow,
+    DecisionRule,
+    DecisionValue,
     Literal,
+    Matcher,
     Parameter,
     ParameterSet,
+    Power,
+    ProcedureStep,
     RulePackage,
     RulePackageError,
     Variable,
@@ -41,8 +49,8 @@ def test_audit_inventory_enumerates_all_package_content(
     assert inventory.mapping_count == 1
     assert inventory.parameter_set_count == 1
     assert inventory.supported_range_count == 2
-    assert inventory.source_reference_count == 10
-    assert inventory.checksum_count == 4
+    assert inventory.source_reference_count == 17
+    assert inventory.checksum_count == 7
     assert inventory.approval_record_count == 1
     assert len(inventory.table_cells) == inventory.table_cell_count
     assert len(inventory.formula_nodes) == inventory.formula_node_count
@@ -60,6 +68,64 @@ def test_audit_inventory_enumerates_all_package_content(
         "table",
     }
     assert all(item.owner_id and item.path for item in inventory.source_references)
+
+
+def test_inventory_counts_decisions_procedures_and_guidance(
+    synthetic_package: RulePackage,
+) -> None:
+    inventory = build_audit_inventory(synthetic_package)
+    assert inventory.decision_count == len(synthetic_package.decisions)
+    assert inventory.procedure_count == len(synthetic_package.procedures)
+    assert inventory.guidance_count == len(synthetic_package.guidance)
+
+
+def test_source_references_reach_decision_rows_and_procedure_steps(
+    synthetic_package: RulePackage,
+) -> None:
+    inventory = build_audit_inventory(synthetic_package)
+    decision = synthetic_package.decisions[0]
+    procedure = synthetic_package.procedures[0]
+    guidance = synthetic_package.guidance[0]
+
+    decision_refs = [item for item in inventory.source_references if item.owner_type == "decision"]
+    procedure_refs = [
+        item for item in inventory.source_references if item.owner_type == "procedure"
+    ]
+    guidance_refs = [item for item in inventory.source_references if item.owner_type == "guidance"]
+
+    # One reference for the rule-level source, plus one per row/step — not just the rule level.
+    assert len(decision_refs) == 1 + len(decision.rows)
+    assert len(procedure_refs) == 1 + len(procedure.procedure_steps)
+    assert len(guidance_refs) == 1
+    assert {item.owner_id for item in decision_refs} == {decision.id}
+    assert {item.owner_id for item in procedure_refs} == {procedure.id}
+    assert {item.owner_id for item in guidance_refs} == {guidance.id}
+    assert any(item.path == "rows.0.source" for item in decision_refs)
+    assert any(item.path == "rows.1.source" for item in decision_refs)
+    assert any(item.path == "procedure_steps.0.source" for item in procedure_refs)
+    assert any(item.path == "procedure_steps.1.source" for item in procedure_refs)
+
+
+def test_audit_inventory_includes_nodes_nested_under_power_base(
+    synthetic_package: RulePackage,
+) -> None:
+    formula = synthetic_package.formulas[0]
+    nested_variable = Variable(name="voltage")
+    with_power = synthetic_package.model_copy(
+        update={
+            "formulas": (
+                formula.model_copy(
+                    update={"expression": Power(base=nested_variable, numerator=2)}
+                ),
+            )
+        }
+    )
+
+    inventory = build_audit_inventory(with_power)
+
+    assert any(
+        node.op == "variable" and node.node == nested_variable for node in inventory.formula_nodes
+    )
 
 
 def test_table_csv_has_one_row_per_cell_with_exact_reference_fields(
@@ -162,6 +228,90 @@ def test_validation_rejects_obsolete_or_incomplete_iec_imports(
     assert _result(validate_rule_package(obsolete), "obsolete_rule_content").passed is False
 
 
+def test_validation_rejects_a_duplicate_decision_id(synthetic_package: RulePackage) -> None:
+    decision = synthetic_package.decisions[0]
+    package = synthetic_package.model_copy(update={"decisions": (decision, decision)})
+
+    assert _result(validate_rule_package(package), "unique_ids").passed is False
+
+
+def test_validation_rejects_a_decision_id_colliding_with_a_formula_id(
+    synthetic_package: RulePackage,
+) -> None:
+    # DecisionOutput(kind="reference") resolves a rule by id, so an id shared with
+    # another kind would be resolved against whichever comes first — a guess.
+    decision = synthetic_package.decisions[0]
+    package = synthetic_package.model_copy(
+        update={"decisions": (decision.model_copy(update={"id": "synthetic-formula"}),)}
+    )
+
+    assert _result(validate_rule_package(package), "unique_ids").passed is False
+
+
+def test_validation_rejects_a_dangling_applicability_rule_id(
+    synthetic_package: RulePackage,
+) -> None:
+    procedure = synthetic_package.procedures[0]
+    package = synthetic_package.model_copy(
+        update={
+            "procedures": (
+                procedure.model_copy(update={"applicability_rule_id": "synthetic-absent-rule"}),
+            )
+        }
+    )
+
+    assert _result(validate_rule_package(package), "rule_references").passed is False
+
+
+def test_validation_rejects_a_dangling_reference_output_value(
+    synthetic_package: RulePackage,
+) -> None:
+    source = synthetic_package.decisions[0].source
+    dangling = DecisionRule(
+        id="synthetic-reference-decision",
+        inputs=(
+            DecisionInput(
+                name="synthetic_category",
+                kind="categorical",
+                allowed_values=("alpha",),
+            ),
+        ),
+        outputs=(DecisionOutput(name="synthetic_target", kind="reference"),),
+        rows=(
+            DecisionRow(
+                matchers=(Matcher(input="synthetic_category", op="equals", values=("alpha",)),),
+                values=(DecisionValue(name="synthetic_target", reference="synthetic-absent-rule"),),
+                source=source,
+            ),
+        ),
+        exhaustive=False,
+        source=source,
+    )
+    package = synthetic_package.model_copy(
+        update={"decisions": (*synthetic_package.decisions, dangling)}
+    )
+
+    assert _result(validate_rule_package(package), "rule_references").passed is False
+
+
+def test_validation_rejects_an_applicability_rule_id_naming_a_table(
+    synthetic_package: RulePackage,
+) -> None:
+    # "synthetic-distance" is a real id in the package, but it names a table, not
+    # a rule. A resolution set that includes table ids would pass this reference;
+    # rule_references must resolve against decision/procedure/guidance ids only.
+    procedure = synthetic_package.procedures[0]
+    package = synthetic_package.model_copy(
+        update={
+            "procedures": (
+                procedure.model_copy(update={"applicability_rule_id": "synthetic-distance"}),
+            )
+        }
+    )
+
+    assert _result(validate_rule_package(package), "rule_references").passed is False
+
+
 def test_validation_accepts_a_sparse_table_with_unique_in_bounds_cells(
     synthetic_package: RulePackage,
 ) -> None:
@@ -211,6 +361,23 @@ def test_validation_rejects_undeclared_variables_and_unlinked_ranges(
 
     assert _result(validate_rule_package(undeclared), "formula_parameters").passed is False
     assert _result(validate_rule_package(unlinked), "range_linkage").passed is False
+
+
+def test_validation_rejects_undeclared_variable_nested_under_power_base(
+    synthetic_package: RulePackage,
+) -> None:
+    formula = synthetic_package.formulas[0]
+    undeclared = synthetic_package.model_copy(
+        update={
+            "formulas": (
+                formula.model_copy(
+                    update={"expression": Power(base=Variable(name="missing"), numerator=2)}
+                ),
+            )
+        }
+    )
+
+    assert _result(validate_rule_package(undeclared), "formula_parameters").passed is False
 
 
 @pytest.mark.parametrize(
@@ -375,6 +542,51 @@ def test_validation_rejects_incomplete_source_locators(
                 )
             }
         )
+
+    assert _result(validate_rule_package(package), "source_references").passed is False
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "decision",
+        "decision_row",
+        "procedure",
+        "preparation_step",
+        "procedure_step",
+        "acceptance_reference",
+        "guidance",
+    ],
+)
+def test_validation_rejects_incomplete_source_locators_on_new_rule_kinds(
+    synthetic_package: RulePackage, location: str
+) -> None:
+    decision = synthetic_package.decisions[0]
+    procedure = synthetic_package.procedures[0]
+    guidance = synthetic_package.guidance[0]
+    # The same weakness a table cell already fails on: a source with no clause.
+    weak = decision.source.model_copy(update={"clause": None})
+    if location == "decision":
+        update = {"decisions": (decision.model_copy(update={"source": weak}),)}
+    elif location == "decision_row":
+        rows = (decision.rows[0].model_copy(update={"source": weak}), *decision.rows[1:])
+        update = {"decisions": (decision.model_copy(update={"rows": rows}),)}
+    elif location == "guidance":
+        update = {"guidance": (guidance.model_copy(update={"source": weak}),)}
+    elif location == "preparation_step":
+        step = ProcedureStep(order=1, text="Synthetic preparation.", source=weak)
+        update = {"procedures": (procedure.model_copy(update={"preparation_steps": (step,)}),)}
+    elif location == "procedure_step":
+        steps = (
+            procedure.procedure_steps[0].model_copy(update={"source": weak}),
+            *procedure.procedure_steps[1:],
+        )
+        update = {"procedures": (procedure.model_copy(update={"procedure_steps": steps}),)}
+    elif location == "acceptance_reference":
+        update = {"procedures": (procedure.model_copy(update={"acceptance_reference": weak}),)}
+    else:
+        update = {"procedures": (procedure.model_copy(update={"source": weak}),)}
+    package = synthetic_package.model_copy(update=update)
 
     assert _result(validate_rule_package(package), "source_references").passed is False
 

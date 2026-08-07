@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
 
@@ -40,12 +39,22 @@ from insulation_coordination.rules.audit import (
     export_table_csv,
 )
 from insulation_coordination.rules.importer.approval import is_fully_resolved
-from insulation_coordination.rules.importer.extract import ImportedRuleDraft
+from insulation_coordination.rules.importer.extract import _REQUIRED_RECIPES, ImportedRuleDraft
 from insulation_coordination.rules.installation import install_rule_package
 from insulation_coordination.ui.equation_review import EquationReviewDialog
 from insulation_coordination.ui.raw_grid_review import RawGridReviewDialog, source_pdf_paths
 
-_SECTIONS = ("Manifest", "Checksums", "Tables", "Formulas", "Mappings", "Validation")
+_SECTIONS = (
+    "Manifest",
+    "Checksums",
+    "Tables",
+    "Formulas",
+    "Mappings",
+    "Validation",
+    "Decisions",
+    "Procedures",
+    "Guidance",
+)
 
 
 class ImportResult:
@@ -372,8 +381,16 @@ class RulesManagerWindow(QWidget):
         self._draft = draft
         self._package = None
         self._inventory = None
+        identities = {identity.recipe_id: identity for identity in draft.source_identities}
+        lines = [
+            f"{identity.standard} {identity.edition} ({identity.sha256[:12]})"
+            for recipe_id in sorted(_REQUIRED_RECIPES)
+            if (identity := identities.get(recipe_id)) is not None
+        ]
         self._identity_label.setText(
-            f"Draft {draft.manifest.package_id} (unapproved; review required)"
+            "\n".join(lines)
+            if lines
+            else f"Draft {draft.manifest.package_id} (unapproved; review required)"
         )
         self._approve_button.setEnabled(False)
         self._inventory_button.setEnabled(False)
@@ -576,6 +593,9 @@ class RulesManagerWindow(QWidget):
         self._add_formulas_items()
         self._add_mappings_items()
         self._add_validation_items()
+        self._add_decisions_items()
+        self._add_procedures_items()
+        self._add_guidance_items()
         self._tree.expandToDepth(0)
 
     def _add_manifest_items(self, manifest: Manifest) -> None:
@@ -710,6 +730,33 @@ class RulesManagerWindow(QWidget):
             status = "PASS" if result.passed else "FAIL"
             top.addChild(QTreeWidgetItem((f"[{status}] {result.code}: {result.message}",)))
 
+    def _add_decisions_items(self) -> None:
+        top = self._tree.topLevelItem(6)
+        if top is None or self._package is None:
+            return
+        for decision in self._package.decisions:
+            top.addChild(
+                QTreeWidgetItem((f"{decision.id} — {_format_reference(decision.source)}",))
+            )
+
+    def _add_procedures_items(self) -> None:
+        top = self._tree.topLevelItem(7)
+        if top is None or self._package is None:
+            return
+        for procedure in self._package.procedures:
+            top.addChild(
+                QTreeWidgetItem((f"{procedure.id} — {_format_reference(procedure.source)}",))
+            )
+
+    def _add_guidance_items(self) -> None:
+        top = self._tree.topLevelItem(8)
+        if top is None or self._package is None:
+            return
+        for guidance in self._package.guidance:
+            top.addChild(
+                QTreeWidgetItem((f"{guidance.id} — {_format_reference(guidance.source)}",))
+            )
+
     def _require_inventory(self) -> AuditInventory:
         if self._inventory is None:
             raise RuntimeError("No audit inventory loaded")
@@ -739,19 +786,6 @@ class RulesManagerWindow(QWidget):
             lines.append(item.text(0))
             stack.extend(item.child(index) for index in range(item.childCount()))
         return tuple(lines)
-
-    def _collect_references(self) -> Iterator[SourceReference]:
-        if self._package is None:
-            return
-        for table in self._package.tables:
-            yield table.source
-            yield from (cell.source for cell in table.cells)
-            yield from (item.source for item in table.supported_ranges)
-        for formula in self._package.formulas:
-            yield formula.source
-            yield from (item.source for item in formula.parameter_sets)
-            yield from (item.source for item in formula.supported_ranges)
-        yield from (mapping.source for mapping in self._package.mappings)
 
 
 def _format_reference(reference: SourceReference) -> str:

@@ -23,6 +23,7 @@ from insulation_coordination.rules.importer.identify import (
     StandardIdentity,
     TableColumnSpec,
     TableSegmentSpec,
+    UnsupportedEditionError,
     UnsupportedStandardError,
     identify_standard,
 )
@@ -56,6 +57,7 @@ __all__ = [
     "StandardIdentity",
     "TableColumnSpec",
     "TableSegmentSpec",
+    "UnsupportedEditionError",
     "UnsupportedStandardError",
     "accept_equation_mapping",
     "accept_raw_grid",

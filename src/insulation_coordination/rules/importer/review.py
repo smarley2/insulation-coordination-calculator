@@ -168,7 +168,7 @@ def _table_from_spec(
             labels=tuple(f"column-{index + 1}" for index in range(len(column_values))),
         ),
         cells=tuple(cells),
-        interpolation="linear",
+        interpolation=spec.interpolation,
         source=source,
     )
 
@@ -640,8 +640,10 @@ def _fill_expression_literals(
         Maximum,
         Minimum,
         Multiply,
+        Power,
         Round,
         Select,
+        TableSelect,
     )
 
     assert isinstance(expr, dict), "expression node must be a dict dump"
@@ -692,6 +694,22 @@ def _fill_expression_literals(
             table_id=expr["table_id"],
             row=_fill_expression_literals(expr["row"], values),
             column=_fill_expression_literals(expr["column"], values),
+        )
+    if op == "table_select":
+        return TableSelect(
+            table_id=expr["table_id"],
+            row=_fill_expression_literals(expr["row"], values),
+            column=_fill_expression_literals(expr["column"], values),
+            row_mode=expr["row_mode"],
+            column_mode=expr["column_mode"],
+        )
+    if op == "power":
+        # The exponent is a pair of plain integers, not Literal nodes, so — like
+        # Round's places — only the base is traversed for literals to rebuild.
+        return Power(
+            base=_fill_expression_literals(expr["base"], values),
+            numerator=expr["numerator"],
+            denominator=expr["denominator"],
         )
     if op == "linear_interpolate":
         column = expr.get("column")

@@ -22,6 +22,7 @@ from insulation_coordination.domain.rules import (
     Minimum,
     Multiply,
     Parameter,
+    Power,
     Round,
     RulePackage,
     Select,
@@ -104,6 +105,8 @@ def _expression_children(expression: Expression) -> tuple[Expression, ...]:
         return (expression.x,) if expression.column is None else (expression.x, expression.column)
     if isinstance(expression, TableSelect):
         return (expression.row, expression.column)
+    if isinstance(expression, Power):
+        return (expression.base,)
     return ()
 
 
@@ -179,6 +182,9 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
     table_ids = [table.id for table in package.tables]
     formula_ids = [formula.id for formula in package.formulas]
     mapping_ids = [mapping.id for mapping in package.mappings]
+    decision_ids = [decision.id for decision in package.decisions]
+    procedure_ids = [procedure.id for procedure in package.procedures]
+    guidance_ids = [guidance.id for guidance in package.guidance]
     try:
         expected_checksums = {
             name: hashlib.sha256(payload).hexdigest()
@@ -262,7 +268,41 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         expected_table_ids = set(table_ids)
         expected_formula_ids = set(formula_ids)
         expected_mapping_ids = set(mapping_ids)
-    identifiers = (*table_ids, *formula_ids, *mapping_ids)
+    legacy_ids = (*table_ids, *formula_ids, *mapping_ids)
+    rule_ids = (*decision_ids, *procedure_ids, *guidance_ids)
+    identifiers = (*legacy_ids, *rule_ids)
+    # A decision, procedure or guidance id is what applicability_rule_id and a
+    # reference output resolve against, so it must be unique against every other
+    # id in the package, not merely within its own kind.
+    unique_ids = (
+        len(table_ids) == len(set(table_ids))
+        and len(formula_ids) == len(set(formula_ids))
+        and len(mapping_ids) == len(set(mapping_ids))
+        and len(rule_ids) == len(set(rule_ids))
+        and set(rule_ids).isdisjoint(legacy_ids)
+    )
+    # A cross-standard pointer must name a real rule, never free text: an unresolved
+    # target would leave the reader to guess which rule was meant. It must resolve
+    # against rule_ids only (decisions, procedures, guidance) — those are the ids a
+    # previous check made globally unique. Resolving against every identifier in the
+    # package would let a reference name a table or mapping instead of a rule, and
+    # since legacy ids are only unique within their own kind, would let the gate
+    # report "resolved" for an id that denotes two different records.
+    rule_references = (
+        *(
+            procedure.applicability_rule_id
+            for procedure in package.procedures
+            if procedure.applicability_rule_id is not None
+        ),
+        *(
+            value.reference
+            for decision in package.decisions
+            for row in decision.rows
+            for value in row.values
+            if value.reference is not None
+        ),
+    )
+    rule_references_valid = set(rule_references) <= set(rule_ids)
     obsolete_markers = (
         "raw_sequence",
         "-f3",
@@ -332,6 +372,24 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
             for formula in package.formulas
         )
         and all(_record_source_valid(mapping.source) for mapping in package.mappings)
+        and all(
+            _record_source_valid(decision.source)
+            and all(_record_source_valid(row.source) for row in decision.rows)
+            for decision in package.decisions
+        )
+        and all(
+            _record_source_valid(procedure.source)
+            and all(
+                _record_source_valid(step.source)
+                for step in (*procedure.preparation_steps, *procedure.procedure_steps)
+            )
+            and (
+                procedure.acceptance_reference is None
+                or _record_source_valid(procedure.acceptance_reference)
+            )
+            for procedure in package.procedures
+        )
+        and all(_record_source_valid(guidance.source) for guidance in package.guidance)
     )
     results = (
         _result(
@@ -380,10 +438,9 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         ),
         _result(
             "unique_ids",
-            len(table_ids) == len(set(table_ids))
-            and len(formula_ids) == len(set(formula_ids))
-            and len(mapping_ids) == len(set(mapping_ids)),
-            "semantic IDs are unique",
+            unique_ids,
+            "decision, procedure and guidance IDs are globally unique; "
+            "table, formula and mapping IDs are unique within their own kind",
         ),
         _result("table_cells", valid_table_cells, "table cells are unique and in bounds"),
         _result("table_axes", table_axes_valid, "table axes are unique and monotonic"),
@@ -411,6 +468,11 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
             "mapping_routes",
             len(mapping_source_ids) == len(set(mapping_source_ids)),
             "compatibility mapping source routes are unique",
+        ),
+        _result(
+            "rule_references",
+            rule_references_valid,
+            "procedure and decision rule references resolve to a rule in the package",
         ),
         _result(
             "formula_tables",

@@ -9,11 +9,15 @@ import pytest
 
 from insulation_coordination.domain.rules import RulePackage, RulePackageError
 from insulation_coordination.rules.archive import load_rule_package, write_rule_package
+from insulation_coordination.rules.importer import recipes as recipe_registry
+from insulation_coordination.rules.importer.extract import extract_draft
 from insulation_coordination.ui.rules_manager import (
     ImportResult,
     RulesManagerWindow,
 )
+from tests.fixtures.synthetic_pdf import create_geometry_pdf
 from tests.fixtures.synthetic_rules import synthetic_rule_package as _build_synthetic_package
+from tests.rules.test_importer import _test_recipes
 
 
 def _installed_dir(tmp_path: Path) -> Path:
@@ -52,6 +56,45 @@ def test_rules_manager_exposes_draft_extraction(qtbot, rules_manager):
     assert rules_manager._extract_draft_button.isEnabled()
 
 
+def test_draft_identity_shows_all_three_required_standards(
+    qtbot, rules_manager, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(recipe_registry, "RECIPES", _test_recipes())
+    part1 = tmp_path / "part1.pdf"
+    part4 = tmp_path / "part4.pdf"
+    part62477 = tmp_path / "part62477.pdf"
+    create_geometry_pdf(
+        part1,
+        standard="IEC 60664-1",
+        edition="2020",
+        edition_anchor="Edition 3.0 2020-05",
+        topic_anchor="synthetic low-voltage geometry",
+        table_anchor="Table S1",
+    )
+    create_geometry_pdf(
+        part4,
+        standard="IEC 60664-4",
+        edition="2005",
+        edition_anchor="first edition 2005",
+        topic_anchor="synthetic high-frequency geometry",
+        table_anchor="Table S4",
+    )
+    create_geometry_pdf(
+        part62477,
+        standard="IEC 62477-1",
+        edition="2022",
+        edition_anchor="Edition 2.0 2022-05",
+        topic_anchor="synthetic power conversion geometry",
+        table_anchor="Table S9",
+    )
+
+    rules_manager.set_draft(extract_draft((part1, part4, part62477)))
+
+    assert "IEC 60664-1" in rules_manager.identity_text
+    assert "IEC 60664-4" in rules_manager.identity_text
+    assert "IEC 62477-1" in rules_manager.identity_text
+
+
 def test_audit_tree_enumerates_every_table_cell_and_formula(
     qtbot, rules_manager, synthetic_rule_package: RulePackage
 ) -> None:
@@ -79,6 +122,41 @@ def test_import_copies_exact_package_and_rejects_altered_copy(
     altered.write_bytes(original[:-1] + (b"\x00" if original[-1:] != b"\x00" else b"\x01"))
     with pytest.raises(RulePackageError):
         rules_manager.import_package(altered)
+
+
+def test_audit_tree_lists_the_new_rule_sections(
+    qtbot, rules_manager, synthetic_rule_package: RulePackage
+) -> None:
+    rules_manager.set_package(synthetic_rule_package)
+    labels = {
+        rules_manager._tree.topLevelItem(index).text(0)
+        for index in range(rules_manager._tree.topLevelItemCount())
+    }
+    assert {"Decisions", "Procedures", "Guidance"} <= labels
+
+
+def test_audit_tree_decision_procedure_guidance_children_show_id_and_source(
+    qtbot, rules_manager, synthetic_rule_package: RulePackage
+) -> None:
+    rules_manager.set_package(synthetic_rule_package)
+    tree = rules_manager._tree
+    sections = {
+        tree.topLevelItem(index).text(0): tree.topLevelItem(index)
+        for index in range(tree.topLevelItemCount())
+    }
+    decision = synthetic_rule_package.decisions[0]
+    procedure = synthetic_rule_package.procedures[0]
+    guidance = synthetic_rule_package.guidance[0]
+
+    assert sections["Decisions"].childCount() == len(synthetic_rule_package.decisions)
+    assert decision.id in sections["Decisions"].child(0).text(0)
+    assert decision.source.standard in sections["Decisions"].child(0).text(0)
+
+    assert sections["Procedures"].childCount() == len(synthetic_rule_package.procedures)
+    assert procedure.id in sections["Procedures"].child(0).text(0)
+
+    assert sections["Guidance"].childCount() == len(synthetic_rule_package.guidance)
+    assert guidance.id in sections["Guidance"].child(0).text(0)
 
 
 def test_audit_browser_sections_and_semantic_search(

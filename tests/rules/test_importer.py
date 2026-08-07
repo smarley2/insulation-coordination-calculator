@@ -6,11 +6,6 @@ from pathlib import Path
 import pytest
 from pdfminer.pdfdocument import PDFSyntaxError
 from pypdf import PdfWriter
-from pypdf.generic import (
-    DecodedStreamObject,
-    DictionaryObject,
-    NameObject,
-)
 
 from insulation_coordination.domain.rules import (
     CompatibilityMapping,
@@ -19,6 +14,7 @@ from insulation_coordination.domain.rules import (
     Literal,
     Parameter,
     ParameterSet,
+    Power,
     SourceReference,
     Table,
     TableAxis,
@@ -49,9 +45,13 @@ from insulation_coordination.rules.importer.identify import (
     PasswordRequiredError,
     StandardRecipe,
     TableAuditSpec,
+    TableColumnSpec,
+    TableSegmentSpec,
+    UnsupportedEditionError,
     UnsupportedStandardError,
     identify_standard,
 )
+from insulation_coordination.rules.importer.projection import project_table
 from insulation_coordination.rules.importer.recipes.iec60664_1_2020 import (
     RECIPE as PART1_RECIPE,
 )
@@ -59,12 +59,14 @@ from insulation_coordination.rules.importer.recipes.iec60664_4_2005 import (
     RECIPE as PART4_RECIPE,
 )
 from insulation_coordination.rules.importer.review import (
+    _fill_expression_literals,
     accept_equation_mapping,
     accept_raw_grid,
     accept_raw_table,
     build_reviewed_draft,
     missing_required_content,
     placeholder_formula_ids,
+    placeholder_formula_values,
     recipe_derived_items,
     required_content_report,
     unresolved_equation_items,
@@ -72,14 +74,11 @@ from insulation_coordination.rules.importer.review import (
     unresolved_raw_review_items,
     unresolved_table_items,
 )
-
-_PAGE_WIDTH = 612
-_PAGE_HEIGHT = 792
-_TABLE_BBOX = (72.0, 192.0, 252.0, 312.0)
-_CELLS = (
-    ("axis", "10", "20"),
-    ("1", "1.1", "1.2"),
-    ("2", "2.1", "2.2"),
+from tests.fixtures.synthetic_pdf import (
+    _PAGE_HEIGHT,
+    _PAGE_WIDTH,
+    _TABLE_BBOX,
+    create_geometry_pdf,
 )
 
 
@@ -135,99 +134,7 @@ def test_part4_recipe_uses_tables_one_two_and_real_equation_artifacts() -> None:
     assert all(mapping.table != "5" for mapping in PART4_RECIPE.mappings)
 
 
-def _pdf_string(value: str) -> bytes:
-    return value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)").encode("latin-1")
-
-
-def _text_command(x: float, y: float, value: str) -> bytes:
-    return f"BT /F1 9 Tf {x:.1f} {y:.1f} Td (".encode() + _pdf_string(value) + b") Tj ET"
-
-
-def _table_commands(
-    bbox: tuple[float, float, float, float],
-    cells: tuple[tuple[str, ...], ...],
-) -> list[bytes]:
-    x0, top, x1, bottom = bbox
-    rows = len(cells)
-    columns = len(cells[0])
-    pdf_top = _PAGE_HEIGHT - top
-    pdf_bottom = _PAGE_HEIGHT - bottom
-    row_height = (pdf_top - pdf_bottom) / rows
-    column_width = (x1 - x0) / columns
-    commands = [b"0.7 w"]
-    for column in range(columns + 1):
-        x = x0 + column * column_width
-        commands.append(f"{x:.1f} {pdf_bottom:.1f} m {x:.1f} {pdf_top:.1f} l S".encode())
-    for row in range(rows + 1):
-        y = pdf_bottom + row * row_height
-        commands.append(f"{x0:.1f} {y:.1f} m {x1:.1f} {y:.1f} l S".encode())
-    for row, values in enumerate(cells):
-        for column, value in enumerate(values):
-            x = x0 + column * column_width + 5
-            y = pdf_top - (row + 1) * row_height + row_height / 2 - 3
-            commands.append(_text_command(x, y, value))
-    return commands
-
-
-def create_geometry_pdf(
-    path: Path,
-    *,
-    standard: str,
-    edition: str,
-    edition_anchor: str,
-    topic_anchor: str,
-    table_anchor: str,
-    cells: tuple[tuple[str, ...], ...] = _CELLS,
-    metadata: dict[str, str] | None = None,
-    second_table: bool = False,
-) -> None:
-    writer = PdfWriter()
-    page = writer.add_blank_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
-    page[NameObject("/Resources")] = DictionaryObject(
-        {
-            NameObject("/Font"): DictionaryObject(
-                {
-                    NameObject("/F1"): DictionaryObject(
-                        {
-                            NameObject("/Type"): NameObject("/Font"),
-                            NameObject("/Subtype"): NameObject("/Type1"),
-                            NameObject("/BaseFont"): NameObject("/Helvetica"),
-                        }
-                    )
-                }
-            )
-        }
-    )
-    commands = [
-        _text_command(72, 750, standard),
-        _text_command(72, 734, edition_anchor),
-        _text_command(72, 718, topic_anchor),
-        _text_command(72, 616, table_anchor),
-        *_table_commands(_TABLE_BBOX, cells),
-    ]
-    if second_table:
-        second_bbox = (300.0, 192.0, 480.0, 312.0)
-        commands.extend(
-            (
-                _text_command(300, 616, table_anchor),
-                *_table_commands(second_bbox, cells),
-            )
-        )
-    stream = DecodedStreamObject()
-    stream.set_data(b"\n".join(commands))
-    page[NameObject("/Contents")] = writer._add_object(stream)
-    writer.add_metadata(
-        {
-            "/Title": f"{standard}:{edition} synthetic geometry fixture",
-            "/ICC-Synthetic": "true",
-            **(metadata or {}),
-        }
-    )
-    with path.open("wb") as target:
-        writer.write(target)
-
-
-def _test_recipes() -> tuple[StandardRecipe, StandardRecipe]:
+def _test_recipes() -> tuple[StandardRecipe, StandardRecipe, StandardRecipe]:
     def recipe(
         *,
         recipe_id: str,
@@ -246,6 +153,9 @@ def _test_recipes() -> tuple[StandardRecipe, StandardRecipe]:
             standard=standard,
             edition=edition,
             expected_page_count=1,
+            identity_claim_pattern=(
+                r"(?i)(IEC\s*(?:60664-[14]|62477-1)).{0,24}?\b((?:19|20)\d{2})\b"
+            ),
             metadata_identity_fields=("/Title", "/Subject", "/Keywords"),
             metadata_identity_anchors=(standard, edition),
             identity_anchors=(standard, edition_anchor, topic_anchor),
@@ -272,6 +182,9 @@ def _test_recipes() -> tuple[StandardRecipe, StandardRecipe]:
                     row_axis_unit="V",
                     column_axis_id="branch",
                     column_axis_unit="1",
+                    # The paired formula below selects with a linear row mode, which
+                    # package validation only accepts from an interpolable table.
+                    interpolation="linear",
                     assertions=(
                         "complete_grid",
                         "strictly_increasing_axes",
@@ -328,6 +241,18 @@ def _test_recipes() -> tuple[StandardRecipe, StandardRecipe]:
             mapping_id="synthetic-part4-mapping",
             route="synthetic:part4",
         ),
+        recipe(
+            recipe_id="iec62477-1-2022",
+            standard="IEC 62477-1",
+            edition="2022",
+            edition_anchor="Edition 2.0 2022-05",
+            topic_anchor="synthetic power conversion geometry",
+            table_id="synthetic-part62477-table",
+            table_name="S9",
+            formula_id="synthetic-part62477-formula",
+            mapping_id="synthetic-part62477-mapping",
+            route="synthetic:part62477",
+        ),
     )
 
 
@@ -339,9 +264,10 @@ def injected_recipes(monkeypatch: pytest.MonkeyPatch) -> tuple[StandardRecipe, .
 
 
 @pytest.fixture
-def supported_pdfs(tmp_path: Path) -> tuple[Path, Path]:
+def supported_pdfs(tmp_path: Path) -> tuple[Path, Path, Path]:
     part1 = tmp_path / "part1.pdf"
     part4 = tmp_path / "part4.pdf"
+    part62477 = tmp_path / "part62477.pdf"
     create_geometry_pdf(
         part1,
         standard="IEC 60664-1",
@@ -358,7 +284,15 @@ def supported_pdfs(tmp_path: Path) -> tuple[Path, Path]:
         topic_anchor="synthetic high-frequency geometry",
         table_anchor="Table S4",
     )
-    return part1, part4
+    create_geometry_pdf(
+        part62477,
+        standard="IEC 62477-1",
+        edition="2022",
+        edition_anchor="Edition 2.0 2022-05",
+        topic_anchor="synthetic power conversion geometry",
+        table_anchor="Table S9",
+    )
+    return part1, part4, part62477
 
 
 def _source_for(recipe: StandardRecipe) -> SourceReference:
@@ -473,7 +407,7 @@ def _review_all(
 
 
 def test_identifies_supported_document_from_recipe_specific_evidence(
-    supported_pdfs: tuple[Path, Path],
+    supported_pdfs: tuple[Path, Path, Path],
 ) -> None:
     identity = identify_standard(supported_pdfs[0])
 
@@ -484,7 +418,7 @@ def test_identifies_supported_document_from_recipe_specific_evidence(
 
 
 def test_identifies_encrypted_document_with_empty_password(
-    supported_pdfs: tuple[Path, Path], tmp_path: Path
+    supported_pdfs: tuple[Path, Path, Path], tmp_path: Path
 ) -> None:
     encrypted = tmp_path / "part1-empty-password.pdf"
     writer = PdfWriter(clone_from=supported_pdfs[0])
@@ -498,7 +432,7 @@ def test_identifies_encrypted_document_with_empty_password(
 
 
 def test_reports_password_required_without_leaking_password(
-    supported_pdfs: tuple[Path, Path], tmp_path: Path
+    supported_pdfs: tuple[Path, Path, Path], tmp_path: Path
 ) -> None:
     encrypted = tmp_path / "part1-password.pdf"
     writer = PdfWriter(clone_from=supported_pdfs[0])
@@ -513,7 +447,7 @@ def test_reports_password_required_without_leaking_password(
 
 
 def test_identifies_encrypted_document_with_supplied_password(
-    supported_pdfs: tuple[Path, Path], tmp_path: Path
+    supported_pdfs: tuple[Path, Path, Path], tmp_path: Path
 ) -> None:
     encrypted = tmp_path / "part1-password.pdf"
     writer = PdfWriter(clone_from=supported_pdfs[0])
@@ -596,8 +530,33 @@ def test_document_matching_two_recipes_is_rejected_as_ambiguous(tmp_path: Path) 
         identify_standard(path)
 
 
+def test_wrong_edition_of_a_supported_standard_names_the_failed_check(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "part1-wrong-edition.pdf"
+    create_geometry_pdf(
+        path,
+        standard="IEC 60664-1",
+        edition="2007",
+        edition_anchor="Edition 2.0 2007-04",
+        topic_anchor="synthetic low-voltage geometry",
+        table_anchor="Table S1",
+    )
+    with pytest.raises(UnsupportedEditionError) as error:
+        identify_standard(path)
+    assert error.value.detected_standard == "IEC 60664-1"
+    assert error.value.detected_edition == "2007"
+
+
+def test_supported_edition_still_identifies_after_the_claim_change(
+    supported_pdfs: tuple[Path, Path, Path],
+) -> None:
+    assert identify_standard(supported_pdfs[0]).edition == "2020"
+    assert identify_standard(supported_pdfs[1]).edition == "2005"
+
+
 def test_metadata_marker_cannot_embed_or_auto_approve_rule_content(
-    supported_pdfs: tuple[Path, Path],
+    supported_pdfs: tuple[Path, Path, Path],
 ) -> None:
     draft = extract_draft(supported_pdfs)
 
@@ -610,11 +569,11 @@ def test_metadata_marker_cannot_embed_or_auto_approve_rule_content(
 
 
 def test_real_geometry_extracts_every_raw_cell_and_pending_contract(
-    supported_pdfs: tuple[Path, Path],
+    supported_pdfs: tuple[Path, Path, Path],
 ) -> None:
     draft = extract_draft(supported_pdfs)
 
-    assert len(draft.raw_grids) == 2
+    assert len(draft.raw_grids) == 3
     assert all((grid.rows, grid.columns) == (3, 3) for grid in draft.raw_grids)
     assert all(len(grid.cells) == 9 for grid in draft.raw_grids)
     assert all(
@@ -676,7 +635,7 @@ def test_data_cell_parser_does_not_collapse_non_scalar_values(
 
 
 def test_extraction_assigns_context_roles_and_one_page_segment(
-    supported_pdfs: tuple[Path, Path],
+    supported_pdfs: tuple[Path, Path, Path],
 ) -> None:
     draft = extract_draft(supported_pdfs)
     grid = draft.raw_grids[0]
@@ -698,7 +657,7 @@ def test_extraction_assigns_context_roles_and_one_page_segment(
 
 
 def test_correction_cannot_rewrite_extracted_equation_text_or_source(
-    supported_pdfs: tuple[Path, Path],
+    supported_pdfs: tuple[Path, Path, Path],
 ) -> None:
     draft = extract_draft(supported_pdfs)
     equation = ExtractedEquation(
@@ -733,7 +692,7 @@ def test_correction_cannot_rewrite_extracted_equation_text_or_source(
 
 @pytest.mark.parametrize("field", ("role", "logical_row", "logical_column"))
 def test_correction_cannot_rewrite_raw_cell_semantics(
-    supported_pdfs: tuple[Path, Path],
+    supported_pdfs: tuple[Path, Path, Path],
     field: str,
 ) -> None:
     draft = extract_draft(supported_pdfs)
@@ -770,7 +729,7 @@ def test_correction_cannot_rewrite_raw_cell_semantics(
 
 
 def test_correction_cannot_rewrite_raw_grid_segments(
-    supported_pdfs: tuple[Path, Path],
+    supported_pdfs: tuple[Path, Path, Path],
 ) -> None:
     draft = extract_draft(supported_pdfs)
     grid = draft.raw_grids[0]
@@ -790,6 +749,7 @@ def test_correction_cannot_rewrite_raw_grid_segments(
 def _compound_draft(tmp_path: Path) -> ImportedRuleDraft:
     part1 = tmp_path / "part1.pdf"
     part4 = tmp_path / "part4.pdf"
+    part62477 = tmp_path / "part62477.pdf"
     compound_cells = (
         ("axis", "10", "20"),
         ("1", "<= 1.2zz", "1.3"),
@@ -812,8 +772,16 @@ def _compound_draft(tmp_path: Path) -> ImportedRuleDraft:
         topic_anchor="synthetic high-frequency geometry",
         table_anchor="Table S4",
     )
+    create_geometry_pdf(
+        part62477,
+        standard="IEC 62477-1",
+        edition="2022",
+        edition_anchor="Edition 2.0 2022-05",
+        topic_anchor="synthetic power conversion geometry",
+        table_anchor="Table S9",
+    )
 
-    return extract_draft((part1, part4))
+    return extract_draft((part1, part4, part62477))
 
 
 def test_unknown_compound_numeric_token_is_preserved_and_flagged(
@@ -964,6 +932,7 @@ def test_two_equally_valid_anchor_table_regions_are_rejected(
 ) -> None:
     part1 = tmp_path / "part1.pdf"
     part4 = tmp_path / "part4.pdf"
+    part62477 = tmp_path / "part62477.pdf"
     create_geometry_pdf(
         part1,
         standard="IEC 60664-1",
@@ -981,6 +950,14 @@ def test_two_equally_valid_anchor_table_regions_are_rejected(
         topic_anchor="synthetic high-frequency geometry",
         table_anchor="Table S4",
     )
+    create_geometry_pdf(
+        part62477,
+        standard="IEC 62477-1",
+        edition="2022",
+        edition_anchor="Edition 2.0 2022-05",
+        topic_anchor="synthetic power conversion geometry",
+        table_anchor="Table S9",
+    )
     part1_recipe = injected_recipes[0]
     spec = part1_recipe.tables[0]
     ambiguous_spec = spec.model_copy(
@@ -995,17 +972,18 @@ def test_two_equally_valid_anchor_table_regions_are_rejected(
         (
             part1_recipe.model_copy(update={"tables": (ambiguous_spec,)}),
             injected_recipes[1],
+            injected_recipes[2],
         ),
     )
 
     with pytest.raises(ExtractionError, match="ambiguous"):
-        extract_draft((part1, part4))
+        extract_draft((part1, part4, part62477))
 
 
 def test_missing_or_duplicate_supported_part_is_rejected(
-    supported_pdfs: tuple[Path, Path],
+    supported_pdfs: tuple[Path, Path, Path],
 ) -> None:
-    part1, part4 = supported_pdfs
+    part1, part4, _ = supported_pdfs
 
     with pytest.raises(ExtractionError, match="must be loaded together"):
         extract_draft((part1,))
@@ -1013,8 +991,17 @@ def test_missing_or_duplicate_supported_part_is_rejected(
         extract_draft((part1, part1, part4))
 
 
+def test_importing_without_the_62477_part_names_the_missing_recipe(
+    supported_pdfs: tuple[Path, Path, Path],
+) -> None:
+    part1, part4, _ = supported_pdfs
+
+    with pytest.raises(ExtractionError, match="iec62477-1-2022"):
+        extract_draft((part1, part4))
+
+
 def test_review_inventory_and_locators_are_immutable(
-    supported_pdfs: tuple[Path, Path],
+    supported_pdfs: tuple[Path, Path, Path],
 ) -> None:
     draft = extract_draft(supported_pdfs)
     item = draft.review_items[0]
@@ -1042,7 +1029,7 @@ def test_review_inventory_and_locators_are_immutable(
 
 
 def test_import_review_cannot_be_erased_by_plain_draft_conversion(
-    supported_pdfs: tuple[Path, Path],
+    supported_pdfs: tuple[Path, Path, Path],
 ) -> None:
     imported = extract_draft(supported_pdfs)
     plain = DraftRulePackage(
@@ -1064,7 +1051,7 @@ def test_import_review_cannot_be_erased_by_plain_draft_conversion(
 
 
 def test_recorded_resolution_uses_original_full_review_item_digest(
-    supported_pdfs: tuple[Path, Path],
+    supported_pdfs: tuple[Path, Path, Path],
     injected_recipes: tuple[StandardRecipe, ...],
 ) -> None:
     draft = extract_draft(supported_pdfs)
@@ -1115,8 +1102,250 @@ def _accept_all_source_artifacts(draft: ImportedRuleDraft) -> ImportedRuleDraft:
     return accepted
 
 
+def test_project_table_honours_the_declared_interpolation_mode(
+    supported_pdfs: tuple[Path, Path, Path],
+    injected_recipes: tuple[StandardRecipe, ...],
+) -> None:
+    """project_table must read interpolation from the spec, not assume "linear"."""
+    draft = extract_draft(supported_pdfs)
+    recipe = injected_recipes[0]
+    identity = next(i for i in draft.source_identities if i.recipe_id == recipe.id)
+    table_spec = recipe.tables[0].model_copy(update={"interpolation": "none"})
+    grid = next(grid for grid in draft.raw_grids if grid.id == f"raw-{table_spec.semantic_id}")
+
+    projected = project_table(identity, table_spec, grid)
+
+    assert projected.interpolation == "none"
+
+
+def test_column_axis_value_can_be_derived_from_its_own_header_row(
+    supported_pdfs: tuple[Path, Path, Path],
+    injected_recipes: tuple[StandardRecipe, ...],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A column can point at the header row holding its axis value instead of
+
+    declaring the value in the recipe -- required when the value itself is licensed
+    table content that must not be committed to a public recipe file.
+    """
+    part1_recipe = injected_recipes[0]
+    legacy_spec = part1_recipe.tables[0]
+    segment = TableSegmentSpec(
+        id=legacy_spec.semantic_id,
+        page_number=legacy_spec.page_number,
+        title_anchor=legacy_spec.title_anchor,
+        expected_raw_rows=3,
+        expected_raw_columns=3,
+        expected_bbox=legacy_spec.expected_bbox,
+        bbox_tolerance=legacy_spec.bbox_tolerance,
+        anchor_max_vertical_gap=legacy_spec.anchor_max_vertical_gap,
+        anchor_min_x_overlap=legacy_spec.anchor_min_x_overlap,
+        source_columns=(0, 1, 2),
+        header_rows=(0,),
+        data_rows=(1, 2),
+        page_search_radius=legacy_spec.page_search_radius,
+    )
+    derived_spec = legacy_spec.model_copy(
+        update={
+            "expected_raw_rows": 3,
+            "expected_raw_columns": 3,
+            "expected_data_rows": 2,
+            "expected_data_columns": 3,
+            "segments": (segment,),
+            "columns": (
+                TableColumnSpec(
+                    semantic_id="row-axis",
+                    heading="row axis",
+                    source_column=0,
+                    role="axis",
+                    unit="V",
+                ),
+                TableColumnSpec(
+                    semantic_id="column-a",
+                    heading="column a",
+                    source_column=1,
+                    role="data",
+                    unit="mm",
+                    axis_value_source_row=0,
+                ),
+                TableColumnSpec(
+                    semantic_id="column-b",
+                    heading="column b",
+                    source_column=2,
+                    role="data",
+                    unit="mm",
+                    axis_value_source_row=0,
+                ),
+            ),
+        }
+    )
+    monkeypatch.setattr(
+        recipe_registry,
+        "RECIPES",
+        (
+            part1_recipe.model_copy(update={"tables": (derived_spec,)}),
+            injected_recipes[1],
+            injected_recipes[2],
+        ),
+    )
+
+    draft = extract_draft(supported_pdfs)
+    identity = next(i for i in draft.source_identities if i.recipe_id == part1_recipe.id)
+    grid = next(grid for grid in draft.raw_grids if grid.id == f"raw-{derived_spec.semantic_id}")
+
+    table = project_table(identity, derived_spec, grid)
+
+    assert table.column_axis.values == (Decimal(10), Decimal(20))
+
+
+def test_projected_table_source_names_the_page_the_table_was_actually_found_on(
+    tmp_path: Path,
+    injected_recipes: tuple[StandardRecipe, ...],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A table located one page inside its search window must record that actual page
+
+    in its own ``Table.source``, matching what its cells already record -- not the page
+    the recipe declared.
+    """
+    part1_recipe, part4_recipe, part62477_recipe = injected_recipes
+    shifted_spec = part1_recipe.tables[0].model_copy(update={"page_search_radius": 1})
+    monkeypatch.setattr(
+        recipe_registry,
+        "RECIPES",
+        (
+            part1_recipe.model_copy(update={"tables": (shifted_spec,)}),
+            part4_recipe,
+            part62477_recipe,
+        ),
+    )
+
+    part1_table_page = tmp_path / "part1-table.pdf"
+    create_geometry_pdf(
+        part1_table_page,
+        standard="IEC 60664-1",
+        edition="2020",
+        edition_anchor="Edition 3.0 2020-05",
+        topic_anchor="synthetic low-voltage geometry",
+        table_anchor="Table S1",
+    )
+    writer = PdfWriter()
+    writer.add_blank_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
+    writer.append(str(part1_table_page))
+    # ``append`` copies pages only, not the source document's /Title metadata that
+    # identification relies on, so it must be reapplied to the combined document.
+    writer.add_metadata({"/Title": "IEC 60664-1:2020 synthetic geometry fixture"})
+    part1 = tmp_path / "part1.pdf"
+    with part1.open("wb") as target:
+        writer.write(target)
+    part4 = tmp_path / "part4.pdf"
+    create_geometry_pdf(
+        part4,
+        standard="IEC 60664-4",
+        edition="2005",
+        edition_anchor="first edition 2005",
+        topic_anchor="synthetic high-frequency geometry",
+        table_anchor="Table S4",
+    )
+    part62477 = tmp_path / "part62477.pdf"
+    create_geometry_pdf(
+        part62477,
+        standard="IEC 62477-1",
+        edition="2022",
+        edition_anchor="Edition 2.0 2022-05",
+        topic_anchor="synthetic power conversion geometry",
+        table_anchor="Table S9",
+    )
+
+    draft = extract_draft((part1, part4, part62477))
+    identity = next(i for i in draft.source_identities if i.recipe_id == part1_recipe.id)
+    grid = next(grid for grid in draft.raw_grids if grid.id == f"raw-{shifted_spec.semantic_id}")
+    assert grid.segments[0].page_number == 2
+
+    table = project_table(identity, shifted_spec, grid)
+
+    assert table.source.note == "PDF page 2"
+    assert all(cell.source.note == "PDF page 2" for cell in table.cells)
+
+
+def test_header_axis_value_column_fails_loudly_when_its_header_cell_is_not_numeric(
+    supported_pdfs: tuple[Path, Path, Path],
+    injected_recipes: tuple[StandardRecipe, ...],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Extraction must refuse rather than silently fall back to an ordinal position.
+
+    Column 0's header cell (row 0) is the text "axis", not a number. Pointing a data
+    column's ``axis_value_source_row`` at that same physical column reuses that
+    non-numeric header cell as the declared axis-value source.
+    """
+    part1_recipe = injected_recipes[0]
+    legacy_spec = part1_recipe.tables[0]
+    segment = TableSegmentSpec(
+        id=legacy_spec.semantic_id,
+        page_number=legacy_spec.page_number,
+        title_anchor=legacy_spec.title_anchor,
+        expected_raw_rows=3,
+        expected_raw_columns=3,
+        expected_bbox=legacy_spec.expected_bbox,
+        bbox_tolerance=legacy_spec.bbox_tolerance,
+        anchor_max_vertical_gap=legacy_spec.anchor_max_vertical_gap,
+        anchor_min_x_overlap=legacy_spec.anchor_min_x_overlap,
+        source_columns=(0, 0, 2),
+        header_rows=(0,),
+        data_rows=(1, 2),
+        page_search_radius=legacy_spec.page_search_radius,
+    )
+    broken_spec = legacy_spec.model_copy(
+        update={
+            "expected_raw_rows": 3,
+            "expected_raw_columns": 3,
+            "expected_data_rows": 2,
+            "expected_data_columns": 3,
+            "segments": (segment,),
+            "columns": (
+                TableColumnSpec(
+                    semantic_id="row-axis",
+                    heading="row axis",
+                    source_column=0,
+                    role="axis",
+                    unit="V",
+                ),
+                TableColumnSpec(
+                    semantic_id="column-a",
+                    heading="column a",
+                    source_column=0,
+                    role="data",
+                    unit="mm",
+                    axis_value_source_row=0,
+                ),
+                TableColumnSpec(
+                    semantic_id="column-b",
+                    heading="column b",
+                    source_column=2,
+                    role="data",
+                    unit="mm",
+                    axis_value_source_row=0,
+                ),
+            ),
+        }
+    )
+    monkeypatch.setattr(
+        recipe_registry,
+        "RECIPES",
+        (
+            part1_recipe.model_copy(update={"tables": (broken_spec,)}),
+            injected_recipes[1],
+            injected_recipes[2],
+        ),
+    )
+
+    with pytest.raises(ExtractionError, match="axis header cell is not numeric"):
+        extract_draft(supported_pdfs)
+
+
 def test_build_reviewed_draft_resolves_every_item(
-    supported_pdfs: tuple[Path, Path],
+    supported_pdfs: tuple[Path, Path, Path],
     injected_recipes: tuple[StandardRecipe, ...],
 ) -> None:
     draft = extract_draft(supported_pdfs)
@@ -1140,7 +1369,7 @@ def test_build_reviewed_draft_resolves_every_item(
 
 
 def test_staged_review_requires_tables_then_equations_and_mappings(
-    supported_pdfs: tuple[Path, Path],
+    supported_pdfs: tuple[Path, Path, Path],
     injected_recipes: tuple[StandardRecipe, ...],
 ) -> None:
     draft = extract_draft(supported_pdfs)
@@ -1233,8 +1462,36 @@ def test_corrected_part4_recipe_has_no_placeholder_formula_gate() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "expression",
+    (
+        Power(base=Literal(value=Decimal(2)), numerator=3, denominator=2),
+        TableSelect(
+            table_id="synthetic-table",
+            row=Literal(value=Decimal(1)),
+            column=Literal(value=Decimal(2)),
+            row_mode="ceiling",
+        ),
+    ),
+)
+def test_placeholder_literals_rebuild_through_power_and_table_select(
+    expression: Power | TableSelect,
+) -> None:
+    # confirm_placeholder_formula rebuilds a formula's literals in place, so every
+    # op that can carry a Literal child must be traversed, not refused.
+    current = placeholder_formula_values(expression)
+    assert current
+
+    unchanged = _fill_expression_literals(expression.model_dump(mode="python"), list(current))
+    assert unchanged == expression
+
+    replaced = tuple(value + 1 for value in current)
+    rebuilt = _fill_expression_literals(expression.model_dump(mode="python"), list(replaced))
+    assert placeholder_formula_values(rebuilt) == replaced
+
+
 def test_required_content_report_tracks_missing_then_present(
-    supported_pdfs: tuple[Path, Path],
+    supported_pdfs: tuple[Path, Path, Path],
     injected_recipes: tuple[StandardRecipe, ...],
 ) -> None:
     draft = extract_draft(supported_pdfs)
@@ -1255,7 +1512,7 @@ def test_required_content_report_tracks_missing_then_present(
 
 
 def test_correction_audits_every_changed_or_deleted_semantic_item(
-    supported_pdfs: tuple[Path, Path],
+    supported_pdfs: tuple[Path, Path, Path],
     injected_recipes: tuple[StandardRecipe, ...],
 ) -> None:
     draft = extract_draft(supported_pdfs)
@@ -1349,7 +1606,7 @@ def _mutate_source_state(
     ("one_hash", "both_hashes", "edition", "layout", "reordered", "missing"),
 )
 def test_source_identity_mutation_breaks_the_immutable_genesis(
-    supported_pdfs: tuple[Path, Path],
+    supported_pdfs: tuple[Path, Path, Path],
     injected_recipes: tuple[StandardRecipe, ...],
     mutation: str,
 ) -> None:
@@ -1365,7 +1622,7 @@ def test_source_identity_mutation_breaks_the_immutable_genesis(
     ("extra_table", "missing_formula", "wrong_formula", "wrong_mapping", "extra_mapping"),
 )
 def test_approval_requires_exact_recipe_content_sets_and_shapes(
-    supported_pdfs: tuple[Path, Path],
+    supported_pdfs: tuple[Path, Path, Path],
     injected_recipes: tuple[StandardRecipe, ...],
     mutation: str,
 ) -> None:
@@ -1429,7 +1686,7 @@ def test_approval_requires_exact_recipe_content_sets_and_shapes(
 
 
 def test_typed_table_cells_must_correspond_to_reviewed_raw_grid(
-    supported_pdfs: tuple[Path, Path],
+    supported_pdfs: tuple[Path, Path, Path],
     injected_recipes: tuple[StandardRecipe, ...],
 ) -> None:
     corrected = _review_all(extract_draft(supported_pdfs), injected_recipes)
@@ -1461,7 +1718,7 @@ def test_typed_table_cells_must_correspond_to_reviewed_raw_grid(
 
 
 def test_approval_and_archive_are_independent_of_source_pdfs(
-    supported_pdfs: tuple[Path, Path],
+    supported_pdfs: tuple[Path, Path, Path],
     injected_recipes: tuple[StandardRecipe, ...],
     tmp_path: Path,
 ) -> None:
@@ -1494,7 +1751,7 @@ def test_malformed_pdf_is_normalized_to_stable_identification_error(
 
 
 def test_pdfplumber_parser_error_is_normalized_at_extract_boundary(
-    supported_pdfs: tuple[Path, Path],
+    supported_pdfs: tuple[Path, Path, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fail_open(*_args: object, **_kwargs: object) -> None:

@@ -73,6 +73,11 @@ def render_expression(expression: object) -> str:
             f"[row {render_expression(node['row'])} ({row_mode}), "
             f"column {render_expression(node['column'])} ({column_mode})]"
         )
+    if operation == "power":
+        base = render_expression(node["base"])
+        if isinstance(node["base"], dict) and node["base"].get("op") == "power":
+            base = f"({base})"
+        return f"{base} ^ ({node['numerator']}/{node['denominator']})"
     return operation
 
 

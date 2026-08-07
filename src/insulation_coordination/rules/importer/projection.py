@@ -37,6 +37,7 @@ from insulation_coordination.rules.importer.identify import (
     MappingAuditSpec,
     StandardIdentity,
     TableAuditSpec,
+    TableColumnSpec,
 )
 
 
@@ -56,6 +57,34 @@ def _source(
         figure=figure,
         note=f"PDF page {page_number}",
     )
+
+
+def _column_axis_value(
+    spec: TableAuditSpec,
+    column: TableColumnSpec,
+    grid_column: int,
+    grid: RawGrid,
+    ordinal: int,
+) -> Decimal:
+    """A data column's axis value: declared, read from its own header row, or ordinal."""
+    if column.axis_value is not None:
+        return column.axis_value
+    if column.axis_value_source_row is not None:
+        cell = next(
+            (
+                cell
+                for cell in grid.cells
+                if cell.row == column.axis_value_source_row and cell.column == grid_column
+            ),
+            None,
+        )
+        if cell is None or cell.value is None:
+            raise ValueError(
+                f"table {spec.semantic_id} column {column.semantic_id!r} has no numeric "
+                "axis value in its declared header row"
+            )
+        return cell.value
+    return Decimal(ordinal)
 
 
 def project_table(
@@ -88,9 +117,10 @@ def project_table(
         for index, cell in enumerate(axis_cells)
         if cell is not None
     )
+    grid_column_index = {column.semantic_id: index for index, column in enumerate(spec.columns)}
     column_values = tuple(
-        column.axis_value if column.axis_value is not None else Decimal(index + 1)
-        for index, column in enumerate(data_columns)
+        _column_axis_value(spec, column, grid_column_index[column.semantic_id], grid, ordinal)
+        for ordinal, column in enumerate(data_columns, start=1)
     )
     cells: list[TableCell] = []
     previous_by_column: dict[str, RawGridCell] = {}
@@ -116,7 +146,7 @@ def project_table(
         raise ValueError(f"table {spec.semantic_id} has no projectable numeric cells")
     source = _source(
         identity,
-        page_number=spec.page_number,
+        page_number=grid.segments[0].page_number,
         clause=spec.clause,
         table=spec.source_table,
     )
@@ -146,7 +176,7 @@ def project_table(
                 source=source,
             ),
         ),
-        interpolation="linear",
+        interpolation=spec.interpolation,
         source=source,
     )
 
@@ -176,7 +206,7 @@ def _project_legacy_table(
             )
     source = _source(
         identity,
-        page_number=spec.page_number,
+        page_number=grid.segments[0].page_number,
         clause=spec.clause,
         table=spec.source_table,
     )
@@ -207,7 +237,7 @@ def _project_legacy_table(
                 source=source,
             ),
         ),
-        interpolation="linear",
+        interpolation=spec.interpolation,
         source=source,
     )
 

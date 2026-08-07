@@ -40,8 +40,10 @@ Run these commands before submitting a pull request:
 ```bash
 uv run ruff check .
 uv run mypy
-uv run pytest --cov=insulation_coordination --cov-branch --cov-report=term-missing --cov-fail-under=80
+uv run pytest -n auto --cov=insulation_coordination --cov-branch --cov-report=term-missing --cov-fail-under=80
 ```
+
+The suite is parallel-safe and `-n auto` cuts a full run from roughly 100 seconds to 20. Drop `-n` when debugging a single failure, since `pytest-xdist` suppresses `pdb` and interleaves output.
 
 The test suite must maintain at least 80% total branch-aware coverage. New or changed behavior should be covered directly rather than relying only on the repository-wide percentage.
 
