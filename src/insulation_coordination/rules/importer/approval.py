@@ -433,7 +433,7 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
                 edition=identity.edition,
                 clause=spec.clause,
                 table=spec.source_table,
-                note=f"PDF page {spec.page_number}",
+                note=f"PDF page {grid.segments[0].page_number}",
             )
             typed_column_count = (
                 sum(column.role == "data" for column in spec.columns)

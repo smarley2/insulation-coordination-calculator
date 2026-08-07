@@ -1198,6 +1198,76 @@ def test_column_axis_value_can_be_derived_from_its_own_header_row(
     assert table.column_axis.values == (Decimal(10), Decimal(20))
 
 
+def test_projected_table_source_names_the_page_the_table_was_actually_found_on(
+    tmp_path: Path,
+    injected_recipes: tuple[StandardRecipe, ...],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A table located one page inside its search window must record that actual page
+
+    in its own ``Table.source``, matching what its cells already record -- not the page
+    the recipe declared.
+    """
+    part1_recipe, part4_recipe, part62477_recipe = injected_recipes
+    shifted_spec = part1_recipe.tables[0].model_copy(update={"page_search_radius": 1})
+    monkeypatch.setattr(
+        recipe_registry,
+        "RECIPES",
+        (
+            part1_recipe.model_copy(update={"tables": (shifted_spec,)}),
+            part4_recipe,
+            part62477_recipe,
+        ),
+    )
+
+    part1_table_page = tmp_path / "part1-table.pdf"
+    create_geometry_pdf(
+        part1_table_page,
+        standard="IEC 60664-1",
+        edition="2020",
+        edition_anchor="Edition 3.0 2020-05",
+        topic_anchor="synthetic low-voltage geometry",
+        table_anchor="Table S1",
+    )
+    writer = PdfWriter()
+    writer.add_blank_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
+    writer.append(str(part1_table_page))
+    # ``append`` copies pages only, not the source document's /Title metadata that
+    # identification relies on, so it must be reapplied to the combined document.
+    writer.add_metadata({"/Title": "IEC 60664-1:2020 synthetic geometry fixture"})
+    part1 = tmp_path / "part1.pdf"
+    with part1.open("wb") as target:
+        writer.write(target)
+    part4 = tmp_path / "part4.pdf"
+    create_geometry_pdf(
+        part4,
+        standard="IEC 60664-4",
+        edition="2005",
+        edition_anchor="first edition 2005",
+        topic_anchor="synthetic high-frequency geometry",
+        table_anchor="Table S4",
+    )
+    part62477 = tmp_path / "part62477.pdf"
+    create_geometry_pdf(
+        part62477,
+        standard="IEC 62477-1",
+        edition="2022",
+        edition_anchor="Edition 2.0 2022-05",
+        topic_anchor="synthetic power conversion geometry",
+        table_anchor="Table S9",
+    )
+
+    draft = extract_draft((part1, part4, part62477))
+    identity = next(i for i in draft.source_identities if i.recipe_id == part1_recipe.id)
+    grid = next(grid for grid in draft.raw_grids if grid.id == f"raw-{shifted_spec.semantic_id}")
+    assert grid.segments[0].page_number == 2
+
+    table = project_table(identity, shifted_spec, grid)
+
+    assert table.source.note == "PDF page 2"
+    assert all(cell.source.note == "PDF page 2" for cell in table.cells)
+
+
 def test_header_axis_value_column_fails_loudly_when_its_header_cell_is_not_numeric(
     supported_pdfs: tuple[Path, Path, Path],
     injected_recipes: tuple[StandardRecipe, ...],

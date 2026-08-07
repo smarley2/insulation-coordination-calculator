@@ -146,7 +146,7 @@ def project_table(
         raise ValueError(f"table {spec.semantic_id} has no projectable numeric cells")
     source = _source(
         identity,
-        page_number=spec.page_number,
+        page_number=grid.segments[0].page_number,
         clause=spec.clause,
         table=spec.source_table,
     )
@@ -206,7 +206,7 @@ def _project_legacy_table(
             )
     source = _source(
         identity,
-        page_number=spec.page_number,
+        page_number=grid.segments[0].page_number,
         clause=spec.clause,
         table=spec.source_table,
     )
