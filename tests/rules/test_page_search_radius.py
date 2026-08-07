@@ -44,7 +44,7 @@ def _document(tmp_path: Path, blank_pages_before: int) -> Path:
 
 def _resolve(path: Path, segment: TableSegmentSpec) -> int:
     with pdfplumber.open(path) as pdf:
-        page_number, _ = _extract_segment_in_window(
+        page_number, _, _ = _extract_segment_in_window(
             pdf,
             PdfReader(path),
             "synthetic-table",

@@ -387,10 +387,13 @@ class RulesManagerWindow(QWidget):
             for recipe_id in sorted(_REQUIRED_RECIPES)
             if (identity := identities.get(recipe_id)) is not None
         ]
+        # The standards lines are extra detail, not a replacement for the unapproved
+        # warning -- a maintainer must never lose the one statement that this draft
+        # still requires review.
         self._identity_label.setText(
-            "\n".join(lines)
-            if lines
-            else f"Draft {draft.manifest.package_id} (unapproved; review required)"
+            "\n".join(
+                (f"Draft {draft.manifest.package_id} (unapproved; review required)", *lines)
+            )
         )
         self._approve_button.setEnabled(False)
         self._inventory_button.setEnabled(False)

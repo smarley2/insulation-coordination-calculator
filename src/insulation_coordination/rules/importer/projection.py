@@ -59,6 +59,14 @@ def _source(
     )
 
 
+def _segment_row_start(grid: RawGrid, row: int) -> int:
+    """The row_start of the segment whose physical rows contain this global row."""
+    for segment in grid.segments:
+        if segment.row_start <= row < segment.row_start + segment.row_count:
+            return segment.row_start
+    raise ValueError(f"row {row} is outside every declared segment")
+
+
 def _column_axis_value(
     spec: TableAuditSpec,
     column: TableColumnSpec,
@@ -66,7 +74,15 @@ def _column_axis_value(
     grid: RawGrid,
     ordinal: int,
 ) -> Decimal:
-    """A data column's axis value: declared, read from its own header row, or ordinal."""
+    """A data column's axis value: declared, read from its own header row, or ordinal.
+
+    ``axis_value_source_row`` is segment-local, the same space ``header_rows`` uses
+    (extraction marks a cell "header" only when its own segment-local row is both in
+    that segment's ``header_rows`` and equal to this value) -- so the row is resolved
+    per-segment here too, rather than against the cell's global, row_start-offset row.
+    The ``role == "header"`` check keeps a data cell that happens to land on the same
+    row number in a different segment from being picked up instead.
+    """
     if column.axis_value is not None:
         return column.axis_value
     if column.axis_value_source_row is not None:
@@ -74,7 +90,9 @@ def _column_axis_value(
             (
                 cell
                 for cell in grid.cells
-                if cell.row == column.axis_value_source_row and cell.column == grid_column
+                if cell.column == grid_column
+                and cell.role == "header"
+                and cell.row - _segment_row_start(grid, cell.row) == column.axis_value_source_row
             ),
             None,
         )

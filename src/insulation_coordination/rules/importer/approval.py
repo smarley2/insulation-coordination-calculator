@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from insulation_coordination.domain.rules import (
     ApprovalRecord,
@@ -602,6 +603,34 @@ def _expression_variables(expression: Expression) -> set[str]:
     return collect(value)
 
 
+def _require_consistent_shared_source_cells(draft: ImportedRuleDraft) -> None:
+    """Two grids that both cover one physical source cell must agree on its value.
+
+    Some recipes extract the same physical PDF cell into more than one raw grid --
+    e.g. the four IEC 62477-1 Table 7 AC/DC specs each re-extract a shared axis or
+    data column. ``RawGridCell.source`` (page, table, and its own grid row/column,
+    see ``_source`` in ``extract.py``) identifies the physical cell a value came
+    from; two cells with an equal ``source`` are two copies of the same cell. A
+    reviewer correcting one copy and not the other must not approve.
+    """
+    first_seen: dict[SourceReference, tuple[str, Decimal]] = {}
+    for grid in draft.raw_grids:
+        for cell in grid.cells:
+            if cell.value is None:
+                continue
+            seen = first_seen.get(cell.source)
+            if seen is None:
+                first_seen[cell.source] = (grid.id, cell.value)
+                continue
+            other_grid_id, other_value = seen
+            if other_value != cell.value:
+                raise ApprovalError(
+                    f"{other_grid_id} and {grid.id} disagree on the value of the shared "
+                    f"source cell at table {cell.source.table} page {cell.source.note} "
+                    f"row {cell.source.row} column {cell.source.column}"
+                )
+
+
 def _require_source_genesis(draft: ImportedRuleDraft) -> None:
     source_documents = tuple(
         (source.standard, source.edition, source.sha256)
@@ -689,6 +718,7 @@ def approve_draft(
     _require_complete_audit(draft)
     _require_compatibility_mapping(draft)
     _require_resolved_recipe_semantics(draft)
+    _require_consistent_shared_source_cells(draft)
     _require_draft_structure(draft)
     _require_logged_content(draft)
 

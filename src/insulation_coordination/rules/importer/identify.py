@@ -7,7 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pypdf import PdfReader
 from pypdf.errors import PyPdfError
 
@@ -137,6 +137,27 @@ class TableAuditSpec(FrozenModel):
     columns: tuple[TableColumnSpec, ...] = ()
     page_search_radius: int = Field(default=0, ge=0, le=5)
     interpolation: Literal["none", "linear"] = "none"
+
+    @model_validator(mode="after")
+    def _axis_value_source_row_is_a_declared_header_row(self) -> TableAuditSpec:
+        """A column's declared axis-value row must be one extraction will mark as a
+
+        header, in segment-local numbering -- the same space ``header_rows`` already
+        uses. Otherwise the row could resolve to a data cell at runtime instead of
+        raising, silently feeding a data value into the column axis.
+        """
+        for column in self.columns:
+            if column.axis_value_source_row is None:
+                continue
+            if not any(
+                column.axis_value_source_row in segment.header_rows for segment in self.segments
+            ):
+                raise ValueError(
+                    f"column {column.semantic_id!r} axis_value_source_row "
+                    f"{column.axis_value_source_row} is not declared in any segment's "
+                    "header_rows"
+                )
+        return self
 
 
 class EquationAuditSpec(FrozenModel):

@@ -267,16 +267,40 @@ def _recipe(identity: StandardIdentity) -> StandardRecipe:
     return recipe.model_copy(update={"tables": tables, "formulas": formulas, "mappings": mappings})
 
 
-_NUMERIC_CELL = re.compile(
-    r"^\s*(<=|>=|<|>|≤|≥)?\s*"
-    r"((?:[0-9]{1,3}(?:[ \u00a0][0-9]{3})+|[0-9]+)(?:[.,][0-9]+)?)"
-    r"\s*(.*?)\s*$"
-)
+_NUMBER_TOKEN = r"(?:[0-9]{1,3}(?:[ \u00a0][0-9]{3})+|[0-9]+)(?:[.,][0-9]+)?"
+_NUMERIC_CELL = re.compile(rf'^\s*(<=|>=|<|>|≤|≥)?\s*({_NUMBER_TOKEN})\s*(.*?)\s*$')
 _RANGE_CELL = re.compile(
     r"^\s*[0-9]+(?:[.,][0-9]+)?\s*(?:to|[-–—])\s*"
     r"[0-9]+(?:[.,][0-9]+)?\s*$",
     re.IGNORECASE,
 )
+#: SI prefixes this importer understands when a header states a bound with a unit
+#: (e.g. "f <= 0,4 MHz") instead of a bare number. Generic across any base unit.
+_SI_PREFIX_MULTIPLIERS: dict[str, Decimal] = {
+    "": Decimal(1),
+    "k": Decimal(1_000),
+    "M": Decimal(1_000_000),
+    "G": Decimal(1_000_000_000),
+}
+
+
+def _header_bound_in_base_unit(text: str, base_unit: str) -> Decimal | None:
+    """The rightmost "<number> <SI-prefixed base_unit>" quantity in free header text.
+
+    A table's own header row sometimes states a data column's applicability as an
+    upper bound in prose (for example "f <= 0,4 MHz") rather than as a bare number in
+    that column's own header cell. The rightmost match is used because a range like
+    "30 kHz < f <= 100 kHz" always states its ceiling last. Trailing characters (a
+    footnote marker glued to the unit, a closing parenthesis) are ignored rather than
+    required to match, since they carry no numeric meaning.
+    """
+    pattern = re.compile(rf"({_NUMBER_TOKEN})\s*([kMG]?){re.escape(base_unit)}")
+    matches = list(pattern.finditer(text))
+    if not matches:
+        return None
+    value, prefix = matches[-1].groups()
+    normalized = re.sub(r"[ \u00a0]", "", value).replace(",", ".")
+    return Decimal(normalized) * _SI_PREFIX_MULTIPLIERS[prefix]
 
 
 def _numeric_token(
@@ -420,7 +444,7 @@ def _extract_segment(
     anchor_page: PageObject,
     semantic_id: str,
     segment: TableSegmentSpec,
-) -> list[list[str | None]]:
+) -> tuple[list[list[str | None]], pdfplumber.table.Table]:
     anchors = _anchor_boxes(anchor_page, anchor_text=segment.title_anchor)
     if not anchors:
         raise ExtractionError(f"layout anchor is missing for {semantic_id}; extraction refused")
@@ -459,7 +483,7 @@ def _extract_segment(
         raise ExtractionError(
             f"layout dimensions are ambiguous for {semantic_id}; extraction refused"
         )
-    return matching[0].extract()
+    return matching[0].extract(), matching[0]
 
 
 def _extract_segment_in_window(
@@ -467,7 +491,7 @@ def _extract_segment_in_window(
     anchor_reader: PdfReader,
     semantic_id: str,
     segment: TableSegmentSpec,
-) -> tuple[int, list[list[str | None]]]:
+) -> tuple[int, list[list[str | None]], pdfplumber.table.Table]:
     """Locate one segment near its declared page, refusing anything but a unique match."""
 
     candidates = [
@@ -481,26 +505,23 @@ def _extract_segment_in_window(
         # failure surface with its own specific message instead of being folded into a
         # generic "found on N pages" refusal.
         index = candidates[0]
-        return index + 1, _extract_segment(
+        raw, table = _extract_segment(
             pdf.pages[index],
             anchor_reader.pages[index],
             semantic_id,
             segment,
         )
-    found: list[tuple[int, list[list[str | None]]]] = []
+        return index + 1, raw, table
+    found: list[tuple[int, list[list[str | None]], pdfplumber.table.Table]] = []
     for index in candidates:
         try:
-            found.append(
-                (
-                    index + 1,
-                    _extract_segment(
-                        pdf.pages[index],
-                        anchor_reader.pages[index],
-                        semantic_id,
-                        segment,
-                    ),
-                )
+            raw, table = _extract_segment(
+                pdf.pages[index],
+                anchor_reader.pages[index],
+                semantic_id,
+                segment,
             )
+            found.append((index + 1, raw, table))
         except ExtractionError:
             continue
     if len(found) != 1:
@@ -510,6 +531,32 @@ def _extract_segment_in_window(
             "extraction refused"
         )
     return found[0]
+
+
+def _header_cell_text(
+    page: pdfplumber.page.Page,
+    table: pdfplumber.table.Table,
+    *,
+    header_row: int,
+    reference_row: int,
+    column: int,
+) -> str:
+    """The text physically positioned under one column of a header row.
+
+    Table lattice detection sometimes finds no vertical divider inside a header row
+    (a banner header with per-column sub-labels but no ruling between them), so the
+    table's own per-cell text for that row merges several columns together instead of
+    splitting them. This recovers one column's own text by reusing its known x-range
+    from a row where the divider is present -- ``reference_row`` -- intersected with
+    the header row's y-range, rather than trusting the table's own cell split for the
+    header row.
+    """
+    column_bbox = table.rows[reference_row].cells[column]
+    if column_bbox is None:
+        return ""
+    header_bbox = table.rows[header_row].bbox
+    crop_bbox = (column_bbox[0], header_bbox[1], column_bbox[2], header_bbox[3])
+    return page.crop(crop_bbox).extract_text() or ""
 
 
 def _legacy_data_logical(
@@ -563,12 +610,13 @@ def _extract_layout_table(
     row_start = 0
     grid_columns: int | None = None
     for segment in segment_specs:
-        resolved_page, raw = _extract_segment_in_window(
+        resolved_page, raw, table = _extract_segment_in_window(
             pdf,
             anchor_reader,
             spec.semantic_id,
             segment,
         )
+        page = pdf.pages[resolved_page - 1]
         source_columns = segment.source_columns or tuple(range(segment.expected_raw_columns))
         if spec.columns and source_columns != tuple(
             column.source_column for column in spec.columns
@@ -608,10 +656,29 @@ def _extract_layout_table(
                             parsed = parse_data_cell(
                                 raw_text, allowed_footnotes=spec.allowed_suffixes
                             )
+                            if parsed.value is None and segment.data_rows:
+                                # The table's own cell split for this header row may
+                                # merge several columns together (no ruling divides
+                                # them there); recover this column's own text by its
+                                # x-range and read the bound it states, in whatever
+                                # unit the document uses, as this table's axis unit.
+                                header_text = _header_cell_text(
+                                    page,
+                                    table,
+                                    header_row=physical_row,
+                                    reference_row=segment.data_rows[0],
+                                    column=source_column,
+                                )
+                                bound = _header_bound_in_base_unit(
+                                    header_text, spec.column_axis_unit
+                                )
+                                if bound is not None:
+                                    parsed = ParsedDataCell(value=bound, parse_status="numeric")
+                                    raw_text = header_text
                             if parsed.value is None:
                                 raise ExtractionError(
                                     f"axis header cell is not numeric for {spec.semantic_id} "
-                                    f"column {column_spec.semantic_id}"
+                                    f"column {column_spec.semantic_id} row {physical_row}"
                                 )
                             role = "header"
                         else:
