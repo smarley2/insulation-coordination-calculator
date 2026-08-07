@@ -39,7 +39,7 @@ from insulation_coordination.rules.audit import (
     export_table_csv,
 )
 from insulation_coordination.rules.importer.approval import is_fully_resolved
-from insulation_coordination.rules.importer.extract import ImportedRuleDraft
+from insulation_coordination.rules.importer.extract import _REQUIRED_RECIPES, ImportedRuleDraft
 from insulation_coordination.rules.installation import install_rule_package
 from insulation_coordination.ui.equation_review import EquationReviewDialog
 from insulation_coordination.ui.raw_grid_review import RawGridReviewDialog, source_pdf_paths
@@ -381,8 +381,16 @@ class RulesManagerWindow(QWidget):
         self._draft = draft
         self._package = None
         self._inventory = None
+        identities = {identity.recipe_id: identity for identity in draft.source_identities}
+        lines = [
+            f"{identity.standard} {identity.edition} ({identity.sha256[:12]})"
+            for recipe_id in sorted(_REQUIRED_RECIPES)
+            if (identity := identities.get(recipe_id)) is not None
+        ]
         self._identity_label.setText(
-            f"Draft {draft.manifest.package_id} (unapproved; review required)"
+            "\n".join(lines)
+            if lines
+            else f"Draft {draft.manifest.package_id} (unapproved; review required)"
         )
         self._approve_button.setEnabled(False)
         self._inventory_button.setEnabled(False)

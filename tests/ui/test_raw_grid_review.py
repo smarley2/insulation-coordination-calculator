@@ -64,7 +64,7 @@ def test_dialog_applies_value_then_accepts_only_current_table(qtbot, draft) -> N
 
     assert changed
     assert unresolved_raw_review_items(dialog.reviewed_draft) == ()
-    assert len(unresolved_table_items(dialog.reviewed_draft)) == 1
+    assert len(unresolved_table_items(dialog.reviewed_draft)) == 2
     reviewed = next(
         cell
         for grid in dialog.reviewed_draft.raw_grids
@@ -153,6 +153,11 @@ def test_multi_page_grid_shows_a_panel_for_every_page(qtbot, tmp_path, draft) ->
 def test_accepting_the_last_table_closes_the_dialog(qtbot, draft) -> None:
     dialog = RawGridReviewDialog(draft, actor="Maintainer")
     qtbot.addWidget(dialog)
+
+    dialog._notes_edit.setText("Compared against the source page")
+    qtbot.mouseClick(dialog._accept_button, Qt.MouseButton.LeftButton)
+    assert dialog.result() != QDialog.DialogCode.Accepted
+    assert dialog.pending_table_count == 2
 
     dialog._notes_edit.setText("Compared against the source page")
     qtbot.mouseClick(dialog._accept_button, Qt.MouseButton.LeftButton)
@@ -283,7 +288,7 @@ def test_dialog_uses_recipe_headings_and_table_progress(
     draft,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    recipe1, recipe4 = _test_recipes()
+    recipe1, recipe4, recipe62477 = _test_recipes()
     columns = (
         TableColumnSpec(
             semantic_id="stress",
@@ -311,7 +316,7 @@ def test_dialog_uses_recipe_headings_and_table_progress(
     monkeypatch.setattr(
         recipe_registry,
         "RECIPES",
-        (recipe1.model_copy(update={"tables": (table,)}), recipe4),
+        (recipe1.model_copy(update={"tables": (table,)}), recipe4, recipe62477),
     )
 
     dialog = RawGridReviewDialog(draft, actor="Maintainer")
@@ -323,6 +328,6 @@ def test_dialog_uses_recipe_headings_and_table_progress(
         "High branch",
     )
     assert dialog._progress.text() == (
-        "This table is pending. All tables: 2 pending. "
+        "This table is pending. All tables: 3 pending. "
         "Any cell can be retyped; 1 cell(s) here need an explicit decision."
     )

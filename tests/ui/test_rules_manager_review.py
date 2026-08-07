@@ -38,9 +38,10 @@ def rules_manager(qtbot, tmp_path: Path) -> RulesManagerWindow:
 
 
 @pytest.fixture
-def supported_pdfs(tmp_path: Path) -> tuple[Path, Path]:
+def supported_pdfs(tmp_path: Path) -> tuple[Path, Path, Path]:
     part1 = tmp_path / "part1.pdf"
     part4 = tmp_path / "part4.pdf"
+    part62477 = tmp_path / "part62477.pdf"
     create_geometry_pdf(
         part1,
         standard="IEC 60664-1",
@@ -57,7 +58,15 @@ def supported_pdfs(tmp_path: Path) -> tuple[Path, Path]:
         topic_anchor="synthetic high-frequency geometry",
         table_anchor="Table S4",
     )
-    return part1, part4
+    create_geometry_pdf(
+        part62477,
+        standard="IEC 62477-1",
+        edition="2022",
+        edition_anchor="Edition 2.0 2022-05",
+        topic_anchor="synthetic power conversion geometry",
+        table_anchor="Table S9",
+    )
+    return part1, part4, part62477
 
 
 @pytest.fixture(autouse=True)
@@ -126,6 +135,13 @@ def test_accepting_every_table_leaves_only_approval(rules_manager, tmp_path: Pat
     accepted = accept_raw_table(
         accepted,
         grid_id="raw-synthetic-part4-table",
+        corrections={},
+        actor="Maintainer",
+        notes="Compared against PDF",
+    )
+    accepted = accept_raw_table(
+        accepted,
+        grid_id="raw-synthetic-part62477-table",
         corrections={},
         actor="Maintainer",
         notes="Compared against PDF",

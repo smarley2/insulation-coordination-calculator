@@ -59,7 +59,7 @@ def test_dialog_shows_canonical_formula_source_and_dependent_mappings(
     qtbot.addWidget(dialog)
 
     details = dialog._details.toPlainText()
-    assert dialog._formula_selector.count() == 2
+    assert dialog._formula_selector.count() == 3
     assert "synthetic-part1-formula" in details
     assert "Calculation: table synthetic-part1-table[row stress (interpolated)" in details
     assert "Canonical shape (audit contract): table_select:" in details
@@ -85,19 +85,23 @@ def test_accept_requires_notes_and_resolves_only_current_formula_and_mappings(
 
     qtbot.mouseClick(dialog._accept_button, Qt.MouseButton.LeftButton)
     assert warnings == ["Resolution notes are required to accept this equation and mappings."]
-    assert len(unresolved_equation_items(dialog.reviewed_draft)) == 2
+    assert len(unresolved_equation_items(dialog.reviewed_draft)) == 3
 
     dialog._notes_edit.setText("Verified formula and route")
     qtbot.mouseClick(dialog._accept_button, Qt.MouseButton.LeftButton)
 
-    assert len(unresolved_equation_items(dialog.reviewed_draft)) == 1
-    assert len(unresolved_mapping_items(dialog.reviewed_draft)) == 1
+    assert len(unresolved_equation_items(dialog.reviewed_draft)) == 2
+    assert len(unresolved_mapping_items(dialog.reviewed_draft)) == 2
     assert dialog._formula_selector.currentData() == "synthetic-part4-formula"
 
 
 def test_accepting_the_last_equation_closes_the_dialog(qtbot, tables_accepted) -> None:
     dialog = EquationReviewDialog(tables_accepted, actor="Maintainer")
     qtbot.addWidget(dialog)
+
+    dialog._notes_edit.setText("Verified against the source clause")
+    qtbot.mouseClick(dialog._accept_button, Qt.MouseButton.LeftButton)
+    assert dialog.result() != QDialog.DialogCode.Accepted
 
     dialog._notes_edit.setText("Verified against the source clause")
     qtbot.mouseClick(dialog._accept_button, Qt.MouseButton.LeftButton)
@@ -151,14 +155,14 @@ def test_dialog_exposes_mapping_without_formula_dependency(
             )
         }
     )
-    monkeypatch.setattr(recipe_registry, "RECIPES", (part1, recipes[1]))
+    monkeypatch.setattr(recipe_registry, "RECIPES", (part1, recipes[1], recipes[2]))
 
     draft = _tables_accepted(tmp_path)
 
     dialog = EquationReviewDialog(draft, actor="Maintainer")
     qtbot.addWidget(dialog)
 
-    assert dialog._formula_selector.count() == 3
+    assert dialog._formula_selector.count() == 4
     mapping_index = dialog._formula_selector.findData(f"mapping:{part1.mappings[0].id}")
     assert mapping_index >= 0
     dialog._formula_selector.setCurrentIndex(mapping_index)

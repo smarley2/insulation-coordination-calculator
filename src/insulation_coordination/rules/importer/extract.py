@@ -45,7 +45,16 @@ from insulation_coordination.rules.importer.identify import (
 )
 
 IMPORTER_VERSION = IEC_IMPORTER_VERSION
-_REQUIRED_RECIPES = {"iec60664-1-2020", "iec60664-4-2005"}
+_REQUIRED_RECIPES = {"iec60664-1-2020", "iec60664-4-2005", "iec62477-1-2022"}
+
+
+def _missing_parts_message(loaded: set[str]) -> str:
+    missing = sorted(_REQUIRED_RECIPES - loaded)
+    required = ", ".join(sorted(_REQUIRED_RECIPES))
+    return (
+        f"all required standards must be loaded together ({required}); "
+        f"missing required part(s): {', '.join(missing)}"
+    )
 
 __all__ = [
     "EquationAuditSpec",
@@ -960,9 +969,7 @@ def extract_draft(
     """Extract recognized sources into a deliberately unusable immutable draft."""
 
     if not paths:
-        raise ExtractionError(
-            "IEC 60664-1 and IEC 60664-4 must be loaded together; no PDFs were selected"
-        )
+        raise ExtractionError(_missing_parts_message(set()))
     identified = tuple(
         (path, identify_standard(path, password=(passwords or {}).get(path))) for path in paths
     )
@@ -971,11 +978,7 @@ def extract_draft(
         raise ExtractionError("duplicate supported IEC part")
     if set(recipe_ids) != _REQUIRED_RECIPES:
         loaded = {identity.recipe_id for _, identity in identified}
-        missing = sorted(_REQUIRED_RECIPES - loaded)
-        raise ExtractionError(
-            "IEC 60664-1 and IEC 60664-4 must be loaded together; "
-            f"missing required part(s): {', '.join(missing)}"
-        )
+        raise ExtractionError(_missing_parts_message(loaded))
 
     tables: tuple[Table, ...] = ()
     formulas: tuple[Formula, ...] = ()
