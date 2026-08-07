@@ -28,8 +28,6 @@ from insulation_coordination.domain.rules import (
     ParameterSet,
     SourceReference,
     Table,
-    TableAxis,
-    TableCell,
     Variable,
 )
 from insulation_coordination.domain.rules import Expression as RuleExpression
@@ -46,7 +44,6 @@ from insulation_coordination.rules.importer.identify import (
     MappingAuditSpec,
     StandardIdentity,
     StandardRecipe,
-    TableAuditSpec,
 )
 from insulation_coordination.rules.importer.projection import (
     project_formula,
@@ -103,74 +100,6 @@ def unresolved_mapping_items(draft: ImportedRuleDraft) -> tuple[ImportReviewItem
 def recipe_derived_items(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
     """Review items the importer resolved itself because no PDF content backs them."""
     return tuple(item for item in draft.review_items if is_recipe_derived(item))
-
-
-def _table_from_spec(
-    identity: StandardIdentity,
-    spec: TableAuditSpec,
-    grid: RawGrid,
-) -> Table:
-    source = SourceReference(
-        standard=identity.standard,
-        edition=identity.edition,
-        clause=spec.clause,
-        table=spec.source_table,
-        note=f"PDF page {spec.page_number}",
-    )
-    if spec.data_strategy == "rectangle":
-        if spec.data_row_start is None or spec.data_column_start is None:
-            raise ValueError(f"recipe rectangle has no source coordinate for {spec.semantic_id}")
-        coordinates = (
-            (row, column, spec.data_row_start + row, spec.data_column_start + column)
-            for row in range(spec.expected_data_rows)
-            for column in range(spec.expected_data_columns)
-        )
-    else:
-        coordinates = (
-            (
-                index // spec.expected_data_columns,
-                index % spec.expected_data_columns,
-                cell.row,
-                cell.column,
-            )
-            for index, cell in enumerate(cell for cell in grid.cells if cell.value is not None)
-        )
-    raw = {(cell.row, cell.column): cell for cell in grid.cells}
-    cells: list[TableCell] = []
-    for row, column, raw_row, raw_column in coordinates:
-        cell = raw[(raw_row, raw_column)]
-        if cell.value is None:
-            raise ValueError(f"raw grid missing numeric value for {spec.semantic_id}")
-        cells.append(
-            TableCell(
-                row=row,
-                column=column,
-                value=cell.value,
-                unit=spec.target_unit,
-                source=cell.source,
-            )
-        )
-    row_values = tuple(Decimal(index + 1) for index in range(spec.expected_data_rows))
-    column_values = tuple(Decimal(index + 1) for index in range(spec.expected_data_columns))
-    return Table(
-        id=spec.semantic_id,
-        unit=spec.target_unit,
-        row_axis=TableAxis(
-            id=spec.row_axis_id,
-            unit=spec.row_axis_unit,
-            values=row_values,
-            labels=tuple(f"row-{index + 1}" for index in range(len(row_values))),
-        ),
-        column_axis=TableAxis(
-            id=spec.column_axis_id,
-            unit=spec.column_axis_unit,
-            values=column_values,
-            labels=tuple(f"column-{index + 1}" for index in range(len(column_values))),
-        ),
-        cells=tuple(cells),
-        interpolation=spec.interpolation,
-        source=source,
-    )
 
 
 def _table_id_for(recipe: StandardRecipe, spec: FormulaAuditSpec) -> str:

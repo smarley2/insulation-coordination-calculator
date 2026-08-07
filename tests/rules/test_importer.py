@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from pdfminer.pdfdocument import PDFSyntaxError
+from pydantic import ValidationError
 from pypdf import PdfWriter
 
 from insulation_coordination.domain.rules import (
@@ -132,6 +133,25 @@ def test_part4_recipe_uses_tables_one_two_and_real_equation_artifacts() -> None:
     }
     assert all("iteration" not in formula.semantic_id for formula in PART4_RECIPE.formulas)
     assert all(mapping.table != "5" for mapping in PART4_RECIPE.mappings)
+
+
+def test_no_part4_column_hardcodes_a_licensed_axis_value() -> None:
+    """Table 2's frequency-band boundaries are licensed table content, so they must
+
+    never live in this public recipe as a declared ``axis_value``; they must be read
+    from the document's own header row instead. Mirrors the equivalent guard for the
+    62477 recipe's altitude bands.
+    """
+    for spec in PART4_RECIPE.tables:
+        for column in spec.columns:
+            assert column.axis_value is None
+
+    table_two = next(
+        spec for spec in PART4_RECIPE.tables if spec.semantic_id == "iec60664-4-table-2"
+    )
+    frequency_columns = [column for column in table_two.columns if column.role == "data"]
+    assert frequency_columns
+    assert all(column.axis_value_source_row is not None for column in frequency_columns)
 
 
 def _test_recipes() -> tuple[StandardRecipe, StandardRecipe, StandardRecipe]:
@@ -1342,6 +1362,59 @@ def test_header_axis_value_column_fails_loudly_when_its_header_cell_is_not_numer
 
     with pytest.raises(ExtractionError, match="axis header cell is not numeric"):
         extract_draft(supported_pdfs)
+
+
+def test_axis_value_source_row_must_be_declared_in_a_segments_header_rows(
+    injected_recipes: tuple[StandardRecipe, ...],
+) -> None:
+    """A column cannot point its axis value at a row the recipe never marks as a header.
+
+    Without this, ``axis_value_source_row`` could silently name a data row: extraction
+    would never raise (the loud "not numeric" guard only checks rows already in
+    ``header_rows``), and projection would read whatever data cell happens to sit there.
+
+    ``model_copy(update=...)`` does not revalidate, so the broken spec is built through
+    ``model_validate`` on a plain dict instead, the same as parsing it fresh.
+    """
+    legacy_spec = injected_recipes[0].tables[0]
+    segment = TableSegmentSpec(
+        id=legacy_spec.semantic_id,
+        page_number=legacy_spec.page_number,
+        title_anchor=legacy_spec.title_anchor,
+        expected_raw_rows=3,
+        expected_raw_columns=3,
+        expected_bbox=legacy_spec.expected_bbox,
+        header_rows=(0,),
+        data_rows=(1, 2),
+    )
+    broken = {
+        **legacy_spec.model_dump(),
+        "expected_raw_rows": 3,
+        "expected_raw_columns": 3,
+        "expected_data_rows": 2,
+        "expected_data_columns": 2,
+        "segments": (segment,),
+        "columns": (
+            TableColumnSpec(
+                semantic_id="row-axis",
+                heading="row axis",
+                source_column=0,
+                role="axis",
+                unit="V",
+            ),
+            TableColumnSpec(
+                semantic_id="column-a",
+                heading="column a",
+                source_column=1,
+                role="data",
+                unit="mm",
+                # Row 1 is a data row in the segment above, not a header row.
+                axis_value_source_row=1,
+            ),
+        ),
+    }
+    with pytest.raises(ValidationError, match="axis_value_source_row"):
+        TableAuditSpec.model_validate(broken)
 
 
 def test_build_reviewed_draft_resolves_every_item(

@@ -1,9 +1,22 @@
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
+from insulation_coordination.rules.importer.approval import (
+    ApprovalError,
+    approve_draft,
+    is_fully_resolved,
+)
 from insulation_coordination.rules.importer.extract import _REQUIRED_RECIPES, extract_draft
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
+from insulation_coordination.rules.importer.review import (
+    accept_equation_mapping,
+    accept_raw_table,
+    build_reviewed_draft,
+    unresolved_equation_items,
+    unresolved_mapping_items,
+)
 
 pytestmark = pytest.mark.private_standard
 
@@ -67,3 +80,53 @@ def test_extraction_is_reproducible(supplied_standards: dict[str, Path], draft) 
         tuple(supplied_standards[recipe] for recipe in sorted(_REQUIRED_RECIPES))
     )
     assert repeated.checksums == draft.checksums
+
+
+def test_correcting_one_table_seven_grid_without_its_pair_is_refused(draft) -> None:
+    """The AC and DC specs both re-extract Table 7's shared overvoltage-category
+
+    columns from the same physical PDF cells. Retyping one copy without retyping the
+    other must not produce an approved package holding two different values for the
+    same source cell.
+    """
+    ac_grid_id = f"raw-{ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC}.ac"
+    ac_grid = next(grid for grid in draft.raw_grids if grid.id == ac_grid_id)
+    # Column 0 is the AC-only system-voltage axis; column 1 is the first shared
+    # overvoltage-category column, present in both the AC and DC grids.
+    shared_cell = next(
+        cell
+        for cell in ac_grid.cells
+        if cell.role == "data" and cell.column == 1 and cell.value is not None
+    )
+    bogus_value = shared_cell.value + Decimal(1)
+
+    reviewed = draft
+    for grid in draft.raw_grids:
+        corrections = (
+            {(shared_cell.row, shared_cell.column): bogus_value}
+            if grid.id == ac_grid_id
+            else {}
+        )
+        reviewed = accept_raw_table(
+            reviewed,
+            grid_id=grid.id,
+            corrections=corrections,
+            actor="Private fixture reviewer",
+            notes="Verified against supplied PDF",
+        )
+    reviewed = accept_equation_mapping(
+        reviewed,
+        equation_ids=tuple(item.semantic_id for item in unresolved_equation_items(reviewed)),
+        mapping_ids=tuple(item.semantic_id for item in unresolved_mapping_items(reviewed)),
+        actor="Private fixture reviewer",
+        notes="Verified equations and mappings against supplied PDF",
+    )
+    built = build_reviewed_draft(
+        reviewed,
+        actor="Private fixture reviewer",
+        notes="Projected accepted IEC artifacts",
+    )
+    assert is_fully_resolved(built)
+
+    with pytest.raises(ApprovalError, match="disagree"):
+        approve_draft(built, approver="Private fixture reviewer", notes="Approval attempt")

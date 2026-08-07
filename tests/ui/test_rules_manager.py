@@ -93,6 +93,9 @@ def test_draft_identity_shows_all_three_required_standards(
     assert "IEC 60664-1" in rules_manager.identity_text
     assert "IEC 60664-4" in rules_manager.identity_text
     assert "IEC 62477-1" in rules_manager.identity_text
+    # The standards lines are extra detail; a maintainer must still see, in the same
+    # label, that this draft has not been approved.
+    assert "unapproved; review required" in rules_manager.identity_text
 
 
 def test_audit_tree_enumerates_every_table_cell_and_formula(

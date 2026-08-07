@@ -25,6 +25,10 @@ _TABLE_7_HEADER_ROWS = (0, 1, 2, 3, 4)
 _TABLE_7_DATA_ROWS_DC = tuple(range(5, 12))
 _TABLE_7_DATA_ROWS_AC = _TABLE_7_DATA_ROWS_DC[:-1]
 _TABLE_7_FOOTNOTE_ROWS = (12,)
+#: Declared independently of the ``data_rows`` tuples above so the extraction-time row
+#: count check (``expected_data_rows``) is not a tautology against its own input.
+_TABLE_7_EXPECTED_DATA_ROWS_AC = 6
+_TABLE_7_EXPECTED_DATA_ROWS_DC = 7
 #: The DC row axis cell carries a footnote marker on the DC-only row; the AC axis and
 #: the shared data columns carry none of the rows either spec actually reads.
 _TABLE_7_AC_SUFFIXES: tuple[str, ...] = ()
@@ -73,9 +77,9 @@ def _table_7_ac_dc_pair(
     the matching ``FormulaAuditSpec`` row mode is declared by the caller.
     """
     specs = []
-    for supply, axis_source_column, data_rows, allowed_suffixes in (
-        ("ac", 0, _TABLE_7_DATA_ROWS_AC, _TABLE_7_AC_SUFFIXES),
-        ("dc", 1, _TABLE_7_DATA_ROWS_DC, _TABLE_7_DC_SUFFIXES),
+    for supply, axis_source_column, data_rows, allowed_suffixes, expected_data_rows in (
+        ("ac", 0, _TABLE_7_DATA_ROWS_AC, _TABLE_7_AC_SUFFIXES, _TABLE_7_EXPECTED_DATA_ROWS_AC),
+        ("dc", 1, _TABLE_7_DATA_ROWS_DC, _TABLE_7_DC_SUFFIXES, _TABLE_7_EXPECTED_DATA_ROWS_DC),
     ):
         axis_semantic_id = f"system_voltage_{supply}_v"
         source_columns = (axis_source_column, *(item[2] for item in data_items))
@@ -95,7 +99,7 @@ def _table_7_ac_dc_pair(
                 data_strategy="rectangle",
                 data_row_start=5,
                 data_column_start=0,
-                expected_data_rows=len(data_rows),
+                expected_data_rows=expected_data_rows,
                 expected_data_columns=expected_data_columns,
                 row_axis_id=axis_semantic_id,
                 row_axis_unit="V",

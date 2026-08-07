@@ -1,4 +1,3 @@
-from decimal import Decimal
 from typing import Literal
 
 from insulation_coordination.rules.importer.identify import (
@@ -28,7 +27,18 @@ def _columns(
     )
 
 
+#: Physical row (within the table-2 segment) whose cells carry the seven frequency
+#: bands' axis values; structural, not a licensed value.
+_FREQUENCY_BAND_HEADER_ROW = 0
+
+
 def _frequency_columns() -> tuple[TableColumnSpec, ...]:
+    """Table 2's row axis plus its seven frequency-band data columns.
+
+    The band boundaries are licensed table content, so they are read from the
+    document's own header row via ``axis_value_source_row`` instead of being
+    declared here.
+    """
     columns = _columns(
         ("peak_voltage_kv", "Peak voltage", 0, "axis", "kV"),
         ("frequency_30_100_khz_mm", "creepage distance for frequency band 1", 1, "data", "mm"),
@@ -39,19 +49,11 @@ def _frequency_columns() -> tuple[TableColumnSpec, ...]:
         ("frequency_2_mhz_mm", "creepage distance for frequency band 6", 6, "data", "mm"),
         ("frequency_3_mhz_mm", "creepage distance for frequency band 7", 7, "data", "mm"),
     )
-    frequencies = (
-        None,
-        Decimal(100_000),
-        Decimal(200_000),
-        Decimal(400_000),
-        Decimal(700_000),
-        Decimal(1_000_000),
-        Decimal(2_000_000),
-        Decimal(3_000_000),
-    )
     return tuple(
-        column.model_copy(update={"axis_value": frequency})
-        for column, frequency in zip(columns, frequencies, strict=True)
+        column
+        if column.role == "axis"
+        else column.model_copy(update={"axis_value_source_row": _FREQUENCY_BAND_HEADER_ROW})
+        for column in columns
     )
 
 
