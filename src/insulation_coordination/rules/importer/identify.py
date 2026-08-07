@@ -84,6 +84,7 @@ class TableSegmentSpec(FrozenModel):
     note_rows: tuple[int, ...] = ()
     footnote_rows: tuple[int, ...] = ()
     context_cells: tuple[tuple[int, int], ...] = ()
+    page_search_radius: int = Field(default=0, ge=0, le=5)
 
 
 class TableColumnSpec(FrozenModel):
@@ -130,6 +131,7 @@ class TableAuditSpec(FrozenModel):
     ]
     segments: tuple[TableSegmentSpec, ...] = ()
     columns: tuple[TableColumnSpec, ...] = ()
+    page_search_radius: int = Field(default=0, ge=0, le=5)
 
 
 class EquationAuditSpec(FrozenModel):

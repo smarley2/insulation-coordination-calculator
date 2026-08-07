@@ -402,6 +402,7 @@ def _legacy_segment(spec: TableAuditSpec) -> TableSegmentSpec:
         bbox_tolerance=spec.bbox_tolerance,
         anchor_max_vertical_gap=spec.anchor_max_vertical_gap,
         anchor_min_x_overlap=spec.anchor_min_x_overlap,
+        page_search_radius=spec.page_search_radius,
     )
 
 
@@ -450,6 +451,56 @@ def _extract_segment(
             f"layout dimensions are ambiguous for {semantic_id}; extraction refused"
         )
     return matching[0].extract()
+
+
+def _extract_segment_in_window(
+    pdf: pdfplumber.pdf.PDF,
+    anchor_reader: PdfReader,
+    semantic_id: str,
+    segment: TableSegmentSpec,
+) -> tuple[int, list[list[str | None]]]:
+    """Locate one segment near its declared page, refusing anything but a unique match."""
+
+    candidates = [
+        index
+        for offset in range(-segment.page_search_radius, segment.page_search_radius + 1)
+        if 0 <= (index := segment.page_number - 1 + offset) < len(pdf.pages)
+    ]
+    if len(candidates) == 1:
+        # Only one page is in range (this is always true when radius is 0): there is no
+        # ambiguity about *which* page to search, so let the underlying shape/bbox/anchor
+        # failure surface with its own specific message instead of being folded into a
+        # generic "found on N pages" refusal.
+        index = candidates[0]
+        return index + 1, _extract_segment(
+            pdf.pages[index],
+            anchor_reader.pages[index],
+            semantic_id,
+            segment,
+        )
+    found: list[tuple[int, list[list[str | None]]]] = []
+    for index in candidates:
+        try:
+            found.append(
+                (
+                    index + 1,
+                    _extract_segment(
+                        pdf.pages[index],
+                        anchor_reader.pages[index],
+                        semantic_id,
+                        segment,
+                    ),
+                )
+            )
+        except ExtractionError:
+            continue
+    if len(found) != 1:
+        raise ExtractionError(
+            f"table {semantic_id} was found on {len(found)} pages within "
+            f"{segment.page_number} plus or minus {segment.page_search_radius}; "
+            "extraction refused"
+        )
+    return found[0]
 
 
 def _legacy_data_logical(
@@ -503,9 +554,9 @@ def _extract_layout_table(
     row_start = 0
     grid_columns: int | None = None
     for segment in segment_specs:
-        raw = _extract_segment(
-            pdf.pages[segment.page_number - 1],
-            anchor_reader.pages[segment.page_number - 1],
+        resolved_page, raw = _extract_segment_in_window(
+            pdf,
+            anchor_reader,
             spec.semantic_id,
             segment,
         )
@@ -523,13 +574,13 @@ def _extract_layout_table(
         legacy_logical = {} if spec.segments else _legacy_data_logical(spec, raw)
         segment_source = _source(
             identity,
-            page_number=segment.page_number,
+            page_number=resolved_page,
             clause=spec.clause,
             table=spec.source_table,
         )
         segments.append(
             RawGridSegment(
-                page_number=segment.page_number,
+                page_number=resolved_page,
                 row_start=row_start,
                 row_count=segment.expected_raw_rows,
                 source=segment_source,
@@ -601,7 +652,7 @@ def _extract_layout_table(
                         parse_status=parse_status,
                         source=_source(
                             identity,
-                            page_number=segment.page_number,
+                            page_number=resolved_page,
                             clause=spec.clause,
                             table=spec.source_table,
                             row=f"grid row {physical_row + 1}",
