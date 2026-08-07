@@ -595,7 +595,18 @@ def _extract_layout_table(
                 if spec.segments:
                     column_spec = spec.columns[column]
                     if physical_row in segment.header_rows:
-                        role = "blank" if not raw_text.strip() else "header"
+                        if column_spec.axis_value_source_row == physical_row:
+                            parsed = parse_data_cell(
+                                raw_text, allowed_footnotes=spec.allowed_suffixes
+                            )
+                            if parsed.value is None:
+                                raise ExtractionError(
+                                    f"axis header cell is not numeric for {spec.semantic_id} "
+                                    f"column {column_spec.semantic_id}"
+                                )
+                            role = "header"
+                        else:
+                            role = "blank" if not raw_text.strip() else "header"
                     elif physical_row in segment.note_rows:
                         role = "blank" if not raw_text.strip() else "note"
                     elif physical_row in segment.footnote_rows:

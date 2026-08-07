@@ -45,6 +45,8 @@ from insulation_coordination.rules.importer.identify import (
     PasswordRequiredError,
     StandardRecipe,
     TableAuditSpec,
+    TableColumnSpec,
+    TableSegmentSpec,
     UnsupportedEditionError,
     UnsupportedStandardError,
     identify_standard,
@@ -1060,6 +1062,160 @@ def test_project_table_honours_the_declared_interpolation_mode(
     projected = project_table(identity, table_spec, grid)
 
     assert projected.interpolation == "none"
+
+
+def test_column_axis_value_can_be_derived_from_its_own_header_row(
+    supported_pdfs: tuple[Path, Path],
+    injected_recipes: tuple[StandardRecipe, ...],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A column can point at the header row holding its axis value instead of
+
+    declaring the value in the recipe -- required when the value itself is licensed
+    table content that must not be committed to a public recipe file.
+    """
+    part1_recipe = injected_recipes[0]
+    legacy_spec = part1_recipe.tables[0]
+    segment = TableSegmentSpec(
+        id=legacy_spec.semantic_id,
+        page_number=legacy_spec.page_number,
+        title_anchor=legacy_spec.title_anchor,
+        expected_raw_rows=3,
+        expected_raw_columns=3,
+        expected_bbox=legacy_spec.expected_bbox,
+        bbox_tolerance=legacy_spec.bbox_tolerance,
+        anchor_max_vertical_gap=legacy_spec.anchor_max_vertical_gap,
+        anchor_min_x_overlap=legacy_spec.anchor_min_x_overlap,
+        source_columns=(0, 1, 2),
+        header_rows=(0,),
+        data_rows=(1, 2),
+        page_search_radius=legacy_spec.page_search_radius,
+    )
+    derived_spec = legacy_spec.model_copy(
+        update={
+            "expected_raw_rows": 3,
+            "expected_raw_columns": 3,
+            "expected_data_rows": 2,
+            "expected_data_columns": 3,
+            "segments": (segment,),
+            "columns": (
+                TableColumnSpec(
+                    semantic_id="row-axis",
+                    heading="row axis",
+                    source_column=0,
+                    role="axis",
+                    unit="V",
+                ),
+                TableColumnSpec(
+                    semantic_id="column-a",
+                    heading="column a",
+                    source_column=1,
+                    role="data",
+                    unit="mm",
+                    axis_value_source_row=0,
+                ),
+                TableColumnSpec(
+                    semantic_id="column-b",
+                    heading="column b",
+                    source_column=2,
+                    role="data",
+                    unit="mm",
+                    axis_value_source_row=0,
+                ),
+            ),
+        }
+    )
+    monkeypatch.setattr(
+        recipe_registry,
+        "RECIPES",
+        (
+            part1_recipe.model_copy(update={"tables": (derived_spec,)}),
+            injected_recipes[1],
+        ),
+    )
+
+    draft = extract_draft(supported_pdfs)
+    identity = next(i for i in draft.source_identities if i.recipe_id == part1_recipe.id)
+    grid = next(grid for grid in draft.raw_grids if grid.id == f"raw-{derived_spec.semantic_id}")
+
+    table = project_table(identity, derived_spec, grid)
+
+    assert table.column_axis.values == (Decimal(10), Decimal(20))
+
+
+def test_header_axis_value_column_fails_loudly_when_its_header_cell_is_not_numeric(
+    supported_pdfs: tuple[Path, Path],
+    injected_recipes: tuple[StandardRecipe, ...],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Extraction must refuse rather than silently fall back to an ordinal position.
+
+    Column 0's header cell (row 0) is the text "axis", not a number. Pointing a data
+    column's ``axis_value_source_row`` at that same physical column reuses that
+    non-numeric header cell as the declared axis-value source.
+    """
+    part1_recipe = injected_recipes[0]
+    legacy_spec = part1_recipe.tables[0]
+    segment = TableSegmentSpec(
+        id=legacy_spec.semantic_id,
+        page_number=legacy_spec.page_number,
+        title_anchor=legacy_spec.title_anchor,
+        expected_raw_rows=3,
+        expected_raw_columns=3,
+        expected_bbox=legacy_spec.expected_bbox,
+        bbox_tolerance=legacy_spec.bbox_tolerance,
+        anchor_max_vertical_gap=legacy_spec.anchor_max_vertical_gap,
+        anchor_min_x_overlap=legacy_spec.anchor_min_x_overlap,
+        source_columns=(0, 0, 2),
+        header_rows=(0,),
+        data_rows=(1, 2),
+        page_search_radius=legacy_spec.page_search_radius,
+    )
+    broken_spec = legacy_spec.model_copy(
+        update={
+            "expected_raw_rows": 3,
+            "expected_raw_columns": 3,
+            "expected_data_rows": 2,
+            "expected_data_columns": 3,
+            "segments": (segment,),
+            "columns": (
+                TableColumnSpec(
+                    semantic_id="row-axis",
+                    heading="row axis",
+                    source_column=0,
+                    role="axis",
+                    unit="V",
+                ),
+                TableColumnSpec(
+                    semantic_id="column-a",
+                    heading="column a",
+                    source_column=0,
+                    role="data",
+                    unit="mm",
+                    axis_value_source_row=0,
+                ),
+                TableColumnSpec(
+                    semantic_id="column-b",
+                    heading="column b",
+                    source_column=2,
+                    role="data",
+                    unit="mm",
+                    axis_value_source_row=0,
+                ),
+            ),
+        }
+    )
+    monkeypatch.setattr(
+        recipe_registry,
+        "RECIPES",
+        (
+            part1_recipe.model_copy(update={"tables": (broken_spec,)}),
+            injected_recipes[1],
+        ),
+    )
+
+    with pytest.raises(ExtractionError, match="axis header cell is not numeric"):
+        extract_draft(supported_pdfs)
 
 
 def test_build_reviewed_draft_resolves_every_item(

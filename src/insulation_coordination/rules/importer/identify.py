@@ -94,6 +94,10 @@ class TableColumnSpec(FrozenModel):
     role: Literal["axis", "data", "context"]
     unit: Identifier
     axis_value: Decimal | None = None
+    #: This column's axis value is the number found in this row of its own header,
+    #: instead of a value declared in the recipe. Use this for axis values that come
+    #: from a licensed table's own header row rather than a value safe to hardcode.
+    axis_value_source_row: int | None = Field(default=None, ge=0)
     fill_down: bool = False
 
 
