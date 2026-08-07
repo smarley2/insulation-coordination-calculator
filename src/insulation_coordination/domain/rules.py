@@ -342,6 +342,10 @@ class CompatibilityMapping(FrozenModel):
 
 
 DecisionValueKind = TypingLiteral["categorical", "numeric", "boolean"]
+# ponytail: a boolean input currently cannot influence row selection — `range` is
+# refused, `equals`/`in` are refused, `any` ignores it, and `exhaustive=True` with a
+# boolean input is refused — so all a boolean input can do is force `input_required`.
+# Narrowing DecisionValueKind to drop "boolean" is a separate maintainer decision.
 
 
 class DecisionInput(FrozenModel):
@@ -489,6 +493,10 @@ class DecisionRule(FrozenModel):
                     raise ValueError(f"Matcher targets undeclared input {matcher.input!r}")
                 if matcher.op == "range" and declared.kind != "numeric":
                     raise ValueError(f"A range matcher needs a numeric input, got {declared.kind}")
+                if matcher.op in ("equals", "in") and declared.kind != "categorical":
+                    raise ValueError(
+                        f"A {matcher.op} matcher needs a categorical input, got {declared.kind}"
+                    )
                 if declared.kind == "categorical" and any(
                     value not in declared.allowed_values for value in matcher.values
                 ):

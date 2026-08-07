@@ -76,6 +76,24 @@ def test_range_matcher_on_a_categorical_input_is_rejected() -> None:
         _rule((row,))
 
 
+@pytest.mark.parametrize(
+    ("op", "values"),
+    (("equals", ("100",)), ("in", ("100", "200"))),
+)
+def test_value_matcher_on_a_non_categorical_input_is_rejected(
+    op: str, values: tuple[str, ...]
+) -> None:
+    # Matcher values are strings; against a numeric input the row could never fire,
+    # and a non-exhaustive rule would answer "no_match" instead of failing loudly.
+    row = DecisionRow(
+        matchers=(Matcher(input="level", op=op, values=values),),
+        values=(DecisionValue(name="protection", categorical="basic"),),
+        source=SOURCE,
+    )
+    with pytest.raises(ValidationError, match="categorical input"):
+        _rule((row,))
+
+
 def test_row_missing_a_declared_output_is_rejected() -> None:
     row = DecisionRow(
         matchers=(Matcher(input="colour", op="equals", values=("red",)),),
