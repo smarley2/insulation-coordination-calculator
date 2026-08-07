@@ -637,6 +637,14 @@ class _Evaluator:
                 f"at precision {precision}"
             ),
             label=child.label,
+            # The LaTeX form {base}^{exponent} is fully braced, so it is
+            # self-grouping regardless of nesting: atom precedence like `_divide`'s
+            # symbolic \frac{}{} form. The substituted form "base ^ (n/d)" is not
+            # self-grouping around the base, so a nested Power needs the same
+            # multiply-level precedence `_divide` uses for its substituted form,
+            # or `2 ^ (1/2) ^ (2/1)` reads ambiguously when self-nested.
+            symbolic_precedence=_ATOM_PRECEDENCE,
+            substituted_precedence=_MULTIPLY_PRECEDENCE,
         )
 
     def _table(self, table_id: str) -> Table:

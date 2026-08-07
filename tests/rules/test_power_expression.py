@@ -89,6 +89,21 @@ def test_declared_precision_is_honoured() -> None:
     assert len(low.as_tuple().digits) < len(high.as_tuple().digits)
 
 
+def test_power_nested_in_power_base_has_unambiguous_substituted_trace() -> None:
+    expression = Power(
+        base=Power(base=Literal(value=Decimal(2)), numerator=1, denominator=2),
+        numerator=2,
+    )
+    result = evaluate_formula(_formula(expression), {}, {})
+    assert result.value == Decimal(2)
+    power_steps = [step for step in result.steps if step.operation == "power"]
+    outer_substituted = power_steps[-1].substituted
+    # The nested power's substituted form must be parenthesised as a whole,
+    # otherwise "base ^ (1/2) ^ (2/1)" reads ambiguously (left- vs
+    # right-associative give different values).
+    assert outer_substituted == "(2 1 ^ (1/2)) ^ (2/1)"
+
+
 def test_power_over_a_variable_round_trips_and_traces() -> None:
     expression = Power(base=Variable(name="voltage"), numerator=1, denominator=2)
     assert Power.model_validate(expression.model_dump(mode="json")) == expression

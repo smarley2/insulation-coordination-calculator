@@ -22,6 +22,7 @@ from insulation_coordination.domain.rules import (
     Minimum,
     Multiply,
     Parameter,
+    Power,
     Round,
     RulePackage,
     Select,
@@ -104,6 +105,8 @@ def _expression_children(expression: Expression) -> tuple[Expression, ...]:
         return (expression.x,) if expression.column is None else (expression.x, expression.column)
     if isinstance(expression, TableSelect):
         return (expression.row, expression.column)
+    if isinstance(expression, Power):
+        return (expression.base,)
     return ()
 
 

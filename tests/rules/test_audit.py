@@ -10,6 +10,7 @@ from insulation_coordination.domain.rules import (
     Literal,
     Parameter,
     ParameterSet,
+    Power,
     RulePackage,
     RulePackageError,
     Variable,
@@ -60,6 +61,28 @@ def test_audit_inventory_enumerates_all_package_content(
         "table",
     }
     assert all(item.owner_id and item.path for item in inventory.source_references)
+
+
+def test_audit_inventory_includes_nodes_nested_under_power_base(
+    synthetic_package: RulePackage,
+) -> None:
+    formula = synthetic_package.formulas[0]
+    nested_variable = Variable(name="voltage")
+    with_power = synthetic_package.model_copy(
+        update={
+            "formulas": (
+                formula.model_copy(
+                    update={"expression": Power(base=nested_variable, numerator=2)}
+                ),
+            )
+        }
+    )
+
+    inventory = build_audit_inventory(with_power)
+
+    assert any(
+        node.op == "variable" and node.node == nested_variable for node in inventory.formula_nodes
+    )
 
 
 def test_table_csv_has_one_row_per_cell_with_exact_reference_fields(
@@ -211,6 +234,23 @@ def test_validation_rejects_undeclared_variables_and_unlinked_ranges(
 
     assert _result(validate_rule_package(undeclared), "formula_parameters").passed is False
     assert _result(validate_rule_package(unlinked), "range_linkage").passed is False
+
+
+def test_validation_rejects_undeclared_variable_nested_under_power_base(
+    synthetic_package: RulePackage,
+) -> None:
+    formula = synthetic_package.formulas[0]
+    undeclared = synthetic_package.model_copy(
+        update={
+            "formulas": (
+                formula.model_copy(
+                    update={"expression": Power(base=Variable(name="missing"), numerator=2)}
+                ),
+            )
+        }
+    )
+
+    assert _result(validate_rule_package(undeclared), "formula_parameters").passed is False
 
 
 @pytest.mark.parametrize(
