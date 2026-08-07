@@ -21,6 +21,7 @@ from insulation_coordination.domain.rules import (
     Maximum,
     Minimum,
     Multiply,
+    Power,
     Round,
     Select,
     TableSelect,
@@ -121,6 +122,18 @@ def _table_select() -> TableSelect:
         (
             LinearInterpolate(table_id="t", x=Variable(name="a"), column=Literal(value=Decimal(3))),
             "table t[interpolate a, column 3]",
+        ),
+        (
+            Power(base=Variable(name="a"), numerator=2),
+            "a ^ (2/1)",
+        ),
+        (
+            Power(
+                base=Add(operands=(Variable(name="a"), Literal(value=Decimal(1)))),
+                numerator=1,
+                denominator=2,
+            ),
+            "(a + 1) ^ (1/2)",
         ),
         (
             _table_select(),
