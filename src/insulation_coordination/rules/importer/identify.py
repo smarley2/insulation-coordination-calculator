@@ -180,6 +180,36 @@ class ReferenceSlotSpec(FrozenModel):
     target_kind: RuleKind
 
 
+class TokenGrammarSpec(FrozenModel):
+    """A reviewed neutral-token grammar for non-numeric data cells.
+
+    Maps the normalized token text extracted from a data cell onto a typed value.
+    Only "boolean" targets exist: a table that needs another type needs its own
+    structural review, not a new hard-coded fallback. Extraction never converts
+    tokens itself; it only checks that every data-cell token belongs to the
+    grammar and blocks on anything else.
+    """
+
+    target: Literal["boolean"]
+    tokens: tuple[tuple[Identifier, bool], ...] = Field(min_length=2)
+
+    @model_validator(mode="after")
+    def _unique_tokens(self) -> TokenGrammarSpec:
+        texts = tuple(text for text, _value in self.tokens)
+        if len(texts) != len(set(texts)):
+            raise ValueError("token grammar must not repeat a token")
+        return self
+
+    def resolve(self, raw_text: str) -> bool | None:
+        """The typed value for one extracted token, or None when unknown."""
+
+        normalized = _normalized(raw_text)
+        for text, value in self.tokens:
+            if _normalized(text) == normalized:
+                return value
+        return None
+
+
 class TableAuditSpec(FrozenModel):
     semantic_id: Identifier
     source_table: ReferenceText
@@ -217,6 +247,7 @@ class TableAuditSpec(FrozenModel):
     merged_cells: tuple[MergedCellSpec, ...] = ()
     blank_cells: tuple[BlankCellSpec, ...] = ()
     reference_slots: tuple[ReferenceSlotSpec, ...] = ()
+    token_grammar: TokenGrammarSpec | None = None
     page_search_radius: int = Field(default=0, ge=0, le=5)
     interpolation: Literal["none", "linear"] = "none"
 

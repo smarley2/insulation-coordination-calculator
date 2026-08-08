@@ -9,6 +9,7 @@ from insulation_coordination.rules.importer.identify import (
     TableAuditSpec,
     TableColumnSpec,
     TableSegmentSpec,
+    TokenGrammarSpec,
 )
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 
@@ -285,8 +286,42 @@ def _altitude_band_columns() -> tuple[TableColumnSpec, ...]:
     )
 
 
+#: Table 3 maps each DVC row (banner-merged DVC name plus a per-row neutral
+#: category) against five boolean protection conditions. Every data cell carries a
+#: reviewed yes/no token, never a number; the declared grammar is the extraction
+#: contract and any other token blocks extraction instead of being guessed.
+TABLE_3 = TableAuditSpec(
+    semantic_id=ids.DVC_PROTECTION_MATRIX,
+    source_table="3",
+    title_anchor="Table 3",
+    page_number=45,
+    clause="4.4.3",
+    target_unit="1",
+    expected_raw_rows=9,
+    expected_raw_columns=7,
+    expected_bbox=(71.0, 265.3, 524.3, 744.2),
+    data_strategy="rectangle",
+    data_row_start=2,
+    data_column_start=2,
+    expected_data_rows=7,
+    expected_data_columns=5,
+    row_axis_id="protection_category",
+    row_axis_unit="1",
+    column_axis_id="protection_condition",
+    column_axis_unit="1",
+    assertions=("complete_grid", "raw_value_correspondence"),
+    page_search_radius=2,
+    merged_cells=(MergedCellSpec(row=0, column=0, row_span=2, inherit="down"),),
+    blank_cells=(BlankCellSpec(row=1, column=0, semantics="inherit"),),
+    token_grammar=TokenGrammarSpec(
+        target="boolean",
+        tokens=(("yes", True), ("no", False)),
+    ),
+)
+
 TABLES: tuple[TableAuditSpec, ...] = (
     TABLE_2,
+    TABLE_3,
     _IMPULSE_AC,
     _IMPULSE_DC,
     _TOV_AC,

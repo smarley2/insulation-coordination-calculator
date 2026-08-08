@@ -339,6 +339,19 @@ def apply_table_structure(grid: RawGrid, spec: TableAuditSpec) -> RawGrid:
             raise ExtractionError(
                 f"table {spec.semantic_id} has content in declared blank at {coordinate}"
             )
+    if spec.token_grammar is not None:
+        for cell in grid.cells:
+            if cell.role != "data":
+                continue
+            if (
+                cell.value is not None
+                or cell.components
+                or spec.token_grammar.resolve(cell.raw_text) is None
+            ):
+                raise ExtractionError(
+                    f"table {spec.semantic_id} has an unknown boolean token at "
+                    f"{(cell.row, cell.column)}"
+                )
     if structural:
         undeclared = tuple(
             coordinate

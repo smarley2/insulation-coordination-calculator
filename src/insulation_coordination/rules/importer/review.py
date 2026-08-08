@@ -147,13 +147,21 @@ def _review_item_artifact_id(item: ImportReviewItem) -> str:
 def _source_semantic_id(proposal: SemanticProposal) -> str:
     from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 
-    table_2_decision_ids = {
-        ids.DVC_VOLTAGE_LIMITS,
-        f"{ids.DVC_VOLTAGE_LIMITS}.references",
-        f"{ids.DVC_VOLTAGE_LIMITS}.not_applicable",
+    table_decision_sources = {
+        ids.DVC_VOLTAGE_LIMITS: (
+            ids.DVC_VOLTAGE_LIMITS,
+            f"{ids.DVC_VOLTAGE_LIMITS}.references",
+            f"{ids.DVC_VOLTAGE_LIMITS}.not_applicable",
+        ),
+        ids.DVC_PROTECTION_MATRIX: (
+            ids.DVC_PROTECTION_MATRIX,
+            f"{ids.DVC_PROTECTION_MATRIX}.applicable",
+        ),
     }
-    if proposal.rule_kind == "decision" and proposal.semantic_id in table_2_decision_ids:
-        return ids.DVC_VOLTAGE_LIMITS
+    if proposal.rule_kind == "decision":
+        for source_id, decision_ids in table_decision_sources.items():
+            if proposal.semantic_id in decision_ids:
+                return source_id
     return proposal.semantic_id
 
 
@@ -1040,6 +1048,7 @@ def build_reviewed_draft(
     from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
     from insulation_coordination.rules.importer.recipes import RECIPES
     from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
+        project_dvc_protection_matrix,
         project_dvc_voltage_limits,
     )
 
@@ -1063,6 +1072,9 @@ def build_reviewed_draft(
             grid = grids[f"raw-{table_spec.semantic_id}"]
             if table_spec.semantic_id == ids.DVC_VOLTAGE_LIMITS:
                 projected, _proposals = project_dvc_voltage_limits(grid, identity)
+                decisions.update((rule.id, rule) for rule in projected)
+            elif table_spec.semantic_id == ids.DVC_PROTECTION_MATRIX:
+                projected, _proposals = project_dvc_protection_matrix(grid, identity)
                 decisions.update((rule.id, rule) for rule in projected)
             else:
                 tables[table_spec.semantic_id] = project_table(identity, table_spec, grid)
