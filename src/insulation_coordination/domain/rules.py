@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 from itertools import pairwise, product
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, Self, cast
 from typing import Literal as TypingLiteral
 from uuid import UUID
 
@@ -412,6 +412,7 @@ class Matcher(FrozenModel):
     input: Identifier
     op: TypingLiteral["any", "equals", "in", "range"]
     values: tuple[Identifier, ...] = ()
+    boolean: bool | None = None
     minimum: DecimalValue | None = None
     maximum: DecimalValue | None = None
     minimum_inclusive: bool = True
@@ -419,9 +420,14 @@ class Matcher(FrozenModel):
 
     @model_validator(mode="after")
     def _operands_match_operator(self) -> Self:
-        if self.op in ("equals", "in") and not self.values:
+        if self.op == "equals" and self.boolean is not None:
+            if self.values or self.minimum is not None or self.maximum is not None:
+                raise ValueError("A boolean equals matcher uses only boolean")
+        elif self.boolean is not None:
+            raise ValueError("Only equals may declare boolean")
+        if self.op in ("equals", "in") and not self.values and self.boolean is None:
             raise ValueError(f"A {self.op} matcher must declare values")
-        if self.op == "equals" and len(self.values) != 1:
+        if self.op == "equals" and self.boolean is None and len(self.values) != 1:
             raise ValueError("An equals matcher must declare exactly one value")
         if self.op in ("any", "range") and self.values:
             raise ValueError(f"A {self.op} matcher must not declare values")
@@ -517,9 +523,18 @@ class DecisionRule(FrozenModel):
                     raise ValueError(f"Matcher targets undeclared input {matcher.input!r}")
                 if matcher.op == "range" and declared.kind != "numeric":
                     raise ValueError(f"A range matcher needs a numeric input, got {declared.kind}")
-                if matcher.op in ("equals", "in") and declared.kind != "categorical":
+                if matcher.op == "in" and declared.kind == "boolean":
+                    raise ValueError("An in matcher cannot target a boolean input")
+                if matcher.op == "equals" and declared.kind == "boolean":
+                    if matcher.boolean is None:
+                        raise ValueError("An equals matcher needs a boolean value for a boolean input")
+                elif matcher.op in ("equals", "in") and declared.kind != "categorical":
                     raise ValueError(
                         f"A {matcher.op} matcher needs a categorical input, got {declared.kind}"
+                    )
+                if matcher.boolean is not None and declared.kind != "boolean":
+                    raise ValueError(
+                        f"A boolean matcher needs a boolean input, got {declared.kind}"
                     )
                 if declared.kind == "categorical" and any(
                     value not in declared.allowed_values for value in matcher.values
@@ -548,29 +563,38 @@ class DecisionRule(FrozenModel):
         return self
 
     def _require_full_coverage(self, inputs: dict[str, DecisionInput]) -> None:
-        for item in inputs.values():
-            if item.kind == "boolean":
-                raise ValueError(
-                    f"Input {item.name!r} is boolean; an exhaustive rule cannot be claimed "
-                    "over a boolean input because boolean exhaustiveness is not supported"
-                )
-        categorical = tuple(item for item in inputs.values() if item.kind == "categorical")
-        if not categorical:
+        decision_inputs = tuple(
+            item for item in inputs.values() if item.kind in ("categorical", "boolean")
+        )
+        if not decision_inputs:
             return
-        for combination in product(*(item.allowed_values for item in categorical)):
-            assignment = dict(zip((item.name for item in categorical), combination, strict=True))
+        domains = tuple(
+            item.allowed_values if item.kind == "categorical" else (False, True)
+            for item in decision_inputs
+        )
+        for combination in product(*domains):
+            assignment = dict[str, str | bool](
+                zip(
+                    (item.name for item in decision_inputs),
+                    cast(tuple[str | bool, ...], combination),
+                    strict=True,
+                )
+            )
             if not any(_row_admits(row, assignment) for row in self.rows):
                 raise ValueError(f"An exhaustive rule does not cover {assignment}")
 
 
-def _row_admits(row: DecisionRow, assignment: dict[str, str]) -> bool:
+def _row_admits(row: DecisionRow, assignment: dict[str, str | bool]) -> bool:
     for matcher in row.matchers:
         value = assignment.get(matcher.input)
         if value is None:
             continue
         if matcher.op == "any":
             continue
-        if matcher.op in ("equals", "in") and value not in matcher.values:
+        if matcher.op == "equals" and matcher.boolean is not None:
+            if not isinstance(value, bool) or value is not matcher.boolean:
+                return False
+        elif matcher.op in ("equals", "in") and value not in matcher.values:
             return False
     return True
 

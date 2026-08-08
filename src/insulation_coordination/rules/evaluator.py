@@ -783,6 +783,8 @@ class DecisionResult(FrozenModel):
 def _matches(matcher: Matcher, value: Decimal | str | bool) -> bool:
     if matcher.op == "any":
         return True
+    if matcher.op == "equals" and matcher.boolean is not None:
+        return isinstance(value, bool) and value is matcher.boolean
     if matcher.op in ("equals", "in"):
         return value in matcher.values
     if not isinstance(value, Decimal):
