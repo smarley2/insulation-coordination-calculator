@@ -192,3 +192,65 @@ def test_raw_points_carry_source_geometry_unlike_curve_points(curve_pdf) -> None
     assert raw.primitive_ref
     semantic_fields = set(CurvePoint.model_fields)
     assert semantic_fields == {"x", "y"}
+
+
+def test_lossy_image_filter_blocks_extraction(curve_pdf, monkeypatch) -> None:
+    """A DCTDecode (lossy) figure image blocks before decode."""
+    from pypdf.generic import NameObject
+
+    reader, pdf = _pages(curve_pdf)
+    with pdf:
+        page = reader.pages[1]
+        xobj = page["/Resources"]["/XObject"]["/Im1"].get_object()
+        xobj.update({NameObject("/Filter"): NameObject("/DCTDecode")})
+        with pytest.raises(ExtractionError, match="CURVE_SOURCE_LOSSY"):
+            extract_raw_figure(
+                page,
+                pdf.pages[1],
+                synthetic_curve_spec().model_copy(update={"page_number": 2}),
+                FakeOcrEngine(),
+                IDENTITY,
+            )
+
+
+def test_clipping_path_blocks_extraction(curve_pdf) -> None:
+    """A clipping path makes in-bbox membership uncertain; extraction blocks."""
+    from pypdf import PdfWriter
+
+    _reader, pdf = _pages(curve_pdf)
+    clipped = curve_pdf.parent / "clipped.pdf"
+    from pypdf.generic import DecodedStreamObject, NameObject
+
+    writer = PdfWriter()
+    writer.append(curve_pdf)
+    page = writer.pages[0]
+    contents = page.get_contents()
+    stream = DecodedStreamObject()
+    stream.set_data(b"0 0 612 792 re W n\n" + contents.get_data())
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    with clipped.open("wb") as target:
+        writer.write(target)
+    reader2, pdf2 = _pages(clipped)
+    with pdf, pdf2, pytest.raises(ExtractionError, match="CURVE_SOURCE_CLIPPED"):
+        extract_raw_figure(
+            reader2.pages[0],
+            pdf2.pages[0],
+            synthetic_curve_spec(),
+            FakeOcrEngine(),
+            IDENTITY,
+        )
+
+
+def test_image_branch_retains_placement_transform(curve_pdf) -> None:
+    reader, pdf = _pages(curve_pdf)
+    with pdf:
+        figure = extract_raw_figure(
+            reader.pages[1],
+            pdf.pages[1],
+            synthetic_curve_spec().model_copy(update={"page_number": 2}),
+            FakeOcrEngine(),
+            IDENTITY,
+        )
+    assert figure.transform == (
+        Decimal(40), Decimal(0), Decimal(0), Decimal(40), Decimal(100), Decimal(350),
+    )

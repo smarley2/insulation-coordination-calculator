@@ -179,6 +179,7 @@ def _parse_tsv(payload: bytes) -> tuple[OcrToken, ...]:
 
 
 __all__ = [
+    "LocatedCurveSource",
     "OcrEngine",
     "OcrEngineIdentity",
     "OcrError",
@@ -222,10 +223,20 @@ class RawFigure(FrozenModel):
 _PATH_OPERATORS = {"m", "l", "c", "v", "y", "h", "re"}
 _PAINT_OPERATORS = {"S", "s", "f", "f*", "B", "B*", "b", "b*"}
 _PATH_POINT_OPERATORS = ("m", "l", "re")
+_LOSSLESS_IMAGE_FILTERS = frozenset({"/FlateDecode", "/LZWDecode", ""})
 
 
 def _decimal(value: object) -> Decimal:
     return Decimal(str(float(str(value))))
+
+
+class LocatedCurveSource(FrozenModel):
+    """The located source for one figure: mode plus, for images, the XObject name
+    and its placement matrix at `Do` time."""
+
+    mode: Literal["vector_path", "image_xobject"]
+    image_name: str | None = None
+    transform: tuple[Decimal, Decimal, Decimal, Decimal, Decimal, Decimal]
 
 
 def locate_curve_source(
@@ -235,6 +246,10 @@ def locate_curve_source(
     """Decide the source mode: vector paths inside the recipe bbox win; a single
     recipe-matching lossless image XObject is the fallback; anything else blocks."""
 
+    return _locate(reader_page, spec).mode
+
+
+def _locate(reader_page: PageObject, spec: CurveAuditSpec) -> LocatedCurveSource:
     reader = reader_page.indirect_reference.pdf if reader_page.indirect_reference else None
     content = reader_page.get_contents()
     if content is None:
@@ -258,11 +273,19 @@ def locate_curve_source(
         elif op == "Q":
             if stack:
                 current_matrix = stack.pop()
+        elif op == "W":
+            # Clipping changes which geometry lands inside the figure; rather than
+            # interpret the clip path, block so a reviewer confirms the figure.
+            raise ExtractionError(
+                f"CURVE_SOURCE_CLIPPED: clipping path present for {spec.figure}"
+            )
         elif op == "cm":
             a, b, c, d, e, f = (float(str(value)) for value in operands)
             current_matrix = (a, b, c, d, e, f)
         elif op == "Do":
             a, b, c, d, e, f = current_matrix
+            # Axis-aligned placement only; rotation/skew coefficients are ignored
+            # here and would need a reviewed generalization.
             corners = (
                 (e, f),
                 (a + e, f),
@@ -283,15 +306,26 @@ def locate_curve_source(
             if x0 <= tx <= x1 and pdf_bottom <= ty <= pdf_top:
                 vector_points += 1
     if vector_points >= 2:
-        return "vector_path"
-    if len({name for name, _ in image_operands}) > 1:
+        return LocatedCurveSource(
+            mode="vector_path",
+            image_name=None,
+            transform=(
+                Decimal(1), Decimal(0), Decimal(0), Decimal(1), Decimal(0), Decimal(0),
+            ),
+        )
+    names = {name for name, _ in image_operands}
+    if len(names) > 1:
         raise ExtractionError(
-            f"CURVE_SOURCE_AMBIGUOUS: "
-            f"{len({name for name, _ in image_operands})} image candidates for {spec.figure}"
+            f"CURVE_SOURCE_AMBIGUOUS: {len(names)} image candidates for {spec.figure}"
         )
     if not image_operands:
         raise ExtractionError(f"CURVE_SOURCE_MISSING: no vector paths or image for {spec.figure}")
-    return "image_xobject"
+    name, matrix = image_operands[0]
+    return LocatedCurveSource(
+        mode="image_xobject",
+        image_name=name,
+        transform=tuple(Decimal(str(value)) for value in matrix),  # type: ignore[arg-type]
+    )
 
 
 def _vector_traces(
@@ -383,8 +417,8 @@ def extract_raw_figure(
         figure=spec.figure,
     )
     bbox = tuple(Decimal(str(value)) for value in spec.expected_bbox)
-    mode = locate_curve_source(reader_page, spec)
-    if mode == "vector_path":
+    located = _locate(reader_page, spec)
+    if located.mode == "vector_path":
         traces = _vector_traces(reader_page, spec)
         payload = (
             f"vector:{spec.semantic_id}:{spec.expected_bbox}:"
@@ -407,16 +441,45 @@ def extract_raw_figure(
             artifact_sha256=hashlib.sha256(payload.encode("utf-8")).hexdigest(),
         )
 
-    images = list(reader_page.images)
-    if len(images) == 0:
+    # Match the located XObject by name, not page-global position: decorative
+    # images elsewhere on the page must not enter the figure artifact.
+    # The filter gate runs on the raw XObject dictionary first: a lossy or
+    # undecodable image must block before any decode attempt, because Pillow
+    # failure modes are not trustworthy evidence about the source bytes.
+    resources = reader_page.get("/Resources")
+    xobjects = getattr(resources, "get", lambda _key: None)("/XObject")
+    xobject = None
+    if xobjects is not None:
+        entry = getattr(xobjects, "get", lambda _key: None)(located.image_name)
+        if entry is not None:
+            xobject = entry.get_object()
+    if xobject is None:
         raise ExtractionError(
-            f"CURVE_SOURCE_MISSING: no image XObject for {spec.figure}"
+            f"CURVE_SOURCE_MISSING: image XObject {located.image_name} for {spec.figure}"
         )
-    if len(images) != 1:
+    filters = xobject.get("/Filter")
+    if isinstance(filters, list):
+        filter_names = {str(item) for item in filters}
+    elif filters is None:
+        filter_names = set()
+    else:
+        filter_names = {str(filters)}
+    if not filter_names <= _LOSSLESS_IMAGE_FILTERS:
         raise ExtractionError(
-            f"CURVE_SOURCE_AMBIGUOUS: {len(images)} image candidates for {spec.figure}"
+            f"CURVE_SOURCE_LOSSY: unsupported image filter "
+            f"{sorted(filter_names - _LOSSLESS_IMAGE_FILTERS)} for {spec.figure}"
         )
-    image_file = images[0]
+    image_name = located.image_name
+    assert image_name is not None
+    bare_name = image_name.removeprefix("/")
+    expected_names = {image_name, bare_name, f"{image_name}.png", f"{bare_name}.png"}
+    matched = [image for image in reader_page.images if image.name in expected_names]
+    if len(matched) != 1:
+        raise ExtractionError(
+            f"CURVE_SOURCE_AMBIGUOUS: {len(matched)} images match {located.image_name} "
+            f"for {spec.figure}"
+        )
+    image_file = matched[0]
     image = image_file.image
     if image is None:
         raise ExtractionError(f"CURVE_SOURCE_MISSING: image bytes for {spec.figure}")
@@ -427,13 +490,13 @@ def extract_raw_figure(
     tokens = ocr.recognize(image)
     if image_file.indirect_reference is None:
         raise ExtractionError("CURVE_SOURCE_MISSING: image has no indirect reference")
-    xobject = image_file.indirect_reference.get_object()
     get_data = getattr(xobject, "get_data", None)
     if get_data is None:
         raise ExtractionError(f"CURVE_SOURCE_MISSING: image stream for {spec.figure}")
     byte_hash = hashlib.sha256(get_data()).hexdigest()
     payload = (
         f"image:{spec.semantic_id}:{spec.expected_bbox}:{byte_hash}:"
+        f"transform:{located.transform}:"
         f"{ocr.identity.name}:{ocr.identity.version}:{ocr.identity.config_sha256}:"
         + ";".join(token.text for token in tokens)
     )
@@ -442,9 +505,7 @@ def extract_raw_figure(
         source_mode="image_xobject",
         source_bbox=bbox,  # type: ignore[arg-type]
         pixel_size=(int(image.size[0]), int(image.size[1])),
-        transform=(
-            Decimal(1), Decimal(0), Decimal(0), Decimal(1), Decimal(0), Decimal(0),
-        ),
+        transform=located.transform,
         ocr_tokens=tokens,
         traces=(),
         artifact_sha256=hashlib.sha256(payload.encode("utf-8")).hexdigest(),
