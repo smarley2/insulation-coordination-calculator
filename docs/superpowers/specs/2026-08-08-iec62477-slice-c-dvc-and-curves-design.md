@@ -55,13 +55,80 @@ rendered whole-page screenshot when the source XObject is available.
 This slice bumps the rule schema and importer version once. Version 3 packages continue to fail
 with the existing explicit rebuild requirement; no migration path is added.
 
-### Execution state
+### Proposal and execution lifecycle
 
-`Formula`, `DecisionRule`, and the new curve rule gain `executable: bool = True`. Existing
-approved rule construction remains executable by default. Imported semantic proposals set it to
-`False`. Evaluators reject a non-executable rule. Approval rejects a required rule that remains
-non-executable and rebuilds reviewed proposals with `executable=True` only after all blocking
-items and dependencies resolve.
+Final rule objects do not carry an `executable` flag. A `RulePackage` is executable by
+construction: it can exist as an approved package only after validation and approval succeed.
+Imported content remains a `DraftRulePackage` and carries separate `SemanticProposal` records:
+
+`RuleKind` becomes one shared schema type with `table`, `formula`, `mapping`, `decision`,
+`procedure`, `guidance`, and `curve`; IEC inventory and proposal records import that type.
+
+```python
+ProposalState = Literal["proposed", "reviewed"]
+
+class SemanticProposal(FrozenModel):
+    semantic_id: Identifier
+    rule_kind: RuleKind
+    state: ProposalState
+    rule_sha256: str
+    source_artifact_sha256: str
+    review_item_sha256s: tuple[str, ...] = ()
+```
+
+The typed candidate rules remain in the draft's existing rule collections, while proposal records
+state whether their exact canonical payload has been reviewed. Any correction changes the rule
+hash and returns that proposal to `proposed`. Approval requires every required proposal to be
+`reviewed`, requires its current rule hash and source-artifact hash to match, and then constructs a
+final `RulePackage` without proposal metadata. Draft proposal state is never archived in an
+approved `.icrules` package. This prevents the contradictory state “approved package containing a
+non-executable rule” and applies the same lifecycle to tables, formulas, decisions, procedures,
+guidance, mappings, and curves.
+
+`source_artifact_sha256` is the artifact digest for a single-source proposal. For a rule assembled
+from multiple artifacts, including `fault_time_voltage`, it is the canonical SHA-256 of the ordered
+`(artifact_id, artifact_sha256)` pairs. Every variant retains its own reviewed-artifact digest and
+required review-item digest. The aggregate proposal can become `reviewed` only when every member
+artifact/variant review matches; changing any member changes the aggregate digest and resets the
+proposal.
+
+### Typed source-document provenance
+
+`SourceDocument` gains a stable `id`, using the recipe ID for imported IEC documents. The source
+hash remains stored once in the manifest document. `SourceReference` gains required
+`document_id`, typed `page: int | None`, and optional `geometry: SourceGeometryReference | None`:
+
+```python
+class SourceGeometryReference(FrozenModel):
+    artifact_sha256: str
+    bbox: tuple[DecimalValue, DecimalValue, DecimalValue, DecimalValue] | None = None
+
+class SourceReference(FrozenModel):
+    document_id: Identifier
+    standard: Identifier
+    edition: Identifier
+    page: int | None = Field(default=None, ge=1)
+    clause: ReferenceText | None = None
+    table: ReferenceText | None = None
+    figure: ReferenceText | None = None
+    row: ReferenceText | None = None
+    column: ReferenceText | None = None
+    geometry: SourceGeometryReference | None = None
+    note: ReferenceText | None = None
+```
+
+Package validation requires every reference's `document_id` to resolve uniquely in the manifest
+and requires its standard/edition to agree with that document. `note` remains optional human
+context and no longer carries the primary PDF page. Version 3 archives require rebuild; no
+migration guesses missing page or document identity.
+
+### Boolean decision matching
+
+`Matcher` gains `boolean: bool | None`. For a boolean input, `equals` requires this field and
+forbids string `values`; categorical equality continues to use `values`. Decision validation,
+exhaustive coverage, and evaluation enumerate `False` and `True` as a real two-value domain.
+Mixed categorical/boolean exhaustive coverage uses their Cartesian product. Numeric ranges and
+categorical `in` matching remain unchanged.
 
 ### Piecewise curves
 
@@ -69,7 +136,10 @@ Add first-class curve models to `domain/rules.py`:
 
 ```python
 CurveAxisScale = Literal["linear", "log10"]
-CurveInterpolation = Literal["linear", "log_x", "log_y", "log_log", "step_before", "step_after"]
+CurveSegmentType = Literal["continuous", "plateau", "step"]
+CurveInterpolation = Literal[
+    "linear", "log_x", "log_y", "log_log", "constant", "step_before", "step_after"
+]
 
 class CurveAxis(FrozenModel):
     quantity_kind: Identifier
@@ -81,44 +151,49 @@ class CurveAxis(FrozenModel):
 class CurvePoint(FrozenModel):
     x: DecimalValue
     y: DecimalValue
-    source_x: int
-    source_y: int
 
 class CurveSegment(FrozenModel):
     start: int
     end: int
+    segment_type: CurveSegmentType
     interpolation: CurveInterpolation
+
+class FaultTimeVoltageSelector(FrozenModel):
+    subject: Literal["accessible_circuit", "conductive_accessible_part"]
+    voltage_basis: Literal["ac_rms", "ac_peak", "dc"]
+    dvc_context: Identifier | None
+    environment_context: Identifier | None
 
 class FaultTimeVoltageVariant(FrozenModel):
     id: Identifier
-    subject: Literal["accessible_circuit", "conductive_accessible_part"]
-    voltage_basis: Literal["ac_rms", "ac_peak", "dc"]
-    dvc_context: tuple[Identifier, ...]
-    environment_context: tuple[Identifier, ...]
+    selector: FaultTimeVoltageSelector
     x_axis: CurveAxis
     y_axis: CurveAxis
     points: tuple[CurvePoint, ...]
     segments: tuple[CurveSegment, ...]
     applicability: ApplicabilityText
     source: SourceReference
+    reviewed_artifact_sha256: str
 
 class PiecewiseCurveRule(FrozenModel):
     id: Identifier
     variants: tuple[FaultTimeVoltageVariant, ...]
-    executable: bool
     source: SourceReference
 ```
 
 Model validation requires ordered, finite, positive values on logarithmic axes; complete,
 non-overlapping segment coverage; in-range points; unique variant identities; and source
-provenance for every variant. Source pixel coordinates are audit evidence tying a reviewed point
-to the private source image. They are stored only in the private package alongside the licensed
-derived coordinates.
+provenance for every variant. A `continuous` segment uses linear/log interpolation, a `plateau`
+requires equal endpoint voltage and `constant`, and a `step` uses `step_before` or `step_after`.
+`CurvePoint` contains only engineering quantities. Source
+pixel/vector coordinates live only in `RawCurvePoint` inside the private extraction/review
+artifact. Each approved variant links to that artifact through `reviewed_artifact_sha256`; it does
+not embed source-image geometry into runtime points.
 
 `RulePackage` gains `curves`, persisted as `curves.json`, checksummed and included in audit and
 report inventories. Curve evaluation selects one typed variant, finds its segment using explicit
-boundary policy, and applies only that segment's declared interpolation. Runtime callers never
-inspect extraction artifacts.
+boundary policy, and applies only that segment's declared interpolation. It never extrapolates.
+Runtime callers never inspect extraction artifacts.
 
 ## Generic figure extraction
 
@@ -130,7 +205,7 @@ inspect extraction artifacts.
 - figure number, page neighborhood, and expected source bounding box;
 - expected x/y quantity kinds and units;
 - expected axis scale (`log10` for Figures 5 through 7);
-- expected curve count and permitted segment/interpolation kinds; and
+- expected curve count and permitted segment types/interpolation kinds; and
 - structural validation and provenance requirements.
 
 It contains no expected tick values, thresholds, curve coordinates, curve labels, or normative
@@ -140,8 +215,30 @@ formula constants.
 
 `RawFigure` retains the source document hash, page/figure locator, image-XObject hash, source
 bbox, pixel dimensions, extraction method, OCR tokens with pixel bboxes, detected grid geometry,
-raw curve traces, diagnostics, and content hash. Image bytes remain in the local rule workspace;
-they do not enter a public artifact, audit export, or final `.icrules` archive.
+raw curve traces, diagnostics, and content hash. Each `RawCurvePoint` contains source x/y
+coordinates plus a stable primitive/path/pixel reference. These raw coordinates never enter
+`CurvePoint`. Image bytes and raw geometry remain in the local rule workspace; they do not enter a
+public artifact, audit export, or final `.icrules` archive.
+
+### OCR abstraction and image dependency
+
+```python
+class OcrEngine(Protocol):
+    @property
+    def identity(self) -> OcrEngineIdentity: ...
+
+    def recognize(self, image: Image.Image) -> tuple[OcrToken, ...]: ...
+```
+
+`TesseractOcrEngine` is the local production implementation. It uses `shutil.which`,
+`subprocess.run` without a shell, fixed arguments, an explicit timeout, and TSV output. Engine
+name/version are part of extraction provenance and the deterministic draft digest. Public tests
+inject `FakeOcrEngine`; they never require a Tesseract installation or call the network.
+
+The plan adds `pillow` as an explicit bounded runtime dependency. `pdfplumber` currently installs
+Pillow transitively, but production code must not rely on that undeclared relationship. Pillow is
+sufficient for lossless XObject decoding, palette inspection, projections, masks, and connected
+pixel traces. PySide6/QImage remains the UI renderer. OpenCV and NumPy are not added.
 
 ### Extraction order
 
@@ -156,12 +253,12 @@ they do not enter a public artifact, audit export, or final `.icrules` archive.
 8. Associate traces with neutral variant slots only when legend geometry and OCR resolve
    uniquely.
 9. Simplify in calibrated log space with a deterministic resolution-derived tolerance.
-10. Emit a proposed `PiecewiseCurveRule(executable=False)` and its review items.
+10. Emit a typed `PiecewiseCurveRule` plus `SemanticProposal(state="proposed")` and its review
+    items.
 
-Tesseract is not a package runtime dependency. The extractor discovers the local executable with
-`shutil.which`, invokes it through `subprocess.run` without a shell, and records its version. A
-missing executable produces a blocking review item and exposes manual calibration/point entry as
-fallback. It never silently changes extraction method.
+Tesseract is an optional local executable, not a Python package dependency. A missing executable
+produces a blocking review item and exposes manual calibration/point entry as fallback. It never
+silently changes extraction method.
 
 ### Determinism and ambiguity
 
@@ -187,6 +284,59 @@ Digitization blocks when any of these occur:
 No confidence threshold turns uncertainty into executable content. Every uncertain state creates
 a blocking review item.
 
+### Conservative reconstruction
+
+The approved reconstructed limit must never become less conservative than the reviewed source
+because of tracing error, simplification, coordinate conversion, rounding, or interpolation. For
+these maximum-voltage curves, “conservative” means the executable voltage limit is never above
+the lowest source value consistent with the detected stroke and calibration uncertainty.
+
+The deterministic policy is:
+
+1. Preserve the complete source stroke as a pixel/vector uncertainty band rather than a
+   centreline.
+2. Convert every band edge through the reviewed log-axis calibration using `Decimal`.
+3. Choose the lower voltage bound at each source sample. At a descending breakpoint choose the
+   earliest time consistent with the horizontal source uncertainty.
+4. Quantize voltage downward and time toward the conservative side at precision derived from the
+   reviewed axis labels; never round to nearest.
+5. Simplify only in calibrated log space. Evaluate every proposed segment at every source-column
+   sample, every breakpoint, and every segment intersection. The proposal must never rise above
+   the conservative source envelope.
+6. Permit a proposal to fall below that envelope by no more than
+   `max(1 pixel, ceil(detected_stroke_width / 2))`, measured back in source pixels. Greater loss of
+   fidelity requires review even though it is conservative.
+7. Include calibration residual in the uncertainty band. If the residual exceeds half the
+   detected minor-grid spacing, or if no conservative ordering can be proved, create a blocking
+   review item.
+
+Reviewer corrections re-run the same proof. A rule cannot become reviewed while the proof fails.
+
+Curve domains are closed and explicit. Evaluation at either approved endpoint is allowed. A value
+below the lower endpoint or above the upper endpoint returns `out_of_domain`; the evaluator never
+continues the first or last sloped segment. A plateau extends only when its approved constant
+segment and domain explicitly include the requested coordinate.
+
+### Variant selection
+
+Every variant has one exact `FaultTimeVoltageSelector` key. Callers provide all four dimensions;
+`None` explicitly means “not applicable” for DVC/environment, never wildcard. Subject and voltage
+basis are always required. Figure 7 variants use `subject="conductive_accessible_part"` and
+`None` for dimensions that do not apply; Figures 5 and 6 use
+`subject="accessible_circuit"` with their reviewed DVC/environment keys.
+
+`select_curve_variant` compares complete keys:
+
+- zero matches returns a typed `no_match` result;
+- exactly one match returns that variant; and
+- more than one match raises a semantic/package error.
+
+Package validation rejects duplicate selector keys, so first-match-wins is never used for curves.
+Construction of `FaultTimeVoltageSelector` requires all four dimensions, including explicit
+`None` values. `evaluate_piecewise_curve` therefore returns `no_match`, `out_of_domain`, or
+`matched`; a structurally incomplete selector is rejected before evaluation rather than reported
+as a runtime status.
+
 ## Figure review and approval
 
 The Rule Manager adds a curve-review view. It renders the licensed source XObject locally and
@@ -207,7 +357,8 @@ proposal. It is not the default path.
 Every correction stores actor, timestamp, notes, original/corrected hashes, affected review-item
 hashes, and complete source reference. Approval is blocked until every required Figure 5 through
 7 variant is present, uniquely associated, reviewed, provenance-complete, and internally valid.
-Only approval converts `fault_time_voltage` to `executable=True`.
+Only approval copies the reviewed `fault_time_voltage` candidate into the final executable
+`RulePackage`; proposal metadata stays in the draft.
 
 ## Table 2 semantic extraction
 
@@ -286,8 +437,9 @@ ambiguity. Slice C replaces that temporary behavior with generic compound-quanti
 
 Projection creates distinct typed TOV components and any reviewed conversion formula needed to
 relate them. A component association or formula interpretation that is not unique remains
-`executable=False` and blocks approval. Reviewer resolution is required before the TOV semantic
-family becomes executable. Existing impulse rules and AC/DC routing remain unchanged.
+in `SemanticProposal(state="proposed")` and blocks approval. Reviewer resolution is required
+before the TOV semantic family enters a final package. Existing impulse rules and AC/DC routing
+remain unchanged.
 
 ## Approval and package gates
 
@@ -295,7 +447,7 @@ Slice C extends approval with focused gates, leaving the full inventory complete
 to Slice E. Approval refuses a draft when:
 
 - any Slice C review item remains unresolved;
-- a required Slice C decision, formula, or curve is non-executable;
+- a required Slice C proposal is absent, not reviewed, or has a stale rule/source-artifact hash;
 - any Table 2 curve/Table 7 reference is unresolved;
 - any required Figure 5 through 7 variant is missing or duplicated;
 - curve calibration, segment coverage, or provenance is incomplete;
@@ -303,7 +455,40 @@ to Slice E. Approval refuses a draft when:
 - semantic projection does not reproduce the corrected private artifact hashes.
 
 Approved export/re-import preserves decisions, formulas, curve variants, points, segments,
-interpolation semantics, execution state, provenance, and deterministic checksums.
+interpolation semantics, provenance, and deterministic checksums. Approved archives contain no
+draft proposal state or raw extraction geometry.
+
+## Three implementation PRs
+
+Slice C is one conceptual milestone delivered through three independently testable PRs. Each PR
+uses `Refs #34`; none closes the issue.
+
+### C1 — semantic foundation
+
+- schema v4 and importer version bump;
+- typed source-document/page/geometry provenance;
+- deterministic boolean decision matching and exhaustive coverage;
+- proposal/review/final-package lifecycle;
+- `PiecewiseCurveRule`, exact selector, evaluator, conservative domain behavior;
+- archive, validation, audit, report counts, and synthetic fixtures.
+
+### C2 — structured DVC extraction
+
+- Table 2 and Table 3 structural recipes and semantic decision projection;
+- generic `ClauseAuditSpec`, subdivision/bullet extraction, and DVC applicability;
+- compound Table 7 TOV quantity parsing, reviewed formula association, and independent AC/DC
+  and impulse/TOV routes.
+
+### C3 — Figures 5 through 7
+
+- vector-first and embedded-XObject source extraction;
+- OCR abstraction and local Tesseract adapter;
+- log-axis calibration, tracing, conservative simplification, and variant association;
+- curve review overlay and corrections;
+- Table 2 reference resolution;
+- private extraction, approval, archive round-trip, and semantic API verification.
+
+Slice C is complete only when C3 passes its private and public gates.
 
 ## Rule Manager surfaces
 
@@ -329,9 +514,16 @@ All public fixtures use unrelated synthetic values and wording.
   log-axis calibration, OCR token handling, curve association, deterministic simplification,
   ambiguity blocking, and manual fallback.
 - Curve model/evaluator tests cover validation, every interpolation kind, boundaries,
-  non-executable refusal, serialization, archive round-trip, checksum, and provenance.
+  unique selection, ambiguity refusal, no extrapolation, conservative reconstruction, unsafe
+  simplification blocking, serialization, archive round-trip, checksum, and provenance.
+- Decision tests cover boolean true/false equality, missing input, boolean exhaustiveness, and
+  mixed categorical/boolean coverage.
+- Provenance tests reject missing document IDs, unknown manifest links, page-in-note-only
+  references, and mismatched standard/edition links.
+- OCR tests inject a deterministic fake and separately test the local Tesseract adapter's fixed,
+  shell-free command contract without requiring the executable.
 - Rule Manager tests cover overlay alignment, corrections, review records, and approval gating.
-- Table 7 tests prove distinct source quantities, non-executable proposals, reviewer resolution,
+- Table 7 tests prove distinct source quantities, proposed/reviewed lifecycle, reviewer resolution,
   AC/DC independence, and impulse/TOV independence.
 
 Every behavior follows strict red-green-refactor TDD. No test asserts source code text or uses a
@@ -346,7 +538,7 @@ licensed content. They prove:
 - deterministic location and extraction of Tables 2 and 3;
 - deterministic location and digitization of Figures 5, 6, and 7;
 - log-axis calibration and complete source provenance;
-- proposed curves are non-executable before review;
+- proposed curves cannot enter a final package before review;
 - all required curve variants can be reviewed and approved;
 - Table 2 references resolve to the reviewed curve semantic rule;
 - Table 7 compound quantities remain distinct across AC/DC routes;
@@ -370,11 +562,20 @@ artifacts or maintainer review records.
 
 - Tables 2 and 3 extract from the licensed PDF and project to their required semantic IDs.
 - Figures 5 through 7 digitize automatically from source XObjects, produce reviewed piecewise
-  rules, and become executable only after approval.
+  rules, and enter an executable package only after approval.
+- Schema v4 supports deterministic boolean matching and exhaustive boolean coverage.
+- Source document identity, page, and optional geometry/artifact provenance are typed.
+- Raw raster/vector coordinates remain separate from semantic curve points.
+- Proposal/review/final-package lifecycle cannot create contradictory approved states.
+- Curve selection is exact and unique; multiple matches are rejected.
+- Curve evaluation performs no implicit extrapolation.
+- Conservative reconstruction is proved before review; uncertainty blocks approval.
+- OCR is abstracted and public tests require no local Tesseract installation.
 - `iec62477_2022.dvc.fault_time_voltage` is queryable and executable after review.
 - Table 2 semantic references resolve without duplicated curve values.
 - Table 7 TOV source quantities and formulas are distinct, typed, reviewable, and executable only
   after approval; AC/DC and impulse/TOV routes remain independent.
+- C1, C2, and C3 each pass their independent test gate and use `Refs #34`.
 - Public tests contain only synthetic content.
 - Private tests pass against the maintainer-supplied IEC 62477-1:2022 PDF.
 - `uv run ruff check .` passes.
