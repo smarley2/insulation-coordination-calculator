@@ -45,6 +45,8 @@ from insulation_coordination.rules.importer.review import (
 _CELL_COLORS = {
     "numeric": QColor("#e5f4e3"),
     "ambiguous_numeric": QColor("#ffe3a3"),
+    "compound": QColor("#e5f4e3"),
+    "ambiguous_compound": QColor("#ffe3a3"),
     "text": QColor("#e8eef8"),
     "blank": QColor("#f0f0f0"),
     "non_scalar": QColor("#ffe3a3"),
@@ -93,7 +95,10 @@ class RawGridReviewDialog(QDialog):
         self.resize(1180, 700)
         self._draft = draft
         self._actor = actor
-        self._corrections: dict[str, dict[tuple[int, int], Decimal]] = {}
+        self._corrections: dict[
+            str, dict[tuple[int, int] | tuple[int, int, str], Decimal]
+        ] = {}
+        self._selected_component_id: str | None = None
         # Passwords stay in memory for page rendering only; they are never stored.
         self._pdf_paths = dict(pdf_paths or {})
         self._pdf_passwords = dict(pdf_passwords or {})
@@ -144,6 +149,16 @@ class RawGridReviewDialog(QDialog):
         self._details.setWordWrap(True)
         layout.addWidget(self._details)
 
+        self._components_table = QTableWidget()
+        self._components_table.setColumnCount(4)
+        self._components_table.setHorizontalHeaderLabels(
+            ("Component", "Extracted text", "Value", "Formula candidate")
+        )
+        self._components_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._components_table.currentCellChanged.connect(self._component_selection_changed)
+        self._components_table.setVisible(False)
+        layout.addWidget(self._components_table)
+
         editor_row = QHBoxLayout()
         editor_row.addWidget(QLabel("Reviewed decimal value:"))
         self._value_edit = QLineEdit()
@@ -188,7 +203,9 @@ class RawGridReviewDialog(QDialog):
         return len(unresolved_table_items(self._draft))
 
     @property
-    def pending_corrections(self) -> dict[tuple[int, int], Decimal]:
+    def pending_corrections(
+        self,
+    ) -> dict[tuple[int, int] | tuple[int, int, str], Decimal]:
         return dict(self._corrections.get(self._current_grid_id(), {}))
 
     def _current_grid_id(self) -> str:
@@ -383,10 +400,72 @@ class RawGridReviewDialog(QDialog):
         if cell is None:
             self._details.setText("Select a cell to compare it with the source page.")
             self._value_edit.clear()
+            self._components_table.setRowCount(0)
+            self._components_table.setVisible(False)
+            self._selected_component_id = None
             return
         self._details.setText(self._cell_details(cell, pending))
-        value = self._corrections.get(grid.id, {}).get((row, column), cell.value)
-        self._value_edit.setText("" if not editable or value is None else str(value))
+        self._components_table.setRowCount(len(cell.components))
+        self._components_table.setVisible(bool(cell.components))
+        formulas = {
+            component_id: tuple(
+                candidate.formula_id or "unresolved"
+                for candidate in cell.formula_candidates
+                if candidate.component_id == component_id
+            )
+            for component_id in {part.component_id for part in cell.components}
+        }
+        for index, component in enumerate(cell.components):
+            component_value = self._corrections.get(grid.id, {}).get(
+                (row, column, component.component_id), component.value
+            )
+            for item_column, text in enumerate(
+                (
+                    component.component_id,
+                    component.raw_text,
+                    "" if component_value is None else str(component_value),
+                    ", ".join(formulas.get(component.component_id, ())) or "none",
+                )
+            ):
+                self._components_table.setItem(index, item_column, QTableWidgetItem(text))
+        if cell.components:
+            self._components_table.setCurrentCell(0, 0)
+        else:
+            self._selected_component_id = None
+            value = self._corrections.get(grid.id, {}).get((row, column), cell.value)
+            self._value_edit.setText("" if not editable or value is None else str(value))
+
+    def _component_selection_changed(
+        self,
+        row: int,
+        _column: int,
+        _previous_row: int,
+        _previous_column: int,
+    ) -> None:
+        grid = self._current_grid()
+        cell_row, cell_column = self._table.currentRow(), self._table.currentColumn()
+        if grid is None or row < 0:
+            self._selected_component_id = None
+            return
+        cell = next(
+            (
+                candidate
+                for candidate in grid.cells
+                if (candidate.row, candidate.column) == (cell_row, cell_column)
+            ),
+            None,
+        )
+        if cell is None or row >= len(cell.components):
+            self._selected_component_id = None
+            return
+        component = cell.components[row]
+        self._selected_component_id = component.component_id
+        value = self._corrections.get(grid.id, {}).get(
+            (cell_row, cell_column, component.component_id), component.value
+        )
+        self._value_edit.setEnabled(True)
+        self._apply_button.setEnabled(True)
+        self._value_edit.setText("" if value is None else str(value))
 
     def _apply_value(self) -> None:
         grid = self._current_grid()
@@ -401,14 +480,22 @@ class RawGridReviewDialog(QDialog):
         if not value.is_finite():
             QMessageBox.warning(self, "Review Extracted Cell", "Value must be finite.")
             return
-        self._corrections.setdefault(grid.id, {})[coordinate] = value
+        correction_coordinate: tuple[int, int] | tuple[int, int, str] = coordinate
+        if self._selected_component_id is not None:
+            correction_coordinate = (*coordinate, self._selected_component_id)
+        self._corrections.setdefault(grid.id, {})[correction_coordinate] = value
         cell = next(cell for cell in grid.cells if (cell.row, cell.column) == coordinate)
         item = self._table.item(*coordinate)
         if item is not None:
             font = QFont(item.font())
             font.setBold(True)
             item.setFont(font)
-            item.setText(f"{cell.raw_text} → {value}")
+            suffix = (
+                f" ({self._selected_component_id})"
+                if self._selected_component_id is not None
+                else ""
+            )
+            item.setText(f"{cell.raw_text} → {value}{suffix}")
             item.setToolTip(
                 self._cell_details(cell, coordinate in self._pending_coordinates(grid.id))
             )

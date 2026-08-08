@@ -19,6 +19,7 @@ from pypdf._text_extraction import mult
 from pypdf.errors import PyPdfError
 
 from insulation_coordination.domain.project import FrozenModel
+from insulation_coordination.domain.quantities import DecimalValue
 from insulation_coordination.domain.rules import (
     IEC_IMPORTER_VERSION,
     RULE_SCHEMA_VERSION,
@@ -40,6 +41,7 @@ from insulation_coordination.domain.rules import (
 )
 from insulation_coordination.rules.archive import _canonical_json
 from insulation_coordination.rules.importer.identify import (
+    CompoundQuantitySpec,
     EquationAuditSpec,
     FormulaAuditSpec,
     MappingAuditSpec,
@@ -63,6 +65,7 @@ def _missing_parts_message(loaded: set[str]) -> str:
     )
 
 __all__ = [
+    "ComponentFormulaCandidate",
     "EquationAuditSpec",
     "ExtractedEquation",
     "ExtractionError",
@@ -74,13 +77,16 @@ __all__ = [
     "RawGrid",
     "RawGridCell",
     "RawGridSegment",
+    "RawQuantityComponent",
     "ReviewArtifactKind",
     "SemanticProposal",
     "StandardRecipe",
     "TableAuditSpec",
     "canonical_model_sha256",
+    "compound_review_items",
     "extract_draft",
     "is_recipe_derived",
+    "parse_compound_data_cell",
     "parse_data_cell",
 ]
 
@@ -144,15 +150,35 @@ class ImportReviewResolution(FrozenModel):
     notes: NotesText
 
 
+class RawQuantityComponent(FrozenModel):
+    component_id: Identifier
+    raw_text: str = Field(max_length=2_000)
+    value: DecimalValue | None = None
+    unit: Identifier | None = None
+    source: SourceReference
+
+
+class ComponentFormulaCandidate(FrozenModel):
+    component_id: Identifier
+    formula_id: Identifier | None
+    source: SourceReference
+
+
 class ParsedDataCell(FrozenModel):
     value: Decimal | None = None
     qualifier: str | None = Field(default=None, max_length=8)
     suffix: str | None = Field(default=None, max_length=32)
     footnotes: tuple[str, ...] = ()
+    components: tuple[RawQuantityComponent, ...] = ()
+    compound_component_ids: tuple[Identifier, ...] = ()
+    formula_candidates: tuple[ComponentFormulaCandidate, ...] = ()
+    review_codes: tuple[Identifier, ...] = ()
     parse_status: Literal[
         "blank",
         "numeric",
         "ambiguous_numeric",
+        "compound",
+        "ambiguous_compound",
         "non_scalar",
         "range",
     ]
@@ -176,11 +202,16 @@ class RawGridCell(FrozenModel):
     qualifier: str | None = Field(default=None, max_length=8)
     suffix: str | None = Field(default=None, max_length=32)
     footnotes: tuple[str, ...] = ()
+    components: tuple[RawQuantityComponent, ...] = ()
+    compound_component_ids: tuple[Identifier, ...] = ()
+    formula_candidates: tuple[ComponentFormulaCandidate, ...] = ()
     parse_status: Literal[
         "blank",
         "text",
         "numeric",
         "ambiguous_numeric",
+        "compound",
+        "ambiguous_compound",
         "non_scalar",
         "range",
     ]
@@ -402,6 +433,118 @@ def parse_data_cell(
         footnotes=footnotes,
         parse_status="ambiguous_numeric" if ambiguous else "numeric",
     )
+
+
+def parse_compound_data_cell(
+    text: str,
+    spec: CompoundQuantitySpec,
+    source: SourceReference,
+) -> ParsedDataCell:
+    """Parse only explicitly labelled components, preserving their source order."""
+    if len(text) > 2_000:
+        raise ExtractionError("raw table cell exceeds the fidelity size limit")
+    components: list[RawQuantityComponent] = []
+    ambiguous = False
+    for raw_part in re.split(r"\s*(?:/|\n)\s*", text):
+        part = raw_part.strip()
+        if not part:
+            ambiguous = True
+            continue
+        token = _numeric_token(part)
+        if token is None:
+            ambiguous = True
+            continue
+        value, qualifier, suffix = token
+        label = (suffix or "").strip()
+        matches = tuple(
+            component_id
+            for component_id in spec.component_ids
+            if label.casefold() == component_id.casefold()
+        )
+        if qualifier is not None or len(matches) != 1:
+            ambiguous = True
+            continue
+        components.append(
+            RawQuantityComponent(
+                component_id=matches[0],
+                raw_text=part,
+                value=value,
+                source=source,
+            )
+        )
+    component_ids = tuple(component.component_id for component in components)
+    if (
+        len(component_ids) != len(set(component_ids))
+        or set(component_ids) != set(spec.component_ids)
+    ):
+        ambiguous = True
+    candidates = tuple(
+        ComponentFormulaCandidate(
+            component_id=component_id,
+            formula_id=formula_id,
+            source=source,
+        )
+        for component_id, formula_id in spec.formula_candidates
+    )
+    formula_groups = {
+        component_id: tuple(
+            candidate
+            for candidate in candidates
+            if candidate.component_id == component_id
+        )
+        for component_id, _formula_id in spec.formula_candidates
+    }
+    ambiguous_formula = any(
+        len(group) != 1 or group[0].formula_id is None
+        for group in formula_groups.values()
+    )
+    review_codes = (
+        *(("AMBIGUOUS_COMPOUND_CELL",) if ambiguous else ()),
+        *(("AMBIGUOUS_COMPONENT_FORMULA",) if ambiguous_formula else ()),
+    )
+    return ParsedDataCell(
+        components=tuple(components),
+        compound_component_ids=spec.component_ids,
+        formula_candidates=candidates,
+        review_codes=review_codes,
+        parse_status="ambiguous_compound" if ambiguous else "compound",
+    )
+
+
+def compound_review_items(grid: RawGrid) -> tuple[ImportReviewItem, ...]:
+    """Blocking review items for compound labels and formula associations."""
+    items: list[ImportReviewItem] = []
+    for cell in grid.cells:
+        semantic_id = f"{grid.id}:{cell.row}:{cell.column}"
+        if cell.parse_status == "ambiguous_compound":
+            items.append(
+                ImportReviewItem(
+                    code="AMBIGUOUS_COMPOUND_CELL",
+                    semantic_id=semantic_id,
+                    kind="raw_cell",
+                    source=cell.source,
+                    expected_contract="compound cell requires one exact label per component",
+                )
+            )
+        component_ids = {candidate.component_id for candidate in cell.formula_candidates}
+        for component_id in sorted(component_ids):
+            candidates = tuple(
+                candidate
+                for candidate in cell.formula_candidates
+                if candidate.component_id == component_id
+            )
+            if len(candidates) == 1 and candidates[0].formula_id is not None:
+                continue
+            items.append(
+                ImportReviewItem(
+                    code="AMBIGUOUS_COMPONENT_FORMULA",
+                    semantic_id=semantic_id,
+                    kind="raw_cell",
+                    source=cell.source,
+                    expected_contract=f"compound formula requires one exact candidate:{component_id}",
+                )
+            )
+    return tuple(items)
 
 
 def _source(
@@ -746,10 +889,25 @@ def _extract_layout_table(
                         )
                         if raw_text.strip():
                             role = "data"
-                            parsed = parse_data_cell(
-                                raw_text,
-                                allowed_footnotes=spec.allowed_suffixes,
-                                allowed_qualifiers=spec.allowed_qualifiers,
+                            parsed = (
+                                parse_compound_data_cell(
+                                    raw_text,
+                                    column_spec.compound_quantity,
+                                    _source(
+                                        identity,
+                                        page_number=resolved_page,
+                                        clause=spec.clause,
+                                        table=spec.source_table,
+                                        row=f"grid row {physical_row + 1}",
+                                        column=f"grid column {source_column + 1}",
+                                    ),
+                                )
+                                if column_spec.compound_quantity is not None
+                                else parse_data_cell(
+                                    raw_text,
+                                    allowed_footnotes=spec.allowed_suffixes,
+                                    allowed_qualifiers=spec.allowed_qualifiers,
+                                )
                             )
                         else:
                             role = "blank"
@@ -786,6 +944,13 @@ def _extract_layout_table(
                         qualifier=None if parsed is None else parsed.qualifier,
                         suffix=None if parsed is None else parsed.suffix,
                         footnotes=() if parsed is None else parsed.footnotes,
+                        components=() if parsed is None else parsed.components,
+                        compound_component_ids=(
+                            () if parsed is None else parsed.compound_component_ids
+                        ),
+                        formula_candidates=(
+                            () if parsed is None else parsed.formula_candidates
+                        ),
                         parse_status=parse_status,
                         source=_source(
                             identity,
@@ -823,7 +988,10 @@ def _extract_layout_table(
         cells=tuple(cells),
         source=table_source,
     )
-    reviews = tuple(
+    compound_reviews = compound_review_items(grid)
+    reviews = (
+        *compound_reviews,
+        *tuple(
         ImportReviewItem(
             code="MANUAL_RAW_CELL_REVIEW_REQUIRED",
             semantic_id=f"{grid.id}:{cell.row}:{cell.column}",
@@ -832,7 +1000,9 @@ def _extract_layout_table(
             expected_contract=f"raw-cell:{spec.semantic_id}:numeric",
         )
         for cell in cells
-        if cell.role == "data" and cell.parse_status != "numeric"
+        if cell.role == "data"
+        and cell.parse_status not in {"numeric", "compound", "ambiguous_compound"}
+        ),
     )
     return grid, reviews
 

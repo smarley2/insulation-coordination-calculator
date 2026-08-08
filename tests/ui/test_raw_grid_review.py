@@ -8,8 +8,13 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog
 
 from insulation_coordination.rules.importer import recipes as recipe_registry
-from insulation_coordination.rules.importer.extract import RawGrid, RawGridCell, RawGridSegment
-from insulation_coordination.rules.importer.identify import TableColumnSpec
+from insulation_coordination.rules.importer.extract import (
+    RawGrid,
+    RawGridCell,
+    RawGridSegment,
+    parse_compound_data_cell,
+)
+from insulation_coordination.rules.importer.identify import CompoundQuantitySpec, TableColumnSpec
 from insulation_coordination.rules.importer.review import (
     unresolved_raw_review_items,
     unresolved_table_items,
@@ -234,6 +239,49 @@ def test_cell_outside_the_data_area_stays_read_only(qtbot, draft) -> None:
 
     assert dialog._value_edit.isEnabled() is False
     assert dialog._apply_button.isEnabled() is False
+
+
+def test_dialog_shows_one_editable_row_per_compound_component(qtbot, draft) -> None:
+    grid = draft.raw_grids[0]
+    original = next(cell for cell in grid.cells if (cell.row, cell.column) == (2, 1))
+    parsed = parse_compound_data_cell(
+        text="11 ac / 17 dc",
+        spec=CompoundQuantitySpec(component_ids=("ac", "dc")),
+        source=original.source,
+    )
+    compound = original.model_copy(
+        update={
+            "raw_text": "11 ac / 17 dc",
+            "value": None,
+            "components": parsed.components,
+            "compound_component_ids": parsed.compound_component_ids,
+            "parse_status": parsed.parse_status,
+        }
+    )
+    changed_grid = grid.model_copy(
+        update={
+            "cells": tuple(
+                compound if cell is original else cell for cell in grid.cells
+            )
+        }
+    )
+    changed = draft.model_copy(
+        update={
+            "raw_grids": tuple(
+                changed_grid if item is grid else item for item in draft.raw_grids
+            )
+        }
+    )
+    dialog = RawGridReviewDialog(changed, actor="Maintainer")
+    qtbot.addWidget(dialog)
+
+    dialog._table.setCurrentCell(2, 1)
+
+    assert dialog._components_table.rowCount() == 2
+    assert dialog._components_table.item(0, 0).text() == "ac"
+    assert dialog._components_table.item(1, 0).text() == "dc"
+    assert dialog._components_table.item(0, 2).text() == "11"
+    assert dialog._components_table.item(1, 2).text() == "17"
 
 
 @pytest.mark.parametrize("value", ("", "not-a-number", "NaN"))

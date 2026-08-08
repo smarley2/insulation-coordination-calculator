@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import re
 from datetime import UTC, datetime
-from decimal import Decimal
 
 from insulation_coordination.domain.rules import (
     ApprovalRecord,
@@ -65,13 +64,46 @@ def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft
         )
     if item.kind == "mapping":
         return any(spec.id == item.semantic_id for recipe in _recipes() for spec in recipe.mappings)
-    return any(
-        f"{grid.id}:{cell.row}:{cell.column}" == item.semantic_id
-        and _source_matches(cell.source, item.source)
-        and cell.value is not None
-        and cell.parse_status == "numeric"
+    cells = tuple(
+        cell
         for grid in changed.raw_grids
         for cell in grid.cells
+        if f"{grid.id}:{cell.row}:{cell.column}" == item.semantic_id
+        and _source_matches(cell.source, item.source)
+    )
+    if item.code == "AMBIGUOUS_COMPOUND_CELL":
+        return any(
+            cell.parse_status == "compound"
+            and len(cell.components) == len(cell.compound_component_ids)
+            and {component.component_id for component in cell.components}
+            == set(cell.compound_component_ids)
+            and all(component.value is not None for component in cell.components)
+            for cell in cells
+        )
+    if item.code == "AMBIGUOUS_COMPONENT_FORMULA":
+        component_id = item.expected_contract.rsplit(":", 1)[-1]
+        return any(
+            len(
+                tuple(
+                    candidate
+                    for candidate in cell.formula_candidates
+                    if candidate.component_id == component_id
+                    and candidate.formula_id is not None
+                )
+            )
+            == 1
+            and len(
+                tuple(
+                    candidate
+                    for candidate in cell.formula_candidates
+                    if candidate.component_id == component_id
+                )
+            )
+            == 1
+            for cell in cells
+        )
+    return any(
+        cell.value is not None and cell.parse_status == "numeric" for cell in cells
     )
 
 
@@ -123,6 +155,9 @@ def _require_safe_raw_grid_correction(
     original: ImportedRuleDraft,
     changed: ImportedRuleDraft,
 ) -> None:
+    known_formula_ids = {
+        spec.semantic_id for recipe in _recipes() for spec in recipe.formulas
+    }
     before_grids = {grid.id: grid for grid in original.raw_grids}
     after_grids = {grid.id: grid for grid in changed.raw_grids}
     if set(before_grids) != set(after_grids):
@@ -156,6 +191,67 @@ def _require_safe_raw_grid_correction(
             for key in before_cells
         ):
             raise ApprovalError("a correction cannot rewrite extracted raw text or source")
+        for key, before_cell in before_cells.items():
+            after_cell = after_cells[key]
+            if before_cell.compound_component_ids != after_cell.compound_component_ids:
+                raise ApprovalError("a correction cannot rewrite declared compound components")
+            before_components = {part.component_id: part for part in before_cell.components}
+            after_components = {part.component_id: part for part in after_cell.components}
+            if len(after_components) != len(after_cell.components) or any(
+                part.raw_text != before_components[component_id].raw_text
+                or part.unit != before_components[component_id].unit
+                or part.source != before_components[component_id].source
+                for component_id, part in after_components.items()
+                if component_id in before_components
+            ):
+                raise ApprovalError("a correction cannot rewrite compound component provenance")
+            if any(
+                part.source != after_cell.source
+                for component_id, part in after_components.items()
+                if component_id not in before_components
+            ):
+                raise ApprovalError("a correction cannot invent compound component provenance")
+            if any(candidate.source != after_cell.source for candidate in after_cell.formula_candidates):
+                raise ApprovalError("a correction cannot rewrite formula candidate provenance")
+            for component_id in {
+                candidate.component_id
+                for candidate in (
+                    *before_cell.formula_candidates,
+                    *after_cell.formula_candidates,
+                )
+            }:
+                before_candidates = tuple(
+                    candidate
+                    for candidate in before_cell.formula_candidates
+                    if candidate.component_id == component_id
+                )
+                after_candidates = tuple(
+                    candidate
+                    for candidate in after_cell.formula_candidates
+                    if candidate.component_id == component_id
+                )
+                if before_candidates == after_candidates:
+                    continue
+                concrete_ids = {
+                    candidate.formula_id
+                    for candidate in before_candidates
+                    if candidate.formula_id is not None
+                }
+                exact = (
+                    len(after_candidates) == 1
+                    and after_candidates[0].formula_id is not None
+                    and (
+                        after_candidates[0].formula_id in concrete_ids
+                        or (
+                            not concrete_ids
+                            and after_candidates[0].formula_id in known_formula_ids
+                        )
+                    )
+                )
+                if not exact:
+                    raise ApprovalError(
+                        "a correction must select one exact formula candidate"
+                    )
 
 
 def _require_safe_equation_correction(
@@ -566,12 +662,38 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
                 for logical_row in sorted({row for row, _ in logical}):
                     for column in data_columns:
                         raw = logical.get((logical_row, column.semantic_id))
-                        if raw is not None and raw.value is not None:
+                        selected = (
+                            next(
+                                (
+                                    component
+                                    for component in raw.components
+                                    if component.component_id == column.projected_component_id
+                                ),
+                                None,
+                            )
+                            if raw is not None and column.projected_component_id is not None
+                            else raw
+                        )
+                        if selected is not None and selected.value is not None:
                             previous[column.semantic_id] = raw
                         elif column.fill_down:
                             raw = previous.get(column.semantic_id)
-                        if raw is not None and raw.value is not None:
-                            raw_value_list.append(raw)
+                            selected = (
+                                next(
+                                    (
+                                        component
+                                        for component in raw.components
+                                        if component.component_id
+                                        == column.projected_component_id
+                                    ),
+                                    None,
+                                )
+                                if raw is not None
+                                and column.projected_component_id is not None
+                                else raw
+                            )
+                        if selected is not None and selected.value is not None:
+                            raw_value_list.append(selected)
                 raw_values = tuple(raw_value_list)
             elif spec.data_strategy == "rectangle":
                 if spec.data_row_start is None or spec.data_column_start is None:
@@ -714,17 +836,32 @@ def _require_consistent_shared_source_cells(draft: ImportedRuleDraft) -> None:
     from; two cells with an equal ``source`` are two copies of the same cell. A
     reviewer correcting one copy and not the other must not approve.
     """
-    first_seen: dict[SourceReference, tuple[str, Decimal]] = {}
+    first_seen: dict[SourceReference, tuple[str, object]] = {}
     for grid in draft.raw_grids:
         for cell in grid.cells:
-            if cell.value is None:
+            values: object = (
+                (
+                    tuple(
+                        (component.component_id, component.value, component.unit)
+                        for component in cell.components
+                        if component.value is not None
+                    ),
+                    tuple(
+                        (candidate.component_id, candidate.formula_id)
+                        for candidate in cell.formula_candidates
+                    ),
+                )
+                if cell.components
+                else cell.value
+            )
+            if values is None or values == ((), ()):
                 continue
             seen = first_seen.get(cell.source)
             if seen is None:
-                first_seen[cell.source] = (grid.id, cell.value)
+                first_seen[cell.source] = (grid.id, values)
                 continue
             other_grid_id, other_value = seen
-            if other_value != cell.value:
+            if other_value != values:
                 raise ApprovalError(
                     f"{other_grid_id} and {grid.id} disagree on the value of the shared "
                     f"source cell at table {cell.source.table} page {cell.source.page} "

@@ -87,6 +87,24 @@ class TableSegmentSpec(FrozenModel):
     page_search_radius: int = Field(default=0, ge=0, le=5)
 
 
+class CompoundQuantitySpec(FrozenModel):
+    component_ids: tuple[Identifier, ...] = Field(min_length=1)
+    formula_candidates: tuple[tuple[Identifier, Identifier | None], ...] = ()
+
+    @model_validator(mode="after")
+    def _valid_component_contract(self) -> CompoundQuantitySpec:
+        if len(self.component_ids) != len(set(self.component_ids)):
+            raise ValueError("compound component IDs must be unique")
+        unknown = {
+            component_id
+            for component_id, _formula_id in self.formula_candidates
+            if component_id not in self.component_ids
+        }
+        if unknown:
+            raise ValueError("formula candidate refers to an undeclared compound component")
+        return self
+
+
 class TableColumnSpec(FrozenModel):
     semantic_id: Identifier
     heading: ReferenceText
@@ -99,6 +117,19 @@ class TableColumnSpec(FrozenModel):
     #: from a licensed table's own header row rather than a value safe to hardcode.
     axis_value_source_row: int | None = Field(default=None, ge=0)
     fill_down: bool = False
+    compound_quantity: CompoundQuantitySpec | None = None
+    projected_component_id: Identifier | None = None
+
+    @model_validator(mode="after")
+    def _valid_projected_component(self) -> TableColumnSpec:
+        if self.projected_component_id is not None and (
+            self.compound_quantity is None
+            or self.projected_component_id not in self.compound_quantity.component_ids
+        ):
+            raise ValueError("projected component must belong to the compound quantity")
+        if self.compound_quantity is not None and self.role != "data":
+            raise ValueError("only data columns may declare compound quantities")
+        return self
 
 
 class TableAuditSpec(FrozenModel):

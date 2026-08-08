@@ -1,6 +1,7 @@
 from typing import Literal
 
 from insulation_coordination.rules.importer.identify import (
+    CompoundQuantitySpec,
     FormulaAuditSpec,
     TableAuditSpec,
     TableColumnSpec,
@@ -68,6 +69,7 @@ def _table_7_ac_dc_pair(
     data_items: tuple[tuple[str, str, int, ColumnRole, str], ...],
     expected_data_columns: int,
     interpolation: Literal["none", "linear"],
+    compound_component_ids: tuple[str, ...] = (),
 ) -> tuple[TableAuditSpec, TableAuditSpec]:
     """One AC spec and one DC spec reading Table 7's two parallel row axes.
 
@@ -83,6 +85,33 @@ def _table_7_ac_dc_pair(
     ):
         axis_semantic_id = f"system_voltage_{supply}_v"
         source_columns = (axis_source_column, *(item[2] for item in data_items))
+        columns = _columns(
+            (axis_semantic_id, f"{supply} system voltage band upper bound",
+             axis_source_column, "axis", "V"),
+            *data_items,
+        )
+        if compound_component_ids:
+            compound = CompoundQuantitySpec(
+                component_ids=compound_component_ids,
+                formula_candidates=tuple(
+                    (
+                        component_id,
+                        f"{impulse_or_tov_id}.{component_id}.lookup",
+                    )
+                    for component_id in compound_component_ids
+                ),
+            )
+            columns = tuple(
+                column.model_copy(
+                    update={
+                        "compound_quantity": compound,
+                        "projected_component_id": supply,
+                    }
+                )
+                if column.role == "data"
+                else column
+                for column in columns
+            )
         specs.append(
             TableAuditSpec(
                 semantic_id=f"{impulse_or_tov_id}.{supply}",
@@ -122,11 +151,7 @@ def _table_7_ac_dc_pair(
                         page_search_radius=2,
                     ),
                 ),
-                columns=_columns(
-                    (axis_semantic_id, f"{supply} system voltage band upper bound",
-                     axis_source_column, "axis", "V"),
-                    *data_items,
-                ),
+                columns=columns,
             )
         )
     return specs[0], specs[1]
@@ -147,6 +172,7 @@ _TOV_AC, _TOV_DC = _table_7_ac_dc_pair(
     data_items=_TOV_DATA_COLUMNS,
     expected_data_columns=2,
     interpolation="linear",
+    compound_component_ids=("ac", "dc"),
 )
 
 #: Table E.2's four altitude-band data columns are physically ordered descending by

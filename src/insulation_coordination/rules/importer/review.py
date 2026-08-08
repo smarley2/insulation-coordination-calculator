@@ -40,10 +40,12 @@ from insulation_coordination.domain.rules import Expression as RuleExpression
 from insulation_coordination.rules.archive import _canonical_json
 from insulation_coordination.rules.importer.approval import ApprovalError, record_correction
 from insulation_coordination.rules.importer.extract import (
+    ComponentFormulaCandidate,
     ImportedRuleDraft,
     ImportReviewItem,
     RawGrid,
     RawGridCell,
+    RawQuantityComponent,
     SemanticProposal,
     canonical_model_sha256,
     is_recipe_derived,
@@ -468,27 +470,63 @@ def correctable_coordinates(
     return {
         (cell.row, cell.column)
         for cell in grid.cells
-        if cell.role == "data" and ((cell.row, cell.column) in flagged or cell.value is not None)
+        if cell.role == "data"
+        and (
+            (cell.row, cell.column) in flagged
+            or cell.value is not None
+            or any(component.value is not None for component in cell.components)
+        )
     }
 
 
 def _corrected_cells(
     grid: RawGrid,
-    corrections: Mapping[tuple[int, int], Decimal],
+    corrections: Mapping[tuple[int, int] | tuple[int, int, str], Decimal],
     flagged: set[tuple[int, int]],
 ) -> tuple[RawGridCell, ...]:
     """Apply retyped values and clear the parser's flag on every flagged cell."""
     correctable = correctable_coordinates(grid, flagged)
-    unexpected = set(corrections) - correctable
+    scalar_corrections = {
+        coordinate: value for coordinate, value in corrections.items() if len(coordinate) == 2
+    }
+    component_corrections = {
+        coordinate: value for coordinate, value in corrections.items() if len(coordinate) == 3
+    }
+    unexpected: set[tuple[int, int] | tuple[int, int, str]] = set()
+    unexpected.update(set(scalar_corrections) - correctable)
+    unexpected.update(
+        coordinate
+        for coordinate in component_corrections
+        if coordinate[:2] not in correctable
+    )
     if unexpected:
         raise ValueError(f"raw grid cell is not correctable: {sorted(unexpected)!r}")
     cells: list[RawGridCell] = []
     for cell in grid.cells:
         coordinate = (cell.row, cell.column)
-        if coordinate not in flagged and coordinate not in corrections:
+        selected_components = {
+            key[2]: value
+            for key, value in component_corrections.items()
+            if key[:2] == coordinate
+        }
+        if coordinate not in flagged and coordinate not in scalar_corrections and not selected_components:
             cells.append(cell)
             continue
-        value = corrections.get(coordinate, cell.value)
+        if selected_components:
+            known = {component.component_id for component in cell.components}
+            if set(selected_components) - known:
+                raise ValueError(f"raw grid component is not correctable: {coordinate}")
+            if any(not value.is_finite() for value in selected_components.values()):
+                raise ValueError(f"raw grid correction must be a finite decimal: {coordinate}")
+            components = tuple(
+                component.model_copy(update={"value": selected_components[component.component_id]})
+                if component.component_id in selected_components
+                else component
+                for component in cell.components
+            )
+            cells.append(cell.model_copy(update={"components": components}))
+            continue
+        value = scalar_corrections.get(coordinate, cell.value)
         if value is None or not value.is_finite():
             raise ValueError(f"raw grid correction must be a finite decimal: {coordinate}")
         cells.append(
@@ -504,11 +542,191 @@ def _corrected_cells(
     return tuple(cells)
 
 
+def _raw_cell(draft: ImportedRuleDraft, grid_id: str, row: int, column: int) -> RawGridCell:
+    grid = next((item for item in draft.raw_grids if item.id == grid_id), None)
+    if grid is None:
+        raise ValueError(f"unknown raw grid: {grid_id}")
+    cell = next(
+        (item for item in grid.cells if (item.row, item.column) == (row, column)),
+        None,
+    )
+    if cell is None:
+        raise ValueError("unknown raw grid cell")
+    return cell
+
+
+def _replace_raw_cell(
+    draft: ImportedRuleDraft,
+    grid_id: str,
+    replacement: RawGridCell,
+) -> ImportedRuleDraft:
+    return draft.model_copy(
+        update={
+            "raw_grids": tuple(
+                grid.model_copy(
+                    update={
+                        "cells": tuple(
+                            replacement
+                            if (cell.row, cell.column)
+                            == (replacement.row, replacement.column)
+                            else cell
+                            for cell in grid.cells
+                        )
+                    }
+                )
+                if grid.id == grid_id
+                else grid
+                for grid in draft.raw_grids
+            )
+        }
+    )
+
+
+def correct_raw_component(
+    draft: ImportedRuleDraft,
+    *,
+    grid_id: str,
+    row: int,
+    column: int,
+    component_id: str,
+    value: Decimal,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Retype one labelled compound component without changing its siblings."""
+    if not value.is_finite():
+        raise ValueError("raw component correction must be a finite decimal")
+    cell = _raw_cell(draft, grid_id, row, column)
+    if component_id not in cell.compound_component_ids:
+        raise ValueError("component is not declared for this compound cell")
+    existing = tuple(part for part in cell.components if part.component_id == component_id)
+    if len(existing) > 1:
+        raise ValueError("compound component association is duplicated")
+    replacement = (
+        existing[0].model_copy(update={"value": value})
+        if existing
+        else RawQuantityComponent(
+            component_id=component_id,
+            raw_text=cell.raw_text,
+            value=value,
+            source=cell.source,
+        )
+    )
+    components = tuple(
+        replacement if part.component_id == component_id else part
+        for part in cell.components
+    )
+    if not existing:
+        components = (*components, replacement)
+    complete = (
+        len(components) == len(cell.compound_component_ids)
+        and {part.component_id for part in components} == set(cell.compound_component_ids)
+        and all(part.value is not None for part in components)
+    )
+    changed_cell = cell.model_copy(
+        update={
+            "components": components,
+            "parse_status": "compound" if complete else "ambiguous_compound",
+        }
+    )
+    changed = _replace_raw_cell(draft, grid_id, changed_cell)
+    coordinate = f"{grid_id}:{row}:{column}"
+    resolve = tuple(
+        item
+        for item in draft.review_items
+        if item.code == "AMBIGUOUS_COMPOUND_CELL"
+        and item.semantic_id == coordinate
+        and complete
+        and item.sha256
+        not in {resolution.review_item_sha256 for resolution in draft.review_resolutions}
+    )
+    return record_correction(
+        draft,
+        changed,
+        actor=actor.strip(),
+        notes=notes.strip(),
+        resolve=resolve,
+    )
+
+
+def select_component_formula(
+    draft: ImportedRuleDraft,
+    *,
+    grid_id: str,
+    row: int,
+    column: int,
+    component_id: str,
+    formula_id: str,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Choose exactly one candidate formula for one compound component."""
+    cell = _raw_cell(draft, grid_id, row, column)
+    candidates = tuple(
+        candidate
+        for candidate in cell.formula_candidates
+        if candidate.component_id == component_id
+    )
+    concrete = tuple(
+        candidate for candidate in candidates if candidate.formula_id is not None
+    )
+    if concrete and formula_id not in {candidate.formula_id for candidate in concrete}:
+        raise ValueError("formula is not an extracted candidate for this component")
+    if not concrete:
+        from insulation_coordination.rules.importer.recipes import RECIPES
+
+        known_formula_ids = {
+            spec.semantic_id for recipe in RECIPES for spec in recipe.formulas
+        }
+        if formula_id not in known_formula_ids:
+            raise ValueError("formula is not an exact recipe candidate")
+    selected = next(
+        (candidate for candidate in concrete if candidate.formula_id == formula_id),
+        ComponentFormulaCandidate(
+            component_id=component_id,
+            formula_id=formula_id,
+            source=cell.source,
+        ),
+    )
+    changed_cell = cell.model_copy(
+        update={
+            "formula_candidates": (
+                *tuple(
+                    candidate
+                    for candidate in cell.formula_candidates
+                    if candidate.component_id != component_id
+                ),
+                selected,
+            )
+        }
+    )
+    changed = _replace_raw_cell(draft, grid_id, changed_cell)
+    coordinate = f"{grid_id}:{row}:{column}"
+    resolved = {resolution.review_item_sha256 for resolution in draft.review_resolutions}
+    resolve = tuple(
+        item
+        for item in draft.review_items
+        if item.code == "AMBIGUOUS_COMPONENT_FORMULA"
+        and item.semantic_id == coordinate
+        and item.expected_contract.endswith(f":{component_id}")
+        and item.sha256 not in resolved
+    )
+    if not resolve:
+        raise ValueError("component formula has no unresolved ambiguity")
+    return record_correction(
+        draft,
+        changed,
+        actor=actor.strip(),
+        notes=notes.strip(),
+        resolve=resolve,
+    )
+
+
 def accept_raw_table(
     draft: ImportedRuleDraft,
     *,
     grid_id: str,
-    corrections: Mapping[tuple[int, int], Decimal],
+    corrections: Mapping[tuple[int, int] | tuple[int, int, str], Decimal],
     actor: str,
     notes: str,
 ) -> ImportedRuleDraft:
@@ -584,7 +802,7 @@ def accept_raw_grid(
     draft: ImportedRuleDraft,
     *,
     grid_id: str,
-    corrections: Mapping[tuple[int, int], Decimal],
+    corrections: Mapping[tuple[int, int] | tuple[int, int, str], Decimal],
     actor: str,
     notes: str,
 ) -> ImportedRuleDraft:
