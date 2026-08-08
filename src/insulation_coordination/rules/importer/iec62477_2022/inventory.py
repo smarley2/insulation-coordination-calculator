@@ -52,6 +52,7 @@ REQUIRED_SOURCE_ITEMS: tuple[RequiredSourceItem, ...] = (
     _item(ids.DVC_VOLTAGE_LIMITS, "decision", (35, 37), table="Table 2"),
     _item(ids.DVC_PROTECTION_MATRIX, "decision", (35, 37), table="Table 3"),
     _item(ids.DVC_FAULT_TIME_VOLTAGE, "curve", (35, 37)),
+    _item(ids.DVC_FAULT_APPLICABILITY, "decision", (35, 37)),
     _item(ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION, "decision", (36,)),
     _item(ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC, "table", (36,), table="Table 7"),
     _item(ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE, "table", (36, 37), table="Table 7"),

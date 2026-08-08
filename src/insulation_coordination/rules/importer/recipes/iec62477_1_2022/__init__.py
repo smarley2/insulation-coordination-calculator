@@ -1,7 +1,11 @@
 """IEC 62477-1:2022 extraction recipe. Layout facts only."""
 
 from insulation_coordination.rules.importer.identify import StandardRecipe
-from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import identity, tables
+from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
+    clauses,
+    identity,
+    tables,
+)
 
 RECIPE = StandardRecipe(
     id="iec62477-1-2022",
@@ -15,6 +19,7 @@ RECIPE = StandardRecipe(
     tables=tables.TABLES,
     formulas=tables.FORMULAS,
     mappings=(),
+    clauses=clauses.CLAUSES,
 )
 
 __all__ = ["RECIPE"]

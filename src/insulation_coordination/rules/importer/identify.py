@@ -327,6 +327,21 @@ class MappingAuditSpec(FrozenModel):
     figure: ReferenceText | None = None
 
 
+class ClauseAuditSpec(FrozenModel):
+    """Structural contract for one reviewed clause fragment.
+
+    Layout facts only: page, bbox, root shape, and output kind. The recipe never
+    stores clause wording; extracted text stays in private raw fragments.
+    """
+
+    semantic_id: Identifier
+    clause: ReferenceText
+    page_number: int = Field(ge=1)
+    expected_bbox: tuple[float, float, float, float]
+    expected_root_kind: Literal["paragraph", "bullets"]
+    output_kind: Literal["decision", "procedure"]
+
+
 class StandardRecipe(FrozenModel):
     id: Identifier
     standard: Identifier
@@ -341,6 +356,7 @@ class StandardRecipe(FrozenModel):
     tables: tuple[TableAuditSpec, ...]
     formulas: tuple[FormulaAuditSpec, ...]
     mappings: tuple[MappingAuditSpec, ...]
+    clauses: tuple[ClauseAuditSpec, ...] = ()
 
     def matches_text(self, text: str) -> bool:
         return all(_normalized(anchor) in text for anchor in self.identity_anchors)

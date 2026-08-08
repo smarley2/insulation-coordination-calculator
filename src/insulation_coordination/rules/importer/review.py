@@ -77,6 +77,7 @@ def draft_review_digest(draft: DraftRulePackage) -> str:
         "curves": payload["curves"],
         "review_items": payload.get("review_items", []),
         "raw_grids": payload.get("raw_grids", []),
+        "raw_clause_fragments": payload.get("raw_clause_fragments", []),
         "extracted_equations": payload.get("extracted_equations", []),
         "semantic_proposals": payload.get("semantic_proposals", []),
     }
@@ -157,6 +158,7 @@ def _source_semantic_id(proposal: SemanticProposal) -> str:
             ids.DVC_PROTECTION_MATRIX,
             f"{ids.DVC_PROTECTION_MATRIX}.applicable",
         ),
+        ids.DVC_FAULT_APPLICABILITY: (ids.DVC_FAULT_APPLICABILITY,),
     }
     if proposal.rule_kind == "decision":
         for source_id, decision_ids in table_decision_sources.items():
@@ -251,6 +253,19 @@ def _current_source_artifact_sha256(
     )
     if grids:
         return _aggregate_artifact_pairs(grids)
+    fragments = tuple(
+        (fragment.id, canonical_model_sha256(fragment))
+        for fragment in draft.raw_clause_fragments
+        if fragment.id
+        in {
+            proposal.semantic_id,
+            f"raw-{proposal.semantic_id}",
+            source_semantic_id,
+            f"raw-{source_semantic_id}",
+        }
+    )
+    if fragments:
+        return _aggregate_artifact_pairs(fragments)
     equations = tuple(
         (equation.id, canonical_model_sha256(equation))
         for equation in draft.extracted_equations
@@ -1047,6 +1062,9 @@ def build_reviewed_draft(
     """Project typed content only after every source artifact is accepted."""
     from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
     from insulation_coordination.rules.importer.recipes import RECIPES
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.clauses import (
+        project_dvc_fault_applicability,
+    )
     from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
         project_dvc_protection_matrix,
         project_dvc_voltage_limits,
@@ -1059,6 +1077,7 @@ def build_reviewed_draft(
 
     identities = {i.recipe_id: i for i in draft.source_identities}
     grids = {g.id: g for g in draft.raw_grids}
+    fragments = {fragment.id: fragment for fragment in draft.raw_clause_fragments}
     equations = {equation.id: equation for equation in draft.extracted_equations}
 
     tables: dict[str, Table] = {}
@@ -1082,6 +1101,19 @@ def build_reviewed_draft(
             formulas[formula_spec.semantic_id] = project_formula(identity, formula_spec, equations)
         for mapping_spec in recipe.mappings:
             mappings[mapping_spec.id] = project_mapping(identity, mapping_spec)
+        for clause_spec in recipe.clauses:
+            fragment = fragments.get(f"raw-{clause_spec.semantic_id}")
+            if fragment is None:
+                # A draft extracted before this clause recipe existed has no
+                # fragment; approval gating reports the missing required content.
+                continue
+            if clause_spec.semantic_id == ids.DVC_FAULT_APPLICABILITY:
+                projected, _proposals = project_dvc_fault_applicability(fragment, identity)
+                decisions.update((rule.id, rule) for rule in projected)
+            else:
+                raise ValueError(
+                    f"no clause projection for {clause_spec.semantic_id}"
+                )
 
     changed = draft.model_copy(
         update={

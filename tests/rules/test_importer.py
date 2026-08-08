@@ -1910,6 +1910,7 @@ def test_approval_constructs_every_final_collection_without_draft_proposals(
         imported.mappings,
         imported.review_items,
         imported.raw_grids,
+        imported.raw_clause_fragments,
         imported.manifest.source_documents,
         imported.source_identities,
         imported.review_resolutions,

@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
 import pdfplumber
@@ -40,6 +40,10 @@ from insulation_coordination.domain.rules import (
     Table,
 )
 from insulation_coordination.rules.archive import _canonical_json
+
+if TYPE_CHECKING:
+    from insulation_coordination.rules.importer.clauses import RawClauseFragment
+
 from insulation_coordination.rules.importer.identify import (
     BlankCellSemantics,
     CompoundQuantitySpec,
@@ -440,6 +444,7 @@ class ImportedRuleDraft(DraftRulePackage):
     review_items: tuple[ImportReviewItem, ...] = ()
     review_resolutions: tuple[ImportReviewResolution, ...] = ()
     raw_grids: tuple[RawGrid, ...] = ()
+    raw_clause_fragments: tuple[RawClauseFragment, ...] = ()
     extracted_equations: tuple[ExtractedEquation, ...] = ()
     semantic_proposals: tuple[SemanticProposal, ...] = ()
     source_identities: tuple[StandardIdentity, ...]
@@ -451,6 +456,7 @@ def _content_digest(
     mappings: tuple[CompatibilityMapping, ...],
     review_items: tuple[ImportReviewItem, ...] = (),
     raw_grids: tuple[RawGrid, ...] = (),
+    raw_clause_fragments: tuple[RawClauseFragment, ...] = (),
     source_documents: tuple[SourceDocument, ...] = (),
     source_identities: tuple[StandardIdentity, ...] = (),
     review_resolutions: tuple[ImportReviewResolution, ...] = (),
@@ -467,6 +473,7 @@ def _content_digest(
         "review_items": [item.model_dump(mode="json") for item in review_items],
         "review_resolutions": [item.model_dump(mode="json") for item in review_resolutions],
         "raw_grids": [item.model_dump(mode="json") for item in raw_grids],
+        "raw_clause_fragments": [item.model_dump(mode="json") for item in raw_clause_fragments],
         "extracted_equations": [item.model_dump(mode="json") for item in extracted_equations],
         "source_documents": [item.model_dump(mode="json") for item in source_documents],
         "source_identities": [item.model_dump(mode="json") for item in source_identities],
@@ -1329,7 +1336,9 @@ def _extract_real_layout(
     path: Path,
     identity: StandardIdentity,
     recipe: StandardRecipe,
-) -> tuple[tuple[RawGrid, ...], tuple[ImportReviewItem, ...]]:
+) -> tuple[tuple[RawGrid, ...], tuple[RawClauseFragment, ...], tuple[ImportReviewItem, ...]]:
+    from insulation_coordination.rules.importer.clauses import extract_clause_fragment
+
     try:
         anchor_reader = PdfReader(path)
         with pdfplumber.open(path) as pdf:
@@ -1341,6 +1350,10 @@ def _extract_real_layout(
                     spec,
                 )
                 for spec in recipe.tables
+            )
+            fragments = tuple(
+                extract_clause_fragment(pdf.pages[spec.page_number - 1], spec, identity)
+                for spec in recipe.clauses
             )
     except ExtractionError:
         raise
@@ -1357,7 +1370,7 @@ def _extract_real_layout(
         raise ExtractionError("recognized PDF layout could not be extracted") from error
     grids = tuple(grid for grid, _ in extracted)
     raw_reviews = tuple(item for _, reviews in extracted for item in reviews)
-    return grids, (*_manual_review_items(identity, recipe), *raw_reviews)
+    return grids, fragments, (*_manual_review_items(identity, recipe), *raw_reviews)
 
 
 def _decimal_literal(value: str) -> Decimal:
@@ -1461,12 +1474,13 @@ def _extract_one(
     tuple[CompatibilityMapping, ...],
     tuple[ImportReviewItem, ...],
     tuple[RawGrid, ...],
+    tuple[RawClauseFragment, ...],
     tuple[ExtractedEquation, ...],
 ]:
     recipe = _recipe(identity)
-    grids, review_items = _extract_real_layout(path, identity, recipe)
+    grids, fragments, review_items = _extract_real_layout(path, identity, recipe)
     equations = _extract_equations(path, identity, recipe)
-    return (), (), (), review_items, grids, equations
+    return (), (), (), review_items, grids, fragments, equations
 
 
 def _require_unique_ids(
@@ -1506,6 +1520,7 @@ def extract_draft(
     mappings: tuple[CompatibilityMapping, ...] = ()
     review_items: tuple[ImportReviewItem, ...] = ()
     raw_grids: tuple[RawGrid, ...] = ()
+    raw_clause_fragments: tuple[RawClauseFragment, ...] = ()
     extracted_equations: tuple[ExtractedEquation, ...] = ()
     for path, identity in sorted(identified, key=lambda pair: pair[1].recipe_id):
         (
@@ -1514,6 +1529,7 @@ def extract_draft(
             extracted_mappings,
             extracted_reviews,
             extracted_grids,
+            extracted_fragments,
             extracted_source_equations,
         ) = _extract_one(path, identity)
         tables += extracted_tables
@@ -1521,6 +1537,7 @@ def extract_draft(
         mappings += extracted_mappings
         review_items += extracted_reviews
         raw_grids += extracted_grids
+        raw_clause_fragments += extracted_fragments
         extracted_equations += extracted_source_equations
     _require_unique_ids(tables, formulas, mappings)
 
@@ -1555,9 +1572,10 @@ def extract_draft(
             *(f"formula:{formula.id}" for formula in formulas),
             *(f"mapping:{mapping.id}" for mapping in mappings),
             *(f"raw-grid:{grid.id}" for grid in raw_grids),
+            *(f"raw-clause:{fragment.id}" for fragment in raw_clause_fragments),
             *(f"equation:{equation.id}" for equation in extracted_equations),
             *(f"review:{item.code}:{item.semantic_id}" for item in review_items),
-            f"content:{_content_digest(tables, formulas, mappings, review_items, raw_grids, extracted_equations=extracted_equations)}",
+            f"content:{_content_digest(tables, formulas, mappings, review_items, raw_grids, raw_clause_fragments=raw_clause_fragments, extracted_equations=extracted_equations)}",
         )
     )
     ordered_identities = tuple(
@@ -1578,6 +1596,7 @@ def extract_draft(
         mappings,
         review_items,
         raw_grids,
+        raw_clause_fragments,
         sources,
         ordered_identities,
         review_resolutions,
@@ -1608,6 +1627,18 @@ def extract_draft(
         review_items=review_items,
         review_resolutions=review_resolutions,
         raw_grids=raw_grids,
+        raw_clause_fragments=raw_clause_fragments,
         extracted_equations=extracted_equations,
         source_identities=ordered_identities,
     )
+
+
+def _rebuild_draft_model() -> None:
+    from insulation_coordination.rules.importer.clauses import RawClauseFragment
+
+    ImportedRuleDraft.model_rebuild(
+        _types_namespace={"RawClauseFragment": RawClauseFragment}
+    )
+
+
+_rebuild_draft_model()

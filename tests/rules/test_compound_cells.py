@@ -458,6 +458,7 @@ def _draft_with_compound_cell(
         draft.mappings,
         draft.review_items,
         draft.raw_grids,
+        draft.raw_clause_fragments,
         draft.manifest.source_documents,
     )
     extraction = ApprovalRecord(

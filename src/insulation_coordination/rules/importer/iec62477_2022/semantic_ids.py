@@ -10,6 +10,7 @@ This module holds identifiers only. No source value, heading, or wording belongs
 DVC_VOLTAGE_LIMITS = "iec62477_2022.dvc.voltage_limits"
 DVC_PROTECTION_MATRIX = "iec62477_2022.dvc.protection_matrix"
 DVC_FAULT_TIME_VOLTAGE = "iec62477_2022.dvc.fault_time_voltage"
+DVC_FAULT_APPLICABILITY = "iec62477_2022.dvc.fault_applicability"
 
 SUPPLY_SYSTEM_VOLTAGE_RESOLUTION = "iec62477_2022.supply.system_voltage_resolution"
 SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC = "iec62477_2022.supply.impulse_by_system_voltage_ovc"
@@ -40,6 +41,7 @@ REQUIRED_SEMANTIC_IDS: frozenset[str] = frozenset(
         DVC_VOLTAGE_LIMITS,
         DVC_PROTECTION_MATRIX,
         DVC_FAULT_TIME_VOLTAGE,
+        DVC_FAULT_APPLICABILITY,
         SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,
         SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC,
         SUPPLY_TOV_BY_SYSTEM_VOLTAGE,

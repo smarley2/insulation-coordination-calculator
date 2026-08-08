@@ -159,6 +159,13 @@ def _changed_tokens(
         for grid_id in sorted(set(before_grids) | set(after_grids))
         if before_grids.get(grid_id) != after_grids.get(grid_id)
     )
+    before_fragments = {item.id: item for item in original.raw_clause_fragments}
+    after_fragments = {item.id: item for item in changed.raw_clause_fragments}
+    tokens.extend(
+        f"raw-clause:{fragment_id}"
+        for fragment_id in sorted(set(before_fragments) | set(after_fragments))
+        if before_fragments.get(fragment_id) != after_fragments.get(fragment_id)
+    )
     before_equations = {item.id: item for item in original.extracted_equations}
     after_equations = {item.id: item for item in changed.extracted_equations}
     tokens.extend(
@@ -391,7 +398,6 @@ def _sync_semantic_proposals(
         unchanged = (
             prior is not None
             and before_rules.get(key) == rule
-            and prior.rule_sha256 == probe.rule_sha256
             and prior.source_artifact_sha256 == source_sha256
             and prior.review_item_sha256s == review_hashes
         )
@@ -446,22 +452,26 @@ def record_correction(
         original.curves,
         original.extracted_equations,
     )
-    raw_changed = changed.raw_grids != original.raw_grids
+    raw_changed = (changed.raw_grids, changed.raw_clause_fragments) != (
+        original.raw_grids,
+        original.raw_clause_fragments,
+    )
     if not content_changed and not raw_changed and not resolve:
         raise ApprovalError("a correction must change rule content")
-    _require_logged_content(original)
     original_reviews = original.review_items
     changed_reviews = changed.review_items
     corrected_mappings = tuple(
         mapping.model_copy(update={"approved": False}) for mapping in changed.mappings
     )
     semantic_proposals = _sync_semantic_proposals(original, changed)
+    _require_logged_content(original)
     before = _content_digest(
         original.tables,
         original.formulas,
         original.mappings,
         original_reviews,
         original.raw_grids,
+        original.raw_clause_fragments,
         original.manifest.source_documents,
         original.source_identities,
         original.review_resolutions,
@@ -486,6 +496,7 @@ def record_correction(
         corrected_mappings,
         changed_reviews,
         changed.raw_grids,
+        changed.raw_clause_fragments,
         changed.manifest.source_documents,
         changed.source_identities,
         resolutions,
@@ -531,6 +542,7 @@ def record_correction(
         review_items=changed.review_items,
         review_resolutions=resolutions,
         raw_grids=changed.raw_grids,
+        raw_clause_fragments=changed.raw_clause_fragments,
         extracted_equations=changed.extracted_equations,
         semantic_proposals=semantic_proposals,
         source_identities=changed.source_identities,
@@ -565,6 +577,9 @@ def _require_complete_audit(draft: DraftRulePackage) -> None:
     required.update(f"curve:{rule.id}" for rule in draft.curves)
     if isinstance(draft, ImportedRuleDraft):
         required.update(f"equation:{equation.id}" for equation in draft.extracted_equations)
+        required.update(
+            f"raw-clause:{fragment.id}" for fragment in draft.raw_clause_fragments
+        )
     missing = required - audited
     if missing:
         raise ApprovalError("draft has incomplete extraction, table, formula, or mapping audits")
@@ -582,23 +597,30 @@ def _require_logged_content(draft: DraftRulePackage) -> None:
         raise ApprovalError("draft content has no unique extraction audit")
     expected = extraction_digests[0]
     for record in draft.manifest.approval_records:
-        if record.action != "correction" or not record.notes.startswith("content:"):
+        if record.action != "correction" or not re.match(
+            r"content:[0-9a-f]{64}->[0-9a-f]{64};", record.notes
+        ):
             continue
         match = re.match(
             r"content:([0-9a-f]{64})->([0-9a-f]{64});\s+\S",
             record.notes,
         )
-        if match is None or match.group(1) != expected:
+        assert match is not None
+        if match.group(1) != expected:
             raise ApprovalError("draft has a broken correction audit chain")
         expected = match.group(2)
     reviews = draft.review_items if isinstance(draft, ImportedRuleDraft) else ()
     raw_grids = draft.raw_grids if isinstance(draft, ImportedRuleDraft) else ()
+    fragments = (
+        draft.raw_clause_fragments if isinstance(draft, ImportedRuleDraft) else ()
+    )
     actual = _content_digest(
         draft.tables,
         draft.formulas,
         draft.mappings,
         reviews,
         raw_grids,
+        fragments,
         draft.manifest.source_documents,
         draft.source_identities if isinstance(draft, ImportedRuleDraft) else (),
         draft.review_resolutions if isinstance(draft, ImportedRuleDraft) else (),

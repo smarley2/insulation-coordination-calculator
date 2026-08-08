@@ -111,3 +111,54 @@ def create_geometry_pdf(
     )
     with path.open("wb") as target:
         writer.write(target)
+
+
+def create_clause_pdf(path: Path) -> None:
+    """Three-page synthetic document with a two-bullet clause fragment on page 3.
+
+    Neutral content only: no IEC wording, values, or structure. Page 3 carries a
+    two-bullet list inside the clause bbox (one bullet wraps across two physical
+    lines) plus a decoy line outside the bbox.
+    """
+
+    writer = PdfWriter()
+    for page_index in range(3):
+        page = writer.add_blank_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
+        page[NameObject("/Resources")] = DictionaryObject(
+            {
+                NameObject("/Font"): DictionaryObject(
+                    {
+                        NameObject("/F1"): DictionaryObject(
+                            {
+                                NameObject("/Type"): NameObject("/Font"),
+                                NameObject("/Subtype"): NameObject("/Type1"),
+                                NameObject("/BaseFont"): NameObject("/Helvetica"),
+                            }
+                        )
+                    }
+                )
+            }
+        )
+        commands: list[bytes] = []
+        if page_index == 2:
+            # pdfplumber "top" coordinates: page height minus PDF y. Bbox top 300
+            # to bottom 700 -> PDF y 492 down to 92. Decoy at top 720 (y 72).
+            commands = [
+                _text_command(80, 480, "SYMBOL first neutral condition not exceeding 30 s"),
+                _text_command(80, 460, "SYMBOL second neutral condition with a wrapped"),
+                _text_command(96, 444, "line that continues here and references the curve slot"),
+                _text_command(80, 72, "SYMBOL outside decoy line not exceeding 99 s"),
+            ]
+        else:
+            commands = [_text_command(72, 700, f"synthetic filler page {page_index + 1}")]
+        stream = DecodedStreamObject()
+        stream.set_data(b"\n".join(commands))
+        page[NameObject("/Contents")] = writer._add_object(stream)
+    writer.add_metadata(
+        {
+            "/Title": "synthetic clause fixture",
+            "/ICC-Synthetic": "true",
+        }
+    )
+    with path.open("wb") as target:
+        writer.write(target)

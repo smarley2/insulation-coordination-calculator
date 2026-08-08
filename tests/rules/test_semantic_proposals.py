@@ -168,6 +168,7 @@ def _draft_with_every_rule_kind() -> ImportedRuleDraft:
         draft.formulas,
         draft.mappings,
         draft.review_items,
+        raw_clause_fragments=draft.raw_clause_fragments,
         source_documents=draft.manifest.source_documents,
         review_resolutions=draft.review_resolutions,
         decisions=draft.decisions,

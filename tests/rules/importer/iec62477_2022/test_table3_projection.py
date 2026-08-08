@@ -467,6 +467,7 @@ def _logged_table3_extraction(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDr
         draft.mappings,
         draft.review_items,
         draft.raw_grids,
+        draft.raw_clause_fragments,
         draft.manifest.source_documents,
         draft.source_identities,
         draft.review_resolutions,
