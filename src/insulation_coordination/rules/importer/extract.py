@@ -317,15 +317,43 @@ def apply_table_structure(grid: RawGrid, spec: TableAuditSpec) -> RawGrid:
 
     blanks = {(item.row, item.column): item.semantics for item in spec.blank_cells}
     references = {(item.row, item.column): item for item in spec.reference_slots}
+    structural = bool(blanks or references or spec.merged_cells)
+    for coordinate in references:
+        cell = by_coordinate[coordinate]
+        if (
+            not cell.raw_text.strip()
+            or cell.value is not None
+            or cell.parse_status not in {"text", "non_scalar"}
+        ):
+            raise ExtractionError(
+                f"table {spec.semantic_id} has an unresolved reference slot at {coordinate}"
+            )
+    for coordinate, semantics in blanks.items():
+        cell = by_coordinate[coordinate]
+        expanded_inherit = semantics == "inherit" and cell.blank_semantics == "inherit"
+        if semantics == "missing":
+            raise ExtractionError(
+                f"table {spec.semantic_id} has unresolved missing semantics at {coordinate}"
+            )
+        if cell.raw_text.strip() and not expanded_inherit:
+            raise ExtractionError(
+                f"table {spec.semantic_id} has content in declared blank at {coordinate}"
+            )
+    if structural:
+        undeclared = tuple(
+            coordinate
+            for coordinate, cell in by_coordinate.items()
+            if not cell.raw_text.strip() and coordinate not in blanks
+        )
+        if undeclared:
+            raise ExtractionError(
+                f"table {spec.semantic_id} has an undeclared blank at {undeclared[0]}"
+            )
     for coordinate, cell in tuple(by_coordinate.items()):
         slot = references.get(coordinate)
         by_coordinate[coordinate] = cell.model_copy(
             update={
-                "blank_semantics": (
-                    blanks.get(coordinate, "missing")
-                    if not cell.raw_text.strip() or cell.blank_semantics == "inherit"
-                    else None
-                ),
+                "blank_semantics": blanks.get(coordinate),
                 "reference_token": (
                     SemanticReferenceToken(
                         target_rule_id=slot.target_rule_id,

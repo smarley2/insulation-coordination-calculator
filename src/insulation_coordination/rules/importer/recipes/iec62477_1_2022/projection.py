@@ -30,6 +30,11 @@ from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.tables import TABLE_2
 
 OutcomeKind = Literal["numeric", "reference", "not_applicable"]
+_REFERENCE_TARGET_KINDS = {
+    ids.DVC_FAULT_TIME_VOLTAGE: "curve",
+    f"{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.ac": "table",
+    f"{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.dc": "table",
+}
 
 
 class _Outcome(NamedTuple):
@@ -57,6 +62,11 @@ def _outcomes(grid: RawGrid) -> tuple[_Outcome, ...]:
             ):
                 raise ValueError("Table 2 outcome has incomplete typed provenance")
             if cell.reference_token is not None:
+                expected_kind = _REFERENCE_TARGET_KINDS.get(
+                    cell.reference_token.target_rule_id
+                )
+                if expected_kind != cell.reference_token.target_kind:
+                    raise ValueError("Table 2 semantic reference has an invalid target kind")
                 outcomes.append(
                     _Outcome(
                         row,

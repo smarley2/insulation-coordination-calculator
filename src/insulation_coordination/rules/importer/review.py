@@ -147,10 +147,12 @@ def _review_item_artifact_id(item: ImportReviewItem) -> str:
 def _source_semantic_id(proposal: SemanticProposal) -> str:
     from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 
-    if proposal.rule_kind == "decision" and (
-        proposal.semantic_id == ids.DVC_VOLTAGE_LIMITS
-        or proposal.semantic_id.startswith(f"{ids.DVC_VOLTAGE_LIMITS}.")
-    ):
+    table_2_decision_ids = {
+        ids.DVC_VOLTAGE_LIMITS,
+        f"{ids.DVC_VOLTAGE_LIMITS}.references",
+        f"{ids.DVC_VOLTAGE_LIMITS}.not_applicable",
+    }
+    if proposal.rule_kind == "decision" and proposal.semantic_id in table_2_decision_ids:
         return ids.DVC_VOLTAGE_LIMITS
     return proposal.semantic_id
 

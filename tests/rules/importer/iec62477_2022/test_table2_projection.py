@@ -1,26 +1,45 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
-from insulation_coordination.domain.rules import SourceReference
+from insulation_coordination.domain.rules import ApprovalRecord, SourceReference
 from insulation_coordination.rules.evaluator import evaluate_decision
+from insulation_coordination.rules.importer import recipes as recipe_registry
+from insulation_coordination.rules.importer.approval import (
+    ApprovalError,
+    approval_blockers,
+    record_correction,
+)
 from insulation_coordination.rules.importer.extract import (
+    IMPORTER_VERSION,
     ImportedRuleDraft,
     ImportReviewItem,
+    ImportReviewResolution,
     RawGrid,
     RawGridCell,
     RawGridSegment,
+    _content_digest,
     apply_table_structure,
 )
 from insulation_coordination.rules.importer.identify import StandardIdentity
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
+from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
+    RECIPE as IEC_RECIPE,
+)
+from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
+    projection as table2_projection,
+)
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
     project_dvc_voltage_limits,
 )
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.tables import TABLE_2
-from insulation_coordination.rules.importer.review import _require_current_proposal
+from insulation_coordination.rules.importer.review import (
+    build_reviewed_draft,
+    mark_proposal_reviewed,
+)
 from tests.fixtures.synthetic_rules import synthetic_rule_package
 
 SOURCE = SourceReference(
@@ -193,9 +212,8 @@ def test_unresolved_neutral_token_blocks_projection() -> None:
         project_dvc_voltage_limits(grid.model_copy(update={"cells": cells}), IDENTITY)
 
 
-def test_every_projected_decision_is_grounded_by_the_table_grid_review_inventory() -> None:
+def _logged_table2_extraction(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
     grid = apply_table_structure(_grid(), TABLE_2)
-    rules, proposals = project_dvc_voltage_limits(grid, IDENTITY)
     review_item = ImportReviewItem(
         code="SYNTHETIC_TABLE_2_REVIEW",
         semantic_id=ids.DVC_VOLTAGE_LIMITS,
@@ -203,24 +221,134 @@ def test_every_projected_decision_is_grounded_by_the_table_grid_review_inventory
         source=SOURCE,
         expected_contract="synthetic structural Table 2 review",
     )
-    proposals = tuple(
-        proposal.model_copy(update={"review_item_sha256s": (review_item.sha256,)})
-        for proposal in proposals
+    resolution = ImportReviewResolution(
+        review_item_sha256=review_item.sha256,
+        actor="Synthetic Source Reviewer",
+        recorded_at=datetime(2026, 8, 8, tzinfo=UTC),
+        notes="Reviewed the synthetic Table 2 source artifact.",
     )
+    recipe = IEC_RECIPE.model_copy(
+        update={
+            "id": IDENTITY.recipe_id,
+            "standard": IDENTITY.standard,
+            "edition": IDENTITY.edition,
+            "tables": (TABLE_2,),
+            "formulas": (),
+            "mappings": (),
+        }
+    )
+    monkeypatch.setattr(recipe_registry, "RECIPES", (recipe,))
     package = synthetic_rule_package()
     draft = ImportedRuleDraft(
         manifest=package.manifest.model_copy(
-            update={"approved": False, "compatible": False, "approval_records": ()}
+            update={
+                "approved": False,
+                "compatible": False,
+                "source_documents": (),
+                "approval_records": (),
+            }
         ),
         tables=(),
         formulas=(),
         mappings=(),
-        decisions=rules,
         review_items=(review_item,),
+        review_resolutions=(resolution,),
         raw_grids=(grid,),
-        semantic_proposals=proposals,
-        source_identities=(),
+        source_identities=(IDENTITY,),
+    )
+    digest = _content_digest(
+        draft.tables,
+        draft.formulas,
+        draft.mappings,
+        draft.review_items,
+        draft.raw_grids,
+        draft.manifest.source_documents,
+        draft.source_identities,
+        draft.review_resolutions,
+    )
+    extraction = ApprovalRecord(
+        action="extraction",
+        actor=f"icc-importer/{IMPORTER_VERSION}",
+        recorded_at=datetime(2026, 8, 8, tzinfo=UTC),
+        notes=f"content:{digest}",
+    )
+    return draft.model_copy(
+        update={"manifest": draft.manifest.model_copy(update={"approval_records": (extraction,)})}
     )
 
-    for proposal in proposals:
-        _require_current_proposal(draft, proposal, require_resolved_members=False)
+
+def test_build_and_review_lifecycle_resets_after_authoritative_grid_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    built = build_reviewed_draft(
+        _logged_table2_extraction(monkeypatch),
+        actor="Synthetic Rule Builder",
+        notes="Build Table 2 decisions.",
+    )
+    assert built.semantic_proposals
+    assert all(proposal.state == "proposed" for proposal in built.semantic_proposals)
+
+    reviewed = built
+    for proposal in built.semantic_proposals:
+        reviewed = mark_proposal_reviewed(
+            reviewed,
+            proposal.semantic_id,
+            actor="Synthetic Semantic Reviewer",
+            notes="Reviewed the generated decision.",
+        )
+    assert all(proposal.state == "reviewed" for proposal in reviewed.semantic_proposals)
+
+    grid = reviewed.raw_grids[0]
+    cells = tuple(
+        cell.model_copy(update={"value": cell.value + Decimal(1)})
+        if (cell.row, cell.column) == (2, 2) and cell.value is not None
+        else cell
+        for cell in grid.cells
+    )
+    corrected = record_correction(
+        reviewed,
+        reviewed.model_copy(
+            update={"raw_grids": (grid.model_copy(update={"cells": cells}),)}
+        ),
+        actor="Synthetic Source Reviewer",
+        notes="Correct one reviewed synthetic source quantity.",
+    )
+
+    assert all(proposal.state == "proposed" for proposal in corrected.semantic_proposals)
+    assert {blocker.code for blocker in approval_blockers(corrected)} >= {
+        "SEMANTIC_PROPOSAL_PROPOSED"
+    }
+
+
+def test_unrelated_prefixed_decision_cannot_borrow_table2_grounding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    built = build_reviewed_draft(
+        _logged_table2_extraction(monkeypatch),
+        actor="Synthetic Rule Builder",
+        notes="Build Table 2 decisions.",
+    )
+    unrelated = built.decisions[0].model_copy(
+        update={"id": f"{ids.DVC_VOLTAGE_LIMITS}.unrelated"}
+    )
+
+    with pytest.raises(ApprovalError, match="review item inventory"):
+        record_correction(
+            built,
+            built.model_copy(update={"decisions": (*built.decisions, unrelated)}),
+            actor="Synthetic Rule Builder",
+            notes="Attempt an unrelated prefixed decision.",
+        )
+
+
+def test_reference_target_kind_mismatch_blocks_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = TABLE_2.reference_slots[0].model_copy(update={"target_kind": "table"})
+    broken = TABLE_2.model_copy(
+        update={"reference_slots": (first, *TABLE_2.reference_slots[1:])}
+    )
+    monkeypatch.setattr(table2_projection, "TABLE_2", broken)
+
+    with pytest.raises(ValueError, match="target kind"):
+        project_dvc_voltage_limits(_grid(), IDENTITY)

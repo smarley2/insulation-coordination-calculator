@@ -22,6 +22,7 @@ SOURCE = SourceReference(
     page=44,
     table="S2",
 )
+REFERENCE_COORDINATES = {(slot.row, slot.column) for slot in TABLE_2.reference_slots}
 
 
 def _cell(row: int, column: int) -> RawGridCell:
@@ -33,18 +34,25 @@ def _cell(row: int, column: int) -> RawGridCell:
         (0, 5),
         (5, 5),
     }
-    text = "" if blank else f"H_{row}_{column}"
+    reference = (row, column) in REFERENCE_COORDINATES
+    text = "" if blank else ("REF" if reference else f"H_{row}_{column}")
     value = Decimal(row * 10 + column) if row >= 2 and column >= 2 and not blank else None
+    if reference:
+        value = None
     not_applicable = (row, column) == (5, 5)
     return RawGridCell(
         row=row,
         column=column,
         raw_text=text if value is None else str(value),
         role="data"
-        if not_applicable
+        if not_applicable or reference
         else ("blank" if blank else ("data" if value is not None else "header")),
-        logical_row=row - 2 if value is not None or not_applicable else None,
-        logical_column=f"column-{column - 1}" if value is not None or not_applicable else None,
+        logical_row=row - 2 if value is not None or not_applicable or reference else None,
+        logical_column=(
+            f"column-{column - 1}"
+            if value is not None or not_applicable or reference
+            else None
+        ),
         value=value,
         parse_status="blank" if blank else ("numeric" if value is not None else "text"),
         source=SOURCE.model_copy(
@@ -94,3 +102,42 @@ def test_missing_physical_cell_blocks_structural_expansion() -> None:
 
     with pytest.raises(ExtractionError, match="missing physical cell"):
         apply_table_structure(incomplete, TABLE_2)
+
+
+def test_declared_blank_rejects_unexpected_numeric_content() -> None:
+    grid = _grid()
+    cells = tuple(
+        cell.model_copy(update={"raw_text": "999", "value": Decimal(999), "parse_status": "numeric"})
+        if (cell.row, cell.column) == (5, 5)
+        else cell
+        for cell in grid.cells
+    )
+
+    with pytest.raises(ExtractionError, match="declared blank"):
+        apply_table_structure(grid.model_copy(update={"cells": cells}), TABLE_2)
+
+
+def test_undeclared_blank_header_blocks_structural_expansion() -> None:
+    grid = _grid()
+    cells = tuple(
+        cell.model_copy(update={"raw_text": "", "role": "blank", "parse_status": "blank"})
+        if (cell.row, cell.column) == (1, 1)
+        else cell
+        for cell in grid.cells
+    )
+
+    with pytest.raises(ExtractionError, match="undeclared blank"):
+        apply_table_structure(grid.model_copy(update={"cells": cells}), TABLE_2)
+
+
+def test_empty_reference_slot_blocks_structural_expansion() -> None:
+    grid = _grid()
+    cells = tuple(
+        cell.model_copy(update={"raw_text": "", "value": None, "parse_status": "blank"})
+        if (cell.row, cell.column) == (6, 2)
+        else cell
+        for cell in grid.cells
+    )
+
+    with pytest.raises(ExtractionError, match="reference slot"):
+        apply_table_structure(grid.model_copy(update={"cells": cells}), TABLE_2)
