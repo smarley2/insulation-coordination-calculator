@@ -145,3 +145,31 @@ def test_identity_joins_engine_name_version_and_config() -> None:
     assert len(identity.config_sha256) == 64
     other = TesseractOcrEngine(executable="tesseract-test", version="5.3.0")
     assert other.identity == identity
+
+
+def _tsv_with_conf(conf: str) -> bytes:
+    return (
+        "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n"
+        f"5\t1\t1\t1\t1\t1\t10\t10\t15\t12\t{conf}\tok\n"
+    ).encode()
+
+
+@pytest.mark.parametrize("conf", ("-1", "150"))
+def test_out_of_range_confidence_blocks_with_ocr_failed(
+    monkeypatch: pytest.MonkeyPatch, conf: str
+) -> None:
+    def fake_run(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, stdout=_tsv_with_conf(conf), stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(OcrError, match="OCR_FAILED"):
+        TesseractOcrEngine(executable="tesseract-test").recognize(_image())
+
+
+def test_non_utf8_output_blocks_with_ocr_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, stdout=b"\xff\xfe invalid", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(OcrError, match="OCR_FAILED"):
+        TesseractOcrEngine(executable="tesseract-test").recognize(_image())

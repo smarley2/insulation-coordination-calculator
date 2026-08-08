@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import os
 import subprocess
 import tempfile
 from decimal import Decimal, InvalidOperation
@@ -19,6 +20,7 @@ from typing import Protocol, runtime_checkable
 
 from PIL import Image
 from pydantic import Field, model_validator
+from pydantic import ValidationError as PydanticValidationError
 
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import Identifier
@@ -116,18 +118,19 @@ class TesseractOcrEngine:
                 )
             return _parse_tsv(completed.stdout)
         finally:
-            path.unlink(missing_ok=True)
             if fd is not None:
-                import os
-
                 try:
                     os.close(fd)
                 except OSError:
                     pass
+            path.unlink(missing_ok=True)
 
 
 def _parse_tsv(payload: bytes) -> tuple[OcrToken, ...]:
-    text = payload.decode("utf-8")
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise OcrError("OCR_FAILED", "OCR returned non-UTF-8 output") from error
     rows = csv.DictReader(io.StringIO(text), delimiter="\t")
     tokens: list[tuple[tuple[int, int, int, int], OcrToken]] = []
     for row in rows:
@@ -138,21 +141,31 @@ def _parse_tsv(payload: bytes) -> tuple[OcrToken, ...]:
             confidence = Decimal(row["conf"]) / Decimal(100)
             left = int(row["left"])
             top = int(row["top"])
-            box = PixelBox(
-                left=left,
-                top=top,
-                right=left + int(row["width"]),
-                bottom=top + int(row["height"]),
-            )
             sort_key = (
                 top,
                 left,
                 int(row["line_num"]),
                 int(row["word_num"]),
             )
-        except (InvalidOperation, TypeError, ValueError, KeyError) as error:
+            token = OcrToken(
+                text=word,
+                confidence=confidence,
+                box=PixelBox(
+                    left=left,
+                    top=top,
+                    right=left + int(row["width"]),
+                    bottom=top + int(row["height"]),
+                ),
+            )
+        except (
+            InvalidOperation,
+            TypeError,
+            ValueError,
+            KeyError,
+            PydanticValidationError,
+        ) as error:
             raise OcrError("OCR_FAILED", "OCR returned malformed TSV") from error
-        tokens.append((sort_key, OcrToken(text=word, confidence=confidence, box=box)))
+        tokens.append((sort_key, token))
     return tuple(token for _, token in sorted(tokens, key=lambda pair: pair[0]))
 
 
