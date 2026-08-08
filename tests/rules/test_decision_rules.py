@@ -242,6 +242,12 @@ def test_boolean_input_rejects_string_equals_matcher() -> None:
         )
 
 
+@pytest.mark.parametrize("boolean", (0, 1))
+def test_boolean_equals_matcher_rejects_integer_declarations(boolean: int) -> None:
+    with pytest.raises(ValidationError):
+        Matcher(input="enabled", op="equals", boolean=boolean)
+
+
 def test_decision_value_kind_mismatch_is_rejected() -> None:
     row = DecisionRow(
         matchers=(Matcher(input="colour", op="equals", values=("red",)),),

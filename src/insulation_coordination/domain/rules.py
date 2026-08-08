@@ -7,7 +7,7 @@ from typing import Annotated, Any, Self, cast
 from typing import Literal as TypingLiteral
 from uuid import UUID
 
-from pydantic import Field, ValidationError, field_validator, model_validator
+from pydantic import Field, StrictBool, ValidationError, field_validator, model_validator
 from pydantic.config import ExtraValues
 
 from insulation_coordination.domain.project import FrozenModel
@@ -366,10 +366,6 @@ class CompatibilityMapping(FrozenModel):
 
 
 DecisionValueKind = TypingLiteral["categorical", "numeric", "boolean"]
-# ponytail: a boolean input currently cannot influence row selection — `range` is
-# refused, `equals`/`in` are refused, `any` ignores it, and `exhaustive=True` with a
-# boolean input is refused — so all a boolean input can do is force `input_required`.
-# Narrowing DecisionValueKind to drop "boolean" is a separate maintainer decision.
 
 
 class DecisionInput(FrozenModel):
@@ -412,7 +408,7 @@ class Matcher(FrozenModel):
     input: Identifier
     op: TypingLiteral["any", "equals", "in", "range"]
     values: tuple[Identifier, ...] = ()
-    boolean: bool | None = None
+    boolean: StrictBool | None = None
     minimum: DecimalValue | None = None
     maximum: DecimalValue | None = None
     minimum_inclusive: bool = True
