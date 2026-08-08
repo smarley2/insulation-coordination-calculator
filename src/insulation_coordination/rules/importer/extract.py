@@ -24,10 +24,16 @@ from insulation_coordination.domain.rules import (
     RULE_SCHEMA_VERSION,
     ApprovalRecord,
     CompatibilityMapping,
+    DecisionRule,
     DraftRulePackage,
     Formula,
+    GuidanceRule,
+    Identifier,
     Manifest,
     NotesText,
+    PiecewiseCurveRule,
+    ProcedureRule,
+    RuleKind,
     SourceDocument,
     SourceReference,
     Table,
@@ -64,11 +70,15 @@ __all__ = [
     "ImportReviewItem",
     "ImportedRuleDraft",
     "MappingAuditSpec",
+    "ProposalState",
     "RawGrid",
     "RawGridCell",
     "RawGridSegment",
+    "ReviewArtifactKind",
+    "SemanticProposal",
     "StandardRecipe",
     "TableAuditSpec",
+    "canonical_model_sha256",
     "extract_draft",
     "is_recipe_derived",
     "parse_data_cell",
@@ -79,22 +89,52 @@ class ExtractionError(ValueError):
     """Recognized input could not be extracted without guessing."""
 
 
+ReviewArtifactKind = Literal[
+    "table",
+    "formula",
+    "mapping",
+    "raw_cell",
+    "semantic",
+    "clause",
+    "curve",
+]
+ProposalState = Literal["proposed", "reviewed"]
+
+
+def canonical_model_sha256(value: FrozenModel) -> str:
+    """Hash one typed model through the rule archive's canonical JSON encoding."""
+    return hashlib.sha256(
+        _canonical_json(value.model_dump(mode="json", warnings=False))
+    ).hexdigest()
+
+
 class ImportReviewItem(FrozenModel):
-    code: Literal[
-        "MANUAL_TABLE_DEFINITION_REQUIRED",
-        "MANUAL_RULE_DEFINITION_REQUIRED",
-        "MANUAL_MAPPING_REQUIRED",
-        "MANUAL_RAW_CELL_REVIEW_REQUIRED",
-    ]
-    semantic_id: str
-    kind: Literal["table", "formula", "mapping", "raw_cell"]
+    code: Identifier
+    semantic_id: Identifier
+    kind: ReviewArtifactKind
     source: SourceReference
     expected_contract: NotesText
 
     @property
     def sha256(self) -> str:
-        payload = self.model_dump(mode="json", warnings=False)
-        return hashlib.sha256(_canonical_json(payload)).hexdigest()
+        return canonical_model_sha256(self)
+
+
+class SemanticProposal(FrozenModel):
+    semantic_id: Identifier
+    rule_kind: RuleKind
+    state: ProposalState
+    rule_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    source_artifact_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    review_item_sha256s: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _valid_review_item_hashes(self) -> SemanticProposal:
+        if any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in self.review_item_sha256s):
+            raise ValueError("review item SHA-256 must be lowercase hexadecimal")
+        if len(self.review_item_sha256s) != len(set(self.review_item_sha256s)):
+            raise ValueError("proposal review item SHA-256 values must be unique")
+        return self
 
 
 class ImportReviewResolution(FrozenModel):
@@ -205,6 +245,7 @@ class ImportedRuleDraft(DraftRulePackage):
     review_resolutions: tuple[ImportReviewResolution, ...] = ()
     raw_grids: tuple[RawGrid, ...] = ()
     extracted_equations: tuple[ExtractedEquation, ...] = ()
+    semantic_proposals: tuple[SemanticProposal, ...] = ()
     source_identities: tuple[StandardIdentity, ...]
 
 
@@ -218,6 +259,10 @@ def _content_digest(
     source_identities: tuple[StandardIdentity, ...] = (),
     review_resolutions: tuple[ImportReviewResolution, ...] = (),
     extracted_equations: tuple[ExtractedEquation, ...] = (),
+    decisions: tuple[DecisionRule, ...] = (),
+    procedures: tuple[ProcedureRule, ...] = (),
+    guidance: tuple[GuidanceRule, ...] = (),
+    curves: tuple[PiecewiseCurveRule, ...] = (),
 ) -> str:
     payload = {
         "tables": [item.model_dump(mode="json") for item in tables],
@@ -229,6 +274,10 @@ def _content_digest(
         "extracted_equations": [item.model_dump(mode="json") for item in extracted_equations],
         "source_documents": [item.model_dump(mode="json") for item in source_documents],
         "source_identities": [item.model_dump(mode="json") for item in source_identities],
+        "decisions": [item.model_dump(mode="json") for item in decisions],
+        "procedures": [item.model_dump(mode="json") for item in procedures],
+        "guidance": [item.model_dump(mode="json") for item in guidance],
+        "curves": [item.model_dump(mode="json") for item in curves],
     }
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
 

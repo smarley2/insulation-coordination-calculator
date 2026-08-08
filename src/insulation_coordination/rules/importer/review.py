@@ -12,31 +12,40 @@ review them via ``record_correction``.
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
 from insulation_coordination.domain.rules import (
+    ApprovalRecord,
     CompatibilityMapping,
+    DecisionRule,
     DraftRulePackage,
     Formula,
+    GuidanceRule,
     LinearInterpolate,
     Literal,
     Lookup,
     Parameter,
     ParameterSet,
+    PiecewiseCurveRule,
+    ProcedureRule,
+    RuleKind,
     SourceReference,
     Table,
     Variable,
 )
 from insulation_coordination.domain.rules import Expression as RuleExpression
-from insulation_coordination.rules.importer.approval import record_correction
+from insulation_coordination.rules.archive import _canonical_json
+from insulation_coordination.rules.importer.approval import ApprovalError, record_correction
 from insulation_coordination.rules.importer.extract import (
     ImportedRuleDraft,
     ImportReviewItem,
     RawGrid,
     RawGridCell,
+    SemanticProposal,
+    canonical_model_sha256,
     is_recipe_derived,
 )
 from insulation_coordination.rules.importer.identify import (
@@ -61,18 +70,191 @@ def draft_review_digest(draft: DraftRulePackage) -> str:
         "tables": payload["tables"],
         "formulas": payload["formulas"],
         "mappings": payload["mappings"],
-        "review_items": payload["review_items"],
-        "raw_grids": payload["raw_grids"],
-        "extracted_equations": payload["extracted_equations"],
+        "decisions": payload["decisions"],
+        "procedures": payload["procedures"],
+        "guidance": payload["guidance"],
+        "curves": payload["curves"],
+        "review_items": payload.get("review_items", []),
+        "raw_grids": payload.get("raw_grids", []),
+        "extracted_equations": payload.get("extracted_equations", []),
+        "semantic_proposals": payload.get("semantic_proposals", []),
     }
-    canonical = json.dumps(
-        stable,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-    return hashlib.sha256(canonical).hexdigest()
+    return hashlib.sha256(_canonical_json(stable)).hexdigest()
+
+
+SemanticRule = (
+    Table
+    | Formula
+    | CompatibilityMapping
+    | DecisionRule
+    | ProcedureRule
+    | GuidanceRule
+    | PiecewiseCurveRule
+)
+
+
+def _rule_entries(draft: DraftRulePackage) -> tuple[tuple[RuleKind, SemanticRule], ...]:
+    entries: list[tuple[RuleKind, SemanticRule]] = []
+    entries.extend(("table", rule) for rule in draft.tables)
+    entries.extend(("formula", rule) for rule in draft.formulas)
+    entries.extend(("mapping", rule) for rule in draft.mappings)
+    entries.extend(("decision", rule) for rule in draft.decisions)
+    entries.extend(("procedure", rule) for rule in draft.procedures)
+    entries.extend(("guidance", rule) for rule in draft.guidance)
+    entries.extend(("curve", rule) for rule in draft.curves)
+    return tuple(entries)
+
+
+def _rule_for(draft: ImportedRuleDraft, proposal: SemanticProposal) -> SemanticRule:
+    matches = tuple(
+        rule
+        for kind, rule in _rule_entries(draft)
+        if kind == proposal.rule_kind and rule.id == proposal.semantic_id
+    )
+    if len(matches) != 1:
+        raise ApprovalError(
+            f"semantic proposal {proposal.semantic_id} has no unique current rule"
+        )
+    return matches[0]
+
+
+def proposal_for(draft: ImportedRuleDraft, semantic_id: str) -> SemanticProposal:
+    """Return the unique draft-only semantic proposal for one rule ID."""
+    matches = tuple(
+        proposal for proposal in draft.semantic_proposals if proposal.semantic_id == semantic_id
+    )
+    if len(matches) != 1:
+        raise ValueError(f"no unique semantic proposal for {semantic_id}")
+    return matches[0]
+
+
+def _aggregate_artifact_pairs(pairs: tuple[tuple[str, str], ...]) -> str:
+    if not pairs:
+        raise ApprovalError("semantic proposal has no current source artifact")
+    if len(pairs) == 1:
+        return pairs[0][1]
+    return hashlib.sha256(_canonical_json(pairs)).hexdigest()
+
+
+def _proposal_review_items(
+    draft: ImportedRuleDraft,
+    proposal: SemanticProposal,
+) -> tuple[ImportReviewItem, ...]:
+    inventory = {item.sha256: item for item in draft.review_items}
+    if len(inventory) != len(draft.review_items):
+        raise ApprovalError("draft has duplicate review item hashes")
+    if any(value not in inventory for value in proposal.review_item_sha256s):
+        raise ApprovalError(f"semantic proposal {proposal.semantic_id} has a stale review item hash")
+    return tuple(inventory[value] for value in proposal.review_item_sha256s)
+
+
+def _current_source_artifact_sha256(
+    draft: ImportedRuleDraft,
+    proposal: SemanticProposal,
+) -> str:
+    rule = _rule_for(draft, proposal)
+    if proposal.rule_kind == "curve":
+        assert isinstance(rule, PiecewiseCurveRule)
+        return _aggregate_artifact_pairs(
+            tuple(
+                (variant.id, variant.reviewed_artifact_sha256)
+                for variant in rule.variants
+            )
+        )
+
+    grids = tuple(
+        (grid.id, canonical_model_sha256(grid))
+        for grid in draft.raw_grids
+        if grid.id in {proposal.semantic_id, f"raw-{proposal.semantic_id}"}
+    )
+    if grids:
+        return _aggregate_artifact_pairs(grids)
+    equations = tuple(
+        (equation.id, canonical_model_sha256(equation))
+        for equation in draft.extracted_equations
+        if equation.id == proposal.semantic_id
+    )
+    if equations:
+        return _aggregate_artifact_pairs(equations)
+
+    review_items = _proposal_review_items(draft, proposal)
+    geometry = tuple(
+        (item.sha256, item.source.geometry.artifact_sha256)
+        for item in review_items
+        if item.source.geometry is not None
+    )
+    if geometry:
+        return _aggregate_artifact_pairs(geometry)
+    contracts = tuple(
+        (item.sha256, digest)
+        for item in review_items
+        if (digest := item.expected_contract.rsplit(":", 1)[-1])
+        and len(digest) == 64
+        and all(character in "0123456789abcdef" for character in digest)
+    )
+    if contracts:
+        return _aggregate_artifact_pairs(contracts)
+    return canonical_model_sha256(rule.source)
+
+
+def _require_current_proposal(
+    draft: ImportedRuleDraft,
+    proposal: SemanticProposal,
+    *,
+    require_resolved_members: bool,
+) -> None:
+    rule = _rule_for(draft, proposal)
+    if proposal.rule_sha256 != canonical_model_sha256(rule):
+        raise ApprovalError(f"semantic proposal {proposal.semantic_id} has a stale rule hash")
+    if proposal.source_artifact_sha256 != _current_source_artifact_sha256(draft, proposal):
+        raise ApprovalError(f"semantic proposal {proposal.semantic_id} has a stale source hash")
+    review_items = _proposal_review_items(draft, proposal)
+    if require_resolved_members:
+        resolved = {item.review_item_sha256 for item in draft.review_resolutions}
+        missing = {item.sha256 for item in review_items} - resolved
+        if missing:
+            raise ApprovalError(
+                f"semantic proposal {proposal.semantic_id} has an unresolved review item"
+            )
+
+
+def mark_proposal_reviewed(
+    draft: ImportedRuleDraft,
+    semantic_id: str,
+    *,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Review the exact current rule, source artifact, and member review hashes."""
+    if not actor.strip() or not notes.strip():
+        raise ApprovalError("semantic review actor and notes are required")
+    proposal = proposal_for(draft, semantic_id)
+    _require_current_proposal(draft, proposal, require_resolved_members=True)
+    if proposal.state == "reviewed":
+        raise ApprovalError(f"semantic proposal {semantic_id} is already reviewed")
+    reviewed = proposal.model_copy(update={"state": "reviewed"})
+    recorded_at = datetime.now(UTC)
+    manifest = draft.manifest.model_copy(
+        update={
+            "approval_records": (
+                *draft.manifest.approval_records,
+                ApprovalRecord(
+                    action="correction",
+                    actor=actor.strip(),
+                    recorded_at=recorded_at,
+                    notes=f"semantic:{semantic_id}:reviewed; {notes.strip()}",
+                ),
+            )
+        }
+    )
+    return draft.model_copy(
+        update={
+            "manifest": manifest,
+            "semantic_proposals": tuple(
+                reviewed if item is proposal else item for item in draft.semantic_proposals
+            ),
+        }
+    )
 
 
 def _unresolved_items(

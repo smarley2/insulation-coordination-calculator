@@ -19,6 +19,7 @@ from insulation_coordination.rules.importer.extract import (
     ImportedRuleDraft,
     ImportReviewItem,
     ImportReviewResolution,
+    SemanticProposal,
     _content_digest,
 )
 from insulation_coordination.rules.importer.identify import StandardRecipe
@@ -89,6 +90,10 @@ def _changed_tokens(
         ("table", original.tables, changed.tables),
         ("formula", original.formulas, changed.formulas),
         ("mapping", original.mappings, changed.mappings),
+        ("decision", original.decisions, changed.decisions),
+        ("procedure", original.procedures, changed.procedures),
+        ("guidance", original.guidance, changed.guidance),
+        ("curve", original.curves, changed.curves),
     ):
         before = {item.id: item for item in before_items}
         after = {item.id: item for item in after_items}
@@ -215,6 +220,77 @@ def _validated_draft(draft: DraftRulePackage) -> ImportedRuleDraft:
         raise ApprovalError("draft is structurally invalid") from error
 
 
+def _sync_semantic_proposals(
+    original: ImportedRuleDraft,
+    changed: ImportedRuleDraft,
+) -> tuple[SemanticProposal, ...]:
+    from insulation_coordination.rules.importer.extract import (
+        canonical_model_sha256,
+    )
+    from insulation_coordination.rules.importer.review import (
+        _current_source_artifact_sha256,
+        _rule_entries,
+    )
+
+    before_rules = {(kind, rule.id): rule for kind, rule in _rule_entries(original)}
+    after_rules = {(kind, rule.id): rule for kind, rule in _rule_entries(changed)}
+    if len(before_rules) != len(_rule_entries(original)) or len(after_rules) != len(
+        _rule_entries(changed)
+    ):
+        raise ApprovalError("rule semantic IDs must be unique within each rule kind")
+    before = {(item.rule_kind, item.semantic_id): item for item in original.semantic_proposals}
+    supplied = {(item.rule_kind, item.semantic_id): item for item in changed.semantic_proposals}
+    if len(before) != len(original.semantic_proposals) or len(supplied) != len(
+        changed.semantic_proposals
+    ):
+        raise ApprovalError("semantic proposals must be unique by rule kind and ID")
+    if set(supplied) - set(after_rules) - set(before_rules):
+        raise ApprovalError("semantic proposal has no matching typed rule")
+
+    proposals: list[SemanticProposal] = []
+    for key, rule in after_rules.items():
+        kind, semantic_id = key
+        prior = before.get(key)
+        candidate = supplied.get(key)
+        if prior is not None and before_rules.get(key) == rule and candidate != prior:
+            raise ApprovalError("a correction cannot rewrite an unchanged semantic proposal")
+        review_hashes = (
+            candidate.review_item_sha256s
+            if candidate is not None
+            else (
+                prior.review_item_sha256s
+                if prior is not None
+                else tuple(
+                    item.sha256
+                    for item in changed.review_items
+                    if item.semantic_id == semantic_id and item.kind != "raw_cell"
+                )
+            )
+        )
+        probe = SemanticProposal(
+            semantic_id=semantic_id,
+            rule_kind=kind,
+            state="proposed",
+            rule_sha256=canonical_model_sha256(rule),
+            source_artifact_sha256="0" * 64,
+            review_item_sha256s=review_hashes,
+        )
+        source_sha256 = _current_source_artifact_sha256(changed, probe)
+        unchanged = (
+            prior is not None
+            and before_rules.get(key) == rule
+            and prior.rule_sha256 == probe.rule_sha256
+            and prior.source_artifact_sha256 == source_sha256
+            and prior.review_item_sha256s == review_hashes
+        )
+        if unchanged:
+            assert prior is not None
+            proposals.append(prior)
+        else:
+            proposals.append(probe.model_copy(update={"source_artifact_sha256": source_sha256}))
+    return tuple(proposals)
+
+
 def record_correction(
     draft: ImportedRuleDraft,
     corrected: ImportedRuleDraft,
@@ -243,11 +319,19 @@ def record_correction(
         changed.tables,
         changed.formulas,
         changed.mappings,
+        changed.decisions,
+        changed.procedures,
+        changed.guidance,
+        changed.curves,
         changed.extracted_equations,
     ) != (
         original.tables,
         original.formulas,
         original.mappings,
+        original.decisions,
+        original.procedures,
+        original.guidance,
+        original.curves,
         original.extracted_equations,
     )
     raw_changed = changed.raw_grids != original.raw_grids
@@ -259,6 +343,7 @@ def record_correction(
     corrected_mappings = tuple(
         mapping.model_copy(update={"approved": False}) for mapping in changed.mappings
     )
+    semantic_proposals = _sync_semantic_proposals(original, changed)
     before = _content_digest(
         original.tables,
         original.formulas,
@@ -269,6 +354,10 @@ def record_correction(
         original.source_identities,
         original.review_resolutions,
         original.extracted_equations,
+        decisions=original.decisions,
+        procedures=original.procedures,
+        guidance=original.guidance,
+        curves=original.curves,
     )
     recorded_at = datetime.now(UTC)
     resolutions = _require_valid_review_resolutions(
@@ -289,6 +378,10 @@ def record_correction(
         changed.source_identities,
         resolutions,
         changed.extracted_equations,
+        decisions=changed.decisions,
+        procedures=changed.procedures,
+        guidance=changed.guidance,
+        curves=changed.curves,
     )
     audit_records = tuple(
         ApprovalRecord(
@@ -319,10 +412,15 @@ def record_correction(
         tables=changed.tables,
         formulas=changed.formulas,
         mappings=corrected_mappings,
+        decisions=changed.decisions,
+        procedures=changed.procedures,
+        guidance=changed.guidance,
+        curves=changed.curves,
         review_items=changed.review_items,
         review_resolutions=resolutions,
         raw_grids=changed.raw_grids,
         extracted_equations=changed.extracted_equations,
+        semantic_proposals=semantic_proposals,
         source_identities=changed.source_identities,
     )
 
@@ -349,6 +447,10 @@ def _require_complete_audit(draft: DraftRulePackage) -> None:
     required.update(f"table:{table.id}" for table in draft.tables)
     required.update(f"formula:{formula.id}" for formula in draft.formulas)
     required.update(f"mapping:{mapping.id}" for mapping in draft.mappings)
+    required.update(f"decision:{rule.id}" for rule in draft.decisions)
+    required.update(f"procedure:{rule.id}" for rule in draft.procedures)
+    required.update(f"guidance:{rule.id}" for rule in draft.guidance)
+    required.update(f"curve:{rule.id}" for rule in draft.curves)
     if isinstance(draft, ImportedRuleDraft):
         required.update(f"equation:{equation.id}" for equation in draft.extracted_equations)
     missing = required - audited
@@ -389,6 +491,10 @@ def _require_logged_content(draft: DraftRulePackage) -> None:
         draft.source_identities if isinstance(draft, ImportedRuleDraft) else (),
         draft.review_resolutions if isinstance(draft, ImportedRuleDraft) else (),
         draft.extracted_equations if isinstance(draft, ImportedRuleDraft) else (),
+        decisions=draft.decisions,
+        procedures=draft.procedures,
+        guidance=draft.guidance,
+        curves=draft.curves,
     )
     if actual != expected:
         raise ApprovalError("draft contains an unlogged content change")
@@ -673,6 +779,10 @@ def _require_draft_structure(draft: DraftRulePackage) -> None:
         tables=draft.tables,
         formulas=draft.formulas,
         mappings=draft.mappings,
+        decisions=draft.decisions,
+        procedures=draft.procedures,
+        guidance=draft.guidance,
+        curves=draft.curves,
         checksums=draft.checksums,
         package_sha256=draft.package_sha256,
     )
@@ -686,13 +796,130 @@ def _require_draft_structure(draft: DraftRulePackage) -> None:
         raise ApprovalError(f"approval validation failed: {', '.join(failures)}")
 
 
-def is_fully_resolved(draft: ImportedRuleDraft) -> bool:
-    """True when every manual review item has an associated resolution."""
-    resolved = {resolution.review_item_sha256 for resolution in draft.review_resolutions}
-    inventory = {item.sha256 for item in draft.review_items}
-    return (
-        len(resolved) == len(draft.review_resolutions) == len(inventory) and resolved == inventory
+def _semantic_blocker(
+    draft: ImportedRuleDraft,
+    *,
+    code: str,
+    semantic_id: str,
+    message: str,
+) -> ImportReviewItem:
+    from insulation_coordination.rules.importer.review import _rule_entries
+
+    source = next(
+        (rule.source for _, rule in _rule_entries(draft) if rule.id == semantic_id),
+        None,
     )
+    if source is None:
+        document = draft.manifest.source_documents[0]
+        source = SourceReference(
+            document_id=document.id,
+            standard=document.standard,
+            edition=document.edition,
+        )
+    return ImportReviewItem(
+        code=code,
+        semantic_id=semantic_id,
+        kind="semantic",
+        source=source,
+        expected_contract=message,
+    )
+
+
+def approval_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
+    """Return the one authoritative manual and semantic approval gate."""
+    from insulation_coordination.rules.importer.review import (
+        _require_current_proposal,
+        _rule_entries,
+    )
+
+    inventory_hashes = tuple(item.sha256 for item in draft.review_items)
+    resolution_hashes = tuple(
+        resolution.review_item_sha256 for resolution in draft.review_resolutions
+    )
+    resolved = set(resolution_hashes)
+    blockers: list[ImportReviewItem] = []
+    if (
+        len(inventory_hashes) != len(set(inventory_hashes))
+        or len(resolution_hashes) != len(resolved)
+        or not resolved <= set(inventory_hashes)
+    ):
+        semantic_id = draft.review_items[0].semantic_id if draft.review_items else draft.manifest.version
+        blockers.append(
+            _semantic_blocker(
+                draft,
+                code="REVIEW_RESOLUTION_INVALID",
+                semantic_id=semantic_id,
+                message="manual review resolution inventory is duplicate or stale",
+            )
+        )
+    blockers.extend(item for item in draft.review_items if item.sha256 not in resolved)
+    rules = _rule_entries(draft)
+    proposals = draft.semantic_proposals
+    for kind, rule in rules:
+        matches = tuple(
+            proposal
+            for proposal in proposals
+            if proposal.rule_kind == kind and proposal.semantic_id == rule.id
+        )
+        if not matches:
+            blockers.append(
+                _semantic_blocker(
+                    draft,
+                    code="SEMANTIC_PROPOSAL_MISSING",
+                    semantic_id=rule.id,
+                    message=f"missing required semantic proposal for {rule.id}",
+                )
+            )
+            continue
+        if len(matches) != 1:
+            blockers.append(
+                _semantic_blocker(
+                    draft,
+                    code="SEMANTIC_PROPOSAL_DUPLICATE",
+                    semantic_id=rule.id,
+                    message=f"duplicate semantic proposal for {rule.id}",
+                )
+            )
+            continue
+        proposal = matches[0]
+        if proposal.state != "reviewed":
+            blockers.append(
+                _semantic_blocker(
+                    draft,
+                    code="SEMANTIC_PROPOSAL_PROPOSED",
+                    semantic_id=rule.id,
+                    message=f"semantic proposal {rule.id} is still proposed",
+                )
+            )
+            continue
+        try:
+            _require_current_proposal(draft, proposal, require_resolved_members=True)
+        except ApprovalError as error:
+            blockers.append(
+                _semantic_blocker(
+                    draft,
+                    code="SEMANTIC_PROPOSAL_STALE",
+                    semantic_id=rule.id,
+                    message=str(error),
+                )
+            )
+    rule_keys = {(kind, rule.id) for kind, rule in rules}
+    for proposal in proposals:
+        if (proposal.rule_kind, proposal.semantic_id) not in rule_keys:
+            blockers.append(
+                _semantic_blocker(
+                    draft,
+                    code="SEMANTIC_PROPOSAL_STALE",
+                    semantic_id=proposal.semantic_id,
+                    message=f"stale semantic proposal {proposal.semantic_id} has no current rule",
+                )
+            )
+    return tuple(blockers)
+
+
+def is_fully_resolved(draft: ImportedRuleDraft) -> bool:
+    """True when the single manual and semantic approval gate is empty."""
+    return not approval_blockers(draft)
 
 
 def approve_draft(
@@ -709,14 +936,15 @@ def approve_draft(
         record.action == "approval" for record in draft.manifest.approval_records
     ):
         raise ApprovalError("draft already contains an approval")
-    resolved = {resolution.review_item_sha256 for resolution in draft.review_resolutions}
-    inventory = {item.sha256 for item in draft.review_items}
-    if (
-        len(resolved) != len(draft.review_resolutions)
-        or not resolved <= inventory
-        or inventory - resolved
-    ):
-        raise ApprovalError("draft has unresolved manual review items")
+    blockers = approval_blockers(draft)
+    if blockers:
+        resolved = {item.review_item_sha256 for item in draft.review_resolutions}
+        manual = any(item.sha256 not in resolved for item in draft.review_items)
+        raise ApprovalError(
+            "draft approval blockers: "
+            + ("unresolved manual review items; " if manual else "")
+            + "; ".join(item.expected_contract for item in blockers)
+        )
     _require_source_genesis(draft)
     _require_complete_audit(draft)
     _require_compatibility_mapping(draft)
@@ -744,6 +972,10 @@ def approve_draft(
         tables=draft.tables,
         formulas=draft.formulas,
         mappings=tuple(mapping.model_copy(update={"approved": True}) for mapping in draft.mappings),
+        decisions=draft.decisions,
+        procedures=draft.procedures,
+        guidance=draft.guidance,
+        curves=draft.curves,
     )
     try:
         content, checksums = _archive_bytes(candidate)

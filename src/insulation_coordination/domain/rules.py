@@ -796,6 +796,7 @@ class RulePackage(FrozenModel):
     decisions: tuple[DecisionRule, ...] = ()
     procedures: tuple[ProcedureRule, ...] = ()
     guidance: tuple[GuidanceRule, ...] = ()
+    curves: tuple[PiecewiseCurveRule, ...] = ()
     checksums: dict[str, str] = Field(default_factory=dict)
     package_sha256: str | None = Field(default=None, exclude=True)
 
