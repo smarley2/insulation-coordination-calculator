@@ -15,6 +15,7 @@ import os
 import subprocess
 import tempfile
 from decimal import Decimal, InvalidOperation
+from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
@@ -25,14 +26,18 @@ from pydantic import ValidationError as PydanticValidationError
 from pypdf._page import PageObject
 
 from insulation_coordination.domain.project import FrozenModel
-from insulation_coordination.rules.importer.extract import ExtractionError
+from insulation_coordination.rules.importer.extract import ExtractionError, ImportReviewItem
 
 if TYPE_CHECKING:
     from insulation_coordination.rules.importer.identify import (
         CurveAuditSpec,
         StandardIdentity,
     )
-from insulation_coordination.domain.rules import Identifier, SourceReference
+from insulation_coordination.domain.rules import (
+    Identifier,
+    PiecewiseCurveRule,
+    SourceReference,
+)
 
 
 class OcrError(ValueError):
@@ -510,3 +515,364 @@ def extract_raw_figure(
         traces=(),
         artifact_sha256=hashlib.sha256(payload.encode("utf-8")).hexdigest(),
     )
+
+
+class AxisCalibration(FrozenModel):
+    scale: Literal["log10"]
+    slope: Decimal
+    intercept: Decimal
+    residual_pixels: Decimal
+    minor_grid_spacing_pixels: Decimal
+
+
+class PlotCalibration(FrozenModel):
+    x: AxisCalibration
+    y: AxisCalibration
+
+
+class ConservatismReport(FrozenModel):
+    maximum_positive_voltage_error: Decimal
+    maximum_fidelity_error_pixels: Decimal
+    proven: bool
+
+
+class CurveDigitizationResult(FrozenModel):
+    proposed_rule: PiecewiseCurveRule | None
+    calibration: PlotCalibration | None
+    conservatism: ConservatismReport | None
+    blocking_review_items: tuple[ImportReviewItem, ...]
+
+
+CurveDigitizationResult.model_rebuild()
+
+
+def calibrate_log_axis(
+    ticks: tuple[tuple[Decimal, Decimal], ...],
+    *,
+    minor_grid_spacing_pixels: Decimal,
+) -> AxisCalibration:
+    """Least-squares fit of log10(value) = slope * pixel + intercept.
+
+    Requires at least two ticks and a monotone pixel→log mapping; residual must not
+    exceed half the declared minor-grid spacing.
+    """
+
+    if len(ticks) < 2:
+        raise ExtractionError("CURVE_CALIBRATION_FAILED: fewer than two ticks")
+    pixels = [pixel for pixel, _ in ticks]
+    logs = [log for _, log in ticks]
+    if any(right <= left for left, right in pairwise(pixels)) or any(
+        right <= left for left, right in pairwise(logs)
+    ):
+        raise ExtractionError("CURVE_CALIBRATION_FAILED: non-monotone tick mapping")
+    n = Decimal(len(ticks))
+    sum_x = sum(pixels)
+    sum_y = sum(logs)
+    sum_xx = sum(pixel * pixel for pixel in pixels)
+    sum_xy = sum(pixel * log for pixel, log in ticks)
+    denominator = n * sum_xx - sum_x * sum_x
+    if denominator == 0:
+        raise ExtractionError("CURVE_CALIBRATION_FAILED: degenerate tick spread")
+    slope = (n * sum_xy - sum_x * sum_y) / denominator
+    intercept = (sum_y - slope * sum_x) / n
+    residual = max(
+        abs(slope * pixel + intercept - log) for pixel, log in ticks
+    )
+    if residual > minor_grid_spacing_pixels / 2:
+        raise ExtractionError(
+            "CURVE_CALIBRATION_FAILED: tick residual exceeds half minor-grid spacing"
+        )
+    return AxisCalibration(
+        scale="log10",
+        slope=slope,
+        intercept=intercept,
+        residual_pixels=residual,
+        minor_grid_spacing_pixels=minor_grid_spacing_pixels,
+    )
+
+
+def prove_conservative(
+    source: list[tuple[Decimal, Decimal]] | tuple[tuple[Decimal, Decimal], ...],
+    candidate: list[tuple[Decimal, Decimal]] | tuple[tuple[Decimal, Decimal], ...],
+    tolerance: Decimal,
+) -> ConservatismReport:
+    """Prove the candidate never exceeds the source's lower uncertainty boundary.
+
+    For a maximum-voltage rule the reconstructed curve must sit at or below the
+    source geometry minus the fidelity tolerance at every source column and every
+    candidate breakpoint.
+    """
+
+    maximum_positive = Decimal(0)
+    proven = True
+    source_points = tuple(source)
+    for x, _y in (*candidate, *source_points):
+        envelope = _lower_envelope(source_points, x)
+        if envelope is None:
+            continue
+        lower = envelope - tolerance
+        candidate_y = _piecewise_value(candidate, x)
+        if candidate_y is None:
+            continue
+        error = candidate_y - lower
+        maximum_positive = max(maximum_positive, error)
+        if candidate_y > lower:
+            proven = False
+    return ConservatismReport(
+        maximum_positive_voltage_error=maximum_positive,
+        maximum_fidelity_error_pixels=tolerance,
+        proven=proven,
+    )
+
+
+def _lower_envelope(
+    source: tuple[tuple[Decimal, Decimal], ...], x: Decimal
+) -> Decimal | None:
+    """Lowest source y at column x, interpolating between neighboring samples.
+
+    Columns outside the traced endpoints have no source evidence: no curve is
+    extrapolated there, so they contribute no envelope constraint.
+    """
+
+    if not source:
+        return None
+    ordered = sorted(source)
+    if x < ordered[0][0] or x > ordered[-1][0]:
+        return None
+    for (lx, ly), (rx, ry) in pairwise(ordered):
+        if lx <= x <= rx:
+            if rx == lx:
+                return min(ly, ry)
+            fraction = (x - lx) / (rx - lx)
+            return ly + fraction * (ry - ly)
+    return ordered[-1][1]
+
+
+def _piecewise_value(
+    candidate: list[tuple[Decimal, Decimal]] | tuple[tuple[Decimal, Decimal], ...],
+    x: Decimal,
+) -> Decimal | None:
+    ordered = tuple(sorted(candidate))
+    if not ordered or x < ordered[0][0] or x > ordered[-1][0]:
+        return None
+    return _lower_envelope(ordered, x)
+
+
+def conservative_simplify(
+    points: list[tuple[Decimal, Decimal]] | tuple[tuple[Decimal, Decimal], ...],
+    tolerance: Decimal,
+) -> tuple[tuple[Decimal, Decimal], ...]:
+    """Round time outward and voltage downward at the declared tolerance.
+
+    For a maximum-voltage rule, conservative means: earliest times shift earlier,
+    latest times shift later, voltages shift down — never the reverse.
+    """
+
+    ordered = tuple(sorted(points))
+    if len(ordered) < 2:
+        return ordered
+    # Time rounds outward (earliest earlier, latest later); voltage rounds down.
+    # For a monotonically DECREASING front this strictly widens the conservative
+    # region: the earlier endpoint follows the slope down-left; the later endpoint
+    # keeps the final (lowest) voltage rather than extrapolating below the traced
+    # endpoint, where no source evidence exists.
+    simplified: list[tuple[Decimal, Decimal]] = []
+    last_index = len(ordered) - 1
+    for index, (x, y) in enumerate(ordered):
+        if index == 0:
+            slope = (ordered[1][1] - ordered[0][1]) / (ordered[1][0] - ordered[0][0])
+            rounded_x = x - tolerance
+            rounded_y = y + slope * (rounded_x - x) - tolerance
+        elif index == last_index:
+            rounded_x = x + tolerance
+            rounded_y = y - tolerance
+        else:
+            rounded_x = x
+            rounded_y = y - tolerance
+        simplified.append((rounded_x, rounded_y))
+    return tuple(simplified)
+
+
+def _blocking_item(code: str, spec: CurveAuditSpec, contract: str) -> ImportReviewItem:
+    from insulation_coordination.domain.rules import SourceReference
+    from insulation_coordination.rules.importer.extract import ImportReviewItem
+
+    return ImportReviewItem(
+        code=code,
+        semantic_id=spec.semantic_id,
+        kind="curve",
+        source=SourceReference(
+            document_id="importer",
+            standard="internal",
+            edition="internal",
+            page=spec.page_number,
+            figure=spec.figure,
+        ),
+        expected_contract=contract,
+    )
+
+
+def _tick_value(token: OcrToken) -> Decimal | None:
+    try:
+        return Decimal(token.text.replace(",", "."))
+    except InvalidOperation:
+        return None
+
+
+def _axis_ticks(
+    tokens: tuple[OcrToken, ...],
+    *,
+    axis: Literal["x", "y"],
+    bbox: tuple[float, float, float, float],
+) -> tuple[tuple[Decimal, Decimal], ...]:
+    """Numeric tokens in the axis strip: bottom 15% of the bbox for x (sorted by
+    pixel x), left 15% for y (sorted by descending pixel y = ascending value)."""
+
+    x0, top, x1, bottom = bbox
+    width = Decimal(str(x1 - x0))
+    height = Decimal(str(bottom - top))
+    x_strip = Decimal(str(bottom)) - Decimal("0.15") * height
+    y_strip = Decimal(str(x0)) + Decimal("0.15") * width
+    ticks: list[tuple[Decimal, Decimal]] = []
+    for token in tokens:
+        value = _tick_value(token)
+        if value is None or value <= 0:
+            continue
+        center_x = Decimal(token.box.left + token.box.right) / 2
+        center_y = Decimal(token.box.top + token.box.bottom) / 2
+        if axis == "x":
+            if center_y < x_strip or center_x < y_strip:
+                continue
+            ticks.append((center_x, _log10(value)))
+        else:
+            if center_x > y_strip or center_y > x_strip:
+                continue
+            ticks.append((center_y, _log10(value)))
+    # y pixel grows downward while value grows upward; calibrate on -pixel so both
+    # axes feed the fit a strictly increasing pixel→log mapping.
+    if axis == "y":
+        return tuple(sorted((-pixel, log) for pixel, log in ticks))
+    return tuple(sorted(ticks))
+
+
+def _log10(value: Decimal) -> Decimal:
+    return value.log10()
+
+
+def digitize_curve_figure(
+    figure: RawFigure,
+    spec: CurveAuditSpec,
+    ocr: OcrEngine,
+    identity: StandardIdentity,
+) -> CurveDigitizationResult:
+    """Digitize one reviewed figure into a proposed conservative curve rule."""
+
+    tokens = ocr.recognize(_blank_image(figure)) if not figure.ocr_tokens else figure.ocr_tokens
+    try:
+        x_calibration = calibrate_log_axis(
+            _axis_ticks(tokens, axis="x", bbox=spec.expected_bbox),
+            minor_grid_spacing_pixels=Decimal(80),
+        )
+        y_calibration = calibrate_log_axis(
+            _axis_ticks(tokens, axis="y", bbox=spec.expected_bbox),
+            minor_grid_spacing_pixels=Decimal(80),
+        )
+    except ExtractionError as error:
+        return CurveDigitizationResult(
+            proposed_rule=None,
+            calibration=None,
+            conservatism=None,
+            blocking_review_items=(
+                _blocking_item("CURVE_CALIBRATION_FAILED", spec, str(error)),
+            ),
+        )
+    calibration = PlotCalibration(x=x_calibration, y=y_calibration)
+    if not figure.traces:
+        return CurveDigitizationResult(
+            proposed_rule=None,
+            calibration=calibration,
+            conservatism=None,
+            blocking_review_items=(
+                _blocking_item(
+                    "CURVE_TRACE_AMBIGUOUS", spec, "no connected stroke was traced"
+                ),
+            ),
+        )
+    trace = max(figure.traces, key=lambda item: len(item.points))
+    tolerance = max(Decimal(1), (trace.stroke_width / 2).to_integral_value())
+    source_points = tuple(
+        (point.x, point.y) for point in sorted(trace.points, key=lambda point: point.x)
+    )
+    breakpoints = (source_points[0], source_points[-1])
+    simplified = conservative_simplify(breakpoints, tolerance)
+    report = prove_conservative(source_points, simplified, tolerance)
+    if not report.proven:
+        return CurveDigitizationResult(
+            proposed_rule=None,
+            calibration=calibration,
+            conservatism=report,
+            blocking_review_items=(
+                _blocking_item(
+                    "CURVE_CONSERVATISM_UNPROVEN",
+                    spec,
+                    "candidate segment exceeds the lower uncertainty envelope",
+                ),
+            ),
+        )
+    from insulation_coordination.domain.rules import (
+        CurveAxis,
+        CurvePoint,
+        CurveSegment,
+        FaultTimeVoltageVariant,
+    )
+
+    x_values = [point[0] for point in simplified]
+    y_values = [point[1] for point in simplified]
+    variant = FaultTimeVoltageVariant(
+        id=f"{spec.semantic_id}.{spec.figure}",
+        selector=spec.variant_slots[0],
+        x_axis=CurveAxis(
+            quantity_kind=spec.x_quantity_kind,
+            unit=spec.x_unit,
+            scale="log10",
+            minimum=min(x_values),
+            maximum=max(x_values),
+        ),
+        y_axis=CurveAxis(
+            quantity_kind=spec.y_quantity_kind,
+            unit=spec.y_unit,
+            scale="log10",
+            minimum=min(y_values),
+            maximum=max(y_values),
+        ),
+        points=tuple(
+            CurvePoint(x=x, y=y) for x, y in simplified
+        ),
+        segments=(
+            CurveSegment(
+                start=0,
+                end=len(simplified) - 1,
+                segment_type="continuous",
+                interpolation="log_log",
+            ),
+        ),
+        applicability="review required",
+        source=figure.source,
+        reviewed_artifact_sha256=figure.artifact_sha256,
+    )
+    rule = PiecewiseCurveRule(
+        id=spec.semantic_id,
+        variants=(variant,),
+        source=figure.source,
+    )
+    return CurveDigitizationResult(
+        proposed_rule=rule,
+        calibration=calibration,
+        conservatism=report,
+        blocking_review_items=(),
+    )
+
+
+def _blank_image(figure: RawFigure) -> Image.Image:
+    width, height = figure.pixel_size or (1, 1)
+    return Image.new("L", (width, height), color=255)
