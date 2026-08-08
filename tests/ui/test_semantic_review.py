@@ -22,6 +22,7 @@ from insulation_coordination.domain.rules import (
 from insulation_coordination.rules.importer import recipes as recipe_registry
 from insulation_coordination.rules.importer.approval import (
     ApprovalError,
+    approval_blockers,
     approve_draft,
 )
 from insulation_coordination.rules.importer.clauses import (
@@ -206,6 +207,7 @@ def built_draft(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
             "formulas": (),
             "mappings": (),
             "clauses": (SPEC,),
+            "required_curves": (ids.DVC_FAULT_TIME_VOLTAGE,),
         }
     )
     monkeypatch.setattr(recipe_registry, "RECIPES", (recipe,))
@@ -376,3 +378,22 @@ def test_source_jump_uses_typed_page_and_bbox(built_draft) -> None:
     assert target.bbox == SPEC.expected_bbox
     assert target.clause == "9.9.9"
     assert target.document_id == "synthetic-clause"
+
+
+def test_missing_required_curve_blocks_approval_with_named_id(built_draft) -> None:
+    """A draft without the recipe-declared curve is blocked and names the curve."""
+    without_curve = built_draft.model_copy(
+        update={
+            "curves": (),
+            "semantic_proposals": tuple(
+                proposal
+                for proposal in built_draft.semantic_proposals
+                if proposal.semantic_id != ids.DVC_FAULT_TIME_VOLTAGE
+            ),
+        }
+    )
+    blockers = approval_blockers(without_curve)
+    curve_blockers = [item for item in blockers if item.code == "CURVE_REQUIRED"]
+    assert [item.semantic_id for item in curve_blockers] == [ids.DVC_FAULT_TIME_VOLTAGE]
+    with pytest.raises(ApprovalError, match="fault_time_voltage"):
+        approve_draft(without_curve, "Synthetic Approver", "Approve without curve.")

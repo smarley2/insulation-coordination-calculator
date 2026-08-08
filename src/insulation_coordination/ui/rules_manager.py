@@ -276,6 +276,11 @@ class RulesManagerWindow(QWidget):
         return self._draft is not None and is_fully_resolved(self._draft)
 
     @property
+    def draft(self) -> ImportedRuleDraft | None:
+        """The currently selected draft, for review surfaces backed by this window."""
+        return self._draft
+
+    @property
     def can_approve(self) -> bool:
         return self._draft is not None and self.is_fully_resolved
 

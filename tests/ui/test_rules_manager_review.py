@@ -375,13 +375,16 @@ def test_semantic_review_panel_backed_by_rules_manager_draft(
     """The semantic review model reads the draft the Rules Manager selected."""
     from insulation_coordination.ui.semantic_review import SemanticReviewModel
 
-    draft = _accept_all_source_artifacts(extract_draft(supported_pdfs))
+    draft = build_reviewed(
+        _accept_all_source_artifacts(extract_draft(supported_pdfs)),
+        recipe_registry.RECIPES,
+    )
     rules_manager.set_draft(draft)
     model = SemanticReviewModel.for_window(rules_manager)
     assert model is not None
-    assert model.draft is rules_manager._draft
-    kinds = {item.rule_kind for item in model.proposals}
-    assert kinds == set()
+    assert model.draft is rules_manager.draft
+    assert model.proposals
+    assert {item.rule_kind for item in model.proposals} >= {"table", "formula", "mapping"}
 
 
 def test_semantic_review_panel_none_without_draft(rules_manager) -> None:

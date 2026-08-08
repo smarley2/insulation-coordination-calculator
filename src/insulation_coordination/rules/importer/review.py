@@ -381,6 +381,35 @@ def unresolved_clause_items(draft: ImportedRuleDraft) -> tuple[ImportReviewItem,
     return _unresolved_items(draft, "clause")
 
 
+def accept_clause_fragment(
+    draft: ImportedRuleDraft,
+    *,
+    semantic_id: str,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Resolve one clause review item against its extracted fragment."""
+
+    from insulation_coordination.rules.importer.approval import record_correction
+
+    pending = tuple(
+        item for item in unresolved_clause_items(draft) if item.semantic_id == semantic_id
+    )
+    if not pending:
+        raise ValueError(f"clause {semantic_id} has no unresolved review item")
+    if not any(
+        fragment.id == f"raw-{semantic_id}" for fragment in draft.raw_clause_fragments
+    ):
+        raise ValueError(f"clause {semantic_id} has no extracted fragment")
+    return record_correction(
+        draft,
+        draft,
+        actor=actor.strip(),
+        notes=notes.strip(),
+        resolve=pending,
+    )
+
+
 def recipe_derived_items(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
     """Review items the importer resolved itself because no PDF content backs them."""
     return tuple(item for item in draft.review_items if is_recipe_derived(item))

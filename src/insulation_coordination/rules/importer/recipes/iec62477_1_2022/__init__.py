@@ -1,6 +1,7 @@
 """IEC 62477-1:2022 extraction recipe. Layout facts only."""
 
 from insulation_coordination.rules.importer.identify import StandardRecipe
+from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
     clauses,
     identity,
@@ -20,6 +21,7 @@ RECIPE = StandardRecipe(
     formulas=tables.FORMULAS,
     mappings=(),
     clauses=clauses.CLAUSES,
+    required_curves=(ids.DVC_FAULT_TIME_VOLTAGE,),
 )
 
 __all__ = ["RECIPE"]

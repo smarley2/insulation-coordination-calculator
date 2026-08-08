@@ -14,6 +14,7 @@ from insulation_coordination.rules.importer.approval import ApprovalError, appro
 from insulation_coordination.rules.importer.extract import _REQUIRED_RECIPES, extract_draft
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.review import (
+    accept_clause_fragment,
     accept_equation_mapping,
     accept_raw_grid,
     accept_raw_table,
@@ -82,8 +83,6 @@ def _review_all_c2_proposals(draft):
             notes="Reviewed equations and mappings.",
         )
     for item in unresolved_clause_items(reviewed):
-        from insulation_coordination.rules.importer.review import accept_clause_fragment
-
         reviewed = accept_clause_fragment(
             reviewed,
             semantic_id=item.semantic_id,

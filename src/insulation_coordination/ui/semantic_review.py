@@ -80,7 +80,7 @@ class SemanticReviewModel:
     def for_window(cls, window: RulesManagerWindow) -> SemanticReviewModel | None:
         """Back the model with the draft currently selected in the Rules Manager."""
 
-        draft = getattr(window, "_draft", None)
+        draft = window.draft
         if draft is None:
             return None
         return cls(draft)
@@ -124,15 +124,26 @@ class SemanticReviewModel:
         proposal = proposal_for(self._draft, semantic_id)
         source = _rule_source(self._draft, proposal)
         bbox: tuple[float, float, float, float] | None = None
+        # Function-local import keeps monkeypatched RECIPES visible at call time.
         from insulation_coordination.rules.importer.recipes import RECIPES
 
+        bboxes: list[tuple[float, float, float, float]] = []
         for recipe in RECIPES:
-            for clause_spec in recipe.clauses:
-                if clause_spec.semantic_id == semantic_id:
-                    bbox = clause_spec.expected_bbox
-            for table_spec in recipe.tables:
-                if table_spec.semantic_id == semantic_id:
-                    bbox = table_spec.expected_bbox
+            clause_matches = tuple(
+                spec.expected_bbox
+                for spec in recipe.clauses
+                if spec.semantic_id == semantic_id
+            )
+            table_matches = tuple(
+                spec.expected_bbox
+                for spec in recipe.tables
+                if spec.semantic_id == semantic_id
+            )
+            bboxes.extend(clause_matches + table_matches)
+        if len(set(bboxes)) > 1:
+            raise ValueError(f"conflicting recipe bboxes for {semantic_id}")
+        if bboxes:
+            bbox = bboxes[0]
         return SourceTarget(
             document_id=source.document_id,
             page=source.page,

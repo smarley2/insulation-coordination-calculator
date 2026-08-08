@@ -444,19 +444,28 @@ def test_multiple_artifacts_use_canonical_ordered_pairs() -> None:
 
 def test_approval_blockers_are_the_single_manual_and_semantic_gate() -> None:
     draft = _draft_with_every_rule_kind()
-    assert {item.code for item in approval_blockers(draft)} == {"SEMANTIC_PROPOSAL_PROPOSED"}
+    # The draft carries a synthetic curve rule, but the IEC 62477 recipe declares
+    # the fault-time-voltage curve as required; no synthetic draft has it.
+    assert {item.code for item in approval_blockers(draft)} == {
+        "SEMANTIC_PROPOSAL_PROPOSED",
+        "CURVE_REQUIRED",
+    }
 
     reviewed = _review_all_proposals(draft)
-    assert approval_blockers(reviewed) == ()
+    assert {item.code for item in approval_blockers(reviewed)} == {"CURVE_REQUIRED"}
 
     stale = reviewed.semantic_proposals[0].model_copy(update={"rule_sha256": "0" * 64})
     stale_draft = reviewed.model_copy(
         update={"semantic_proposals": (stale, *reviewed.semantic_proposals[1:])}
     )
-    assert "stale" in approval_blockers(stale_draft)[0].expected_contract
+    assert any(
+        "stale" in item.expected_contract for item in approval_blockers(stale_draft)
+    )
 
     missing = reviewed.model_copy(update={"semantic_proposals": reviewed.semantic_proposals[:-1]})
-    assert approval_blockers(missing)[0].code == "SEMANTIC_PROPOSAL_MISSING"
+    assert any(
+        item.code == "SEMANTIC_PROPOSAL_MISSING" for item in approval_blockers(missing)
+    )
 
     duplicate_resolution = reviewed.model_copy(
         update={

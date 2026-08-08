@@ -985,12 +985,20 @@ def _semantic_blocker(
         None,
     )
     if source is None:
-        document = draft.manifest.source_documents[0]
-        source = SourceReference(
-            document_id=document.id,
-            standard=document.standard,
-            edition=document.edition,
-        )
+        documents = draft.manifest.source_documents
+        if documents:
+            document = documents[0]
+            source = SourceReference(
+                document_id=document.id,
+                standard=document.standard,
+                edition=document.edition,
+            )
+        else:
+            source = SourceReference(
+                document_id="importer",
+                standard="internal",
+                edition="internal",
+            )
     return ImportReviewItem(
         code=code,
         semantic_id=semantic_id,
@@ -1089,7 +1097,32 @@ def approval_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
                     message=f"stale semantic proposal {proposal.semantic_id} has no current rule",
                 )
             )
+    for semantic_id in missing_required_curves(draft):
+        blockers.append(
+            _semantic_blocker(
+                draft,
+                code="CURVE_REQUIRED",
+                semantic_id=semantic_id,
+                message=(
+                    f"required curve {semantic_id} has no reviewed variants in the draft"
+                ),
+            )
+        )
     return tuple(blockers)
+
+
+def missing_required_curves(draft: ImportedRuleDraft) -> tuple[str, ...]:
+    """Recipe-declared curve semantics with no reviewed curve rule in the draft."""
+
+    from insulation_coordination.rules.importer.recipes import RECIPES
+
+    present = {curve.id for curve in draft.curves}
+    required = {
+        semantic_id for recipe in RECIPES for semantic_id in recipe.required_curves
+    }
+    return tuple(
+        semantic_id for semantic_id in sorted(required) if semantic_id not in present
+    )
 
 
 def is_fully_resolved(draft: ImportedRuleDraft) -> bool:

@@ -357,6 +357,10 @@ class StandardRecipe(FrozenModel):
     formulas: tuple[FormulaAuditSpec, ...]
     mappings: tuple[MappingAuditSpec, ...]
     clauses: tuple[ClauseAuditSpec, ...] = ()
+    #: Curve semantics the recipe's standard requires. A draft missing a reviewed
+    #: curve rule for one of these cannot approve. Declared here so approval does
+    #: not hard-code any one standard's curve IDs.
+    required_curves: tuple[Identifier, ...] = ()
 
     def matches_text(self, text: str) -> bool:
         return all(_normalized(anchor) in text for anchor in self.identity_anchors)
