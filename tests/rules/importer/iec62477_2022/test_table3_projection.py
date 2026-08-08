@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 
@@ -143,6 +144,112 @@ def test_projection_emits_boolean_matchers_exhaustive_coverage_and_proposals() -
     }
     assert boolean_match_values == {False, True}
     assert {proposal.semantic_id for proposal in proposals} == {rule.id for rule in rules}
+    assert all(len(rule.rows) == 7 * 5 * 2 for rule in rules)
+
+
+def test_evidence_and_applicability_fields_use_the_named_derivation() -> None:
+    """The two boolean fields are distinct outputs with distinct rule IDs, each
+
+    derived per the explicit ``_PROTECTION_OUTCOME_DERIVATION`` rule: a reviewed
+    "yes" cell requires both protective measures (applicable) and their
+    verification evidence (evidence_required); a "no" cell requires neither.
+    The test pins the derivation name and both fields independently rather than
+    asserting they blindly equal the token.
+    """
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
+        projection as table3_projection,
+    )
+
+    assert table3_projection._PROTECTION_OUTCOME_DERIVATION == "reviewed-cell-token"
+    rules, _ = project_dvc_protection_matrix(_grid(), synthetic_identity())
+    by_output = {rule.outputs[0].name: rule for rule in rules}
+    assert set(by_output) == {"evidence_required", "applicable"}
+    assert by_output["evidence_required"].id == ids.DVC_PROTECTION_MATRIX
+    assert by_output["applicable"].id == f"{ids.DVC_PROTECTION_MATRIX}.applicable"
+    # Both derivations are stated for both token values, independently.
+    for token in (False, True):
+        evidence, applicable = table3_projection._derive_protection_outcome_fields(token)
+        assert evidence is token
+        assert applicable is token
+
+
+def test_every_category_condition_and_boolean_half_evaluates_without_raising() -> None:
+    from itertools import product
+
+    rules, _ = project_dvc_protection_matrix(_grid(), synthetic_identity())
+    for rule in rules:
+        allowed = {
+            item.name: item.allowed_values
+            for item in rule.inputs
+            if item.kind == "categorical"
+        }
+        assert set(allowed) == {"dvc", "protection_condition"}
+        assert len(allowed["dvc"]) == 7
+        assert len(allowed["protection_condition"]) == 5
+        for category, condition, met in product(
+            allowed["dvc"], allowed["protection_condition"], (False, True)
+        ):
+            result = evaluate_decision(
+                rule,
+                {
+                    "dvc": category,
+                    "protection_condition": condition,
+                    "protection_condition_met": met,
+                },
+            )
+            assert all(value.boolean is not None for value in result.values)
+
+
+def test_off_grid_evaluation_combinations_follow_the_reviewed_cell_token() -> None:
+    rules, _ = project_dvc_protection_matrix(_grid(), synthetic_identity())
+    for rule in rules:
+        for row_index, (grid_row, grid_column) in enumerate(
+            (row, column) for row in DATA_ROWS for column in DATA_COLUMNS
+        ):
+            category = f"category-row-{grid_row - 1}"
+            condition = f"condition-column-{grid_column - 1}"
+            for met in (False, True):
+                result = evaluate_decision(
+                    rule,
+                    {
+                        "dvc": category,
+                        "protection_condition": condition,
+                        "protection_condition_met": met,
+                    },
+                )
+                outcome = next(
+                    outcome
+                    for outcome in _expected_outcomes()
+                    if outcome.category == category
+                    and outcome.source.row == f"grid row {grid_row + 1}"
+                    and outcome.source.column == f"grid column {grid_column + 1}"
+                )
+                expected = getattr(outcome, rule.outputs[0].name) == met
+                assert all(value.boolean is expected for value in result.values), (
+                    f"{rule.id} row {row_index} must derive from the reviewed token"
+                )
+
+
+def _expected_outcomes():
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
+        ProtectionOutcome,
+    )
+
+    return tuple(
+        ProtectionOutcome(
+            category=f"category-row-{row - 1}",
+            evidence_required=_token(row, column) == "yes",
+            applicable=_token(row, column) == "yes",
+            source=SOURCE.model_copy(
+                update={
+                    "row": f"grid row {row + 1}",
+                    "column": f"grid column {column + 1}",
+                }
+            ),
+        )
+        for row in DATA_ROWS
+        for column in DATA_COLUMNS
+    )
 
 
 def test_projection_mixes_categorical_axes_boolean_inputs_and_typed_outputs() -> None:
@@ -177,16 +284,22 @@ def test_projection_rules_evaluate_the_reviewed_boolean_tokens() -> None:
     for rule in rules:
         boolean_inputs = tuple(item.name for item in rule.inputs if item.kind == "boolean")
         assert len(boolean_inputs) == 1
-        for row in rule.rows:
-            assignment: dict[str, str | bool] = {}
-            for matcher in row.matchers:
-                if matcher.boolean is not None:
-                    assignment[matcher.input] = matcher.boolean
-                else:
-                    assignment[matcher.input] = matcher.values[0]
-            result = evaluate_decision(rule, assignment)
-            expected = {value.name: value.boolean for value in row.values}
-            assert {value.name: value.boolean for value in result.values} == expected
+        # Deliberately evaluate combinations that are NOT copied from any row's
+        # own matchers: flip the boolean half of every cell's assignment and
+        # require the outcome to flip with it around the reviewed cell token.
+        for grid_row in DATA_ROWS:
+            for grid_column in DATA_COLUMNS:
+                token = _token(grid_row, grid_column) == "yes"
+                base = {
+                    "dvc": f"category-row-{grid_row - 1}",
+                    "protection_condition": f"condition-column-{grid_column - 1}",
+                }
+                met_result = evaluate_decision(rule, {**base, "protection_condition_met": True})
+                unmet_result = evaluate_decision(
+                    rule, {**base, "protection_condition_met": False}
+                )
+                assert met_result.values[0].boolean is token
+                assert unmet_result.values[0].boolean is not token
 
 
 def test_deleting_one_boolean_row_fails_exhaustive_rule_validation() -> None:
@@ -247,7 +360,38 @@ def test_incomplete_cartesian_coverage_blocks_projection() -> None:
     grid = _grid()
     cells = tuple(cell for cell in grid.cells if (cell.row, cell.column) != (8, 6))
 
-    with pytest.raises(ValueError, match="missing physical cell|coverage"):
+    # Mutation: deleting a physical cell must surface the structural missing-cell
+    # guard, unambiguously.
+    with pytest.raises(ValueError, match="missing physical cell"):
+        project_dvc_protection_matrix(
+            grid.model_copy(update={"cells": cells}), synthetic_identity()
+        )
+
+
+def test_missing_category_condition_cell_fails_cartesian_coverage() -> None:
+    """A grid with every physical cell present but one data cell blanked must fail
+
+    the projection's own incomplete-Cartesian-coverage guard, not the structural
+    missing-cell guard.
+    """
+    grid = _grid()
+    cells = tuple(
+        cell.model_copy(
+            update={
+                "raw_text": "0",
+                "role": "header",
+                "logical_row": None,
+                "logical_column": None,
+                "value": Decimal(0),
+                "parse_status": "numeric",
+            }
+        )
+        if (cell.row, cell.column) == (8, 6)
+        else cell
+        for cell in grid.cells
+    )
+
+    with pytest.raises(ValueError, match="incomplete Cartesian coverage"):
         project_dvc_protection_matrix(
             grid.model_copy(update={"cells": cells}), synthetic_identity()
         )

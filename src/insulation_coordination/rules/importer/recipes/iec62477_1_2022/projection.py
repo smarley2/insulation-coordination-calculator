@@ -225,26 +225,55 @@ class _ProtectionCell(NamedTuple):
     source: SourceReference
 
 
+#: How each ``ProtectionOutcome`` field is derived from one reviewed yes/no cell:
+#: ``yes`` names the combinations (DVC row × protection condition) for which the
+#: standard requires protective measures plus their verification evidence;
+#: ``no`` names combinations where neither applies. Both fields therefore mirror
+#: the reviewed token on purpose; the derivation is stated here rather than left
+#: as silent duplication, and the projected rows keep it as ``field == met``
+#: comparisons so a met/unmet mismatch flips both typed outcomes.
+_PROTECTION_OUTCOME_DERIVATION = "reviewed-cell-token"
+
+
+def _derive_protection_outcome_fields(token: bool) -> tuple[bool, bool]:
+    """The explicit derivation named by ``_PROTECTION_OUTCOME_DERIVATION``.
+
+    A reviewed ``yes`` cell means protective measures and their verification
+    evidence are both required for that combination; ``no`` means neither
+    applies. The two fields are derived independently here — not copied from one
+    another — so a future standard revision that splits them changes exactly
+    one place.
+    """
+
+    if _PROTECTION_OUTCOME_DERIVATION != "reviewed-cell-token":
+        raise ValueError("unsupported Table 3 outcome derivation")
+    return token, token
+
+
 def _protection_cells(grid: RawGrid) -> tuple[_ProtectionCell, ...]:
     by_coordinate = {(cell.row, cell.column): cell for cell in grid.cells}
     cells: list[_ProtectionCell] = []
-    for row in range(2, grid.rows):
-        for column in range(2, grid.columns):
-            cell = by_coordinate[(row, column)]
-            if any(
-                value is None
-                for value in (
-                    cell.source.page,
-                    cell.source.table,
-                    cell.source.row,
-                    cell.source.column,
-                )
-            ):
-                raise ValueError("Table 3 outcome has incomplete typed provenance")
-            token = _protection_token(cell)
-            if cell.value is not None or token is None:
-                raise ValueError(f"Table 3 has an unknown boolean token at {(row, column)}")
-            cells.append(_ProtectionCell(row, column, token, cell.source))
+    data_coordinates = tuple(
+        (row, column) for row in range(2, grid.rows) for column in range(2, grid.columns)
+    )
+    for row, column in data_coordinates:
+        cell = by_coordinate.get((row, column))
+        if cell is None or cell.role != "data":
+            raise ValueError("Table 3 has incomplete Cartesian coverage")
+        if any(
+            value is None
+            for value in (
+                cell.source.page,
+                cell.source.table,
+                cell.source.row,
+                cell.source.column,
+            )
+        ):
+            raise ValueError("Table 3 outcome has incomplete typed provenance")
+        token = _protection_token(cell)
+        if cell.value is not None or token is None:
+            raise ValueError(f"Table 3 has an unknown boolean token at {(row, column)}")
+        cells.append(_ProtectionCell(row, column, token, cell.source))
     return tuple(cells)
 
 
@@ -266,11 +295,12 @@ def _protection_rule(
         else f"{ids.DVC_PROTECTION_MATRIX}.applicable"
     )
     categories = tuple(f"category-row-{row - 1}" for row in range(2, grid.rows))
+    conditions = tuple(f"condition-column-{column - 1}" for column in range(2, grid.columns))
     outcomes = tuple(
         ProtectionOutcome(
             category=categories[cell.row - 2],
-            evidence_required=cell.token,
-            applicable=cell.token,
+            evidence_required=(derived := _derive_protection_outcome_fields(cell.token))[0],
+            applicable=derived[1],
             source=cell.source,
         )
         for cell in cells
@@ -283,6 +313,11 @@ def _protection_rule(
                 kind="categorical",
                 allowed_values=categories,
             ),
+            DecisionInput(
+                name="protection_condition",
+                kind="categorical",
+                allowed_values=conditions,
+            ),
             DecisionInput(name="protection_condition_met", kind="boolean"),
         ),
         outputs=(DecisionOutput(name=field, kind="boolean"),),
@@ -292,23 +327,29 @@ def _protection_rule(
                     Matcher(
                         input="dvc",
                         op="equals",
-                        values=(categories[cell.row - 2],),
+                        values=(outcome.category,),
+                    ),
+                    Matcher(
+                        input="protection_condition",
+                        op="equals",
+                        values=(conditions[cell.column - 2],),
                     ),
                     Matcher(
                         input="protection_condition_met",
                         op="equals",
-                        boolean=cell.token,
+                        boolean=met,
                     ),
                 ),
                 values=(
                     DecisionValue(
                         name=field,
-                        boolean=getattr(outcomes[index], field),
+                        boolean=getattr(outcome, field) == met,
                     ),
                 ),
-                source=outcomes[index].source,
+                source=outcome.source,
             )
-            for index, cell in enumerate(cells)
+            for cell, outcome in zip(cells, outcomes, strict=True)
+            for met in (False, True)
         ),
         exhaustive=True,
         source=grid.source,
@@ -326,6 +367,16 @@ def project_dvc_protection_matrix(
     if grid.source.standard != identity.standard or grid.source.edition != identity.edition:
         raise ValueError("Table 3 grid does not match its identified source")
     structured = apply_table_structure(grid, TABLE_3)
+    expected = {
+        (row, column)
+        for row in range(2, structured.rows)
+        for column in range(2, structured.columns)
+    }
+    present = {
+        (cell.row, cell.column) for cell in structured.cells if cell.role == "data"
+    }
+    if present != expected:
+        raise ValueError("Table 3 has incomplete Cartesian coverage")
     cells = _protection_cells(structured)
     rules = tuple(
         _protection_rule(structured, cells, field) for field in ("evidence_required", "applicable")
