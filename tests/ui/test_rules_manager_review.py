@@ -367,3 +367,24 @@ def test_draft_audit_tree_shows_review_state(
 
     assert rules_manager._tree.topLevelItemCount() > 0
     assert rules_manager._tree.topLevelItem(0).text(0) == "Draft review"
+
+
+def test_semantic_review_panel_backed_by_rules_manager_draft(
+    rules_manager, supported_pdfs, injected_recipes
+) -> None:
+    """The semantic review model reads the draft the Rules Manager selected."""
+    from insulation_coordination.ui.semantic_review import SemanticReviewModel
+
+    draft = _accept_all_source_artifacts(extract_draft(supported_pdfs))
+    rules_manager.set_draft(draft)
+    model = SemanticReviewModel.for_window(rules_manager)
+    assert model is not None
+    assert model.draft is rules_manager._draft
+    kinds = {item.rule_kind for item in model.proposals}
+    assert kinds == set()
+
+
+def test_semantic_review_panel_none_without_draft(rules_manager) -> None:
+    from insulation_coordination.ui.semantic_review import SemanticReviewModel
+
+    assert SemanticReviewModel.for_window(rules_manager) is None

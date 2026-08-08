@@ -127,7 +127,11 @@ def project_dvc_fault_applicability(
         ),
         outputs=(
             DecisionOutput(name="curve_applicability", kind="boolean"),
-            DecisionOutput(name="required_curve", kind="reference"),
+            DecisionOutput(
+                name="required_curve",
+                kind="categorical",
+                allowed_values=(ids.DVC_FAULT_TIME_VOLTAGE,),
+            ),
         ),
         rows=tuple(
             DecisionRow(
@@ -146,7 +150,8 @@ def project_dvc_fault_applicability(
                 values=(
                     DecisionValue(name="curve_applicability", boolean=True),
                     DecisionValue(
-                        name="required_curve", reference=ids.DVC_FAULT_TIME_VOLTAGE
+                        name="required_curve",
+                        categorical=ids.DVC_FAULT_TIME_VOLTAGE,
                     ),
                 ),
                 source=fragment.source,

@@ -137,7 +137,10 @@ def test_projection_emits_typed_applicability_inputs_and_outputs() -> None:
     }
     kinds = {output.name: output.kind for output in rule.outputs}
     assert kinds["curve_applicability"] == "boolean"
-    assert kinds["required_curve"] == "reference"
+    # categorical, not reference: package validation resolves reference outputs only
+    # against decision/procedure/guidance IDs, never curve IDs. The curve rule ID is
+    # carried as a categorical value.
+    assert kinds["required_curve"] == "categorical"
     assert {proposal.semantic_id for proposal in proposals} == {rule.id}
     assert all(proposal.state == "proposed" for proposal in proposals)
 
@@ -172,8 +175,8 @@ def test_projection_evaluates_both_alternatives() -> None:
         },
     )
     assert over.status == "no_match"
-    reference = next(value for value in first.values if value.name == "required_curve")
-    assert reference.reference == ids.DVC_FAULT_TIME_VOLTAGE
+    curve_value = next(value for value in first.values if value.name == "required_curve")
+    assert curve_value.categorical == ids.DVC_FAULT_TIME_VOLTAGE
 
 
 def test_swapped_tokens_change_the_canonical_rule_hash() -> None:
