@@ -33,6 +33,15 @@ ReferenceText = Annotated[
 NotesText = Annotated[str, Field(max_length=MAX_NOTES_LENGTH)]
 LatexText = Annotated[str, Field(max_length=MAX_LATEX_LENGTH)]
 ApplicabilityText = Annotated[str, Field(max_length=MAX_APPLICABILITY_LENGTH)]
+RuleKind = TypingLiteral[
+    "table",
+    "formula",
+    "mapping",
+    "decision",
+    "procedure",
+    "guidance",
+    "curve",
+]
 
 
 class RulePackageError(ValueError):
@@ -363,6 +372,144 @@ class CompatibilityMapping(FrozenModel):
     approved: bool = False
     source: SourceReference
     notes: NotesText = ""
+
+
+CurveAxisScale = TypingLiteral["linear", "log10"]
+CurveSegmentType = TypingLiteral["continuous", "plateau", "step"]
+CurveInterpolation = TypingLiteral[
+    "linear",
+    "log_x",
+    "log_y",
+    "log_log",
+    "constant",
+    "step_before",
+    "step_after",
+]
+
+
+class CurveAxis(FrozenModel):
+    quantity_kind: Identifier
+    unit: Identifier
+    scale: CurveAxisScale
+    minimum: DecimalValue
+    maximum: DecimalValue
+
+    @model_validator(mode="after")
+    def _valid_bounds(self) -> Self:
+        if not self.minimum.is_finite() or not self.maximum.is_finite():
+            raise ValueError("Curve axis bounds must be finite")
+        if self.minimum >= self.maximum:
+            raise ValueError("Curve axis maximum must exceed minimum")
+        if self.scale == "log10" and self.minimum <= 0:
+            raise ValueError("Logarithmic curve axis bounds must be positive")
+        return self
+
+
+class CurvePoint(FrozenModel):
+    x: DecimalValue
+    y: DecimalValue
+
+
+class CurveSegment(FrozenModel):
+    start: int = Field(ge=0, strict=True)
+    end: int = Field(ge=0, strict=True)
+    segment_type: CurveSegmentType
+    interpolation: CurveInterpolation
+
+
+class FaultTimeVoltageSelector(FrozenModel):
+    subject: TypingLiteral["accessible_circuit", "conductive_accessible_part"]
+    voltage_basis: TypingLiteral["ac_rms", "ac_peak", "dc"]
+    dvc_context: Identifier | None
+    environment_context: Identifier | None
+
+
+class FaultTimeVoltageVariant(FrozenModel):
+    id: Identifier
+    selector: FaultTimeVoltageSelector
+    x_axis: CurveAxis
+    y_axis: CurveAxis
+    points: tuple[CurvePoint, ...]
+    segments: tuple[CurveSegment, ...]
+    applicability: ApplicabilityText
+    source: SourceReference
+    reviewed_artifact_sha256: str
+
+    @field_validator("reviewed_artifact_sha256")
+    @classmethod
+    def _valid_reviewed_artifact_sha256(cls, value: str) -> str:
+        if SHA256_PATTERN.fullmatch(value) is None:
+            raise ValueError("SHA-256 must be 64 lowercase hexadecimal characters")
+        return value
+
+    @model_validator(mode="after")
+    def _valid_piecewise_curve(self) -> Self:
+        if len(self.points) < 2:
+            raise ValueError("A curve variant needs at least two points")
+        if any(not point.x.is_finite() or not point.y.is_finite() for point in self.points):
+            raise ValueError("Curve points must be finite")
+        if any(left.x >= right.x for left, right in pairwise(self.points)):
+            raise ValueError("Curve point x coordinates must be strictly increasing")
+        if self.x_axis.scale == "log10" and any(point.x <= 0 for point in self.points):
+            raise ValueError("Curve points on a logarithmic x axis must be positive")
+        if self.y_axis.scale == "log10" and any(point.y <= 0 for point in self.points):
+            raise ValueError("Curve points on a logarithmic y axis must be positive")
+        if any(
+            not self.x_axis.minimum <= point.x <= self.x_axis.maximum
+            or not self.y_axis.minimum <= point.y <= self.y_axis.maximum
+            for point in self.points
+        ):
+            raise ValueError("Curve points must be inside their axis range")
+        expected_segments = tuple((index, index + 1) for index in range(len(self.points) - 1))
+        if tuple((segment.start, segment.end) for segment in self.segments) != expected_segments:
+            raise ValueError("Curve segments must cover every adjacent point interval")
+        continuous_interpolations = {"linear", "log_x", "log_y", "log_log"}
+        for segment in self.segments:
+            if (
+                segment.segment_type == "continuous"
+                and segment.interpolation not in continuous_interpolations
+            ):
+                raise ValueError("A continuous segment needs linear or logarithmic interpolation")
+            if segment.segment_type == "plateau" and segment.interpolation != "constant":
+                raise ValueError("A plateau segment needs constant interpolation")
+            if segment.segment_type == "step" and segment.interpolation not in {
+                "step_before",
+                "step_after",
+            }:
+                raise ValueError("A step segment needs step interpolation")
+            endpoints = (self.points[segment.start], self.points[segment.end])
+            if segment.interpolation in {"log_x", "log_log"} and any(
+                point.x <= 0 for point in endpoints
+            ):
+                raise ValueError("Logarithmic x interpolation needs positive coordinates")
+            if segment.interpolation in {"log_y", "log_log"} and any(
+                point.y <= 0 for point in endpoints
+            ):
+                raise ValueError("Logarithmic y interpolation needs positive coordinates")
+            if (
+                segment.segment_type == "plateau"
+                and endpoints[0].y != endpoints[1].y
+            ):
+                raise ValueError("A plateau segment needs equal endpoint voltage")
+        return self
+
+
+class PiecewiseCurveRule(FrozenModel):
+    id: Identifier
+    variants: tuple[FaultTimeVoltageVariant, ...]
+    source: SourceReference
+
+    @model_validator(mode="after")
+    def _unique_variants(self) -> Self:
+        if not self.variants:
+            raise ValueError("A piecewise curve rule needs at least one variant")
+        selectors = tuple(variant.selector for variant in self.variants)
+        if len(selectors) != len(set(selectors)):
+            raise ValueError("Curve variant selector keys must be unique")
+        variant_ids = tuple(variant.id for variant in self.variants)
+        if len(variant_ids) != len(set(variant_ids)):
+            raise ValueError("Curve variant IDs must be unique")
+        return self
 
 
 DecisionValueKind = TypingLiteral["categorical", "numeric", "boolean"]
