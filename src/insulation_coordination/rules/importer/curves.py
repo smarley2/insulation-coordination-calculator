@@ -729,17 +729,6 @@ def _log10_to_value(log_value: Decimal) -> Decimal:
     return (log_value * Decimal(10).ln()).exp()
 
 
-def _apply_calibration(
-    point: RawCurvePoint, calibration: PlotCalibration
-) -> tuple[Decimal, Decimal]:
-    """Pixel → engineering value: log10(v) = slope·pixel + intercept per axis."""
-
-    x_log = calibration.x.slope * point.x + calibration.x.intercept
-    # y calibration was fit on −pixel (pixel grows downward, value upward)
-    y_log = calibration.y.slope * (-point.y) + calibration.y.intercept
-    return _log10_to_value(x_log), _log10_to_value(y_log)
-
-
 def _log_space_point(point: RawCurvePoint, calibration: PlotCalibration) -> tuple[Decimal, Decimal]:
     """Pixel → log10 space for envelope math."""
 
@@ -760,21 +749,6 @@ def _pixel_tolerance_to_value(tolerance: Decimal, slope: Decimal) -> Decimal:
     """Pixel tolerance → log10-value tolerance through the axis slope magnitude."""
 
     return abs(slope) * tolerance
-
-
-def _segment_value_at(
-    left: tuple[Decimal, Decimal], right: tuple[Decimal, Decimal], x: Decimal
-) -> Decimal | None:
-    """Linear interpolation in the caller's coordinate space."""
-
-    lx, ly = left
-    rx, ry = right
-    if rx == lx:
-        return min(ly, ry)
-    if x < lx or x > rx:
-        return None
-    fraction = (x - lx) / (rx - lx)
-    return ly + fraction * (ry - ly)
 
 
 def prove_conservative(
