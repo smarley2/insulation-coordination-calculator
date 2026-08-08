@@ -18,6 +18,14 @@ def test_rules_provenance_counts_decisions_procedures_and_guidance(
     # Distinct counts, so a count read from the wrong collection cannot pass.
     enriched = rules.model_copy(
         update={
+            "manifest": rules.manifest.model_copy(
+                update={
+                    "source_documents": (
+                        *rules.manifest.source_documents,
+                        *source.manifest.source_documents,
+                    )
+                }
+            ),
             "decisions": (decision,),
             "procedures": (
                 procedure,

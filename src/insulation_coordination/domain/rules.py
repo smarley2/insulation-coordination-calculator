@@ -13,8 +13,8 @@ from pydantic.config import ExtraValues
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.quantities import DecimalValue
 
-RULE_SCHEMA_VERSION = 3
-IEC_IMPORTER_VERSION = "iec-pdf-3"
+RULE_SCHEMA_VERSION = 4
+IEC_IMPORTER_VERSION = "iec-pdf-4"
 MAX_IDENTIFIER_LENGTH = 160
 MAX_REFERENCE_TEXT_LENGTH = 500
 MAX_NOTES_LENGTH = 2_000
@@ -39,18 +39,42 @@ class RulePackageError(ValueError):
     """A rules package is malformed, unsafe, or unusable."""
 
 
+class SourceGeometryReference(FrozenModel):
+    artifact_sha256: str
+    bbox: tuple[DecimalValue, DecimalValue, DecimalValue, DecimalValue] | None = None
+
+    @field_validator("artifact_sha256")
+    @classmethod
+    def _valid_sha256(cls, value: str) -> str:
+        if SHA256_PATTERN.fullmatch(value) is None:
+            raise ValueError("SHA-256 must be 64 lowercase hexadecimal characters")
+        return value
+
+    @model_validator(mode="after")
+    def _ordered_bbox(self) -> Self:
+        if self.bbox is not None:
+            left, bottom, right, top = self.bbox
+            if left >= right or bottom >= top:
+                raise ValueError("bounding box coordinates must be ordered")
+        return self
+
+
 class SourceReference(FrozenModel):
+    document_id: Identifier
     standard: Identifier
     edition: Identifier
+    page: int | None = Field(default=None, ge=1, strict=True)
     clause: ReferenceText | None = None
     table: ReferenceText | None = None
     figure: ReferenceText | None = None
     row: ReferenceText | None = None
     column: ReferenceText | None = None
+    geometry: SourceGeometryReference | None = None
     note: ReferenceText | None = None
 
 
 class SourceDocument(FrozenModel):
+    id: Identifier
     standard: Identifier
     edition: Identifier
     sha256: str

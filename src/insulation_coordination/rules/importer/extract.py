@@ -366,14 +366,15 @@ def _source(
     column: str | None = None,
 ) -> SourceReference:
     return SourceReference(
+        document_id=identity.recipe_id,
         standard=identity.standard,
         edition=identity.edition,
+        page=page_number,
         clause=clause,
         table=table,
         figure=figure,
         row=row,
         column=column,
-        note=f"PDF page {page_number}",
     )
 
 
@@ -1111,6 +1112,7 @@ def extract_draft(
     )
     sources = tuple(
         SourceDocument(
+            id=identity.recipe_id,
             standard=identity.standard,
             edition=identity.edition,
             sha256=identity.sha256,

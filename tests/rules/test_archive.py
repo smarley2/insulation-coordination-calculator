@@ -191,8 +191,8 @@ def test_load_rejects_malformed_checksum_set_and_unsupported_schema(
 
 
 def test_current_rule_trust_versions_require_semantic_pcb_packages() -> None:
-    assert RULE_SCHEMA_VERSION == 3
-    assert IMPORTER_VERSION == "iec-pdf-3"
+    assert RULE_SCHEMA_VERSION == 4
+    assert IMPORTER_VERSION == "iec-pdf-4"
 
 
 def test_legacy_schema_tells_maintainer_to_regenerate_from_pdfs(
@@ -395,9 +395,13 @@ def test_free_text_and_identifiers_are_bounded(
 
 def test_reference_identifiers_reject_whitespace_and_overlong_values() -> None:
     with pytest.raises(ValidationError):
-        SourceReference(standard=" ", edition="1")
+        SourceReference(document_id="synthetic-source", standard=" ", edition="1")
     with pytest.raises(ValidationError):
-        SourceReference(standard="x" * (MAX_IDENTIFIER_LENGTH + 1), edition="1")
+        SourceReference(
+            document_id="synthetic-source",
+            standard="x" * (MAX_IDENTIFIER_LENGTH + 1),
+            edition="1",
+        )
 
 
 def _canonical_json(value: object) -> bytes:
@@ -412,7 +416,7 @@ def _write_members(path: Path, members: dict[str, bytes]) -> None:
             archive.writestr(name, content)
 
 
-def test_schema_version_two_package_is_rejected_with_a_rebuild_message(
+def test_schema_version_three_package_is_rejected_with_a_rebuild_message(
     tmp_path: Path,
     synthetic_package: RulePackage,
 ) -> None:
@@ -421,7 +425,7 @@ def test_schema_version_two_package_is_rejected_with_a_rebuild_message(
     with zipfile.ZipFile(path) as archive:
         members = {name: archive.read(name) for name in archive.namelist()}
     manifest = json.loads(members["manifest.json"])
-    manifest["schema_version"] = 2
+    manifest["schema_version"] = 3
     members["manifest.json"] = (
         json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
     ).encode()

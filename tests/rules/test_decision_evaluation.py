@@ -13,7 +13,7 @@ from insulation_coordination.domain.rules import (
 )
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_decision
 
-SOURCE = SourceReference(standard="SYNTHETIC-1", edition="1", clause="4.2")
+SOURCE = SourceReference(document_id="synthetic-source", standard="SYNTHETIC-1", edition="1", clause="4.2")
 ROW_SOURCE = SOURCE.model_copy(update={"row": "synthetic row 1"})
 
 

@@ -391,6 +391,18 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         )
         and all(_record_source_valid(guidance.source) for guidance in package.guidance)
     )
+    from insulation_coordination.rules.audit import _source_references
+
+    source_document_links_valid = all(
+        len(matches := tuple(
+            document
+            for document in package.manifest.source_documents
+            if document.id == owned.reference.document_id
+        )) == 1
+        and matches[0].standard == owned.reference.standard
+        and matches[0].edition == owned.reference.edition
+        for owned in _source_references(package)
+    )
     results = (
         _result(
             "schema",
@@ -483,6 +495,11 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
             "source_references",
             sources_valid,
             "all package records have meaningful source locators",
+        ),
+        _result(
+            "SOURCE_DOCUMENT_LINKS_VALID",
+            source_document_links_valid,
+            "source references resolve to exactly one matching manifest document",
         ),
     )
     return ValidationReport(results=results)

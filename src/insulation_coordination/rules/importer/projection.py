@@ -50,12 +50,13 @@ def _source(
     figure: str | None = None,
 ) -> SourceReference:
     return SourceReference(
+        document_id=identity.recipe_id,
         standard=identity.standard,
         edition=identity.edition,
+        page=page_number,
         clause=clause,
         table=table,
         figure=figure,
-        note=f"PDF page {page_number}",
     )
 
 

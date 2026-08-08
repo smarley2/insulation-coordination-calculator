@@ -318,11 +318,12 @@ def supported_pdfs(tmp_path: Path) -> tuple[Path, Path, Path]:
 def _source_for(recipe: StandardRecipe) -> SourceReference:
     spec = recipe.tables[0]
     return SourceReference(
+        document_id=recipe.id,
         standard=recipe.standard,
         edition=recipe.edition,
         clause=spec.clause,
         table=spec.source_table,
-        note=f"PDF page {spec.page_number}",
+        page=spec.page_number,
     )
 
 
@@ -690,6 +691,7 @@ def test_correction_cannot_rewrite_extracted_equation_text_or_source(
         applicability="synthetic",
         parse_status="parsed",
         source=SourceReference(
+            document_id="synthetic-source",
             standard="SYNTHETIC",
             edition="1",
             clause="4.2",
@@ -1284,8 +1286,9 @@ def test_projected_table_source_names_the_page_the_table_was_actually_found_on(
 
     table = project_table(identity, shifted_spec, grid)
 
-    assert table.source.note == "PDF page 2"
-    assert all(cell.source.note == "PDF page 2" for cell in table.cells)
+    assert table.source.page == 2
+    assert table.source.note is None
+    assert all(cell.source.page == 2 and cell.source.note is None for cell in table.cells)
 
 
 def test_header_axis_value_column_fails_loudly_when_its_header_cell_is_not_numeric(

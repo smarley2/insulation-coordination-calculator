@@ -44,6 +44,7 @@ from insulation_coordination.domain.rules import (
 
 def synthetic_rule_package() -> RulePackage:
     reference = SourceReference(
+        document_id="synthetic-source",
         standard="SYNTHETIC-1",
         edition="1",
         clause="4.2",
@@ -245,6 +246,7 @@ def synthetic_rule_package() -> RulePackage:
             created_at=datetime(2026, 1, 1, tzinfo=UTC),
             source_documents=(
                 SourceDocument(
+                    id="synthetic-source",
                     standard="SYNTHETIC-1",
                     edition="1",
                     sha256="a" * 64,
@@ -280,6 +282,7 @@ def synthetic_rule_package() -> RulePackage:
 
 def synthetic_part1_rule_package() -> RulePackage:
     reference = SourceReference(
+        document_id="synthetic-part-1-source",
         standard="SYNTHETIC-PART-1",
         edition="1",
         clause="synthetic",
@@ -475,6 +478,7 @@ def synthetic_part1_rule_package() -> RulePackage:
             created_at=datetime(2026, 1, 1, tzinfo=UTC),
             source_documents=(
                 SourceDocument(
+                    id="synthetic-part-1-source",
                     standard="SYNTHETIC-PART-1",
                     edition="1",
                     sha256="b" * 64,
@@ -509,6 +513,7 @@ def synthetic_part1_rule_package() -> RulePackage:
 def synthetic_hf_rule_package() -> RulePackage:
     base = synthetic_part1_rule_package()
     reference = SourceReference(
+        document_id="synthetic-part-4-source",
         standard="SYNTHETIC-PART-4",
         edition="1",
         clause="synthetic",
@@ -894,6 +899,19 @@ def synthetic_hf_rule_package() -> RulePackage:
 
     return base.model_copy(
         update={
+            "manifest": base.manifest.model_copy(
+                update={
+                    "source_documents": (
+                        *base.manifest.source_documents,
+                        SourceDocument(
+                            id="synthetic-part-4-source",
+                            standard="SYNTHETIC-PART-4",
+                            edition="1",
+                            sha256="c" * 64,
+                        ),
+                    )
+                }
+            ),
             "tables": (*base.tables, *hf_tables),
             "formulas": (
                 *base.formulas,

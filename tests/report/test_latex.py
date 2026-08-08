@@ -253,6 +253,7 @@ def test_report_formats_every_exact_source_locator(report_model) -> None:
     step = calculation.steps[0].model_copy(
         update={
             "source_reference": SourceReference(
+                document_id="synthetic-source",
                 standard="IEC 60664-1",
                 edition="2020",
                 clause="5.3.4",

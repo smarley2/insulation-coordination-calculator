@@ -40,7 +40,7 @@ class ApprovalError(RulePackageError):
 def _source_matches(actual: SourceReference, expected: SourceReference) -> bool:
     return all(
         getattr(actual, field) == getattr(expected, field)
-        for field in ("standard", "edition", "clause", "table", "figure")
+        for field in ("document_id", "standard", "edition", "page", "clause", "table", "figure")
     )
 
 
@@ -430,11 +430,12 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
             table = tables[spec.semantic_id]
             grid = grids[f"raw-{spec.semantic_id}"]
             expected_source = SourceReference(
+                document_id=identity.recipe_id,
                 standard=identity.standard,
                 edition=identity.edition,
+                page=grid.segments[0].page_number,
                 clause=spec.clause,
                 table=spec.source_table,
-                note=f"PDF page {grid.segments[0].page_number}",
             )
             typed_column_count = (
                 sum(column.role == "data" for column in spec.columns)
@@ -501,12 +502,13 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
         for formula_spec in recipe.formulas:
             formula = formulas[formula_spec.semantic_id]
             expected_source = SourceReference(
+                document_id=identity.recipe_id,
                 standard=identity.standard,
                 edition=identity.edition,
+                page=formula_spec.page_number,
                 clause=formula_spec.clause,
                 table=formula_spec.table,
                 figure=formula_spec.figure,
-                note=f"PDF page {formula_spec.page_number}",
             )
             expected_shape = {
                 "critical_frequency_inverse_clearance": "divide(literal,variable:clearance_mm)",
@@ -531,12 +533,13 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
         for mapping_spec in recipe.mappings:
             mapping = mappings[mapping_spec.id]
             expected_source = SourceReference(
+                document_id=identity.recipe_id,
                 standard=identity.standard,
                 edition=identity.edition,
+                page=mapping_spec.page_number,
                 clause=mapping_spec.clause,
                 table=mapping_spec.table,
                 figure=mapping_spec.figure,
-                note=f"PDF page {mapping_spec.page_number}",
             )
             if (
                 mapping.source_rule_id != mapping_spec.semantic_route
@@ -626,18 +629,18 @@ def _require_consistent_shared_source_cells(draft: ImportedRuleDraft) -> None:
             if other_value != cell.value:
                 raise ApprovalError(
                     f"{other_grid_id} and {grid.id} disagree on the value of the shared "
-                    f"source cell at table {cell.source.table} page {cell.source.note} "
+                    f"source cell at table {cell.source.table} page {cell.source.page} "
                     f"row {cell.source.row} column {cell.source.column}"
                 )
 
 
 def _require_source_genesis(draft: ImportedRuleDraft) -> None:
     source_documents = tuple(
-        (source.standard, source.edition, source.sha256)
+        (source.id, source.standard, source.edition, source.sha256)
         for source in draft.manifest.source_documents
     )
     identities = tuple(
-        (identity.standard, identity.edition, identity.sha256)
+        (identity.recipe_id, identity.standard, identity.edition, identity.sha256)
         for identity in draft.source_identities
     )
     if source_documents != identities:

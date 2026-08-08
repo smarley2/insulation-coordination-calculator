@@ -116,12 +116,13 @@ def _formula_from_spec(
     table_id: str,
 ) -> Formula:
     source = SourceReference(
+        document_id=identity.recipe_id,
         standard=identity.standard,
         edition=identity.edition,
+        page=spec.page_number,
         clause=spec.clause,
         table=spec.table,
         figure=spec.figure,
-        note=f"PDF page {spec.page_number}",
     )
     return Formula(
         id=spec.semantic_id,
@@ -184,12 +185,13 @@ def _mapping_from_spec(
         target_rule_id=spec.target_rule_id,
         approved=False,
         source=SourceReference(
+            document_id=identity.recipe_id,
             standard=identity.standard,
             edition=identity.edition,
+            page=spec.page_number,
             clause=spec.clause,
             table=spec.table,
             figure=spec.figure,
-            note=f"PDF page {spec.page_number}",
         ),
     )
 
@@ -455,7 +457,7 @@ class RequiredContentStatus:
 def _matches(source: SourceReference, expected: SourceReference) -> bool:
     return all(
         getattr(source, field) == getattr(expected, field)
-        for field in ("standard", "edition", "clause", "table", "figure")
+        for field in ("document_id", "standard", "edition", "page", "clause", "table", "figure")
     )
 
 
@@ -471,11 +473,12 @@ def required_content_report(draft: ImportedRuleDraft) -> tuple[RequiredContentSt
     for recipe in RECIPES:
         for table_spec in recipe.tables:
             expected = SourceReference(
+                document_id=recipe.id,
                 standard=recipe.standard,
                 edition=recipe.edition,
+                page=table_spec.page_number,
                 clause=table_spec.clause,
                 table=table_spec.source_table,
-                note=f"PDF page {table_spec.page_number}",
             )
             table = table_ids.get(table_spec.semantic_id)
             present = table is not None and _matches(table.source, expected)
@@ -492,12 +495,13 @@ def required_content_report(draft: ImportedRuleDraft) -> tuple[RequiredContentSt
             )
         for formula_spec in recipe.formulas:
             expected = SourceReference(
+                document_id=recipe.id,
                 standard=recipe.standard,
                 edition=recipe.edition,
+                page=formula_spec.page_number,
                 clause=formula_spec.clause,
                 table=formula_spec.table,
                 figure=formula_spec.figure,
-                note=f"PDF page {formula_spec.page_number}",
             )
             formula = formula_ids.get(formula_spec.semantic_id)
             present = formula is not None and _matches(formula.source, expected)
@@ -514,12 +518,13 @@ def required_content_report(draft: ImportedRuleDraft) -> tuple[RequiredContentSt
             )
         for mapping_spec in recipe.mappings:
             expected = SourceReference(
+                document_id=recipe.id,
                 standard=recipe.standard,
                 edition=recipe.edition,
+                page=mapping_spec.page_number,
                 clause=mapping_spec.clause,
                 table=mapping_spec.table,
                 figure=mapping_spec.figure,
-                note=f"PDF page {mapping_spec.page_number}",
             )
             mapping = mapping_ids.get(mapping_spec.id)
             present = mapping is not None and _matches(mapping.source, expected)

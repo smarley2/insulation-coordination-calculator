@@ -8,7 +8,7 @@ from insulation_coordination.domain.rules import (
     SourceReference,
 )
 
-SOURCE = SourceReference(standard="SYNTHETIC-1", edition="1", clause="9.1", table="T-26")
+SOURCE = SourceReference(document_id="synthetic-source", standard="SYNTHETIC-1", edition="1", clause="9.1", table="T-26")
 
 
 def _step(order: int) -> ProcedureStep:

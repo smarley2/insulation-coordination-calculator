@@ -13,7 +13,7 @@ from insulation_coordination.domain.rules import (
     SourceReference,
 )
 
-SOURCE = SourceReference(standard="SYNTHETIC-1", edition="1", clause="4.2", table="T-1")
+SOURCE = SourceReference(document_id="synthetic-source", standard="SYNTHETIC-1", edition="1", clause="4.2", table="T-1")
 
 
 def _rule(
