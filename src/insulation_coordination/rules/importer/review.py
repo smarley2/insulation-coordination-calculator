@@ -131,21 +131,74 @@ def proposal_for(draft: ImportedRuleDraft, semantic_id: str) -> SemanticProposal
 def _aggregate_artifact_pairs(pairs: tuple[tuple[str, str], ...]) -> str:
     if not pairs:
         raise ApprovalError("semantic proposal has no current source artifact")
-    if len(pairs) == 1:
-        return pairs[0][1]
-    return hashlib.sha256(_canonical_json(pairs)).hexdigest()
+    ordered = tuple(sorted(pairs))
+    if len({artifact_id for artifact_id, _ in ordered}) != len(ordered):
+        raise ApprovalError("semantic proposal has duplicate source artifact IDs")
+    if len(ordered) == 1:
+        return ordered[0][1]
+    return hashlib.sha256(_canonical_json(ordered)).hexdigest()
 
 
-def _proposal_review_items(
+def _review_item_artifact_id(item: ImportReviewItem) -> str:
+    return f"{item.semantic_id}:{item.code}"
+
+
+def _required_review_items(
     draft: ImportedRuleDraft,
     proposal: SemanticProposal,
 ) -> tuple[ImportReviewItem, ...]:
-    inventory = {item.sha256: item for item in draft.review_items}
-    if len(inventory) != len(draft.review_items):
+    rule = _rule_for(draft, proposal)
+    semantic_ids = {proposal.semantic_id}
+    if proposal.rule_kind == "curve":
+        assert isinstance(rule, PiecewiseCurveRule)
+        semantic_ids.update(variant.id for variant in rule.variants)
+    items = tuple(
+        item
+        for item in draft.review_items
+        if item.semantic_id in semantic_ids
+        or (
+            proposal.rule_kind == "table"
+            and item.semantic_id.startswith(f"raw-{proposal.semantic_id}:")
+        )
+    )
+    if not items:
+        raise ApprovalError(
+            f"semantic proposal {proposal.semantic_id} has no required review item inventory"
+        )
+    ordered = tuple(sorted(items, key=_review_item_artifact_id))
+    artifact_ids = tuple(_review_item_artifact_id(item) for item in ordered)
+    if len(artifact_ids) != len(set(artifact_ids)):
+        raise ApprovalError("draft has duplicate review item artifact IDs")
+    inventory = {item.sha256: item for item in ordered}
+    if len(inventory) != len(ordered):
         raise ApprovalError("draft has duplicate review item hashes")
-    if any(value not in inventory for value in proposal.review_item_sha256s):
-        raise ApprovalError(f"semantic proposal {proposal.semantic_id} has a stale review item hash")
-    return tuple(inventory[value] for value in proposal.review_item_sha256s)
+    return ordered
+
+
+def _recipe_source_artifacts(proposal: SemanticProposal) -> tuple[tuple[str, str], ...]:
+    from insulation_coordination.rules.importer.recipes import RECIPES
+
+    artifacts: list[tuple[str, str]] = []
+    for recipe in RECIPES:
+        if proposal.rule_kind == "table":
+            artifacts.extend(
+                (f"{recipe.id}:table:{spec.semantic_id}", canonical_model_sha256(spec))
+                for spec in recipe.tables
+                if spec.semantic_id == proposal.semantic_id
+            )
+        elif proposal.rule_kind == "formula":
+            artifacts.extend(
+                (f"{recipe.id}:formula:{spec.semantic_id}", canonical_model_sha256(spec))
+                for spec in recipe.formulas
+                if spec.semantic_id == proposal.semantic_id
+            )
+        elif proposal.rule_kind == "mapping":
+            artifacts.extend(
+                (f"{recipe.id}:mapping:{spec.id}", canonical_model_sha256(spec))
+                for spec in recipe.mappings
+                if spec.id == proposal.semantic_id
+            )
+    return tuple(artifacts)
 
 
 def _current_source_artifact_sha256(
@@ -177,24 +230,20 @@ def _current_source_artifact_sha256(
     if equations:
         return _aggregate_artifact_pairs(equations)
 
-    review_items = _proposal_review_items(draft, proposal)
+    review_items = _required_review_items(draft, proposal)
     geometry = tuple(
-        (item.sha256, item.source.geometry.artifact_sha256)
+        (_review_item_artifact_id(item), item.source.geometry.artifact_sha256)
         for item in review_items
         if item.source.geometry is not None
     )
     if geometry:
         return _aggregate_artifact_pairs(geometry)
-    contracts = tuple(
-        (item.sha256, digest)
-        for item in review_items
-        if (digest := item.expected_contract.rsplit(":", 1)[-1])
-        and len(digest) == 64
-        and all(character in "0123456789abcdef" for character in digest)
+    recipe_artifacts = _recipe_source_artifacts(proposal)
+    if recipe_artifacts:
+        return _aggregate_artifact_pairs(recipe_artifacts)
+    raise ApprovalError(
+        f"semantic proposal {proposal.semantic_id} has no real current source artifact"
     )
-    if contracts:
-        return _aggregate_artifact_pairs(contracts)
-    return canonical_model_sha256(rule.source)
 
 
 def _require_current_proposal(
@@ -206,9 +255,14 @@ def _require_current_proposal(
     rule = _rule_for(draft, proposal)
     if proposal.rule_sha256 != canonical_model_sha256(rule):
         raise ApprovalError(f"semantic proposal {proposal.semantic_id} has a stale rule hash")
+    review_items = _required_review_items(draft, proposal)
+    required_hashes = tuple(item.sha256 for item in review_items)
+    if proposal.review_item_sha256s != required_hashes:
+        raise ApprovalError(
+            f"semantic proposal {proposal.semantic_id} has stale required review item hashes"
+        )
     if proposal.source_artifact_sha256 != _current_source_artifact_sha256(draft, proposal):
         raise ApprovalError(f"semantic proposal {proposal.semantic_id} has a stale source hash")
-    review_items = _proposal_review_items(draft, proposal)
     if require_resolved_members:
         resolved = {item.review_item_sha256 for item in draft.review_resolutions}
         missing = {item.sha256 for item in review_items} - resolved

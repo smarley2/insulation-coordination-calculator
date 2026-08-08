@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -31,6 +32,7 @@ from insulation_coordination.domain.rules import (
     Power,
     ProcedureRule,
     ProcedureStep,
+    SourceGeometryReference,
     SourceReference,
     Table,
     TableAxis,
@@ -50,7 +52,10 @@ from insulation_coordination.rules.importer.extract import (
     ExtractedEquation,
     ExtractionError,
     ImportedRuleDraft,
+    ImportReviewItem,
+    ImportReviewResolution,
     RawGridSegment,
+    _content_digest,
     extract_draft,
     parse_data_cell,
 )
@@ -1783,6 +1788,15 @@ def test_approval_requires_exact_recipe_content_sets_and_shapes(
                 )
             }
         )
+    if mutation in {"extra_table", "extra_mapping"}:
+        with pytest.raises(ApprovalError, match="review item inventory"):
+            record_correction(
+                corrected,
+                changed,
+                actor="Synthetic Reviewer",
+                notes=f"Logged invalid mutation {mutation}.",
+            )
+        return
     changed = record_correction(
         corrected,
         changed,
@@ -1853,7 +1867,74 @@ def test_approval_constructs_every_final_collection_without_draft_proposals(
     supported_pdfs: tuple[Path, Path, Path],
     injected_recipes: tuple[StandardRecipe, ...],
 ) -> None:
-    reviewed = _review_all(extract_draft(supported_pdfs), injected_recipes)
+    imported = extract_draft(supported_pdfs)
+    inventory_source = imported.review_items[0].source
+    semantic_artifacts = (
+        ("SYNTHETIC_EXTRA_DECISION", "synthetic-extra-decision", "a" * 64),
+        ("SYNTHETIC_EXTRA_PROCEDURE", "synthetic-extra-procedure", "b" * 64),
+        ("SYNTHETIC_EXTRA_GUIDANCE", "synthetic-extra-guidance", "c" * 64),
+        ("SYNTHETIC_EXTRA_CURVE", "synthetic-extra-curve", "d" * 64),
+    )
+    semantic_items = tuple(
+        ImportReviewItem(
+            code=code,
+            semantic_id=semantic_id,
+            kind="semantic",
+            source=inventory_source.model_copy(
+                update={
+                    "geometry": SourceGeometryReference(artifact_sha256=artifact_sha256)
+                }
+            ),
+            expected_contract=f"synthetic:{semantic_id}",
+        )
+        for code, semantic_id, artifact_sha256 in semantic_artifacts
+    )
+    semantic_resolutions = tuple(
+        ImportReviewResolution(
+            review_item_sha256=item.sha256,
+            actor="Synthetic Import Reviewer",
+            recorded_at=datetime(2026, 1, 3, tzinfo=UTC),
+            notes="Synthetic importer artifact reviewed.",
+        )
+        for item in semantic_items
+    )
+    imported = imported.model_copy(
+        update={
+            "review_items": (*imported.review_items, *semantic_items),
+            "review_resolutions": (*imported.review_resolutions, *semantic_resolutions),
+        }
+    )
+    genesis_digest = _content_digest(
+        imported.tables,
+        imported.formulas,
+        imported.mappings,
+        imported.review_items,
+        imported.raw_grids,
+        imported.manifest.source_documents,
+        imported.source_identities,
+        imported.review_resolutions,
+        imported.extracted_equations,
+        decisions=imported.decisions,
+        procedures=imported.procedures,
+        guidance=imported.guidance,
+        curves=imported.curves,
+    )
+    imported = imported.model_copy(
+        update={
+            "manifest": imported.manifest.model_copy(
+                update={
+                    "approval_records": tuple(
+                        record.model_copy(update={"notes": f"content:{genesis_digest}"})
+                        if record.action == "extraction"
+                        and record.notes.startswith("content:")
+                        else record
+                        for record in imported.manifest.approval_records
+                    )
+                }
+            )
+        }
+    )
+    reviewed = _review_all(imported, injected_recipes)
     source = reviewed.tables[0].source
     decision = DecisionRule(
         id="synthetic-extra-decision",

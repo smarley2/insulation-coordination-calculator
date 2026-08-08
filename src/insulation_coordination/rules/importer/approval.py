@@ -229,6 +229,7 @@ def _sync_semantic_proposals(
     )
     from insulation_coordination.rules.importer.review import (
         _current_source_artifact_sha256,
+        _required_review_items,
         _rule_entries,
     )
 
@@ -254,27 +255,18 @@ def _sync_semantic_proposals(
         candidate = supplied.get(key)
         if prior is not None and before_rules.get(key) == rule and candidate != prior:
             raise ApprovalError("a correction cannot rewrite an unchanged semantic proposal")
-        review_hashes = (
-            candidate.review_item_sha256s
-            if candidate is not None
-            else (
-                prior.review_item_sha256s
-                if prior is not None
-                else tuple(
-                    item.sha256
-                    for item in changed.review_items
-                    if item.semantic_id == semantic_id and item.kind != "raw_cell"
-                )
-            )
-        )
         probe = SemanticProposal(
             semantic_id=semantic_id,
             rule_kind=kind,
             state="proposed",
             rule_sha256=canonical_model_sha256(rule),
             source_artifact_sha256="0" * 64,
-            review_item_sha256s=review_hashes,
+            review_item_sha256s=(),
         )
+        review_hashes = tuple(
+            item.sha256 for item in _required_review_items(changed, probe)
+        )
+        probe = probe.model_copy(update={"review_item_sha256s": review_hashes})
         source_sha256 = _current_source_artifact_sha256(changed, probe)
         unchanged = (
             prior is not None

@@ -20,6 +20,7 @@ from insulation_coordination.rules.archive import _canonical_json
 from insulation_coordination.rules.importer.approval import (
     ApprovalError,
     approval_blockers,
+    approve_draft,
     record_correction,
 )
 from insulation_coordination.rules.importer.extract import (
@@ -197,6 +198,20 @@ def _review_all_proposals(draft: ImportedRuleDraft) -> ImportedRuleDraft:
     return draft
 
 
+def _replace_proposal(
+    draft: ImportedRuleDraft,
+    replacement: SemanticProposal,
+) -> ImportedRuleDraft:
+    return draft.model_copy(
+        update={
+            "semantic_proposals": tuple(
+                replacement if item.semantic_id == replacement.semantic_id else item
+                for item in draft.semantic_proposals
+            )
+        }
+    )
+
+
 @pytest.mark.parametrize(
     "rule_kind",
     ("table", "formula", "mapping", "decision", "procedure", "guidance", "curve"),
@@ -239,14 +254,20 @@ def test_proposal_review_and_correction_lifecycle_covers_every_rule_kind(
     )
 
 
-def test_mark_reviewed_rejects_stale_rule_source_and_member_hashes() -> None:
+@pytest.mark.parametrize(
+    "rule_kind",
+    ("table", "formula", "mapping", "decision", "procedure", "guidance", "curve"),
+)
+def test_mark_reviewed_rejects_stale_rule_source_and_member_hashes_for_every_kind(
+    rule_kind: RuleKind,
+) -> None:
     draft = _draft_with_every_rule_kind()
-    proposal = draft.semantic_proposals[0]
+    proposal = next(item for item in draft.semantic_proposals if item.rule_kind == rule_kind)
 
     stale_rule = proposal.model_copy(update={"rule_sha256": "0" * 64})
     with pytest.raises(ApprovalError, match="stale rule"):
         mark_proposal_reviewed(
-            draft.model_copy(update={"semantic_proposals": (stale_rule, *draft.semantic_proposals[1:])}),
+            _replace_proposal(draft, stale_rule),
             proposal.semantic_id,
             actor="Reviewer",
             notes="Review",
@@ -255,9 +276,7 @@ def test_mark_reviewed_rejects_stale_rule_source_and_member_hashes() -> None:
     stale_source = proposal.model_copy(update={"source_artifact_sha256": "0" * 64})
     with pytest.raises(ApprovalError, match="stale source"):
         mark_proposal_reviewed(
-            draft.model_copy(
-                update={"semantic_proposals": (stale_source, *draft.semantic_proposals[1:])}
-            ),
+            _replace_proposal(draft, stale_source),
             proposal.semantic_id,
             actor="Reviewer",
             notes="Review",
@@ -266,12 +285,101 @@ def test_mark_reviewed_rejects_stale_rule_source_and_member_hashes() -> None:
     stale_member = proposal.model_copy(update={"review_item_sha256s": ("0" * 64,)})
     with pytest.raises(ApprovalError, match="review item"):
         mark_proposal_reviewed(
-            draft.model_copy(
-                update={"semantic_proposals": (stale_member, *draft.semantic_proposals[1:])}
-            ),
+            _replace_proposal(draft, stale_member),
             proposal.semantic_id,
             actor="Reviewer",
             notes="Review",
+        )
+
+
+@pytest.mark.parametrize(
+    "rule_kind",
+    ("table", "formula", "mapping", "decision", "procedure", "guidance", "curve"),
+)
+def test_approval_refuses_proposed_and_stale_proposals_for_every_kind(
+    rule_kind: RuleKind,
+) -> None:
+    reviewed = _review_all_proposals(_draft_with_every_rule_kind())
+    proposal = next(item for item in reviewed.semantic_proposals if item.rule_kind == rule_kind)
+
+    proposed = proposal.model_copy(update={"state": "proposed"})
+    with pytest.raises(ApprovalError, match="proposed"):
+        approve_draft(
+            _replace_proposal(reviewed, proposed),
+            "Synthetic Reviewer",
+            "Cannot approve proposed semantics.",
+        )
+
+    stale = proposal.model_copy(update={"rule_sha256": "0" * 64})
+    with pytest.raises(ApprovalError, match="stale"):
+        approve_draft(
+            _replace_proposal(reviewed, stale),
+            "Synthetic Reviewer",
+            "Cannot approve stale semantics.",
+        )
+
+
+def test_rule_metadata_is_not_accepted_as_a_source_artifact() -> None:
+    draft = _draft_with_every_rule_kind()
+    proposal = next(item for item in draft.semantic_proposals if item.rule_kind == "decision")
+    member_sha256 = proposal.review_item_sha256s[0]
+    member = next(item for item in draft.review_items if item.sha256 == member_sha256)
+    no_artifact = member.model_copy(
+        update={"source": member.source.model_copy(update={"geometry": None})}
+    )
+    resolution = next(
+        item for item in draft.review_resolutions if item.review_item_sha256 == member_sha256
+    ).model_copy(update={"review_item_sha256": no_artifact.sha256})
+    rule = next(rule for rule in draft.decisions if rule.id == proposal.semantic_id)
+    ungrounded = proposal.model_copy(
+        update={
+            "source_artifact_sha256": canonical_model_sha256(rule.source),
+            "review_item_sha256s": (no_artifact.sha256,),
+        }
+    )
+    draft = draft.model_copy(
+        update={
+            "review_items": tuple(
+                no_artifact if item.sha256 == member_sha256 else item
+                for item in draft.review_items
+            ),
+            "review_resolutions": tuple(
+                resolution if item.review_item_sha256 == member_sha256 else item
+                for item in draft.review_resolutions
+            ),
+            "semantic_proposals": tuple(
+                ungrounded if item.semantic_id == proposal.semantic_id else item
+                for item in draft.semantic_proposals
+            ),
+        }
+    )
+
+    with pytest.raises(ApprovalError, match="source artifact"):
+        mark_proposal_reviewed(
+            draft,
+            proposal.semantic_id,
+            actor="Reviewer",
+            notes="Metadata is not evidence.",
+        )
+
+
+def test_proposal_cannot_omit_importer_required_review_members() -> None:
+    draft = _draft_with_every_rule_kind()
+    proposal = next(item for item in draft.semantic_proposals if item.rule_kind == "guidance")
+    rule = next(rule for rule in draft.guidance if rule.id == proposal.semantic_id)
+    omitted = proposal.model_copy(
+        update={
+            "source_artifact_sha256": canonical_model_sha256(rule.source),
+            "review_item_sha256s": (),
+        }
+    )
+
+    with pytest.raises(ApprovalError, match="required review item"):
+        mark_proposal_reviewed(
+            _replace_proposal(draft, omitted),
+            proposal.semantic_id,
+            actor="Reviewer",
+            notes="Cannot omit required evidence.",
         )
 
 
@@ -281,7 +389,7 @@ def test_multiple_artifacts_use_canonical_ordered_pairs() -> None:
     first = draft.review_items[0]
     second = first.model_copy(
         update={
-            "code": "SYNTHETIC_SECOND_ARTIFACT",
+            "code": "ZZZ_SYNTHETIC_SECOND_ARTIFACT",
             "source": first.source.model_copy(
                 update={"geometry": SourceGeometryReference(artifact_sha256="f" * 64)}
             ),
@@ -290,7 +398,10 @@ def test_multiple_artifacts_use_canonical_ordered_pairs() -> None:
     second_resolution = draft.review_resolutions[0].model_copy(
         update={"review_item_sha256": second.sha256}
     )
-    pairs = [(first.sha256, "1" * 64), (second.sha256, "f" * 64)]
+    pairs = [
+        (f"{first.semantic_id}:{first.code}", "1" * 64),
+        (f"{second.semantic_id}:{second.code}", "f" * 64),
+    ]
     aggregate = hashlib.sha256(_canonical_json(pairs)).hexdigest()
     multi = proposal.model_copy(
         update={
@@ -315,8 +426,13 @@ def test_multiple_artifacts_use_canonical_ordered_pairs() -> None:
     assert proposal_for(reviewed, proposal.semantic_id).state == "reviewed"
 
     reversed_aggregate = hashlib.sha256(_canonical_json(tuple(reversed(pairs)))).hexdigest()
-    stale = multi.model_copy(update={"source_artifact_sha256": reversed_aggregate})
-    with pytest.raises(ApprovalError, match="stale source"):
+    stale = multi.model_copy(
+        update={
+            "source_artifact_sha256": reversed_aggregate,
+            "review_item_sha256s": tuple(reversed(multi.review_item_sha256s)),
+        }
+    )
+    with pytest.raises(ApprovalError, match="required review item|stale source"):
         mark_proposal_reviewed(
             draft.model_copy(update={"semantic_proposals": (stale, *draft.semantic_proposals[1:])}),
             proposal.semantic_id,
