@@ -168,6 +168,9 @@ class RawGridReviewDialog(QDialog):
         association_row.addWidget(QLabel("Reviewed component association:"))
         self._association_selector = QComboBox()
         self._association_selector.setEnabled(False)
+        self._association_selector.currentIndexChanged.connect(
+            self._association_changed
+        )
         association_row.addWidget(self._association_selector, 1)
         self._apply_association_button = QPushButton("Apply association")
         self._apply_association_button.setEnabled(False)
@@ -515,6 +518,7 @@ class RawGridReviewDialog(QDialog):
         self._value_edit.setEnabled(True)
         self._apply_button.setEnabled(True)
         self._value_edit.setText("" if value is None else str(value))
+        self._association_selector.blockSignals(True)
         self._association_selector.clear()
         for component_id in cell.compound_component_ids:
             self._association_selector.addItem(component_id, component_id)
@@ -522,29 +526,70 @@ class RawGridReviewDialog(QDialog):
             self._selected_component_id
         )
         self._association_selector.setCurrentIndex(max(0, selected_association))
+        self._association_selector.blockSignals(False)
         self._association_selector.setEnabled(True)
         self._apply_association_button.setEnabled(True)
         self._load_formula_candidates(cell, key)
+
+    def _association_changed(self, _index: int) -> None:
+        grid = self._current_grid()
+        if grid is None or self._selected_source_index is None:
+            return
+        coordinate = (self._table.currentRow(), self._table.currentColumn())
+        cell = next(
+            (
+                candidate
+                for candidate in grid.cells
+                if (candidate.row, candidate.column) == coordinate
+            ),
+            None,
+        )
+        if cell is None:
+            return
+        self._load_formula_candidates(
+            cell,
+            (*coordinate, self._selected_source_index),
+            component_id=str(self._association_selector.currentData() or ""),
+            preserve_existing=False,
+        )
 
     def _load_formula_candidates(
         self,
         cell: RawGridCell,
         key: tuple[int, int, int],
+        *,
+        component_id: str | None = None,
+        preserve_existing: bool = True,
     ) -> None:
-        component_id = self._association_corrections.get(
-            self._current_grid_id(), {}
-        ).get(key, self._selected_component_id)
+        if component_id is None:
+            component_id = self._association_corrections.get(
+                self._current_grid_id(), {}
+            ).get(key, self._selected_component_id)
         allowed = tuple(
             formula_id
             for route_component_id, formula_id in cell.allowed_component_formula_ids
             if route_component_id == component_id
         )
         self._formula_selector.clear()
+        if allowed:
+            self._formula_selector.addItem("Select formula…", None)
         for formula_id in allowed:
             self._formula_selector.addItem(formula_id, formula_id)
-        selected_formula = self._formula_corrections.get(
-            self._current_grid_id(), {}
-        ).get(key)
+        pending_component = self._association_corrections.get(self._current_grid_id(), {}).get(key)
+        selected_formula = (
+            self._formula_corrections.get(self._current_grid_id(), {}).get(key)
+            if pending_component == component_id or pending_component is None and preserve_existing
+            else None
+        )
+        if selected_formula is None and preserve_existing:
+            existing = tuple(
+                candidate.formula_id
+                for candidate in cell.formula_candidates
+                if candidate.source_index == key[2]
+                and candidate.component_id == component_id
+                and candidate.formula_id in allowed
+            )
+            selected_formula = existing[0] if len(existing) == 1 else None
         if selected_formula is not None:
             self._formula_selector.setCurrentIndex(
                 self._formula_selector.findData(selected_formula)
@@ -561,14 +606,36 @@ class RawGridReviewDialog(QDialog):
         if not component_id:
             return
         key = (row, column, self._selected_source_index)
+        cell = next(
+            cell for cell in grid.cells if (cell.row, cell.column) == (row, column)
+        )
+        allowed = {
+            formula_id
+            for route_component_id, formula_id in cell.allowed_component_formula_ids
+            if route_component_id == component_id
+        }
+        formula_id = str(self._formula_selector.currentData() or "")
+        if allowed and formula_id not in allowed:
+            QMessageBox.warning(
+                self,
+                "Review Component Association",
+                "Select an exact formula for the reviewed component route.",
+            )
+            return
         self._association_corrections.setdefault(grid.id, {})[key] = component_id
+        if formula_id:
+            self._formula_corrections.setdefault(grid.id, {})[key] = formula_id
+        else:
+            self._formula_corrections.get(grid.id, {}).pop(key, None)
         self._selected_component_id = component_id
         item = self._components_table.item(self._components_table.currentRow(), 0)
         if item is not None:
             item.setText(component_id)
-        cell = next(
-            cell for cell in grid.cells if (cell.row, cell.column) == (row, column)
+        formula_item = self._components_table.item(
+            self._components_table.currentRow(), 3
         )
+        if formula_item is not None:
+            formula_item.setText(formula_id or "none")
         self._load_formula_candidates(cell, key)
 
     def _apply_formula(self) -> None:

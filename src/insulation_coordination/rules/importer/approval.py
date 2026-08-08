@@ -250,7 +250,10 @@ def _require_safe_raw_grid_correction(
                     for candidate in after_cell.formula_candidates
                     if candidate.source_index == source_index
                 )
-                if before_candidates == after_candidates:
+                association_changed = (
+                    before_components[source_index].component_id != component.component_id
+                )
+                if before_candidates == after_candidates and not association_changed:
                     continue
                 allowed = {
                     formula_id
@@ -260,13 +263,14 @@ def _require_safe_raw_grid_correction(
                     if component_id == component.component_id
                 }
                 exact = (
-                    len(after_candidates) == 1
-                    and component.component_id is not None
-                    and after_candidates[0].component_id == component.component_id
-                    and (
-                        after_candidates[0].formula_id is None
-                        or after_candidates[0].formula_id in allowed
+                    (
+                        len(after_candidates) == 1
+                        and component.component_id is not None
+                        and after_candidates[0].component_id == component.component_id
+                        and after_candidates[0].formula_id in allowed
                     )
+                    if allowed
+                    else not after_candidates
                 )
                 if not exact:
                     raise ApprovalError(

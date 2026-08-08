@@ -6,6 +6,7 @@ from decimal import Decimal
 import pytest
 
 from insulation_coordination.domain.rules import ApprovalRecord, SourceReference
+from insulation_coordination.rules.importer.approval import ApprovalError
 from insulation_coordination.rules.importer.extract import (
     IMPORTER_VERSION,
     ComponentFormulaCandidate,
@@ -22,10 +23,12 @@ from insulation_coordination.rules.importer.extract import (
 )
 from insulation_coordination.rules.importer.identify import CompoundQuantitySpec
 from insulation_coordination.rules.importer.review import (
+    accept_raw_table,
     correct_component_association,
     correct_raw_component,
     mark_proposal_reviewed,
     proposal_for,
+    record_correction,
     select_component_formula,
     unresolved_raw_review_items,
 )
@@ -235,6 +238,159 @@ def test_missing_association_can_be_supplied_by_source_occurrence() -> None:
         "dc",
     ]
     assert len(corrected.review_resolutions) == len(review_items)
+
+
+def _duplicate_formula_route_draft() -> ImportedRuleDraft:
+    parsed = parse_compound_data_cell(
+        text="11 ac / 17 ac",
+        spec=CompoundQuantitySpec(
+            component_ids=("ac", "dc"),
+            formula_candidates=(("ac", "synthetic-ac-formula"),),
+            allowed_formula_ids=(
+                ("ac", "synthetic-ac-formula"),
+                ("dc", "synthetic-dc-formula"),
+            ),
+        ),
+        source=SYNTHETIC_SOURCE,
+    )
+    cell = RawGridCell(
+        row=0,
+        column=0,
+        raw_text="11 ac / 17 ac",
+        role="data",
+        logical_row=0,
+        logical_column="compound",
+        components=parsed.components,
+        compound_component_ids=parsed.compound_component_ids,
+        formula_candidates=parsed.formula_candidates,
+        allowed_component_formula_ids=parsed.allowed_component_formula_ids,
+        parse_status=parsed.parse_status,
+        source=SYNTHETIC_SOURCE,
+    )
+    review_items = compound_review_items(_grid_for_cell(cell))
+    assert [item.code for item in review_items] == [
+        "AMBIGUOUS_COMPOUND_CELL",
+        "AMBIGUOUS_COMPOUND_CELL",
+    ]
+    return _draft_with_compound_cell(cell, review_items)
+
+
+def test_association_change_with_formula_route_requires_atomic_selection() -> None:
+    draft = _duplicate_formula_route_draft()
+
+    with pytest.raises(ValueError, match="route-local formula"):
+        correct_component_association(
+            draft,
+            grid_id=draft.raw_grids[0].id,
+            row=0,
+            column=0,
+            source_index=1,
+            component_id="dc",
+            actor="Synthetic Reviewer",
+            notes="Missing the required formula selection.",
+        )
+
+    with pytest.raises(ValueError, match="component route"):
+        correct_component_association(
+            draft,
+            grid_id=draft.raw_grids[0].id,
+            row=0,
+            column=0,
+            source_index=1,
+            component_id="dc",
+            formula_id="synthetic-ac-formula",
+            actor="Synthetic Reviewer",
+            notes="Reject a formula from the old route.",
+        )
+
+    corrected = correct_component_association(
+        draft,
+        grid_id=draft.raw_grids[0].id,
+        row=0,
+        column=0,
+        source_index=1,
+        component_id="dc",
+        formula_id="synthetic-dc-formula",
+        actor="Synthetic Reviewer",
+        notes="Associated the occurrence with its exact formula.",
+    )
+
+    cell = corrected.raw_grids[0].cells[0]
+    assert [part.component_id for part in cell.components] == ["ac", "dc"]
+    assert [
+        candidate.formula_id for candidate in cell.formula_candidates if candidate.source_index == 1
+    ] == ["synthetic-dc-formula"]
+    assert unresolved_raw_review_items(corrected) == ()
+    assert proposal_for(corrected, draft.tables[0].id).state == "proposed"
+
+
+def test_batch_association_requires_formula_for_the_same_occurrence() -> None:
+    draft = _duplicate_formula_route_draft()
+    key = (0, 0, 1)
+
+    with pytest.raises(ValueError, match="route-local formula"):
+        accept_raw_table(
+            draft,
+            grid_id=draft.raw_grids[0].id,
+            corrections={},
+            component_associations={key: "dc"},
+            actor="Synthetic Reviewer",
+            notes="Missing atomic formula selection.",
+        )
+
+    corrected = accept_raw_table(
+        draft,
+        grid_id=draft.raw_grids[0].id,
+        corrections={},
+        component_associations={key: "dc"},
+        formula_selections={key: "synthetic-dc-formula"},
+        actor="Synthetic Reviewer",
+        notes="Applied the exact association and formula pair.",
+    )
+
+    assert unresolved_raw_review_items(corrected) == ()
+    assert proposal_for(corrected, draft.tables[0].id).state == "proposed"
+
+
+def test_approval_rejects_corrected_formula_route_without_formula() -> None:
+    draft = _duplicate_formula_route_draft()
+    grid = draft.raw_grids[0]
+    cell = grid.cells[0]
+    components = tuple(
+        component.model_copy(update={"component_id": "dc"})
+        if component.source_index == 1
+        else component
+        for component in cell.components
+    )
+    candidates = tuple(
+        candidate for candidate in cell.formula_candidates if candidate.source_index != 1
+    ) + (
+        ComponentFormulaCandidate(
+            source_index=1,
+            component_id="dc",
+            formula_id=None,
+            source=SYNTHETIC_SOURCE,
+        ),
+    )
+    changed_cell = cell.model_copy(
+        update={
+            "components": components,
+            "formula_candidates": candidates,
+            "parse_status": "compound",
+        }
+    )
+    changed = draft.model_copy(
+        update={"raw_grids": (grid.model_copy(update={"cells": (changed_cell,)}),)}
+    )
+
+    with pytest.raises(ApprovalError, match="exact formula candidate"):
+        record_correction(
+            draft,
+            changed,
+            actor="Synthetic Reviewer",
+            notes="Must remain fail closed.",
+            resolve=draft.review_items,
+        )
 
 
 def _grid_for_cell(cell: RawGridCell) -> RawGrid:

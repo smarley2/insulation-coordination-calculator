@@ -643,6 +643,7 @@ def _associated_cell(
     *,
     source_index: int,
     component_id: str,
+    formula_id: str | None = None,
 ) -> RawGridCell:
     if component_id not in cell.compound_component_ids:
         raise ValueError("component is not declared for this compound cell")
@@ -659,22 +660,26 @@ def _associated_cell(
         for part in cell.components
     )
     allowed = {
-        formula_id
-        for route_component_id, formula_id in cell.allowed_component_formula_ids
+        allowed_formula_id
+        for route_component_id, allowed_formula_id in cell.allowed_component_formula_ids
         if route_component_id == component_id
     }
+    if allowed and formula_id is None:
+        raise ValueError("association correction requires one exact route-local formula")
+    if formula_id is not None and formula_id not in allowed:
+        raise ValueError("formula is not declared for this exact component route")
     candidates = tuple(
         candidate
         for candidate in cell.formula_candidates
         if candidate.source_index != source_index
     )
-    if allowed:
+    if formula_id is not None:
         candidates = (
             *candidates,
             ComponentFormulaCandidate(
                 source_index=source_index,
                 component_id=component_id,
-                formula_id=None,
+                formula_id=formula_id,
                 source=replacement.source,
             ),
         )
@@ -696,24 +701,36 @@ def correct_component_association(
     column: int,
     source_index: int,
     component_id: str,
+    formula_id: str | None = None,
     actor: str,
     notes: str,
 ) -> ImportedRuleDraft:
-    """Associate one preserved source occurrence without rewriting its source text."""
+    """Associate one source occurrence and its required route-local formula."""
     cell = _raw_cell(draft, grid_id, row, column)
     changed_cell = _associated_cell(
         cell,
         source_index=source_index,
         component_id=component_id,
+        formula_id=formula_id,
     )
     changed = _replace_raw_cell(draft, grid_id, changed_cell)
     resolved = {resolution.review_item_sha256 for resolution in draft.review_resolutions}
     prefix = f"{grid_id}:{row}:{column}:"
+    coordinate = f"{prefix}{source_index}"
     resolve = tuple(
         item
         for item in draft.review_items
-        if item.code == "AMBIGUOUS_COMPOUND_CELL"
-        and item.semantic_id.startswith(prefix)
+        if (
+            (
+                item.code == "AMBIGUOUS_COMPOUND_CELL"
+                and item.semantic_id.startswith(prefix)
+            )
+            or (
+                item.code == "AMBIGUOUS_COMPONENT_FORMULA"
+                and formula_id is not None
+                and item.semantic_id == coordinate
+            )
+        )
         and item.sha256 not in resolved
         and _compound_complete(changed_cell)
     )
@@ -826,10 +843,12 @@ def _corrected_compound_cells(
         cell = by_coordinate.get(coordinate)
         if cell is None:
             raise ValueError(f"unknown compound cell: {coordinate}")
+        key = (row, column, source_index)
         by_coordinate[coordinate] = _associated_cell(
             cell,
             source_index=source_index,
             component_id=component_id,
+            formula_id=formulas.get(key),
         )
     for (row, column, source_index), formula_id in sorted(formulas.items()):
         coordinate = (row, column)

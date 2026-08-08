@@ -241,14 +241,23 @@ def test_cell_outside_the_data_area_stays_read_only(qtbot, draft) -> None:
     assert dialog._apply_button.isEnabled() is False
 
 
-def test_dialog_shows_one_editable_row_per_compound_component(qtbot, draft) -> None:
+def test_dialog_applies_association_and_formula_atomically(
+    qtbot,
+    draft,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "insulation_coordination.ui.raw_grid_review.QMessageBox.warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
     grid = draft.raw_grids[0]
     original = next(cell for cell in grid.cells if (cell.row, cell.column) == (2, 1))
     parsed = parse_compound_data_cell(
         text="11 ac / 17 ac",
         spec=CompoundQuantitySpec(
             component_ids=("ac", "dc"),
-            formula_candidates=(("ac", None),),
+            formula_candidates=(("ac", "synthetic-ac-formula"),),
             allowed_formula_ids=(
                 ("ac", "synthetic-ac-formula"),
                 ("dc", "synthetic-dc-formula"),
@@ -297,10 +306,15 @@ def test_dialog_shows_one_editable_row_per_compound_component(qtbot, draft) -> N
         dialog._association_selector.findData("dc")
     )
     qtbot.mouseClick(dialog._apply_association_button, Qt.MouseButton.LeftButton)
+
+    assert warnings == ["Select an exact formula for the reviewed component route."]
+    assert dialog.pending_association_corrections == {}
+    assert dialog.pending_formula_corrections == {}
+
     dialog._formula_selector.setCurrentIndex(
         dialog._formula_selector.findData("synthetic-dc-formula")
     )
-    qtbot.mouseClick(dialog._apply_formula_button, Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(dialog._apply_association_button, Qt.MouseButton.LeftButton)
 
     assert dialog.pending_association_corrections == {(2, 1, 1): "dc"}
     assert dialog.pending_formula_corrections == {
