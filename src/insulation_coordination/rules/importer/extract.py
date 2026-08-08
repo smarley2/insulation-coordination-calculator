@@ -41,6 +41,7 @@ from insulation_coordination.domain.rules import (
 )
 from insulation_coordination.rules.archive import _canonical_json
 from insulation_coordination.rules.importer.identify import (
+    BlankCellSemantics,
     CompoundQuantitySpec,
     EquationAuditSpec,
     FormulaAuditSpec,
@@ -80,8 +81,10 @@ __all__ = [
     "RawQuantityComponent",
     "ReviewArtifactKind",
     "SemanticProposal",
+    "SemanticReferenceToken",
     "StandardRecipe",
     "TableAuditSpec",
+    "apply_table_structure",
     "canonical_model_sha256",
     "compound_review_items",
     "extract_draft",
@@ -194,6 +197,12 @@ class RawGridSegment(FrozenModel):
     source: SourceReference
 
 
+class SemanticReferenceToken(FrozenModel):
+    target_rule_id: Identifier
+    target_kind: RuleKind
+    source: SourceReference
+
+
 class RawGridCell(FrozenModel):
     row: int = Field(ge=0)
     column: int = Field(ge=0)
@@ -219,6 +228,8 @@ class RawGridCell(FrozenModel):
         "non_scalar",
         "range",
     ]
+    blank_semantics: BlankCellSemantics | None = None
+    reference_token: SemanticReferenceToken | None = None
     source: SourceReference
 
     @model_validator(mode="after")
@@ -287,6 +298,89 @@ class RawGrid(FrozenModel):
         ):
             raise ValueError("raw grid logical coordinates do not match cell roles")
         return self
+
+
+def apply_table_structure(grid: RawGrid, spec: TableAuditSpec) -> RawGrid:
+    """Apply only recipe-declared merges, blank meanings, and semantic references."""
+
+    if (grid.rows, grid.columns) != (spec.expected_raw_rows, spec.expected_raw_columns):
+        raise ExtractionError(f"raw grid dimensions differ for {spec.semantic_id}")
+    by_coordinate = {(cell.row, cell.column): cell for cell in grid.cells}
+    expected = {
+        (row, column)
+        for row in range(spec.expected_raw_rows)
+        for column in range(spec.expected_raw_columns)
+    }
+    missing = expected - set(by_coordinate)
+    if missing:
+        raise ExtractionError(f"table {spec.semantic_id} has a missing physical cell")
+
+    blanks = {(item.row, item.column): item.semantics for item in spec.blank_cells}
+    references = {(item.row, item.column): item for item in spec.reference_slots}
+    for coordinate, cell in tuple(by_coordinate.items()):
+        slot = references.get(coordinate)
+        by_coordinate[coordinate] = cell.model_copy(
+            update={
+                "blank_semantics": (
+                    blanks.get(coordinate, "missing")
+                    if not cell.raw_text.strip() or cell.blank_semantics == "inherit"
+                    else None
+                ),
+                "reference_token": (
+                    SemanticReferenceToken(
+                        target_rule_id=slot.target_rule_id,
+                        target_kind=slot.target_kind,
+                        source=cell.source,
+                    )
+                    if slot is not None and cell.raw_text.strip()
+                    else None
+                ),
+            }
+        )
+
+    for merge in spec.merged_cells:
+        anchor_coordinate = (merge.row, merge.column)
+        anchor = by_coordinate[anchor_coordinate]
+        if not anchor.raw_text.strip():
+            raise ExtractionError(f"table {spec.semantic_id} has an unresolved merged anchor")
+        covered = {
+            (row, column)
+            for row in range(merge.row, merge.row + merge.row_span)
+            for column in range(merge.column, merge.column + merge.column_span)
+            if (merge.inherit in {"down", "both"} or row == merge.row)
+            and (merge.inherit in {"right", "both"} or column == merge.column)
+        }
+        for coordinate in covered - {anchor_coordinate}:
+            cell = by_coordinate[coordinate]
+            if cell.role != "blank" or cell.blank_semantics != "inherit":
+                raise ExtractionError(
+                    f"table {spec.semantic_id} has an unresolved merged cell at {coordinate}"
+                )
+            by_coordinate[coordinate] = cell.model_copy(
+                update={
+                    "raw_text": anchor.raw_text,
+                    "value": anchor.value,
+                    "qualifier": anchor.qualifier,
+                    "suffix": anchor.suffix,
+                    "footnotes": anchor.footnotes,
+                    "components": anchor.components,
+                    "compound_component_ids": anchor.compound_component_ids,
+                    "formula_candidates": anchor.formula_candidates,
+                    "allowed_component_formula_ids": anchor.allowed_component_formula_ids,
+                    "parse_status": anchor.parse_status,
+                    "reference_token": anchor.reference_token,
+                    "source": anchor.source,
+                }
+            )
+    return grid.model_copy(
+        update={
+            "cells": tuple(
+                by_coordinate[(row, column)]
+                for row in range(spec.expected_raw_rows)
+                for column in range(spec.expected_raw_columns)
+            )
+        }
+    )
 
 
 class ExtractedEquation(FrozenModel):
@@ -1073,15 +1167,19 @@ def _extract_layout_table(
             or len(logical_columns) != spec.expected_data_columns
         ):
             raise ExtractionError(f"semantic data dimensions differ for {spec.semantic_id}")
-    grid = RawGrid(
-        id=f"raw-{spec.semantic_id}",
-        rows=row_start,
-        columns=grid_columns,
-        target_unit=spec.target_unit,
-        segments=tuple(segments),
-        cells=tuple(cells),
-        source=table_source,
+    grid = apply_table_structure(
+        RawGrid(
+            id=f"raw-{spec.semantic_id}",
+            rows=row_start,
+            columns=grid_columns,
+            target_unit=spec.target_unit,
+            segments=tuple(segments),
+            cells=tuple(cells),
+            source=table_source,
+        ),
+        spec,
     )
+    cells = list(grid.cells)
     compound_reviews = compound_review_items(grid)
     reviews = (
         *compound_reviews,
@@ -1095,6 +1193,7 @@ def _extract_layout_table(
         )
         for cell in cells
         if cell.role == "data"
+        and cell.reference_token is None
         and cell.parse_status not in {"numeric", "compound", "ambiguous_compound"}
         ),
     )

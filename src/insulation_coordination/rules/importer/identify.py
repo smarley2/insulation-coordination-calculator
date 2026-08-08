@@ -15,6 +15,7 @@ from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import (
     Identifier,
     ReferenceText,
+    RuleKind,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -155,6 +156,30 @@ class TableColumnSpec(FrozenModel):
         return self
 
 
+BlankCellSemantics = Literal["inherit", "not_applicable", "reference", "missing"]
+
+
+class MergedCellSpec(FrozenModel):
+    row: int = Field(ge=0)
+    column: int = Field(ge=0)
+    row_span: int = Field(default=1, ge=1)
+    column_span: int = Field(default=1, ge=1)
+    inherit: Literal["right", "down", "both", "none"]
+
+
+class BlankCellSpec(FrozenModel):
+    row: int = Field(ge=0)
+    column: int = Field(ge=0)
+    semantics: BlankCellSemantics
+
+
+class ReferenceSlotSpec(FrozenModel):
+    row: int = Field(ge=0)
+    column: int = Field(ge=0)
+    target_rule_id: Identifier
+    target_kind: RuleKind
+
+
 class TableAuditSpec(FrozenModel):
     semantic_id: Identifier
     source_table: ReferenceText
@@ -189,6 +214,9 @@ class TableAuditSpec(FrozenModel):
     ]
     segments: tuple[TableSegmentSpec, ...] = ()
     columns: tuple[TableColumnSpec, ...] = ()
+    merged_cells: tuple[MergedCellSpec, ...] = ()
+    blank_cells: tuple[BlankCellSpec, ...] = ()
+    reference_slots: tuple[ReferenceSlotSpec, ...] = ()
     page_search_radius: int = Field(default=0, ge=0, le=5)
     interpolation: Literal["none", "linear"] = "none"
 
@@ -211,6 +239,31 @@ class TableAuditSpec(FrozenModel):
                     f"{column.axis_value_source_row} is not declared in any segment's "
                     "header_rows"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _structural_coordinates_fit_the_raw_grid(self) -> TableAuditSpec:
+        blank_coordinates = tuple((item.row, item.column) for item in self.blank_cells)
+        reference_coordinates = tuple((item.row, item.column) for item in self.reference_slots)
+        merge_anchors = tuple((item.row, item.column) for item in self.merged_cells)
+        for label, coordinates in (
+            ("blank", blank_coordinates),
+            ("reference", reference_coordinates),
+            ("merged", merge_anchors),
+        ):
+            if len(coordinates) != len(set(coordinates)):
+                raise ValueError(f"table has duplicate {label} cell coordinates")
+            if any(
+                row >= self.expected_raw_rows or column >= self.expected_raw_columns
+                for row, column in coordinates
+            ):
+                raise ValueError(f"table {label} cell is outside the raw grid")
+        if any(
+            merge.row + merge.row_span > self.expected_raw_rows
+            or merge.column + merge.column_span > self.expected_raw_columns
+            for merge in self.merged_cells
+        ):
+            raise ValueError("table merged cell span is outside the raw grid")
         return self
 
 

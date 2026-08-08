@@ -144,12 +144,23 @@ def _review_item_artifact_id(item: ImportReviewItem) -> str:
     return f"{item.semantic_id}:{item.code}"
 
 
+def _source_semantic_id(proposal: SemanticProposal) -> str:
+    from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
+
+    if proposal.rule_kind == "decision" and (
+        proposal.semantic_id == ids.DVC_VOLTAGE_LIMITS
+        or proposal.semantic_id.startswith(f"{ids.DVC_VOLTAGE_LIMITS}.")
+    ):
+        return ids.DVC_VOLTAGE_LIMITS
+    return proposal.semantic_id
+
+
 def _required_review_items(
     draft: ImportedRuleDraft,
     proposal: SemanticProposal,
 ) -> tuple[ImportReviewItem, ...]:
     rule = _rule_for(draft, proposal)
-    semantic_ids = {proposal.semantic_id}
+    semantic_ids = {proposal.semantic_id, _source_semantic_id(proposal)}
     if proposal.rule_kind == "curve":
         assert isinstance(rule, PiecewiseCurveRule)
         semantic_ids.update(variant.id for variant in rule.variants)
@@ -216,10 +227,17 @@ def _current_source_artifact_sha256(
             )
         )
 
+    source_semantic_id = _source_semantic_id(proposal)
     grids = tuple(
         (grid.id, canonical_model_sha256(grid))
         for grid in draft.raw_grids
-        if grid.id in {proposal.semantic_id, f"raw-{proposal.semantic_id}"}
+        if grid.id
+        in {
+            proposal.semantic_id,
+            f"raw-{proposal.semantic_id}",
+            source_semantic_id,
+            f"raw-{source_semantic_id}",
+        }
     )
     if grids:
         return _aggregate_artifact_pairs(grids)
@@ -1017,7 +1035,11 @@ def build_reviewed_draft(
     notes: str,
 ) -> ImportedRuleDraft:
     """Project typed content only after every source artifact is accepted."""
+    from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
     from insulation_coordination.rules.importer.recipes import RECIPES
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
+        project_dvc_voltage_limits,
+    )
 
     if unresolved_table_items(draft) or unresolved_raw_review_items(draft):
         raise ValueError("Review extracted tables first")
@@ -1031,13 +1053,17 @@ def build_reviewed_draft(
     tables: dict[str, Table] = {}
     formulas: dict[str, Formula] = {}
     mappings: dict[str, CompatibilityMapping] = {}
+    decisions: dict[str, DecisionRule] = {rule.id: rule for rule in draft.decisions}
 
     for recipe in RECIPES:
         identity = identities[recipe.id]
         for table_spec in recipe.tables:
-            tables[table_spec.semantic_id] = project_table(
-                identity, table_spec, grids[f"raw-{table_spec.semantic_id}"]
-            )
+            grid = grids[f"raw-{table_spec.semantic_id}"]
+            if table_spec.semantic_id == ids.DVC_VOLTAGE_LIMITS:
+                projected, _proposals = project_dvc_voltage_limits(grid, identity)
+                decisions.update((rule.id, rule) for rule in projected)
+            else:
+                tables[table_spec.semantic_id] = project_table(identity, table_spec, grid)
         for formula_spec in recipe.formulas:
             formulas[formula_spec.semantic_id] = project_formula(identity, formula_spec, equations)
         for mapping_spec in recipe.mappings:
@@ -1048,6 +1074,7 @@ def build_reviewed_draft(
             "tables": tuple(tables.values()),
             "formulas": tuple(formulas.values()),
             "mappings": tuple(mappings.values()),
+            "decisions": tuple(decisions.values()),
         }
     )
     return record_correction(
