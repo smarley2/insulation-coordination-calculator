@@ -24,6 +24,7 @@ CORE_MEMBERS = (
     "decisions.json",
     "procedures.json",
     "guidance.json",
+    "curves.json",
 )
 ARCHIVE_MEMBERS = (*CORE_MEMBERS, "checksums.json")
 FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
@@ -66,6 +67,9 @@ def _core_member_payloads(package: RulePackage) -> dict[str, bytes]:
         ),
         "guidance.json": _canonical_json(
             [guidance.model_dump(mode="json") for guidance in package.guidance]
+        ),
+        "curves.json": _canonical_json(
+            [curve.model_dump(mode="json") for curve in package.curves]
         ),
     }
 
@@ -254,6 +258,7 @@ def load_rule_package(path: Path) -> RulePackage:
             "decisions": _decode_json(members["decisions.json"], "decisions.json"),
             "procedures": _decode_json(members["procedures.json"], "procedures.json"),
             "guidance": _decode_json(members["guidance.json"], "guidance.json"),
+            "curves": _decode_json(members["curves.json"], "curves.json"),
             "checksums": checksums,
             "package_sha256": hashlib.sha256(content).hexdigest(),
         }
@@ -288,4 +293,5 @@ def migrate_rule_package(package: RulePackage, target_schema: int) -> DraftRuleP
         decisions=package.decisions,
         procedures=package.procedures,
         guidance=package.guidance,
+        curves=package.curves,
     )

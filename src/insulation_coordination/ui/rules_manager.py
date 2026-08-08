@@ -54,6 +54,7 @@ _SECTIONS = (
     "Decisions",
     "Procedures",
     "Guidance",
+    "Curves",
 )
 
 
@@ -194,6 +195,10 @@ class RulesManagerWindow(QWidget):
     @property
     def audit_formula_count(self) -> int:
         return self._inventory.formula_node_count if self._inventory is not None else 0
+
+    @property
+    def audit_curve_count(self) -> int:
+        return self._inventory.curve_count if self._inventory is not None else 0
 
     @property
     def total_cell_count(self) -> int:
@@ -599,6 +604,7 @@ class RulesManagerWindow(QWidget):
         self._add_decisions_items()
         self._add_procedures_items()
         self._add_guidance_items()
+        self._add_curves_items()
         self._tree.expandToDepth(0)
 
     def _add_manifest_items(self, manifest: Manifest) -> None:
@@ -758,6 +764,15 @@ class RulesManagerWindow(QWidget):
         for guidance in self._package.guidance:
             top.addChild(
                 QTreeWidgetItem((f"{guidance.id} — {_format_reference(guidance.source)}",))
+            )
+
+    def _add_curves_items(self) -> None:
+        top = self._tree.topLevelItem(9)
+        if top is None or self._inventory is None:
+            return
+        for curve in self._inventory.curves:
+            top.addChild(
+                QTreeWidgetItem((f"{curve.id} — {_format_reference(curve.source)}",))
             )
 
     def _require_inventory(self) -> AuditInventory:

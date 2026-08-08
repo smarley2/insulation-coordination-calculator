@@ -162,6 +162,7 @@ class RulesProvenance(FrozenModel):
     decision_count: int
     procedure_count: int
     guidance_count: int
+    curve_count: int
     importer_version: str
     created_at: str
     approved: bool
@@ -329,6 +330,7 @@ def build_report_model(
             decision_count=len(rules.decisions),
             procedure_count=len(rules.procedures),
             guidance_count=len(rules.guidance),
+            curve_count=len(rules.curves),
             importer_version=rules.manifest.importer_version,
             created_at=rules.manifest.created_at.isoformat(),
             approved=rules.manifest.approved,

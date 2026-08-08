@@ -49,8 +49,9 @@ def test_audit_inventory_enumerates_all_package_content(
     assert inventory.mapping_count == 1
     assert inventory.parameter_set_count == 1
     assert inventory.supported_range_count == 2
-    assert inventory.source_reference_count == 17
-    assert inventory.checksum_count == 7
+    assert inventory.curve_count == 1
+    assert inventory.source_reference_count == 19
+    assert inventory.checksum_count == 8
     assert inventory.approval_record_count == 1
     assert len(inventory.table_cells) == inventory.table_cell_count
     assert len(inventory.formula_nodes) == inventory.formula_node_count
@@ -60,6 +61,7 @@ def test_audit_inventory_enumerates_all_package_content(
     assert inventory.manifest == loaded.manifest
     assert inventory.tables == loaded.tables
     assert inventory.formulas == loaded.formulas
+    assert inventory.curves == loaded.curves
     assert inventory.parameter_sets[0].owner_type == "formula"
     assert inventory.parameter_sets[0].owner_id == "synthetic-formula"
     assert inventory.parameter_sets[0].path == "parameter_sets.0"
@@ -77,6 +79,59 @@ def test_inventory_counts_decisions_procedures_and_guidance(
     assert inventory.decision_count == len(synthetic_package.decisions)
     assert inventory.procedure_count == len(synthetic_package.procedures)
     assert inventory.guidance_count == len(synthetic_package.guidance)
+
+
+def test_curve_sources_are_owned_by_rule_and_variant(
+    synthetic_package: RulePackage,
+) -> None:
+    inventory = build_audit_inventory(synthetic_package)
+    curve = synthetic_package.curves[0]
+    curve_refs = [item for item in inventory.source_references if item.owner_type == "curve"]
+
+    assert inventory.curve_count == 1
+    assert {item.owner_id for item in curve_refs} == {curve.id}
+    assert {item.path for item in curve_refs} == {"source", "variants.0.source"}
+
+
+def test_validation_rejects_duplicate_curve_ids(
+    synthetic_package: RulePackage,
+) -> None:
+    duplicate = synthetic_package.model_copy(
+        update={"curves": (synthetic_package.curves[0], synthetic_package.curves[0])}
+    )
+
+    report = validate_rule_package(duplicate)
+
+    assert report.is_valid is False
+    assert next(result for result in report.results if result.code == "unique_ids").passed is False
+
+
+def test_validation_requires_typed_curve_source_links(
+    synthetic_package: RulePackage,
+) -> None:
+    curve = synthetic_package.curves[0]
+    invalid_source = curve.source.model_copy(update={"clause": None, "table": None})
+    invalid = synthetic_package.model_copy(
+        update={
+            "curves": (
+                curve.model_copy(
+                    update={
+                        "source": invalid_source,
+                        "variants": (
+                            curve.variants[0].model_copy(update={"source": invalid_source}),
+                        ),
+                    }
+                ),
+            )
+        }
+    )
+
+    report = validate_rule_package(invalid)
+
+    assert report.is_valid is False
+    assert next(
+        result for result in report.results if result.code == "source_references"
+    ).passed is False
 
 
 def test_source_references_reach_decision_rows_and_procedure_steps(

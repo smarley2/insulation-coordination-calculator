@@ -185,6 +185,7 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
     decision_ids = [decision.id for decision in package.decisions]
     procedure_ids = [procedure.id for procedure in package.procedures]
     guidance_ids = [guidance.id for guidance in package.guidance]
+    curve_ids = [curve.id for curve in package.curves]
     try:
         expected_checksums = {
             name: hashlib.sha256(payload).hexdigest()
@@ -270,7 +271,7 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         expected_mapping_ids = set(mapping_ids)
     legacy_ids = (*table_ids, *formula_ids, *mapping_ids)
     rule_ids = (*decision_ids, *procedure_ids, *guidance_ids)
-    identifiers = (*legacy_ids, *rule_ids)
+    identifiers = (*legacy_ids, *rule_ids, *curve_ids)
     # A decision, procedure or guidance id is what applicability_rule_id and a
     # reference output resolve against, so it must be unique against every other
     # id in the package, not merely within its own kind.
@@ -280,6 +281,8 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         and len(mapping_ids) == len(set(mapping_ids))
         and len(rule_ids) == len(set(rule_ids))
         and set(rule_ids).isdisjoint(legacy_ids)
+        and len(curve_ids) == len(set(curve_ids))
+        and set(curve_ids).isdisjoint((*legacy_ids, *rule_ids))
     )
     # A cross-standard pointer must name a real rule, never free text: an unresolved
     # target would leave the reader to guess which rule was meant. It must resolve
@@ -390,6 +393,11 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
             for procedure in package.procedures
         )
         and all(_record_source_valid(guidance.source) for guidance in package.guidance)
+        and all(
+            _record_source_valid(curve.source)
+            and all(_record_source_valid(variant.source) for variant in curve.variants)
+            for curve in package.curves
+        )
     )
     from insulation_coordination.rules.audit import _source_references
 
@@ -451,7 +459,7 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         _result(
             "unique_ids",
             unique_ids,
-            "decision, procedure and guidance IDs are globally unique; "
+            "decision, procedure, guidance and curve IDs are globally unique; "
             "table, formula and mapping IDs are unique within their own kind",
         ),
         _result("table_cells", valid_table_cells, "table cells are unique and in bounds"),
