@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import pytest
 from PIL import Image
 
 from insulation_coordination.domain.rules import FaultTimeVoltageSelector, SourceReference
@@ -118,8 +119,8 @@ def _stroke(points: tuple[tuple[int, int], ...], width: str = "2") -> RawCurveTr
 
 
 def _two_stroke_figure() -> RawFigure:
+    # One continuous synthetic stroke: a falling front into a plateau.
     falling = _stroke(((40, 20), (110, 100), (180, 180)))
-    plateau = _stroke(((40, 100), (180, 100)))
     return RawFigure(
         source=SOURCE,
         source_mode="image_xobject",
@@ -127,7 +128,7 @@ def _two_stroke_figure() -> RawFigure:
         pixel_size=(200, 200),
         transform=(Decimal(1), Decimal(0), Decimal(0), Decimal(1), Decimal(0), Decimal(0)),
         ocr_tokens=(),
-        traces=(falling, plateau),
+        traces=(falling,),
         artifact_sha256="0" * 64,
     )
 
@@ -217,3 +218,73 @@ def test_out_of_domain_request_is_explicit_not_extrapolated() -> None:
         outside,
     )
     assert evaluation.status != "matched"
+
+
+def test_two_traces_without_association_block() -> None:
+    """Multiple strokes with no reviewed association are ambiguous, not guessed."""
+    falling = _stroke(((40, 20), (110, 100), (180, 180)))
+    plateau = _stroke(((40, 100), (180, 100)))
+    figure = RawFigure(
+        source=SOURCE,
+        source_mode="image_xobject",
+        source_bbox=(Decimal(0), Decimal(0), Decimal(200), Decimal(200)),
+        pixel_size=(200, 200),
+        transform=(Decimal(1), Decimal(0), Decimal(0), Decimal(1), Decimal(0), Decimal(0)),
+        ocr_tokens=(),
+        traces=(falling, plateau),
+        artifact_sha256="0" * 64,
+    )
+    result = digitize_synthetic_chart(figure, FakeOcrEngine((*X_TICKS, *Y_TICKS)))
+    assert result.proposed_rule is None
+    assert any(
+        item.code == "CURVE_TRACE_AMBIGUOUS" for item in result.blocking_review_items
+    )
+
+
+def test_proposed_rule_carries_engineering_units_not_pixels() -> None:
+    """Calibration is applied: the rule's axes span seconds/volts, not pixels."""
+    figure = _two_stroke_figure()
+    result = digitize_synthetic_chart(figure, FakeOcrEngine((*X_TICKS, *Y_TICKS)))
+    assert result.proposed_rule is not None
+    variant = result.proposed_rule.variants[0]
+    assert variant.x_axis.unit == "s"
+    assert variant.y_axis.unit == "V"
+    # x ticks span 1..100 s (synthetic); the conservative margin only widens it
+    # slightly. Pixels would land in the tens-to-hundreds range on BOTH axes.
+    assert variant.x_axis.minimum < Decimal(2)
+    assert variant.x_axis.maximum > Decimal(50)
+    assert variant.y_axis.maximum < variant.y_axis.minimum * Decimal(10000)
+
+
+def test_residual_above_half_minor_grid_spacing_blocks() -> None:
+    """A tick off the log-linear line by more than half the grid spacing blocks."""
+
+    # A tick one synthetic log decade off the line leaves a residual of ~0.4 —
+    # far above half of a 0.1-decade minor-grid spacing.
+    ticks = (
+        (Decimal(20), Decimal(0)),
+        (Decimal(100), Decimal("1.6")),
+        (Decimal(180), Decimal(2)),
+    )
+    from insulation_coordination.rules.importer.extract import ExtractionError
+
+    with pytest.raises(ExtractionError, match="CURVE_CALIBRATION_FAILED"):
+        calibrate_log_axis(ticks, minor_grid_spacing_pixels=Decimal("0.1"))
+
+
+def test_single_point_trace_blocks_as_ambiguous() -> None:
+    figure = RawFigure(
+        source=SOURCE,
+        source_mode="image_xobject",
+        source_bbox=(Decimal(0), Decimal(0), Decimal(200), Decimal(200)),
+        pixel_size=(200, 200),
+        transform=(Decimal(1), Decimal(0), Decimal(0), Decimal(1), Decimal(0), Decimal(0)),
+        ocr_tokens=(),
+        traces=(_stroke(((40, 20),)),),
+        artifact_sha256="0" * 64,
+    )
+    result = digitize_synthetic_chart(figure, FakeOcrEngine((*X_TICKS, *Y_TICKS)))
+    assert result.proposed_rule is None
+    assert any(
+        item.code == "CURVE_TRACE_AMBIGUOUS" for item in result.blocking_review_items
+    )

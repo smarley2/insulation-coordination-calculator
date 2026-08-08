@@ -591,40 +591,6 @@ def calibrate_log_axis(
     )
 
 
-def prove_conservative(
-    source: list[tuple[Decimal, Decimal]] | tuple[tuple[Decimal, Decimal], ...],
-    candidate: list[tuple[Decimal, Decimal]] | tuple[tuple[Decimal, Decimal], ...],
-    tolerance: Decimal,
-) -> ConservatismReport:
-    """Prove the candidate never exceeds the source's lower uncertainty boundary.
-
-    For a maximum-voltage rule the reconstructed curve must sit at or below the
-    source geometry minus the fidelity tolerance at every source column and every
-    candidate breakpoint.
-    """
-
-    maximum_positive = Decimal(0)
-    proven = True
-    source_points = tuple(source)
-    for x, _y in (*candidate, *source_points):
-        envelope = _lower_envelope(source_points, x)
-        if envelope is None:
-            continue
-        lower = envelope - tolerance
-        candidate_y = _piecewise_value(candidate, x)
-        if candidate_y is None:
-            continue
-        error = candidate_y - lower
-        maximum_positive = max(maximum_positive, error)
-        if candidate_y > lower:
-            proven = False
-    return ConservatismReport(
-        maximum_positive_voltage_error=maximum_positive,
-        maximum_fidelity_error_pixels=tolerance,
-        proven=proven,
-    )
-
-
 def _lower_envelope(
     source: tuple[tuple[Decimal, Decimal], ...], x: Decimal
 ) -> Decimal | None:
@@ -759,6 +725,115 @@ def _log10(value: Decimal) -> Decimal:
     return value.log10()
 
 
+def _log10_to_value(log_value: Decimal) -> Decimal:
+    return (log_value * Decimal(10).ln()).exp()
+
+
+def _apply_calibration(
+    point: RawCurvePoint, calibration: PlotCalibration
+) -> tuple[Decimal, Decimal]:
+    """Pixel → engineering value: log10(v) = slope·pixel + intercept per axis."""
+
+    x_log = calibration.x.slope * point.x + calibration.x.intercept
+    # y calibration was fit on −pixel (pixel grows downward, value upward)
+    y_log = calibration.y.slope * (-point.y) + calibration.y.intercept
+    return _log10_to_value(x_log), _log10_to_value(y_log)
+
+
+def _log_space_point(point: RawCurvePoint, calibration: PlotCalibration) -> tuple[Decimal, Decimal]:
+    """Pixel → log10 space for envelope math."""
+
+    x_log = calibration.x.slope * point.x + calibration.x.intercept
+    y_log = calibration.y.slope * (-point.y) + calibration.y.intercept
+    return x_log, y_log
+
+
+def _fidelity_tolerance(trace: RawCurveTrace) -> Decimal:
+    """max(1 pixel, ceil(stroke_width / 2)) — the mandated fidelity tolerance."""
+
+    half = trace.stroke_width / 2
+    ceiling = half.to_integral_value(rounding="ROUND_CEILING")
+    return max(Decimal(1), ceiling)
+
+
+def _pixel_tolerance_to_value(tolerance: Decimal, slope: Decimal) -> Decimal:
+    """Pixel tolerance → log10-value tolerance through the axis slope magnitude."""
+
+    return abs(slope) * tolerance
+
+
+def _segment_value_at(
+    left: tuple[Decimal, Decimal], right: tuple[Decimal, Decimal], x: Decimal
+) -> Decimal | None:
+    """Linear interpolation in the caller's coordinate space."""
+
+    lx, ly = left
+    rx, ry = right
+    if rx == lx:
+        return min(ly, ry)
+    if x < lx or x > rx:
+        return None
+    fraction = (x - lx) / (rx - lx)
+    return ly + fraction * (ry - ly)
+
+
+def prove_conservative(
+    source: list[tuple[Decimal, Decimal]] | tuple[tuple[Decimal, Decimal], ...],
+    candidate: list[tuple[Decimal, Decimal]] | tuple[tuple[Decimal, Decimal], ...],
+    tolerance: Decimal,
+) -> ConservatismReport:
+    """Prove the candidate never exceeds the source's lower uncertainty boundary.
+
+    Both inputs live in the same coordinate space (log10 space for the digitizer).
+    Checks every source column, every candidate breakpoint, and the analytic
+    intersection of each candidate segment with each source segment, including the
+    case where the segment runs strictly above the envelope between two columns
+    without crossing it (endpoint-extremum coverage).
+    """
+
+    source_points = tuple(sorted(source))
+    candidate_points = tuple(sorted(candidate))
+    maximum_positive = Decimal(0)
+    proven = True
+    probe_xs = {x for x, _ in source_points} | {x for x, _ in candidate_points}
+    for (lx, ly), (rx, ry) in pairwise(candidate_points):
+        for (sx0, sy0), (sx1, sy1) in pairwise(source_points):
+            # Solve candidate == envelope inside the overlap of both segments.
+            overlap_lo = max(lx, sx0)
+            overlap_hi = min(rx, sx1)
+            if overlap_lo > overlap_hi:
+                continue
+            probe_xs.add(overlap_lo)
+            probe_xs.add(overlap_hi)
+            candidate_slope = (ry - ly) / (rx - lx) if rx != lx else Decimal(0)
+            source_slope = (sy1 - sy0) / (sx1 - sx0) if sx1 != sx0 else Decimal(0)
+            denominator = candidate_slope - source_slope
+            if denominator == 0:
+                continue
+            intersection = (
+                (sy0 - ly) + source_slope * (lx - sx0)
+            ) / denominator + lx
+            if overlap_lo < intersection < overlap_hi:
+                probe_xs.add(intersection)
+    for x in sorted(probe_xs):
+        envelope = _lower_envelope(source_points, x)
+        if envelope is None:
+            continue
+        lower = envelope - tolerance
+        candidate_y = _piecewise_value(candidate_points, x)
+        if candidate_y is None:
+            continue
+        error = candidate_y - lower
+        maximum_positive = max(maximum_positive, error)
+        if candidate_y > lower:
+            proven = False
+    return ConservatismReport(
+        maximum_positive_voltage_error=maximum_positive,
+        maximum_fidelity_error_pixels=tolerance,
+        proven=proven,
+    )
+
+
 def digitize_curve_figure(
     figure: RawFigure,
     spec: CurveAuditSpec,
@@ -787,25 +862,59 @@ def digitize_curve_figure(
             ),
         )
     calibration = PlotCalibration(x=x_calibration, y=y_calibration)
-    if not figure.traces:
+    if len(figure.traces) != 1:
         return CurveDigitizationResult(
             proposed_rule=None,
             calibration=calibration,
             conservatism=None,
             blocking_review_items=(
                 _blocking_item(
-                    "CURVE_TRACE_AMBIGUOUS", spec, "no connected stroke was traced"
+                    "CURVE_TRACE_AMBIGUOUS",
+                    spec,
+                    f"expected exactly one connected stroke, found {len(figure.traces)}",
                 ),
             ),
         )
-    trace = max(figure.traces, key=lambda item: len(item.points))
-    tolerance = max(Decimal(1), (trace.stroke_width / 2).to_integral_value())
-    source_points = tuple(
-        (point.x, point.y) for point in sorted(trace.points, key=lambda point: point.x)
+    trace = figure.traces[0]
+    if len(trace.points) < 2:
+        return CurveDigitizationResult(
+            proposed_rule=None,
+            calibration=calibration,
+            conservatism=None,
+            blocking_review_items=(
+                _blocking_item(
+                    "CURVE_TRACE_AMBIGUOUS", spec, "trace has fewer than two points"
+                ),
+            ),
+        )
+    tolerance_pixels = _fidelity_tolerance(trace)
+    y_tolerance = _pixel_tolerance_to_value(tolerance_pixels, calibration.y.slope)
+
+    # Work in log10 space: source envelope and candidate share coordinates, and the
+    # emitted log_log segments are exactly linear there.
+    source_log = tuple(
+        sorted(_log_space_point(point, calibration) for point in trace.points)
     )
-    breakpoints = (source_points[0], source_points[-1])
-    simplified = conservative_simplify(breakpoints, tolerance)
-    report = prove_conservative(source_points, simplified, tolerance)
+    first, last = source_log[0], source_log[-1]
+    # Time outward, voltage downward: extend x by the pixel tolerance through the
+    # x slope; drop y by the y tolerance. The extended domain stays anchored to the
+    # traced endpoints — the margin equals the fidelity tolerance, nothing more.
+    x_margin = _pixel_tolerance_to_value(tolerance_pixels, calibration.x.slope)
+    # Constant-y margin: the first endpoint moves to an earlier time at the same
+    # (already lowered) voltage, the last endpoint to a later time at the final
+    # lowered voltage. This never tilts the segment above the envelope — unlike a
+    # parallel x-shift, which would move mid-segment y values upward in log space.
+    # Extend the domain at constant voltage: lead-in at the first (highest, for a
+    # maximum-voltage front) voltage and a tail at the final (lowest) voltage, both
+    # lowered by the tolerance. x grows earlier/later; y never tilts upward. Every
+    # vertex sits at source minus the tolerance, so no column, breakpoint, or
+    # intersection can exceed the envelope.
+    candidate_log = (
+        (first[0] - x_margin, first[1] - y_tolerance),
+        *((x, y - y_tolerance) for x, y in source_log),
+        (last[0] + x_margin, last[1] - y_tolerance),
+    )
+    report = prove_conservative(source_log, candidate_log, y_tolerance)
     if not report.proven:
         return CurveDigitizationResult(
             proposed_rule=None,
@@ -826,8 +935,25 @@ def digitize_curve_figure(
         FaultTimeVoltageVariant,
     )
 
-    x_values = [point[0] for point in simplified]
-    y_values = [point[1] for point in simplified]
+    value_points = tuple(
+        (_log10_to_value(x_log), _log10_to_value(y_log))
+        for x_log, y_log in candidate_log
+    )
+    if any(x <= 0 or y <= 0 for x, y in value_points):
+        return CurveDigitizationResult(
+            proposed_rule=None,
+            calibration=calibration,
+            conservatism=report,
+            blocking_review_items=(
+                _blocking_item(
+                    "CURVE_CONSERVATISM_UNPROVEN",
+                    spec,
+                    "conservative rounding left the log domain",
+                ),
+            ),
+        )
+    x_values = [x for x, _ in value_points]
+    y_values = [y for _, y in value_points]
     variant = FaultTimeVoltageVariant(
         id=f"{spec.semantic_id}.{spec.figure}",
         selector=spec.variant_slots[0],
@@ -845,16 +971,15 @@ def digitize_curve_figure(
             minimum=min(y_values),
             maximum=max(y_values),
         ),
-        points=tuple(
-            CurvePoint(x=x, y=y) for x, y in simplified
-        ),
-        segments=(
+        points=tuple(CurvePoint(x=x, y=y) for x, y in value_points),
+        segments=tuple(
             CurveSegment(
-                start=0,
-                end=len(simplified) - 1,
+                start=index,
+                end=index + 1,
                 segment_type="continuous",
                 interpolation="log_log",
-            ),
+            )
+            for index in range(len(value_points) - 1)
         ),
         applicability="review required",
         source=figure.source,
