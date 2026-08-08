@@ -13,6 +13,9 @@ from pypdf.errors import PyPdfError
 
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import (
+    CurveInterpolation,
+    CurveSegmentType,
+    FaultTimeVoltageSelector,
     Identifier,
     ReferenceText,
     RuleKind,
@@ -342,6 +345,29 @@ class ClauseAuditSpec(FrozenModel):
     output_kind: Literal["decision", "procedure"]
 
 
+class CurveAuditSpec(FrozenModel):
+    """Structural contract for one reviewed source figure.
+
+    Layout facts only: figure number, page, bbox, axis kinds/units/scales, and the
+    permitted variant/segment vocabulary. No curve coordinates or labels live here.
+    """
+
+    semantic_id: Identifier
+    figure: ReferenceText
+    page_number: int = Field(ge=1)
+    expected_bbox: tuple[float, float, float, float]
+    expected_pixel_size: tuple[int, int] | None = None
+    x_quantity_kind: Identifier
+    x_unit: Identifier
+    y_quantity_kind: Identifier
+    y_unit: Identifier
+    x_scale: Literal["log10"]
+    y_scale: Literal["log10"]
+    variant_slots: tuple[FaultTimeVoltageSelector, ...] = Field(min_length=1)
+    permitted_segment_types: tuple[CurveSegmentType, ...] = Field(min_length=1)
+    permitted_interpolations: tuple[CurveInterpolation, ...] = Field(min_length=1)
+
+
 class StandardRecipe(FrozenModel):
     id: Identifier
     standard: Identifier
@@ -357,6 +383,7 @@ class StandardRecipe(FrozenModel):
     formulas: tuple[FormulaAuditSpec, ...]
     mappings: tuple[MappingAuditSpec, ...]
     clauses: tuple[ClauseAuditSpec, ...] = ()
+    curves: tuple[CurveAuditSpec, ...] = ()
     #: Curve semantics the recipe's standard requires. A draft missing a reviewed
     #: curve rule for one of these cannot approve. Declared here so approval does
     #: not hard-code any one standard's curve IDs.

@@ -162,3 +162,80 @@ def create_clause_pdf(path: Path) -> None:
     )
     with path.open("wb") as target:
         writer.write(target)
+
+
+def create_curve_source_pdf(path: Path) -> None:
+    """Two-page synthetic curve-source fixture. No IEC content.
+
+    Page 1 (pdfplumber page): vector path commands plus one lossless image inside the
+    curve bbox (70, 200)-(400, 500). Page 2: one lossless image only. Coordinates are
+    pdfplumber "top" space; PDF y = 792 - top.
+    """
+
+    import zlib
+
+    from pypdf.generic import NumberObject
+
+    writer = PdfWriter()
+
+    def _image_ref(name: str) -> object:
+        from PIL import Image
+
+        raw = Image.new("L", (8, 8), color=64).tobytes()
+        xobj = DecodedStreamObject()
+        xobj.set_data(zlib.compress(raw))
+        xobj.update(
+            {
+                NameObject("/Type"): NameObject("/XObject"),
+                NameObject("/Subtype"): NameObject("/Image"),
+                NameObject("/Width"): NumberObject(8),
+                NameObject("/Height"): NumberObject(8),
+                NameObject("/ColorSpace"): NameObject("/DeviceGray"),
+                NameObject("/BitsPerComponent"): NumberObject(8),
+                NameObject("/Filter"): NameObject("/FlateDecode"),
+            }
+        )
+        return writer._add_object(xobj)
+
+    for page_index in range(2):
+        page = writer.add_blank_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
+        ref = _image_ref("Im1")
+        page[NameObject("/Resources")] = DictionaryObject(
+            {
+                NameObject("/XObject"): DictionaryObject({NameObject("/Im1"): ref}),
+                NameObject("/Font"): DictionaryObject(
+                    {
+                        NameObject("/F1"): DictionaryObject(
+                            {
+                                NameObject("/Type"): NameObject("/Font"),
+                                NameObject("/Subtype"): NameObject("/Type1"),
+                                NameObject("/BaseFont"): NameObject("/Helvetica"),
+                            }
+                        )
+                    }
+                ),
+            }
+        )
+        # Bbox (70,200)-(400,500) top-space -> PDF x 70..400, y 292..592.
+        image_cmd = b"q 40 0 0 40 100 350 cm /Im1 Do Q"
+        if page_index == 0:
+            commands = [
+                image_cmd,
+                b"1.5 w",
+                b"100 400 m 200 450 l 300 500 l S",
+                b"0.8 w",
+                b"120 380 m 220 420 l S",
+            ]
+        else:
+            commands = [image_cmd]
+        stream = DecodedStreamObject()
+        stream.set_data(b"\n".join(commands))
+        page[NameObject("/Contents")] = writer._add_object(stream)
+    writer.add_metadata(
+        {
+            "/Title": "synthetic curve source fixture",
+            "/ICC-Synthetic": "true",
+        }
+    )
+    with path.open("wb") as target:
+        writer.write(target)

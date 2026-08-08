@@ -4,6 +4,7 @@ from insulation_coordination.rules.importer.identify import StandardRecipe
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
     clauses,
+    curves,
     identity,
     tables,
 )
@@ -21,6 +22,7 @@ RECIPE = StandardRecipe(
     formulas=tables.FORMULAS,
     mappings=(),
     clauses=clauses.CLAUSES,
+    curves=curves.CURVES,
     required_curves=(ids.DVC_FAULT_TIME_VOLTAGE,),
 )
 
