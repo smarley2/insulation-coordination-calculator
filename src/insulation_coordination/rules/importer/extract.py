@@ -151,7 +151,8 @@ class ImportReviewResolution(FrozenModel):
 
 
 class RawQuantityComponent(FrozenModel):
-    component_id: Identifier
+    source_index: int = Field(default=0, ge=0)
+    component_id: Identifier | None
     raw_text: str = Field(max_length=2_000)
     value: DecimalValue | None = None
     unit: Identifier | None = None
@@ -159,6 +160,7 @@ class RawQuantityComponent(FrozenModel):
 
 
 class ComponentFormulaCandidate(FrozenModel):
+    source_index: int = Field(default=0, ge=0)
     component_id: Identifier
     formula_id: Identifier | None
     source: SourceReference
@@ -172,6 +174,7 @@ class ParsedDataCell(FrozenModel):
     components: tuple[RawQuantityComponent, ...] = ()
     compound_component_ids: tuple[Identifier, ...] = ()
     formula_candidates: tuple[ComponentFormulaCandidate, ...] = ()
+    allowed_component_formula_ids: tuple[tuple[Identifier, Identifier], ...] = ()
     review_codes: tuple[Identifier, ...] = ()
     parse_status: Literal[
         "blank",
@@ -205,6 +208,7 @@ class RawGridCell(FrozenModel):
     components: tuple[RawQuantityComponent, ...] = ()
     compound_component_ids: tuple[Identifier, ...] = ()
     formula_candidates: tuple[ComponentFormulaCandidate, ...] = ()
+    allowed_component_formula_ids: tuple[tuple[Identifier, Identifier], ...] = ()
     parse_status: Literal[
         "blank",
         "text",
@@ -216,6 +220,32 @@ class RawGridCell(FrozenModel):
         "range",
     ]
     source: SourceReference
+
+    @model_validator(mode="after")
+    def _valid_compound_occurrences(self) -> RawGridCell:
+        indexes = tuple(component.source_index for component in self.components)
+        if len(indexes) != len(set(indexes)):
+            raise ValueError("compound source occurrence indexes must be unique")
+        if any(
+            component.component_id is not None
+            and component.component_id not in self.compound_component_ids
+            for component in self.components
+        ):
+            raise ValueError("compound occurrence has an undeclared component association")
+        components = {component.source_index: component for component in self.components}
+        if any(
+            candidate.source_index not in components
+            or candidate.component_id
+            != components[candidate.source_index].component_id
+            for candidate in self.formula_candidates
+        ):
+            raise ValueError("formula candidate does not match its source occurrence")
+        if any(
+            component_id not in self.compound_component_ids
+            for component_id, _formula_id in self.allowed_component_formula_ids
+        ):
+            raise ValueError("formula route has an undeclared component")
+        return self
 
 
 class RawGrid(FrozenModel):
@@ -445,13 +475,21 @@ def parse_compound_data_cell(
         raise ExtractionError("raw table cell exceeds the fidelity size limit")
     components: list[RawQuantityComponent] = []
     ambiguous = False
-    for raw_part in re.split(r"\s*(?:/|\n)\s*", text):
+    for source_index, raw_part in enumerate(re.split(r"\s*(?:/|\n)\s*", text)):
         part = raw_part.strip()
         if not part:
             ambiguous = True
             continue
         token = _numeric_token(part)
         if token is None:
+            components.append(
+                RawQuantityComponent(
+                    source_index=source_index,
+                    component_id=None,
+                    raw_text=part,
+                    source=source,
+                )
+            )
             ambiguous = True
             continue
         value, qualifier, suffix = token
@@ -461,42 +499,63 @@ def parse_compound_data_cell(
             for component_id in spec.component_ids
             if label.casefold() == component_id.casefold()
         )
-        if qualifier is not None or len(matches) != 1:
-            ambiguous = True
-            continue
+        component_id = matches[0] if qualifier is None and len(matches) == 1 else None
+        ambiguous = ambiguous or component_id is None
         components.append(
             RawQuantityComponent(
-                component_id=matches[0],
+                source_index=source_index,
+                component_id=component_id,
                 raw_text=part,
                 value=value,
                 source=source,
             )
         )
-    component_ids = tuple(component.component_id for component in components)
+    component_ids = tuple(
+        component.component_id
+        for component in components
+        if component.component_id is not None
+    )
     if (
         len(component_ids) != len(set(component_ids))
         or set(component_ids) != set(spec.component_ids)
     ):
         ambiguous = True
+    allowed_formula_ids = spec.allowed_formula_ids or tuple(
+        (component_id, formula_id)
+        for component_id, formula_id in spec.formula_candidates
+        if formula_id is not None
+    )
     candidates = tuple(
         ComponentFormulaCandidate(
-            component_id=component_id,
+            source_index=component.source_index,
+            component_id=component.component_id,
             formula_id=formula_id,
             source=source,
         )
-        for component_id, formula_id in spec.formula_candidates
+        for component in components
+        if component.component_id is not None
+        for candidate_component_id, formula_id in spec.formula_candidates
+        if candidate_component_id == component.component_id
     )
-    formula_groups = {
-        component_id: tuple(
-            candidate
-            for candidate in candidates
-            if candidate.component_id == component_id
+    formula_source_indexes = {
+        component.source_index
+        for component in components
+        if component.component_id is not None
+        and any(
+            allowed_component_id == component.component_id
+            for allowed_component_id, _formula_id in allowed_formula_ids
         )
-        for component_id, _formula_id in spec.formula_candidates
     }
     ambiguous_formula = any(
         len(group) != 1 or group[0].formula_id is None
-        for group in formula_groups.values()
+        for source_index in formula_source_indexes
+        for group in (
+            tuple(
+                candidate
+                for candidate in candidates
+                if candidate.source_index == source_index
+            ),
+        )
     )
     review_codes = (
         *(("AMBIGUOUS_COMPOUND_CELL",) if ambiguous else ()),
@@ -506,6 +565,7 @@ def parse_compound_data_cell(
         components=tuple(components),
         compound_component_ids=spec.component_ids,
         formula_candidates=candidates,
+        allowed_component_formula_ids=allowed_formula_ids,
         review_codes=review_codes,
         parse_status="ambiguous_compound" if ambiguous else "compound",
     )
@@ -515,33 +575,62 @@ def compound_review_items(grid: RawGrid) -> tuple[ImportReviewItem, ...]:
     """Blocking review items for compound labels and formula associations."""
     items: list[ImportReviewItem] = []
     for cell in grid.cells:
-        semantic_id = f"{grid.id}:{cell.row}:{cell.column}"
-        if cell.parse_status == "ambiguous_compound":
-            items.append(
-                ImportReviewItem(
-                    code="AMBIGUOUS_COMPOUND_CELL",
-                    semantic_id=semantic_id,
-                    kind="raw_cell",
-                    source=cell.source,
-                    expected_contract="compound cell requires one exact label per component",
-                )
+        counts = {
+            component_id: sum(
+                component.component_id == component_id for component in cell.components
             )
-        component_ids = {candidate.component_id for candidate in cell.formula_candidates}
-        for component_id in sorted(component_ids):
+            for component_id in cell.compound_component_ids
+        }
+        for component in cell.components:
+            semantic_id = (
+                f"{grid.id}:{cell.row}:{cell.column}:{component.source_index}"
+            )
+            ambiguous_association = (
+                component.component_id is None
+                or counts.get(component.component_id, 0) != 1
+            )
+            if ambiguous_association:
+                items.append(
+                    ImportReviewItem(
+                        code="AMBIGUOUS_COMPOUND_CELL",
+                        semantic_id=semantic_id,
+                        kind="raw_cell",
+                        source=component.source,
+                        expected_contract=(
+                            "compound association requires one exact component at source "
+                            f"occurrence:{component.source_index}"
+                        ),
+                    )
+                )
             candidates = tuple(
                 candidate
                 for candidate in cell.formula_candidates
-                if candidate.component_id == component_id
+                if candidate.source_index == component.source_index
             )
-            if len(candidates) == 1 and candidates[0].formula_id is not None:
+            allowed = {
+                formula_id
+                for component_id, formula_id in cell.allowed_component_formula_ids
+                if component_id == component.component_id
+            }
+            formula_required = bool(allowed) or (
+                ambiguous_association and bool(cell.allowed_component_formula_ids)
+            )
+            if not formula_required or (
+                len(candidates) == 1
+                and candidates[0].formula_id is not None
+                and candidates[0].formula_id in allowed
+            ):
                 continue
             items.append(
                 ImportReviewItem(
                     code="AMBIGUOUS_COMPONENT_FORMULA",
                     semantic_id=semantic_id,
                     kind="raw_cell",
-                    source=cell.source,
-                    expected_contract=f"compound formula requires one exact candidate:{component_id}",
+                    source=component.source,
+                    expected_contract=(
+                        "compound formula requires one exact route-local candidate at source "
+                        f"occurrence:{component.source_index}"
+                    ),
                 )
             )
     return tuple(items)
@@ -950,6 +1039,11 @@ def _extract_layout_table(
                         ),
                         formula_candidates=(
                             () if parsed is None else parsed.formula_candidates
+                        ),
+                        allowed_component_formula_ids=(
+                            ()
+                            if parsed is None
+                            else parsed.allowed_component_formula_ids
                         ),
                         parse_status=parse_status,
                         source=_source(

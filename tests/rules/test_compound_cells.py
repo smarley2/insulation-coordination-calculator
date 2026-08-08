@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
+
 from insulation_coordination.domain.rules import ApprovalRecord, SourceReference
 from insulation_coordination.rules.importer.extract import (
     IMPORTER_VERSION,
@@ -20,10 +22,12 @@ from insulation_coordination.rules.importer.extract import (
 )
 from insulation_coordination.rules.importer.identify import CompoundQuantitySpec
 from insulation_coordination.rules.importer.review import (
+    correct_component_association,
     correct_raw_component,
     mark_proposal_reviewed,
     proposal_for,
     select_component_formula,
+    unresolved_raw_review_items,
 )
 from tests.fixtures.synthetic_rules import synthetic_rule_package
 
@@ -100,7 +104,8 @@ def test_missing_compound_label_is_blocking_and_never_assigned_by_position() -> 
     )
 
     assert [(part.component_id, part.value) for part in parsed.components] == [
-        ("dc", Decimal(17))
+        (None, Decimal(11)),
+        ("dc", Decimal(17)),
     ]
     assert parsed.parse_status == "ambiguous_compound"
     assert parsed.review_codes == ("AMBIGUOUS_COMPOUND_CELL",)
@@ -125,7 +130,8 @@ def test_unknown_compound_label_is_blocking() -> None:
     )
 
     assert [(part.component_id, part.value) for part in parsed.components] == [
-        ("ac", Decimal(11))
+        ("ac", Decimal(11)),
+        (None, Decimal(17)),
     ]
     assert parsed.review_codes == ("AMBIGUOUS_COMPOUND_CELL",)
 
@@ -136,11 +142,118 @@ def test_zero_formula_candidates_is_blocking() -> None:
         spec=CompoundQuantitySpec(
             component_ids=("ac", "dc"),
             formula_candidates=(("ac", None),),
+            allowed_formula_ids=(("ac", "synthetic-route-formula"),),
         ),
         source=SYNTHETIC_SOURCE,
     )
 
     assert parsed.review_codes == ("AMBIGUOUS_COMPONENT_FORMULA",)
+
+
+def test_duplicate_association_can_be_relabelled_by_source_occurrence() -> None:
+    parsed = parse_compound_data_cell(
+        text="11 ac / 17 ac",
+        spec=CompoundQuantitySpec(component_ids=("ac", "dc")),
+        source=SYNTHETIC_SOURCE,
+    )
+    cell = RawGridCell(
+        row=0,
+        column=0,
+        raw_text="11 ac / 17 ac",
+        role="data",
+        logical_row=0,
+        logical_column="compound",
+        components=parsed.components,
+        compound_component_ids=parsed.compound_component_ids,
+        parse_status=parsed.parse_status,
+        source=SYNTHETIC_SOURCE,
+    )
+    grid = _grid_for_cell(cell)
+    review_items = compound_review_items(grid)
+    draft = _draft_with_compound_cell(cell, review_items)
+
+    corrected = correct_component_association(
+        draft,
+        grid_id=grid.id,
+        row=0,
+        column=0,
+        source_index=1,
+        component_id="dc",
+        actor="Synthetic Reviewer",
+        notes="Associated the second source occurrence.",
+    )
+
+    parts = corrected.raw_grids[0].cells[0].components
+    assert [(part.source_index, part.component_id, part.value) for part in parts] == [
+        (0, "ac", Decimal(11)),
+        (1, "dc", Decimal(17)),
+    ]
+    assert corrected.raw_grids[0].cells[0].raw_text == "11 ac / 17 ac"
+    assert all(part.source == SYNTHETIC_SOURCE for part in parts)
+    assert len(corrected.review_resolutions) == len(review_items)
+    assert proposal_for(corrected, draft.tables[0].id).state == "proposed"
+
+
+def test_missing_association_can_be_supplied_by_source_occurrence() -> None:
+    parsed = parse_compound_data_cell(
+        text="11 / 17 dc",
+        spec=CompoundQuantitySpec(component_ids=("ac", "dc")),
+        source=SYNTHETIC_SOURCE,
+    )
+    assert [(part.source_index, part.component_id) for part in parsed.components] == [
+        (0, None),
+        (1, "dc"),
+    ]
+    cell = RawGridCell(
+        row=0,
+        column=0,
+        raw_text="11 / 17 dc",
+        role="data",
+        logical_row=0,
+        logical_column="compound",
+        components=parsed.components,
+        compound_component_ids=parsed.compound_component_ids,
+        parse_status=parsed.parse_status,
+        source=SYNTHETIC_SOURCE,
+    )
+    review_items = compound_review_items(_grid_for_cell(cell))
+    draft = _draft_with_compound_cell(cell, review_items)
+
+    corrected = correct_component_association(
+        draft,
+        grid_id=draft.raw_grids[0].id,
+        row=0,
+        column=0,
+        source_index=0,
+        component_id="ac",
+        actor="Synthetic Reviewer",
+        notes="Associated the unlabeled source occurrence.",
+    )
+
+    assert [part.component_id for part in corrected.raw_grids[0].cells[0].components] == [
+        "ac",
+        "dc",
+    ]
+    assert len(corrected.review_resolutions) == len(review_items)
+
+
+def _grid_for_cell(cell: RawGridCell) -> RawGrid:
+    return RawGrid(
+        id=f"raw-{synthetic_rule_package().tables[0].id}",
+        rows=1,
+        columns=1,
+        target_unit="mm",
+        segments=(
+            RawGridSegment(
+                page_number=3,
+                row_start=0,
+                row_count=1,
+                source=SYNTHETIC_SOURCE,
+            ),
+        ),
+        cells=(cell,),
+        source=SYNTHETIC_SOURCE,
+    )
 
 
 def _draft_with_compound_cell(
@@ -225,6 +338,11 @@ def _compound_cell(
         components=parsed.components,
         compound_component_ids=parsed.compound_component_ids,
         formula_candidates=formula_candidates,
+        allowed_component_formula_ids=tuple(
+            (candidate.component_id, candidate.formula_id)
+            for candidate in formula_candidates
+            if candidate.formula_id is not None
+        ),
         parse_status="compound",
         source=SYNTHETIC_SOURCE,
     )
@@ -315,3 +433,125 @@ def test_ambiguous_formula_requires_an_exact_reviewed_candidate() -> None:
         notes="Reviewed the corrected association.",
     )
     assert proposal_for(reviewed, after.semantic_id).state == "reviewed"
+
+
+def _cell_with_formula_contract(
+    *,
+    candidates: tuple[tuple[str, str | None], ...],
+    allowed: tuple[tuple[str, str], ...],
+) -> RawGridCell:
+    parsed = parse_compound_data_cell(
+        text="11 ac / 17 dc",
+        spec=CompoundQuantitySpec(
+            component_ids=("ac", "dc"),
+            formula_candidates=candidates,
+            allowed_formula_ids=allowed,
+        ),
+        source=SYNTHETIC_SOURCE,
+    )
+    return RawGridCell(
+        row=0,
+        column=0,
+        raw_text="11 ac / 17 dc",
+        role="data",
+        logical_row=0,
+        logical_column="compound",
+        components=parsed.components,
+        compound_component_ids=parsed.compound_component_ids,
+        formula_candidates=parsed.formula_candidates,
+        allowed_component_formula_ids=parsed.allowed_component_formula_ids,
+        parse_status=parsed.parse_status,
+        source=SYNTHETIC_SOURCE,
+    )
+
+
+def test_formula_selection_is_restricted_to_the_exact_component_route() -> None:
+    cell = _cell_with_formula_contract(
+        candidates=(("ac", None),),
+        allowed=(("ac", "synthetic-tov-ac-formula"),),
+    )
+    draft = _draft_with_compound_cell(
+        cell,
+        compound_review_items(_grid_for_cell(cell)),
+    )
+
+    with pytest.raises(ValueError, match="component route"):
+        select_component_formula(
+            draft,
+            grid_id=draft.raw_grids[0].id,
+            row=0,
+            column=0,
+            source_index=0,
+            component_id="ac",
+            formula_id="synthetic-impulse-formula",
+            actor="Synthetic Reviewer",
+            notes="Must reject a formula from another route.",
+        )
+
+    corrected = select_component_formula(
+        draft,
+        grid_id=draft.raw_grids[0].id,
+        row=0,
+        column=0,
+        source_index=0,
+        component_id="ac",
+        formula_id="synthetic-tov-ac-formula",
+        actor="Synthetic Reviewer",
+        notes="Selected the route-local candidate.",
+    )
+
+    selected = corrected.raw_grids[0].cells[0].formula_candidates
+    assert [(item.source_index, item.component_id, item.formula_id) for item in selected] == [
+        (0, "ac", "synthetic-tov-ac-formula")
+    ]
+    assert proposal_for(corrected, draft.tables[0].id).state == "proposed"
+
+
+def test_two_formula_blockers_are_unique_and_independently_resolvable() -> None:
+    cell = _cell_with_formula_contract(
+        candidates=(("ac", None), ("dc", None)),
+        allowed=(
+            ("ac", "synthetic-tov-ac-formula"),
+            ("dc", "synthetic-tov-dc-formula"),
+        ),
+    )
+    review_items = compound_review_items(_grid_for_cell(cell))
+    assert [item.code for item in review_items] == [
+        "AMBIGUOUS_COMPONENT_FORMULA",
+        "AMBIGUOUS_COMPONENT_FORMULA",
+    ]
+    assert len({item.semantic_id for item in review_items}) == 2
+    draft = _draft_with_compound_cell(cell, review_items)
+
+    ac_selected = select_component_formula(
+        draft,
+        grid_id=draft.raw_grids[0].id,
+        row=0,
+        column=0,
+        source_index=0,
+        component_id="ac",
+        formula_id="synthetic-tov-ac-formula",
+        actor="Synthetic Reviewer",
+        notes="Selected AC formula.",
+    )
+    assert len(unresolved_raw_review_items(ac_selected)) == 1
+
+    dc_selected = select_component_formula(
+        ac_selected,
+        grid_id=draft.raw_grids[0].id,
+        row=0,
+        column=0,
+        source_index=1,
+        component_id="dc",
+        formula_id="synthetic-tov-dc-formula",
+        actor="Synthetic Reviewer",
+        notes="Selected DC formula.",
+    )
+    assert unresolved_raw_review_items(dc_selected) == ()
+    reviewed = mark_proposal_reviewed(
+        dc_selected,
+        draft.tables[0].id,
+        actor="Synthetic Reviewer",
+        notes="Reviewed both exact formula associations.",
+    )
+    assert proposal_for(reviewed, draft.tables[0].id).state == "reviewed"

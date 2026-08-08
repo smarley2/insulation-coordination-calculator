@@ -245,16 +245,25 @@ def test_dialog_shows_one_editable_row_per_compound_component(qtbot, draft) -> N
     grid = draft.raw_grids[0]
     original = next(cell for cell in grid.cells if (cell.row, cell.column) == (2, 1))
     parsed = parse_compound_data_cell(
-        text="11 ac / 17 dc",
-        spec=CompoundQuantitySpec(component_ids=("ac", "dc")),
+        text="11 ac / 17 ac",
+        spec=CompoundQuantitySpec(
+            component_ids=("ac", "dc"),
+            formula_candidates=(("ac", None),),
+            allowed_formula_ids=(
+                ("ac", "synthetic-ac-formula"),
+                ("dc", "synthetic-dc-formula"),
+            ),
+        ),
         source=original.source,
     )
     compound = original.model_copy(
         update={
-            "raw_text": "11 ac / 17 dc",
+            "raw_text": "11 ac / 17 ac",
             "value": None,
             "components": parsed.components,
             "compound_component_ids": parsed.compound_component_ids,
+            "formula_candidates": parsed.formula_candidates,
+            "allowed_component_formula_ids": parsed.allowed_component_formula_ids,
             "parse_status": parsed.parse_status,
         }
     )
@@ -279,9 +288,24 @@ def test_dialog_shows_one_editable_row_per_compound_component(qtbot, draft) -> N
 
     assert dialog._components_table.rowCount() == 2
     assert dialog._components_table.item(0, 0).text() == "ac"
-    assert dialog._components_table.item(1, 0).text() == "dc"
+    assert dialog._components_table.item(1, 0).text() == "ac"
     assert dialog._components_table.item(0, 2).text() == "11"
     assert dialog._components_table.item(1, 2).text() == "17"
+
+    dialog._components_table.setCurrentCell(1, 0)
+    dialog._association_selector.setCurrentIndex(
+        dialog._association_selector.findData("dc")
+    )
+    qtbot.mouseClick(dialog._apply_association_button, Qt.MouseButton.LeftButton)
+    dialog._formula_selector.setCurrentIndex(
+        dialog._formula_selector.findData("synthetic-dc-formula")
+    )
+    qtbot.mouseClick(dialog._apply_formula_button, Qt.MouseButton.LeftButton)
+
+    assert dialog.pending_association_corrections == {(2, 1, 1): "dc"}
+    assert dialog.pending_formula_corrections == {
+        (2, 1, 1): "synthetic-dc-formula"
+    }
 
 
 @pytest.mark.parametrize("value", ("", "not-a-number", "NaN"))

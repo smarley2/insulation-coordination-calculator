@@ -90,6 +90,7 @@ class TableSegmentSpec(FrozenModel):
 class CompoundQuantitySpec(FrozenModel):
     component_ids: tuple[Identifier, ...] = Field(min_length=1)
     formula_candidates: tuple[tuple[Identifier, Identifier | None], ...] = ()
+    allowed_formula_ids: tuple[tuple[Identifier, Identifier], ...] = ()
 
     @model_validator(mode="after")
     def _valid_component_contract(self) -> CompoundQuantitySpec:
@@ -97,11 +98,33 @@ class CompoundQuantitySpec(FrozenModel):
             raise ValueError("compound component IDs must be unique")
         unknown = {
             component_id
-            for component_id, _formula_id in self.formula_candidates
+            for component_id, _formula_id in (
+                *self.formula_candidates,
+                *self.allowed_formula_ids,
+            )
             if component_id not in self.component_ids
         }
         if unknown:
             raise ValueError("formula candidate refers to an undeclared compound component")
+        allowed = set(self.allowed_formula_ids) or {
+            (component_id, formula_id)
+            for component_id, formula_id in self.formula_candidates
+            if formula_id is not None
+        }
+        if any(
+            formula_id is not None and (component_id, formula_id) not in allowed
+            for component_id, formula_id in self.formula_candidates
+        ):
+            raise ValueError("formula candidate is outside its component route")
+        if any(
+            formula_id is None
+            and not any(
+                allowed_component_id == component_id
+                for allowed_component_id, _allowed_formula_id in allowed
+            )
+            for component_id, formula_id in self.formula_candidates
+        ):
+            raise ValueError("zero formula candidates need a component-local allowed formula")
         return self
 
 

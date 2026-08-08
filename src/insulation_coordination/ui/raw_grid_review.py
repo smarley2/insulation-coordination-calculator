@@ -96,9 +96,14 @@ class RawGridReviewDialog(QDialog):
         self._draft = draft
         self._actor = actor
         self._corrections: dict[
-            str, dict[tuple[int, int] | tuple[int, int, str], Decimal]
+            str, dict[tuple[int, int] | tuple[int, int, int], Decimal]
         ] = {}
+        self._association_corrections: dict[
+            str, dict[tuple[int, int, int], str]
+        ] = {}
+        self._formula_corrections: dict[str, dict[tuple[int, int, int], str]] = {}
         self._selected_component_id: str | None = None
+        self._selected_source_index: int | None = None
         # Passwords stay in memory for page rendering only; they are never stored.
         self._pdf_paths = dict(pdf_paths or {})
         self._pdf_passwords = dict(pdf_passwords or {})
@@ -159,6 +164,28 @@ class RawGridReviewDialog(QDialog):
         self._components_table.setVisible(False)
         layout.addWidget(self._components_table)
 
+        association_row = QHBoxLayout()
+        association_row.addWidget(QLabel("Reviewed component association:"))
+        self._association_selector = QComboBox()
+        self._association_selector.setEnabled(False)
+        association_row.addWidget(self._association_selector, 1)
+        self._apply_association_button = QPushButton("Apply association")
+        self._apply_association_button.setEnabled(False)
+        self._apply_association_button.clicked.connect(self._apply_association)
+        association_row.addWidget(self._apply_association_button)
+        layout.addLayout(association_row)
+
+        formula_row = QHBoxLayout()
+        formula_row.addWidget(QLabel("Reviewed formula candidate:"))
+        self._formula_selector = QComboBox()
+        self._formula_selector.setEnabled(False)
+        formula_row.addWidget(self._formula_selector, 1)
+        self._apply_formula_button = QPushButton("Apply formula")
+        self._apply_formula_button.setEnabled(False)
+        self._apply_formula_button.clicked.connect(self._apply_formula)
+        formula_row.addWidget(self._apply_formula_button)
+        layout.addLayout(formula_row)
+
         editor_row = QHBoxLayout()
         editor_row.addWidget(QLabel("Reviewed decimal value:"))
         self._value_edit = QLineEdit()
@@ -205,8 +232,16 @@ class RawGridReviewDialog(QDialog):
     @property
     def pending_corrections(
         self,
-    ) -> dict[tuple[int, int] | tuple[int, int, str], Decimal]:
+    ) -> dict[tuple[int, int] | tuple[int, int, int], Decimal]:
         return dict(self._corrections.get(self._current_grid_id(), {}))
+
+    @property
+    def pending_association_corrections(self) -> dict[tuple[int, int, int], str]:
+        return dict(self._association_corrections.get(self._current_grid_id(), {}))
+
+    @property
+    def pending_formula_corrections(self) -> dict[tuple[int, int, int], str]:
+        return dict(self._formula_corrections.get(self._current_grid_id(), {}))
 
     def _current_grid_id(self) -> str:
         return str(self._grid_selector.currentData() or "")
@@ -403,28 +438,35 @@ class RawGridReviewDialog(QDialog):
             self._components_table.setRowCount(0)
             self._components_table.setVisible(False)
             self._selected_component_id = None
+            self._selected_source_index = None
             return
         self._details.setText(self._cell_details(cell, pending))
         self._components_table.setRowCount(len(cell.components))
         self._components_table.setVisible(bool(cell.components))
         formulas = {
-            component_id: tuple(
+            source_index: tuple(
                 candidate.formula_id or "unresolved"
                 for candidate in cell.formula_candidates
-                if candidate.component_id == component_id
+                if candidate.source_index == source_index
             )
-            for component_id in {part.component_id for part in cell.components}
+            for source_index in {part.source_index for part in cell.components}
         }
         for index, component in enumerate(cell.components):
             component_value = self._corrections.get(grid.id, {}).get(
-                (row, column, component.component_id), component.value
+                (row, column, component.source_index), component.value
+            )
+            effective_component_id = self._association_corrections.get(grid.id, {}).get(
+                (row, column, component.source_index), component.component_id
             )
             for item_column, text in enumerate(
                 (
-                    component.component_id,
+                    effective_component_id or "unresolved",
                     component.raw_text,
                     "" if component_value is None else str(component_value),
-                    ", ".join(formulas.get(component.component_id, ())) or "none",
+                    self._formula_corrections.get(grid.id, {}).get(
+                        (row, column, component.source_index),
+                        ", ".join(formulas.get(component.source_index, ())) or "none",
+                    ),
                 )
             ):
                 self._components_table.setItem(index, item_column, QTableWidgetItem(text))
@@ -432,6 +474,7 @@ class RawGridReviewDialog(QDialog):
             self._components_table.setCurrentCell(0, 0)
         else:
             self._selected_component_id = None
+            self._selected_source_index = None
             value = self._corrections.get(grid.id, {}).get((row, column), cell.value)
             self._value_edit.setText("" if not editable or value is None else str(value))
 
@@ -446,6 +489,7 @@ class RawGridReviewDialog(QDialog):
         cell_row, cell_column = self._table.currentRow(), self._table.currentColumn()
         if grid is None or row < 0:
             self._selected_component_id = None
+            self._selected_source_index = None
             return
         cell = next(
             (
@@ -457,15 +501,92 @@ class RawGridReviewDialog(QDialog):
         )
         if cell is None or row >= len(cell.components):
             self._selected_component_id = None
+            self._selected_source_index = None
             return
         component = cell.components[row]
-        self._selected_component_id = component.component_id
+        key = (cell_row, cell_column, component.source_index)
+        self._selected_component_id = self._association_corrections.get(grid.id, {}).get(
+            key, component.component_id
+        )
+        self._selected_source_index = component.source_index
         value = self._corrections.get(grid.id, {}).get(
-            (cell_row, cell_column, component.component_id), component.value
+            key, component.value
         )
         self._value_edit.setEnabled(True)
         self._apply_button.setEnabled(True)
         self._value_edit.setText("" if value is None else str(value))
+        self._association_selector.clear()
+        for component_id in cell.compound_component_ids:
+            self._association_selector.addItem(component_id, component_id)
+        selected_association = self._association_selector.findData(
+            self._selected_component_id
+        )
+        self._association_selector.setCurrentIndex(max(0, selected_association))
+        self._association_selector.setEnabled(True)
+        self._apply_association_button.setEnabled(True)
+        self._load_formula_candidates(cell, key)
+
+    def _load_formula_candidates(
+        self,
+        cell: RawGridCell,
+        key: tuple[int, int, int],
+    ) -> None:
+        component_id = self._association_corrections.get(
+            self._current_grid_id(), {}
+        ).get(key, self._selected_component_id)
+        allowed = tuple(
+            formula_id
+            for route_component_id, formula_id in cell.allowed_component_formula_ids
+            if route_component_id == component_id
+        )
+        self._formula_selector.clear()
+        for formula_id in allowed:
+            self._formula_selector.addItem(formula_id, formula_id)
+        selected_formula = self._formula_corrections.get(
+            self._current_grid_id(), {}
+        ).get(key)
+        if selected_formula is not None:
+            self._formula_selector.setCurrentIndex(
+                self._formula_selector.findData(selected_formula)
+            )
+        self._formula_selector.setEnabled(bool(allowed))
+        self._apply_formula_button.setEnabled(bool(allowed))
+
+    def _apply_association(self) -> None:
+        grid = self._current_grid()
+        if grid is None or self._selected_source_index is None:
+            return
+        row, column = self._table.currentRow(), self._table.currentColumn()
+        component_id = str(self._association_selector.currentData() or "")
+        if not component_id:
+            return
+        key = (row, column, self._selected_source_index)
+        self._association_corrections.setdefault(grid.id, {})[key] = component_id
+        self._selected_component_id = component_id
+        item = self._components_table.item(self._components_table.currentRow(), 0)
+        if item is not None:
+            item.setText(component_id)
+        cell = next(
+            cell for cell in grid.cells if (cell.row, cell.column) == (row, column)
+        )
+        self._load_formula_candidates(cell, key)
+
+    def _apply_formula(self) -> None:
+        grid = self._current_grid()
+        if grid is None or self._selected_source_index is None:
+            return
+        formula_id = str(self._formula_selector.currentData() or "")
+        if not formula_id:
+            return
+        key = (
+            self._table.currentRow(),
+            self._table.currentColumn(),
+            self._selected_source_index,
+        )
+        self._formula_corrections.setdefault(grid.id, {})[key] = formula_id
+        item = self._components_table.item(self._components_table.currentRow(), 3)
+        if item is not None:
+            item.setText(formula_id)
 
     def _apply_value(self) -> None:
         grid = self._current_grid()
@@ -480,9 +601,9 @@ class RawGridReviewDialog(QDialog):
         if not value.is_finite():
             QMessageBox.warning(self, "Review Extracted Cell", "Value must be finite.")
             return
-        correction_coordinate: tuple[int, int] | tuple[int, int, str] = coordinate
-        if self._selected_component_id is not None:
-            correction_coordinate = (*coordinate, self._selected_component_id)
+        correction_coordinate: tuple[int, int] | tuple[int, int, int] = coordinate
+        if self._selected_source_index is not None:
+            correction_coordinate = (*coordinate, self._selected_source_index)
         self._corrections.setdefault(grid.id, {})[correction_coordinate] = value
         cell = next(cell for cell in grid.cells if (cell.row, cell.column) == coordinate)
         item = self._table.item(*coordinate)
@@ -520,11 +641,15 @@ class RawGridReviewDialog(QDialog):
                 corrections=self._corrections.get(grid_id, {}),
                 actor=self._actor,
                 notes=notes,
+                component_associations=self._association_corrections.get(grid_id, {}),
+                formula_selections=self._formula_corrections.get(grid_id, {}),
             )
         except ValueError as error:
             QMessageBox.warning(self, "Review Extracted Table", str(error))
             return
         self._corrections.pop(grid_id, None)
+        self._association_corrections.pop(grid_id, None)
+        self._formula_corrections.pop(grid_id, None)
         self._notes_edit.clear()
         self.draft_changed.emit(self._draft)
         if not self.pending_table_count:

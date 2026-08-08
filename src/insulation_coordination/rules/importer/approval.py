@@ -64,6 +64,55 @@ def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft
         )
     if item.kind == "mapping":
         return any(spec.id == item.semantic_id for recipe in _recipes() for spec in recipe.mappings)
+    if item.code in {"AMBIGUOUS_COMPOUND_CELL", "AMBIGUOUS_COMPONENT_FORMULA"}:
+        grid_id, row_text, column_text, source_index_text = item.semantic_id.rsplit(":", 3)
+        cell = next(
+            (
+                cell
+                for grid in changed.raw_grids
+                if grid.id == grid_id
+                for cell in grid.cells
+                if (cell.row, cell.column) == (int(row_text), int(column_text))
+                and _source_matches(cell.source, item.source)
+            ),
+            None,
+        )
+        if cell is None:
+            return False
+        source_index = int(source_index_text)
+        component = next(
+            (
+                component
+                for component in cell.components
+                if component.source_index == source_index
+            ),
+            None,
+        )
+        if component is None or component.component_id is None:
+            return False
+        if item.code == "AMBIGUOUS_COMPOUND_CELL":
+            return (
+                cell.parse_status == "compound"
+                and len(cell.components) == len(cell.compound_component_ids)
+                and {part.component_id for part in cell.components}
+                == set(cell.compound_component_ids)
+                and all(part.value is not None for part in cell.components)
+            )
+        candidates = tuple(
+            candidate
+            for candidate in cell.formula_candidates
+            if candidate.source_index == source_index
+        )
+        allowed = {
+            formula_id
+            for component_id, formula_id in cell.allowed_component_formula_ids
+            if component_id == component.component_id
+        }
+        return (
+            len(candidates) == 1
+            and candidates[0].component_id == component.component_id
+            and candidates[0].formula_id in allowed
+        )
     cells = tuple(
         cell
         for grid in changed.raw_grids
@@ -71,37 +120,6 @@ def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft
         if f"{grid.id}:{cell.row}:{cell.column}" == item.semantic_id
         and _source_matches(cell.source, item.source)
     )
-    if item.code == "AMBIGUOUS_COMPOUND_CELL":
-        return any(
-            cell.parse_status == "compound"
-            and len(cell.components) == len(cell.compound_component_ids)
-            and {component.component_id for component in cell.components}
-            == set(cell.compound_component_ids)
-            and all(component.value is not None for component in cell.components)
-            for cell in cells
-        )
-    if item.code == "AMBIGUOUS_COMPONENT_FORMULA":
-        component_id = item.expected_contract.rsplit(":", 1)[-1]
-        return any(
-            len(
-                tuple(
-                    candidate
-                    for candidate in cell.formula_candidates
-                    if candidate.component_id == component_id
-                    and candidate.formula_id is not None
-                )
-            )
-            == 1
-            and len(
-                tuple(
-                    candidate
-                    for candidate in cell.formula_candidates
-                    if candidate.component_id == component_id
-                )
-            )
-            == 1
-            for cell in cells
-        )
     return any(
         cell.value is not None and cell.parse_status == "numeric" for cell in cells
     )
@@ -155,9 +173,6 @@ def _require_safe_raw_grid_correction(
     original: ImportedRuleDraft,
     changed: ImportedRuleDraft,
 ) -> None:
-    known_formula_ids = {
-        spec.semantic_id for recipe in _recipes() for spec in recipe.formulas
-    }
     before_grids = {grid.id: grid for grid in original.raw_grids}
     after_grids = {grid.id: grid for grid in changed.raw_grids}
     if set(before_grids) != set(after_grids):
@@ -195,57 +210,62 @@ def _require_safe_raw_grid_correction(
             after_cell = after_cells[key]
             if before_cell.compound_component_ids != after_cell.compound_component_ids:
                 raise ApprovalError("a correction cannot rewrite declared compound components")
-            before_components = {part.component_id: part for part in before_cell.components}
-            after_components = {part.component_id: part for part in after_cell.components}
-            if len(after_components) != len(after_cell.components) or any(
-                part.raw_text != before_components[component_id].raw_text
-                or part.unit != before_components[component_id].unit
-                or part.source != before_components[component_id].source
-                for component_id, part in after_components.items()
-                if component_id in before_components
+            if (
+                before_cell.allowed_component_formula_ids
+                != after_cell.allowed_component_formula_ids
+            ):
+                raise ApprovalError("a correction cannot rewrite component formula routes")
+            before_components = {
+                part.source_index: part for part in before_cell.components
+            }
+            after_components = {
+                part.source_index: part for part in after_cell.components
+            }
+            if (
+                len(before_components) != len(before_cell.components)
+                or len(after_components) != len(after_cell.components)
+                or set(before_components) != set(after_components)
+                or any(
+                    after_components[source_index].raw_text != part.raw_text
+                    or after_components[source_index].unit != part.unit
+                    or after_components[source_index].source != part.source
+                    for source_index, part in before_components.items()
+                )
             ):
                 raise ApprovalError("a correction cannot rewrite compound component provenance")
             if any(
-                part.source != after_cell.source
-                for component_id, part in after_components.items()
-                if component_id not in before_components
+                candidate.source_index not in after_components
+                or candidate.source != after_components[candidate.source_index].source
+                for candidate in after_cell.formula_candidates
             ):
-                raise ApprovalError("a correction cannot invent compound component provenance")
-            if any(candidate.source != after_cell.source for candidate in after_cell.formula_candidates):
                 raise ApprovalError("a correction cannot rewrite formula candidate provenance")
-            for component_id in {
-                candidate.component_id
-                for candidate in (
-                    *before_cell.formula_candidates,
-                    *after_cell.formula_candidates,
-                )
-            }:
+            for source_index, component in after_components.items():
                 before_candidates = tuple(
                     candidate
                     for candidate in before_cell.formula_candidates
-                    if candidate.component_id == component_id
+                    if candidate.source_index == source_index
                 )
                 after_candidates = tuple(
                     candidate
                     for candidate in after_cell.formula_candidates
-                    if candidate.component_id == component_id
+                    if candidate.source_index == source_index
                 )
                 if before_candidates == after_candidates:
                     continue
-                concrete_ids = {
-                    candidate.formula_id
-                    for candidate in before_candidates
-                    if candidate.formula_id is not None
+                allowed = {
+                    formula_id
+                    for component_id, formula_id in (
+                        after_cell.allowed_component_formula_ids
+                    )
+                    if component_id == component.component_id
                 }
                 exact = (
                     len(after_candidates) == 1
-                    and after_candidates[0].formula_id is not None
+                    and component.component_id is not None
+                    and after_candidates[0].component_id == component.component_id
                     and (
-                        after_candidates[0].formula_id in concrete_ids
-                        or (
-                            not concrete_ids
-                            and after_candidates[0].formula_id in known_formula_ids
-                        )
+                        after_candidates[0].formula_id is None
+                        or after_candidates[0].formula_id in allowed
                     )
                 )
                 if not exact:

@@ -45,7 +45,6 @@ from insulation_coordination.rules.importer.extract import (
     ImportReviewItem,
     RawGrid,
     RawGridCell,
-    RawQuantityComponent,
     SemanticProposal,
     canonical_model_sha256,
     is_recipe_derived,
@@ -450,7 +449,11 @@ def flagged_coordinates(items: Iterable[ImportReviewItem]) -> set[tuple[int, int
     """Grid coordinates carried by raw-cell review items."""
     coordinates: set[tuple[int, int]] = set()
     for item in items:
-        row, column = item.semantic_id.rsplit(":", 2)[-2:]
+        parts = item.semantic_id.rsplit(
+            ":",
+            3 if item.code in {"AMBIGUOUS_COMPOUND_CELL", "AMBIGUOUS_COMPONENT_FORMULA"} else 2,
+        )
+        row, column = parts[-3:-1] if len(parts) == 4 else parts[-2:]
         coordinates.add((int(row), int(column)))
     return coordinates
 
@@ -481,7 +484,7 @@ def correctable_coordinates(
 
 def _corrected_cells(
     grid: RawGrid,
-    corrections: Mapping[tuple[int, int] | tuple[int, int, str], Decimal],
+    corrections: Mapping[tuple[int, int] | tuple[int, int, int], Decimal],
     flagged: set[tuple[int, int]],
 ) -> tuple[RawGridCell, ...]:
     """Apply retyped values and clear the parser's flag on every flagged cell."""
@@ -492,7 +495,7 @@ def _corrected_cells(
     component_corrections = {
         coordinate: value for coordinate, value in corrections.items() if len(coordinate) == 3
     }
-    unexpected: set[tuple[int, int] | tuple[int, int, str]] = set()
+    unexpected: set[tuple[int, int] | tuple[int, int, int]] = set()
     unexpected.update(set(scalar_corrections) - correctable)
     unexpected.update(
         coordinate
@@ -513,18 +516,21 @@ def _corrected_cells(
             cells.append(cell)
             continue
         if selected_components:
-            known = {component.component_id for component in cell.components}
+            known = {component.source_index for component in cell.components}
             if set(selected_components) - known:
                 raise ValueError(f"raw grid component is not correctable: {coordinate}")
             if any(not value.is_finite() for value in selected_components.values()):
                 raise ValueError(f"raw grid correction must be a finite decimal: {coordinate}")
             components = tuple(
-                component.model_copy(update={"value": selected_components[component.component_id]})
-                if component.component_id in selected_components
+                component.model_copy(update={"value": selected_components[component.source_index]})
+                if component.source_index in selected_components
                 else component
                 for component in cell.components
             )
             cells.append(cell.model_copy(update={"components": components}))
+            continue
+        if cell.components:
+            cells.append(cell)
             continue
         value = scalar_corrections.get(coordinate, cell.value)
         if value is None or not value.is_finite():
@@ -590,6 +596,7 @@ def correct_raw_component(
     column: int,
     component_id: str,
     value: Decimal,
+    source_index: int | None = None,
     actor: str,
     notes: str,
 ) -> ImportedRuleDraft:
@@ -599,53 +606,171 @@ def correct_raw_component(
     cell = _raw_cell(draft, grid_id, row, column)
     if component_id not in cell.compound_component_ids:
         raise ValueError("component is not declared for this compound cell")
-    existing = tuple(part for part in cell.components if part.component_id == component_id)
-    if len(existing) > 1:
-        raise ValueError("compound component association is duplicated")
-    replacement = (
-        existing[0].model_copy(update={"value": value})
-        if existing
-        else RawQuantityComponent(
-            component_id=component_id,
-            raw_text=cell.raw_text,
-            value=value,
-            source=cell.source,
-        )
+    existing = tuple(
+        part
+        for part in cell.components
+        if part.component_id == component_id
+        and (source_index is None or part.source_index == source_index)
     )
+    if len(existing) != 1:
+        raise ValueError("component value correction needs one exact source occurrence")
+    replacement = existing[0].model_copy(update={"value": value})
     components = tuple(
-        replacement if part.component_id == component_id else part
+        replacement if part.source_index == replacement.source_index else part
         for part in cell.components
     )
-    if not existing:
-        components = (*components, replacement)
-    complete = (
-        len(components) == len(cell.compound_component_ids)
-        and {part.component_id for part in components} == set(cell.compound_component_ids)
-        and all(part.value is not None for part in components)
+    changed_cell = cell.model_copy(update={"components": components})
+    changed = _replace_raw_cell(draft, grid_id, changed_cell)
+    return record_correction(
+        draft,
+        changed,
+        actor=actor.strip(),
+        notes=notes.strip(),
     )
-    changed_cell = cell.model_copy(
+
+
+def _compound_complete(cell: RawGridCell) -> bool:
+    return (
+        len(cell.components) == len(cell.compound_component_ids)
+        and {part.component_id for part in cell.components}
+        == set(cell.compound_component_ids)
+        and all(part.value is not None for part in cell.components)
+    )
+
+
+def _associated_cell(
+    cell: RawGridCell,
+    *,
+    source_index: int,
+    component_id: str,
+) -> RawGridCell:
+    if component_id not in cell.compound_component_ids:
+        raise ValueError("component is not declared for this compound cell")
+    matches = tuple(
+        component
+        for component in cell.components
+        if component.source_index == source_index
+    )
+    if len(matches) != 1:
+        raise ValueError("association correction needs one exact source occurrence")
+    replacement = matches[0].model_copy(update={"component_id": component_id})
+    components = tuple(
+        replacement if part.source_index == source_index else part
+        for part in cell.components
+    )
+    allowed = {
+        formula_id
+        for route_component_id, formula_id in cell.allowed_component_formula_ids
+        if route_component_id == component_id
+    }
+    candidates = tuple(
+        candidate
+        for candidate in cell.formula_candidates
+        if candidate.source_index != source_index
+    )
+    if allowed:
+        candidates = (
+            *candidates,
+            ComponentFormulaCandidate(
+                source_index=source_index,
+                component_id=component_id,
+                formula_id=None,
+                source=replacement.source,
+            ),
+        )
+    changed = cell.model_copy(
+        update={"components": components, "formula_candidates": candidates}
+    )
+    return changed.model_copy(
         update={
-            "components": components,
-            "parse_status": "compound" if complete else "ambiguous_compound",
+            "parse_status": "compound" if _compound_complete(changed) else "ambiguous_compound"
         }
     )
+
+
+def correct_component_association(
+    draft: ImportedRuleDraft,
+    *,
+    grid_id: str,
+    row: int,
+    column: int,
+    source_index: int,
+    component_id: str,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Associate one preserved source occurrence without rewriting its source text."""
+    cell = _raw_cell(draft, grid_id, row, column)
+    changed_cell = _associated_cell(
+        cell,
+        source_index=source_index,
+        component_id=component_id,
+    )
     changed = _replace_raw_cell(draft, grid_id, changed_cell)
-    coordinate = f"{grid_id}:{row}:{column}"
+    resolved = {resolution.review_item_sha256 for resolution in draft.review_resolutions}
+    prefix = f"{grid_id}:{row}:{column}:"
     resolve = tuple(
         item
         for item in draft.review_items
         if item.code == "AMBIGUOUS_COMPOUND_CELL"
-        and item.semantic_id == coordinate
-        and complete
-        and item.sha256
-        not in {resolution.review_item_sha256 for resolution in draft.review_resolutions}
+        and item.semantic_id.startswith(prefix)
+        and item.sha256 not in resolved
+        and _compound_complete(changed_cell)
     )
+    if not resolve:
+        raise ValueError("component association has no resolved ambiguity")
     return record_correction(
         draft,
         changed,
         actor=actor.strip(),
         notes=notes.strip(),
         resolve=resolve,
+    )
+
+
+def _formula_selected_cell(
+    cell: RawGridCell,
+    *,
+    component_id: str,
+    formula_id: str,
+    source_index: int | None = None,
+) -> tuple[RawGridCell, int]:
+    components = tuple(
+        component
+        for component in cell.components
+        if component.component_id == component_id
+        and (source_index is None or component.source_index == source_index)
+    )
+    if len(components) != 1:
+        raise ValueError("formula correction needs one exact source occurrence")
+    source_index = components[0].source_index
+    allowed = {
+        allowed_formula_id
+        for route_component_id, allowed_formula_id in cell.allowed_component_formula_ids
+        if route_component_id == component_id
+    }
+    if formula_id not in allowed:
+        raise ValueError("formula is not declared for this exact component route")
+    selected = ComponentFormulaCandidate(
+        source_index=source_index,
+        component_id=component_id,
+        formula_id=formula_id,
+        source=components[0].source,
+    )
+    return (
+        cell.model_copy(
+            update={
+                "formula_candidates": (
+                    *tuple(
+                        candidate
+                        for candidate in cell.formula_candidates
+                        if candidate.source_index != source_index
+                    ),
+                    selected,
+                )
+            }
+        ),
+        source_index,
     )
 
 
@@ -657,58 +782,26 @@ def select_component_formula(
     column: int,
     component_id: str,
     formula_id: str,
+    source_index: int | None = None,
     actor: str,
     notes: str,
 ) -> ImportedRuleDraft:
-    """Choose exactly one candidate formula for one compound component."""
+    """Choose exactly one route-local formula for one source occurrence."""
     cell = _raw_cell(draft, grid_id, row, column)
-    candidates = tuple(
-        candidate
-        for candidate in cell.formula_candidates
-        if candidate.component_id == component_id
-    )
-    concrete = tuple(
-        candidate for candidate in candidates if candidate.formula_id is not None
-    )
-    if concrete and formula_id not in {candidate.formula_id for candidate in concrete}:
-        raise ValueError("formula is not an extracted candidate for this component")
-    if not concrete:
-        from insulation_coordination.rules.importer.recipes import RECIPES
-
-        known_formula_ids = {
-            spec.semantic_id for recipe in RECIPES for spec in recipe.formulas
-        }
-        if formula_id not in known_formula_ids:
-            raise ValueError("formula is not an exact recipe candidate")
-    selected = next(
-        (candidate for candidate in concrete if candidate.formula_id == formula_id),
-        ComponentFormulaCandidate(
-            component_id=component_id,
-            formula_id=formula_id,
-            source=cell.source,
-        ),
-    )
-    changed_cell = cell.model_copy(
-        update={
-            "formula_candidates": (
-                *tuple(
-                    candidate
-                    for candidate in cell.formula_candidates
-                    if candidate.component_id != component_id
-                ),
-                selected,
-            )
-        }
+    changed_cell, source_index = _formula_selected_cell(
+        cell,
+        component_id=component_id,
+        formula_id=formula_id,
+        source_index=source_index,
     )
     changed = _replace_raw_cell(draft, grid_id, changed_cell)
-    coordinate = f"{grid_id}:{row}:{column}"
+    coordinate = f"{grid_id}:{row}:{column}:{source_index}"
     resolved = {resolution.review_item_sha256 for resolution in draft.review_resolutions}
     resolve = tuple(
         item
         for item in draft.review_items
         if item.code == "AMBIGUOUS_COMPONENT_FORMULA"
         and item.semantic_id == coordinate
-        and item.expected_contract.endswith(f":{component_id}")
         and item.sha256 not in resolved
     )
     if not resolve:
@@ -722,13 +815,55 @@ def select_component_formula(
     )
 
 
+def _corrected_compound_cells(
+    cells: tuple[RawGridCell, ...],
+    associations: Mapping[tuple[int, int, int], str],
+    formulas: Mapping[tuple[int, int, int], str],
+) -> tuple[RawGridCell, ...]:
+    by_coordinate = {(cell.row, cell.column): cell for cell in cells}
+    for (row, column, source_index), component_id in sorted(associations.items()):
+        coordinate = (row, column)
+        cell = by_coordinate.get(coordinate)
+        if cell is None:
+            raise ValueError(f"unknown compound cell: {coordinate}")
+        by_coordinate[coordinate] = _associated_cell(
+            cell,
+            source_index=source_index,
+            component_id=component_id,
+        )
+    for (row, column, source_index), formula_id in sorted(formulas.items()):
+        coordinate = (row, column)
+        cell = by_coordinate.get(coordinate)
+        if cell is None:
+            raise ValueError(f"unknown compound cell: {coordinate}")
+        component = next(
+            (
+                part
+                for part in cell.components
+                if part.source_index == source_index
+            ),
+            None,
+        )
+        if component is None or component.component_id is None:
+            raise ValueError("formula correction needs a reviewed component association")
+        by_coordinate[coordinate], _ = _formula_selected_cell(
+            cell,
+            source_index=source_index,
+            component_id=component.component_id,
+            formula_id=formula_id,
+        )
+    return tuple(by_coordinate[(cell.row, cell.column)] for cell in cells)
+
+
 def accept_raw_table(
     draft: ImportedRuleDraft,
     *,
     grid_id: str,
-    corrections: Mapping[tuple[int, int] | tuple[int, int, str], Decimal],
+    corrections: Mapping[tuple[int, int] | tuple[int, int, int], Decimal],
     actor: str,
     notes: str,
+    component_associations: Mapping[tuple[int, int, int], str] | None = None,
+    formula_selections: Mapping[tuple[int, int, int], str] | None = None,
 ) -> ImportedRuleDraft:
     """Accept one logical table, including any explicitly reviewed data cells."""
     grid = next((item for item in draft.raw_grids if item.id == grid_id), None)
@@ -746,8 +881,15 @@ def accept_raw_table(
     if not table_items and not raw_items:
         raise ValueError(f"raw table {grid_id} is already accepted")
     coordinates = flagged_coordinates(raw_items)
+    corrected_cells = _corrected_cells(grid, corrections, coordinates)
     changed_grid = grid.model_copy(
-        update={"cells": _corrected_cells(grid, corrections, coordinates)}
+        update={
+            "cells": _corrected_compound_cells(
+                corrected_cells,
+                component_associations or {},
+                formula_selections or {},
+            )
+        }
     )
     changed = draft.model_copy(
         update={
@@ -802,9 +944,11 @@ def accept_raw_grid(
     draft: ImportedRuleDraft,
     *,
     grid_id: str,
-    corrections: Mapping[tuple[int, int] | tuple[int, int, str], Decimal],
+    corrections: Mapping[tuple[int, int] | tuple[int, int, int], Decimal],
     actor: str,
     notes: str,
+    component_associations: Mapping[tuple[int, int, int], str] | None = None,
+    formula_selections: Mapping[tuple[int, int, int], str] | None = None,
 ) -> ImportedRuleDraft:
     """Correct or explicitly accept all pending review cells in one raw grid."""
     grid = next((item for item in draft.raw_grids if item.id == grid_id), None)
@@ -817,8 +961,19 @@ def accept_raw_grid(
     )
     if not pending:
         raise ValueError(f"raw grid {grid_id} has no unresolved raw cells")
+    corrected_cells = _corrected_cells(
+        grid,
+        corrections,
+        flagged_coordinates(pending),
+    )
     changed_grid = grid.model_copy(
-        update={"cells": _corrected_cells(grid, corrections, flagged_coordinates(pending))}
+        update={
+            "cells": _corrected_compound_cells(
+                corrected_cells,
+                component_associations or {},
+                formula_selections or {},
+            )
+        }
     )
     changed = draft.model_copy(
         update={
