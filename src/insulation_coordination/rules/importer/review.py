@@ -377,6 +377,10 @@ def unresolved_mapping_items(draft: ImportedRuleDraft) -> tuple[ImportReviewItem
     return _unresolved_items(draft, "mapping")
 
 
+def unresolved_clause_items(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
+    return _unresolved_items(draft, "clause")
+
+
 def recipe_derived_items(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
     """Review items the importer resolved itself because no PDF content backs them."""
     return tuple(item for item in draft.review_items if is_recipe_derived(item))
@@ -1074,6 +1078,8 @@ def build_reviewed_draft(
         raise ValueError("Review extracted tables first")
     if unresolved_equation_items(draft) or unresolved_mapping_items(draft):
         raise ValueError("Review equations and mappings first")
+    if unresolved_clause_items(draft):
+        raise ValueError("Review extracted clauses first")
 
     identities = {i.recipe_id: i for i in draft.source_identities}
     grids = {g.id: g for g in draft.raw_grids}
@@ -1169,6 +1175,7 @@ def required_content_report(draft: ImportedRuleDraft) -> tuple[RequiredContentSt
     table_ids = {table.id: table for table in draft.tables}
     formula_ids = {formula.id: formula for formula in draft.formulas}
     mapping_ids = {mapping.id: mapping for mapping in draft.mappings}
+    fragment_ids = {fragment.id for fragment in draft.raw_clause_fragments}
 
     statuses: list[RequiredContentStatus] = []
     for recipe in RECIPES:
@@ -1238,6 +1245,18 @@ def required_content_report(draft: ImportedRuleDraft) -> tuple[RequiredContentSt
                     page_number=mapping_spec.page_number,
                     clause=mapping_spec.clause,
                     present=present,
+                )
+            )
+        for clause_spec in recipe.clauses:
+            statuses.append(
+                RequiredContentStatus(
+                    standard=recipe.standard,
+                    kind="clause",
+                    semantic_id=clause_spec.semantic_id,
+                    source_table=None,
+                    page_number=clause_spec.page_number,
+                    clause=clause_spec.clause,
+                    present=f"raw-{clause_spec.semantic_id}" in fragment_ids,
                 )
             )
     return tuple(statuses)

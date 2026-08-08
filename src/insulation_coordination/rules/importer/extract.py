@@ -1329,7 +1329,24 @@ def _manual_review_items(
         )
         for spec in recipe.mappings
     )
-    return (*table_items, *formula_items, *mapping_items)
+    clause_items = tuple(
+        ImportReviewItem(
+            code="MANUAL_CLAUSE_DEFINITION_REQUIRED",
+            semantic_id=spec.semantic_id,
+            kind="clause",
+            source=_source(
+                identity,
+                page_number=spec.page_number,
+                clause=spec.clause,
+            ),
+            expected_contract=(
+                f"clause:{spec.semantic_id}:"
+                f"{hashlib.sha256(_canonical_json(spec.model_dump(mode='json'))).hexdigest()}"
+            ),
+        )
+        for spec in recipe.clauses
+    )
+    return (*table_items, *formula_items, *mapping_items, *clause_items)
 
 
 def _extract_real_layout(

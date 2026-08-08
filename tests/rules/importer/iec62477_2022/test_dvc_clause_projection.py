@@ -40,6 +40,8 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.clauses impo
 from insulation_coordination.rules.importer.review import (
     build_reviewed_draft,
     mark_proposal_reviewed,
+    missing_required_content,
+    unresolved_clause_items,
 )
 from tests.fixtures.synthetic_rules import synthetic_rule_package
 
@@ -398,3 +400,80 @@ def test_unrelated_prefixed_decision_cannot_borrow_clause_grounding(
             actor="Synthetic Rule Builder",
             notes="Attempt an unrelated prefixed decision.",
         )
+
+
+def test_recipe_emits_clause_review_item_and_build_blocks_until_resolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from insulation_coordination.rules.importer.extract import _manual_review_items
+
+    draft = _logged_clause_extraction(monkeypatch)
+    recipe = next(
+        item for item in recipe_registry.RECIPES if item.id == IDENTITY.recipe_id
+    )
+    clause_items = tuple(
+        item
+        for item in _manual_review_items(IDENTITY, recipe)
+        if item.kind == "clause"
+    )
+    assert [item.code for item in clause_items] == ["MANUAL_CLAUSE_DEFINITION_REQUIRED"]
+    assert clause_items[0].semantic_id == ids.DVC_FAULT_APPLICABILITY
+
+    gated = draft.model_copy(
+        update={"review_items": (*draft.review_items, *clause_items)}
+    )
+    assert unresolved_clause_items(gated) == clause_items
+    with pytest.raises(ValueError, match="Review extracted clauses first"):
+        build_reviewed_draft(gated, actor="Synthetic Rule Builder", notes="Build.")
+
+
+def test_missing_clause_fragment_is_flagged_as_required_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    draft = _logged_clause_extraction(monkeypatch).model_copy(
+        update={"raw_clause_fragments": ()}
+    )
+    missing = missing_required_content(draft)
+    clause_missing = [item for item in missing if item.kind == "clause"]
+    assert [item.semantic_id for item in clause_missing] == [ids.DVC_FAULT_APPLICABILITY]
+
+
+def test_rule_change_with_unchanged_artifact_resets_reviewed_proposal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rule changed, artifact and review hashes unchanged -> fresh proposed probe."""
+    built = build_reviewed_draft(
+        _logged_clause_extraction(monkeypatch),
+        actor="Synthetic Rule Builder",
+        notes="Build clause decisions.",
+    )
+    reviewed = mark_proposal_reviewed(
+        built,
+        ids.DVC_FAULT_APPLICABILITY,
+        actor="Synthetic Semantic Reviewer",
+        notes="Reviewed the generated clause decision.",
+    )
+    rule = next(
+        item for item in reviewed.decisions if item.id == ids.DVC_FAULT_APPLICABILITY
+    )
+    changed_rule = rule.model_copy(update={"exhaustive": True})
+    corrected = record_correction(
+        reviewed,
+        reviewed.model_copy(
+            update={
+                "decisions": tuple(
+                    changed_rule if item.id == rule.id else item
+                    for item in reviewed.decisions
+                )
+            }
+        ),
+        actor="Synthetic Rule Builder",
+        notes="Tighten the clause decision to exhaustive matching.",
+    )
+    proposal = next(
+        item
+        for item in corrected.semantic_proposals
+        if item.semantic_id == ids.DVC_FAULT_APPLICABILITY
+    )
+    assert proposal.state == "proposed"
+    assert proposal.rule_sha256 == canonical_model_sha256(changed_rule)
