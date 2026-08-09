@@ -10,6 +10,7 @@ from PIL import Image
 from insulation_coordination.domain.rules import FaultTimeVoltageSelector, SourceReference
 from insulation_coordination.rules.importer.curves import (
     OcrEngineIdentity,
+    OcrError,
     OcrToken,
     PixelBox,
     RawCurvePoint,
@@ -169,6 +170,17 @@ def test_fewer_than_two_ticks_blocks() -> None:
     assert any(
         item.code == "CURVE_CALIBRATION_FAILED" for item in result.blocking_review_items
     )
+
+
+def test_missing_ocr_becomes_a_blocking_digitization_result() -> None:
+    class MissingOcr(FakeOcrEngine):
+        def recognize(self, image: Image.Image) -> tuple[OcrToken, ...]:
+            raise OcrError("OCR_UNAVAILABLE", "synthetic executable missing")
+
+    result = digitize_synthetic_chart(_two_stroke_figure(), MissingOcr(()))
+
+    assert result.proposed_rule is None
+    assert any(item.code == "CURVE_OCR_FAILED" for item in result.blocking_review_items)
 
 
 def test_non_monotone_ticks_block() -> None:

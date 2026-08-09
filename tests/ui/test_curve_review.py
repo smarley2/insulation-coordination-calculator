@@ -384,6 +384,51 @@ def test_review_variant_marks_aggregate_proposal_reviewed(draft) -> None:
     assert model.can_approve is True
 
 
+def test_curve_review_resolves_the_extracted_variant_inventory(draft) -> None:
+    pending = draft.model_copy(update={"review_resolutions": ()})
+    digest = _content_digest(
+        pending.tables,
+        pending.formulas,
+        pending.mappings,
+        pending.review_items,
+        pending.raw_grids,
+        pending.raw_clause_fragments,
+        pending.manifest.source_documents,
+        pending.source_identities,
+        pending.review_resolutions,
+        curves=pending.curves,
+        raw_figures=pending.raw_figures,
+        curve_digitizations=pending.curve_digitizations,
+    )
+    pending = pending.model_copy(
+        update={
+            "manifest": pending.manifest.model_copy(
+                update={
+                    "approval_records": tuple(
+                        record.model_copy(update={"notes": f"content:{digest}"})
+                        if record.action == "extraction" and record.notes.startswith("content:")
+                        else record
+                        for record in pending.manifest.approval_records
+                    )
+                }
+            )
+        }
+    )
+    model = CurveReviewModel(pending)
+
+    model.review_variant(
+        VARIANT_ID,
+        actor="Synthetic Curve Reviewer",
+        notes="Resolve and review the extracted curve inventory.",
+    )
+
+    assert model.draft.semantic_proposals[0].state == "reviewed"
+    assert {item.review_item_sha256 for item in model.draft.review_resolutions} == {
+        item.sha256 for item in model.draft.review_items
+    }
+    assert model.can_approve is True
+
+
 def test_each_variant_requires_an_exact_review(draft) -> None:
     first = draft.curves[0].variants[0]
     second = first.model_copy(
@@ -393,6 +438,10 @@ def test_each_variant_requires_an_exact_review(draft) -> None:
         }
     )
     rule = draft.curves[0].model_copy(update={"variants": (first, second)})
+    second_item = draft.review_items[0].model_copy(update={"semantic_id": second.id})
+    second_resolution = draft.review_resolutions[0].model_copy(
+        update={"review_item_sha256": second_item.sha256}
+    )
     proposal = draft.semantic_proposals[0].model_copy(
         update={
             "rule_sha256": canonical_model_sha256(rule),
@@ -400,6 +449,13 @@ def test_each_variant_requires_an_exact_review(draft) -> None:
                 tuple(
                     (variant.id, variant.reviewed_artifact_sha256)
                     for variant in rule.variants
+                )
+            ),
+            "review_item_sha256s": tuple(
+                item.sha256
+                for item in sorted(
+                    (*draft.review_items, second_item),
+                    key=lambda item: f"{item.semantic_id}:{item.code}",
                 )
             ),
             "state": "proposed",
@@ -417,8 +473,13 @@ def test_each_variant_requires_an_exact_review(draft) -> None:
                         }
                     ),
                 ),
-                "semantic_proposals": (proposal,),
-            }
+                    "semantic_proposals": (proposal,),
+                    "review_items": (*draft.review_items, second_item),
+                    "review_resolutions": (
+                        *draft.review_resolutions,
+                        second_resolution,
+                    ),
+                }
         )
     )
 
@@ -565,6 +626,144 @@ def test_manual_entry_is_gated_by_blocking_failure_or_rejection(draft) -> None:
         draft.model_copy(update={"curve_digitizations": (blocked_digitization,)})
     )
     assert blocked.manual_entry_enabled is True
+
+
+def test_blocked_real_shape_can_be_recovered_without_a_preexisting_curve(
+    draft, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(recipe_registry, "RECIPES", (IEC_RECIPE,))
+    identity = IDENTITY.model_copy(
+        update={
+            "recipe_id": IEC_RECIPE.id,
+            "standard": IEC_RECIPE.standard,
+            "edition": IEC_RECIPE.edition,
+        }
+    )
+    figures = tuple(
+        draft.raw_figures[0].model_copy(
+            update={
+                "source": draft.raw_figures[0].source.model_copy(
+                    update={
+                        "document_id": identity.recipe_id,
+                        "standard": identity.standard,
+                        "edition": identity.edition,
+                        "page": page,
+                        "figure": figure,
+                    }
+                ),
+                "artifact_sha256": digest * 64,
+            }
+        )
+        for figure, page, digest in (("5", 54, "a"), ("6", 55, "b"), ("7", 56, "c"))
+    )
+    variant_items = tuple(
+        ImportReviewItem(
+            code="CURVE_VARIANT_REVIEW_REQUIRED",
+            semantic_id=f"{ids.DVC_FAULT_TIME_VOLTAGE}.{figure.source.figure}",
+            kind="curve",
+            source=figure.source.model_copy(
+                update={
+                    "geometry": SourceGeometryReference(
+                        artifact_sha256=figure.artifact_sha256,
+                        bbox=figure.source_bbox,
+                    )
+                }
+            ),
+            expected_contract="review recovered synthetic curve",
+        )
+        for figure in figures
+    )
+    blocking_items = tuple(
+        ImportReviewItem(
+            code="CURVE_CALIBRATION_FAILED",
+            semantic_id=f"{ids.DVC_FAULT_TIME_VOLTAGE}.{figure.source.figure}",
+            kind="curve",
+            source=figure.source,
+            expected_contract="synthetic blocked automatic calibration",
+        )
+        for figure in figures
+    )
+    digitizations = tuple(
+        draft.curve_digitizations[0].model_copy(
+            update={
+                "proposed_rule": None,
+                "calibration": None,
+                "conservatism": None,
+                "blocking_review_items": (blocker,),
+            }
+        )
+        for blocker in blocking_items
+    )
+    source_document = draft.manifest.source_documents[0].model_copy(
+        update={
+            "id": identity.recipe_id,
+            "standard": identity.standard,
+            "edition": identity.edition,
+        }
+    )
+    blocked = draft.model_copy(
+        update={
+            "manifest": draft.manifest.model_copy(
+                update={"source_documents": (source_document,), "approval_records": ()}
+            ),
+            "curves": (),
+            "review_items": (*variant_items, *blocking_items),
+            "review_resolutions": (),
+            "raw_figures": figures,
+            "curve_digitizations": digitizations,
+            "semantic_proposals": (),
+            "source_identities": (identity,),
+        }
+    )
+    digest = _content_digest(
+        blocked.tables,
+        blocked.formulas,
+        blocked.mappings,
+        blocked.review_items,
+        blocked.raw_grids,
+        blocked.raw_clause_fragments,
+        blocked.manifest.source_documents,
+        blocked.source_identities,
+        blocked.review_resolutions,
+        curves=blocked.curves,
+        raw_figures=blocked.raw_figures,
+        curve_digitizations=blocked.curve_digitizations,
+    )
+    blocked = blocked.model_copy(
+        update={
+            "manifest": blocked.manifest.model_copy(
+                update={
+                    "approval_records": (
+                        ApprovalRecord(
+                            action="extraction",
+                            actor=f"icc-importer/{IMPORTER_VERSION}",
+                            recorded_at=datetime(2026, 8, 9, tzinfo=UTC),
+                            notes=f"content:{digest}",
+                        ),
+                    )
+                }
+            )
+        }
+    )
+    calibration = draft.curve_digitizations[0].calibration
+    assert calibration is not None
+    points = draft.curves[0].variants[0].points
+    model = CurveReviewModel(blocked)
+
+    model.recover_blocked(
+        tuple(
+            (index, figure.traces[0].id, calibration, points)
+            for index, figure in enumerate(figures)
+        ),
+        actor="Synthetic Reviewer",
+        notes="Recover all blocked synthetic figures in one audited action.",
+    )
+
+    assert len(model.draft.curves) == 1
+    assert len(model.draft.curves[0].variants) == 3
+    assert all(not item.blocking_review_items for item in model.draft.curve_digitizations)
+    assert len(model.draft.semantic_proposals) == 1
+    assert model.manual_entry_enabled is False
 
 
 def _local_pdf_draft(draft: ImportedRuleDraft, path) -> ImportedRuleDraft:

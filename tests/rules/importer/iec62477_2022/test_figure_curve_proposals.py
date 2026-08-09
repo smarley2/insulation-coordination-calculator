@@ -351,10 +351,13 @@ def test_real_extraction_stage_projects_all_recipe_figures(
     monkeypatch.setattr(
         "insulation_coordination.rules.importer.curves.digitize_curve_figure", fake_digitize
     )
-    figures, digitizations, curves, proposals, blockers = _extract_curve_artifacts(
+    figures, digitizations, curves, proposals, review_items = _extract_curve_artifacts(
         path, IDENTITY.model_copy(update={"recipe_id": "iec62477-1-2022"}), RECIPE, object()
     )
     assert len(figures) == len(digitizations) == 3
     assert len(curves) == len(proposals) == 1
     assert curves[0].id == ids.DVC_FAULT_TIME_VOLTAGE
-    assert blockers == ()
+    assert len(review_items) == 3
+    assert {item.semantic_id for item in review_items} == {
+        variant.id for variant in curves[0].variants
+    }

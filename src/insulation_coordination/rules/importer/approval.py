@@ -65,6 +65,15 @@ def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft
         )
     if item.kind == "mapping":
         return any(spec.id == item.semantic_id for recipe in _recipes() for spec in recipe.mappings)
+    if item.kind == "curve":
+        return any(
+            figure.source.page == item.source.page
+            and figure.source.figure == item.source.figure
+            and result.proposed_rule is not None
+            and result.conservatism is not None
+            and result.conservatism.proven
+            for figure, result in zip(changed.raw_figures, changed.curve_digitizations)
+        )
     if item.code in {"AMBIGUOUS_COMPOUND_CELL", "AMBIGUOUS_COMPONENT_FORMULA"}:
         grid_id, row_text, column_text, source_index_text = item.semantic_id.rsplit(":", 3)
         cell = next(

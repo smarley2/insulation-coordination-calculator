@@ -49,6 +49,7 @@ from insulation_coordination.rules.importer.extract import ImportedRuleDraft
 from insulation_coordination.rules.importer.review import (
     associate_curve_trace,
     correct_curve_calibration,
+    recover_blocked_curve_figures,
     reject_curve_variant,
     replace_curve_breakpoint,
     replace_curve_points,
@@ -226,6 +227,23 @@ class CurveReviewModel:
         )
         return self._draft
 
+    def recover_blocked(
+        self,
+        replacements: tuple[
+            tuple[int, str, PlotCalibration, tuple[CurvePoint, ...]], ...
+        ],
+        *,
+        actor: str,
+        notes: str,
+    ) -> ImportedRuleDraft:
+        self._draft = recover_blocked_curve_figures(
+            self._draft,
+            replacements=replacements,
+            actor=actor,
+            notes=notes,
+        )
+        return self._draft
+
     @property
     def manual_entry_enabled(self) -> bool:
         return bool(self._draft.curve_variant_rejections) or any(
@@ -275,6 +293,8 @@ class CurveReviewDialog(QDialog):
         for rule in draft.curves:
             for variant in rule.variants:
                 self._variant_selector.addItem(variant.id, variant.id)
+        if not draft.curves and draft.curve_digitizations:
+            self._variant_selector.addItem("Blocked reconstruction — manual recovery", None)
         self._variant_selector.currentIndexChanged.connect(self._load_current_variant)
         selector_row.addWidget(self._variant_selector, 1)
         self._overlay_toggle = QCheckBox("Show semantic overlay")
@@ -320,7 +340,17 @@ class CurveReviewDialog(QDialog):
         actions.addWidget(close)
         layout.addLayout(actions)
 
-        if self._variant_selector.count():
+        has_variants = any(rule.variants for rule in draft.curves)
+        for button in (
+            self._calibration_button,
+            self._trace_button,
+            self._breakpoint_button,
+            self._segment_button,
+            self._reject_button,
+            self._review_button,
+        ):
+            button.setEnabled(has_variants)
+        if has_variants:
             self._load_current_variant(0)
 
     @property
@@ -599,6 +629,9 @@ class CurveReviewDialog(QDialog):
         notes = self._required_notes()
         if notes is None or not self._model.manual_entry_enabled:
             return
+        if not self._model.draft.curves:
+            self._recover_blocked_figures(notes)
+            return
         variant = self._current_variant()
         value, accepted = QInputDialog.getText(
             self,
@@ -625,6 +658,88 @@ class CurveReviewDialog(QDialog):
         self._manual_button.setEnabled(self._model.manual_entry_enabled)
         self.draft_changed.emit(self._model.draft)
         self._load_current_variant(self._variant_selector.currentIndex())
+
+    def _recover_blocked_figures(self, notes: str) -> None:
+        replacements: list[
+            tuple[int, str, PlotCalibration, tuple[CurvePoint, ...]]
+        ] = []
+        for index, (figure, result) in enumerate(
+            zip(
+                self._model.draft.raw_figures,
+                self._model.draft.curve_digitizations,
+            )
+        ):
+            if result.proposed_rule is not None:
+                continue
+            if not figure.traces:
+                self._status.setText(
+                    f"Figure {figure.source.figure} has no recoverable source trace."
+                )
+                return
+            trace_id, accepted = QInputDialog.getItem(
+                self,
+                f"Recover Figure {figure.source.figure}",
+                "Source trace",
+                tuple(trace.id for trace in figure.traces),
+                editable=False,
+            )
+            if not accepted:
+                return
+            axes: list[AxisCalibration] = []
+            for axis in ("x", "y"):
+                value, accepted = QInputDialog.getText(
+                    self,
+                    f"Recover Figure {figure.source.figure}",
+                    f"{axis}-axis: slope, intercept, residual pixels, minor-grid pixels",
+                    text="0.01,0,0,10",
+                )
+                if not accepted:
+                    return
+                slope, intercept, residual, spacing = (
+                    Decimal(part.strip()) for part in value.split(",")
+                )
+                axes.append(
+                    AxisCalibration(
+                        scale="log10",
+                        slope=slope,
+                        intercept=intercept,
+                        residual_pixels=residual,
+                        minor_grid_spacing_pixels=spacing,
+                    )
+                )
+            value, accepted = QInputDialog.getText(
+                self,
+                f"Recover Figure {figure.source.figure}",
+                "Semicolon-separated x,y engineering points",
+            )
+            if not accepted:
+                return
+            points = tuple(
+                CurvePoint(
+                    x=Decimal(pair.split(",", 1)[0].strip()),
+                    y=Decimal(pair.split(",", 1)[1].strip()),
+                )
+                for pair in value.split(";")
+                if pair.strip()
+            )
+            replacements.append(
+                (
+                    index,
+                    trace_id,
+                    PlotCalibration(x=axes[0], y=axes[1]),
+                    points,
+                )
+            )
+        self._model.recover_blocked(
+            tuple(replacements), actor=self._actor, notes=notes
+        )
+        self._manual_button.setEnabled(False)
+        self.draft_changed.emit(self._model.draft)
+        self._variant_selector.clear()
+        for rule in self._model.draft.curves:
+            for variant in rule.variants:
+                self._variant_selector.addItem(variant.id, variant.id)
+        self._load_current_variant(0)
 
     def _reject_current(self) -> None:
         notes = self._notes.text().strip()

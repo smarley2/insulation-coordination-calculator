@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pdfplumber
 import pytest
+from PIL import Image, ImageDraw
 from pypdf import PdfReader
 
 from insulation_coordination.domain.rules import FaultTimeVoltageSelector
@@ -14,6 +15,7 @@ from insulation_coordination.rules.importer.curves import (
     OcrEngineIdentity,
     OcrToken,
     PixelBox,
+    _raster_traces,
     extract_raw_figure,
 )
 from insulation_coordination.rules.importer.extract import ExtractionError
@@ -159,6 +161,23 @@ def test_raster_figure_carries_ocr_tokens(curve_pdf) -> None:
         )
     assert figure.ocr_tokens
     assert figure.ocr_tokens[0].text == "ms"
+
+
+def test_lossless_raster_curve_recovers_one_pixel_trace() -> None:
+    image = Image.new("L", (200, 160), color=255)
+    draw = ImageDraw.Draw(image)
+    for x in range(20, 181):
+        y = 20 + (x - 20) // 2
+        draw.line((x, y, x, y + 1), fill=0, width=1)
+    draw.line((10, 140, 190, 140), fill=0, width=1)
+    draw.line((10, 10, 10, 150), fill=0, width=1)
+
+    traces = _raster_traces(image, ())
+
+    assert len(traces) == 1
+    assert traces[0].points[0].space == "pixel"
+    assert traces[0].points[0].x == Decimal(20)
+    assert traces[0].points[-1].x == Decimal(180)
 
 
 def test_ambiguous_images_block_extraction(curve_pdf, monkeypatch) -> None:

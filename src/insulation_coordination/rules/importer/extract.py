@@ -36,6 +36,7 @@ from insulation_coordination.domain.rules import (
     ProcedureRule,
     RuleKind,
     SourceDocument,
+    SourceGeometryReference,
     SourceReference,
     Table,
 )
@@ -1590,8 +1591,31 @@ def _extract_curve_artifacts(
     blocking_items = tuple(
         item for result in digitizations for item in result.blocking_review_items
     )
+    variant_review_items = tuple(
+        ImportReviewItem(
+            code="CURVE_VARIANT_REVIEW_REQUIRED",
+            semantic_id=f"{spec.semantic_id}.{spec.figure}",
+            kind="curve",
+            source=figure.source.model_copy(
+                update={
+                    "geometry": SourceGeometryReference(
+                        artifact_sha256=figure.artifact_sha256,
+                        bbox=figure.source_bbox,
+                    )
+                }
+            ),
+            expected_contract="verify the reconstructed curve against the local source figure",
+        )
+        for spec, figure in zip(recipe.curves, figures, strict=True)
+    )
     if blocking_items:
-        return tuple(figures), tuple(digitizations), (), (), blocking_items
+        return (
+            tuple(figures),
+            tuple(digitizations),
+            (),
+            (),
+            (*variant_review_items, *blocking_items),
+        )
     if identity.recipe_id != "iec62477-1-2022" or len(digitizations) != 3:
         raise ExtractionError("no semantic projection is registered for extracted curves")
     proposed_rules = tuple(result.proposed_rule for result in digitizations)
@@ -1601,7 +1625,18 @@ def _extract_curve_artifacts(
     rule, proposals = project_fault_time_voltage(
         tuple(figures), variants[0], variants[1], variants[2], identity
     )
-    return tuple(figures), tuple(digitizations), (rule,), proposals, ()
+    review_items = variant_review_items
+    review_hashes = tuple(
+        item.sha256
+        for item in sorted(
+            review_items, key=lambda item: f"{item.semantic_id}:{item.code}"
+        )
+    )
+    proposals = tuple(
+        proposal.model_copy(update={"review_item_sha256s": review_hashes})
+        for proposal in proposals
+    )
+    return tuple(figures), tuple(digitizations), (rule,), proposals, review_items
 
 
 def _extract_one(

@@ -14,6 +14,7 @@ import io
 import os
 import subprocess
 import tempfile
+from collections import deque
 from decimal import Decimal, InvalidOperation
 from itertools import pairwise
 from pathlib import Path
@@ -406,6 +407,93 @@ def _vector_traces(
     return tuple(traces)
 
 
+def _raster_traces(
+    image: Image.Image, tokens: tuple[OcrToken, ...]
+) -> tuple[RawCurveTrace, ...]:
+    """Recover unambiguous long dark strokes from a lossless chart image.
+
+    OCR boxes and full-length grid/axis rows are removed first. Multiple equally
+    plausible long components are deliberately returned as separate traces so the
+    digitizer blocks for maintainer association instead of guessing.
+    """
+
+    gray = image.convert("L")
+    width, height = gray.size
+    dark: set[tuple[int, int]] = set()
+    for y in range(height):
+        for x in range(width):
+            value = gray.getpixel((x, y))
+            if isinstance(value, int) and value < 96:
+                dark.add((x, y))
+    for token in tokens:
+        for y in range(max(0, token.box.top - 1), min(height, token.box.bottom + 1)):
+            for x in range(max(0, token.box.left - 1), min(width, token.box.right + 1)):
+                dark.discard((x, y))
+    row_counts = [sum((x, y) in dark for x in range(width)) for y in range(height)]
+    column_counts = [sum((x, y) in dark for y in range(height)) for x in range(width)]
+    grid_rows = {y for y, count in enumerate(row_counts) if count >= max(3, width // 2)}
+    grid_columns = {
+        x for x, count in enumerate(column_counts) if count >= max(3, height // 2)
+    }
+    dark = {
+        point for point in dark if point[0] not in grid_columns and point[1] not in grid_rows
+    }
+
+    components: list[set[tuple[int, int]]] = []
+    remaining = set(dark)
+    while remaining:
+        seed = min(remaining, key=lambda point: (point[0], point[1]))
+        remaining.remove(seed)
+        component = {seed}
+        pending = deque((seed,))
+        while pending:
+            x, y = pending.popleft()
+            for dx in range(-2, 3):
+                for dy in range(-2, 3):
+                    candidate = (x + dx, y + dy)
+                    if candidate in remaining:
+                        remaining.remove(candidate)
+                        component.add(candidate)
+                        pending.append(candidate)
+        x_span = max(x for x, _ in component) - min(x for x, _ in component)
+        if x_span >= max(4, width // 5) and len(component) >= max(8, width // 10):
+            components.append(component)
+    if not components:
+        return ()
+    maximum_span = max(
+        max(x for x, _ in component) - min(x for x, _ in component)
+        for component in components
+    )
+    plausible = tuple(
+        component
+        for component in components
+        if max(x for x, _ in component) - min(x for x, _ in component)
+        >= Decimal("0.8") * maximum_span
+    )
+    traces: list[RawCurveTrace] = []
+    for index, component in enumerate(plausible, start=1):
+        by_x: dict[int, list[int]] = {}
+        for x, y in component:
+            by_x.setdefault(x, []).append(y)
+        points = tuple(
+            RawCurvePoint(
+                x=Decimal(x),
+                y=Decimal(sorted(ys)[len(ys) // 2]),
+                space="pixel",
+                primitive_ref=f"raster-column-{x}",
+            )
+            for x, ys in sorted(by_x.items())
+        )
+        traces.append(
+            RawCurveTrace(
+                id=f"trace-{index}",
+                points=points,
+                stroke_width=max(Decimal(1), Decimal(len(component)) / Decimal(len(points))),
+            )
+        )
+    return tuple(traces)
+
+
 def extract_raw_figure(
     reader_page: PageObject,
     plumber_page: pdfplumber.page.Page,
@@ -427,7 +515,10 @@ def extract_raw_figure(
     if located.mode == "vector_path":
         pdf_traces = _vector_traces(reader_page, spec)
         rendered = plumber_page.crop(spec.expected_bbox).to_image(resolution=110).original
-        tokens = ocr.recognize(rendered)
+        try:
+            tokens = ocr.recognize(rendered)
+        except OcrError:
+            tokens = ()
         width, height = rendered.size
         x0, top, x1, bottom = spec.expected_bbox
         page_height = float(reader_page.mediabox.height)
@@ -525,7 +616,11 @@ def extract_raw_figure(
         raise ExtractionError(
             f"CURVE_SOURCE_MISMATCH: pixel size differs for {spec.figure}"
         )
-    tokens = ocr.recognize(image)
+    try:
+        tokens = ocr.recognize(image)
+    except OcrError:
+        tokens = ()
+    traces = _raster_traces(image, tokens)
     if image_file.indirect_reference is None:
         raise ExtractionError("CURVE_SOURCE_MISSING: image has no indirect reference")
     get_data = getattr(xobject, "get_data", None)
@@ -545,7 +640,7 @@ def extract_raw_figure(
         pixel_size=(int(image.size[0]), int(image.size[1])),
         transform=located.transform,
         ocr_tokens=tokens,
-        traces=(),
+        traces=traces,
         artifact_sha256=hashlib.sha256(payload.encode("utf-8")).hexdigest(),
     )
 
@@ -698,7 +793,7 @@ def _blocking_item(code: str, spec: CurveAuditSpec, contract: str) -> ImportRevi
 
     return ImportReviewItem(
         code=code,
-        semantic_id=spec.semantic_id,
+        semantic_id=f"{spec.semantic_id}.{spec.figure}",
         kind="curve",
         source=SourceReference(
             document_id="importer",
@@ -878,14 +973,8 @@ def rebuild_variant_from_calibration(
     if len(source_log) < 2:
         raise ValueError("curve trace has fewer than two points")
     tolerance_pixels = _fidelity_tolerance(trace)
-    x_margin = _pixel_tolerance_to_value(tolerance_pixels, calibration.x.slope)
     y_margin = _pixel_tolerance_to_value(tolerance_pixels, calibration.y.slope)
-    first, last = source_log[0], source_log[-1]
-    candidate_log = (
-        (first[0] - x_margin, first[1] - y_margin),
-        *((x, y - y_margin) for x, y in source_log),
-        (last[0] + x_margin, last[1] - y_margin),
-    )
+    candidate_log = tuple((x, y - y_margin) for x, y in source_log)
     values = tuple(
         CurvePoint(x=_log10_to_value(x), y=_log10_to_value(y))
         for x, y in candidate_log
@@ -926,7 +1015,21 @@ def digitize_curve_figure(
 ) -> CurveDigitizationResult:
     """Digitize one reviewed figure into a proposed conservative curve rule."""
 
-    tokens = ocr.recognize(_blank_image(figure)) if not figure.ocr_tokens else figure.ocr_tokens
+    try:
+        tokens = (
+            ocr.recognize(_blank_image(figure))
+            if not figure.ocr_tokens
+            else figure.ocr_tokens
+        )
+    except OcrError as error:
+        return CurveDigitizationResult(
+            proposed_rule=None,
+            calibration=None,
+            conservatism=None,
+            blocking_review_items=(
+                _blocking_item("CURVE_OCR_FAILED", spec, str(error)),
+            ),
+        )
     try:
         x_calibration = calibrate_log_axis(
             _axis_ticks(tokens, axis="x", bbox=spec.expected_bbox),
@@ -979,25 +1082,9 @@ def digitize_curve_figure(
     source_log = tuple(
         sorted(_log_space_point(point, calibration) for point in trace.points)
     )
-    first, last = source_log[0], source_log[-1]
-    # Time outward, voltage downward: extend x by the pixel tolerance through the
-    # x slope; drop y by the y tolerance. The extended domain stays anchored to the
-    # traced endpoints — the margin equals the fidelity tolerance, nothing more.
-    x_margin = _pixel_tolerance_to_value(tolerance_pixels, calibration.x.slope)
-    # Constant-y margin: the first endpoint moves to an earlier time at the same
-    # (already lowered) voltage, the last endpoint to a later time at the final
-    # lowered voltage. This never tilts the segment above the envelope — unlike a
-    # parallel x-shift, which would move mid-segment y values upward in log space.
-    # Extend the domain at constant voltage: lead-in at the first (highest, for a
-    # maximum-voltage front) voltage and a tail at the final (lowest) voltage, both
-    # lowered by the tolerance. x grows earlier/later; y never tilts upward. Every
-    # vertex sits at source minus the tolerance, so no column, breakpoint, or
-    # intersection can exceed the envelope.
-    candidate_log = (
-        (first[0] - x_margin, first[1] - y_tolerance),
-        *((x, y - y_tolerance) for x, y in source_log),
-        (last[0] + x_margin, last[1] - y_tolerance),
-    )
+    # Preserve the explicit traced domain exactly; only voltage moves downward by
+    # the measured fidelity tolerance.
+    candidate_log = tuple((x, y - y_tolerance) for x, y in source_log)
     report = prove_conservative(source_log, candidate_log, y_tolerance)
     if not report.proven:
         return CurveDigitizationResult(

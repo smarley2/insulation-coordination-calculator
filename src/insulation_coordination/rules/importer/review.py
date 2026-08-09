@@ -20,6 +20,7 @@ from typing import Any
 from insulation_coordination.domain.rules import (
     ApprovalRecord,
     CompatibilityMapping,
+    CurveAxis,
     CurvePoint,
     CurveSegment,
     DecisionRule,
@@ -47,6 +48,7 @@ from insulation_coordination.rules.importer.curves import (
     PlotCalibration,
     RawCurveTrace,
     RawFigure,
+    _log_space_point,
     prove_variant_conservative,
     rebuild_variant_from_calibration,
 )
@@ -1752,6 +1754,148 @@ def replace_curve_points(
     )
 
 
+def recover_blocked_curve_figures(
+    draft: ImportedRuleDraft,
+    *,
+    replacements: tuple[
+        tuple[int, str, PlotCalibration, tuple[CurvePoint, ...]], ...
+    ],
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Recover every blocked figure together, then build the aggregate proposal."""
+
+    if not replacements:
+        raise ApprovalError("manual recovery requires at least one blocked figure")
+    by_index = {index: (trace_id, calibration, points) for index, trace_id, calibration, points in replacements}
+    if len(by_index) != len(replacements):
+        raise ApprovalError("manual recovery contains duplicate figure entries")
+    from insulation_coordination.rules.importer.recipes import RECIPES
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
+        project_fault_time_voltage,
+    )
+
+    identities = {identity.recipe_id: identity for identity in draft.source_identities}
+    recipe = next(
+        (
+            candidate
+            for candidate in RECIPES
+            if candidate.id == "iec62477-1-2022" and candidate.curves
+        ),
+        None,
+    )
+    identity = identities.get("iec62477-1-2022")
+    if recipe is None or identity is None:
+        raise ApprovalError("manual recovery lacks the IEC curve recipe identity")
+    if len(draft.raw_figures) != len(draft.curve_digitizations) or len(recipe.curves) != 3:
+        raise ApprovalError("manual recovery has an incomplete figure inventory")
+    digitizations = list(draft.curve_digitizations)
+    for index, (trace_id, calibration, points) in by_index.items():
+        if not 0 <= index < len(digitizations):
+            raise ApprovalError("manual recovery figure index is outside the inventory")
+        result = digitizations[index]
+        figure = draft.raw_figures[index]
+        spec = recipe.curves[index]
+        if result.proposed_rule is not None or not result.blocking_review_items:
+            raise ApprovalError("manual recovery is allowed only for a blocked figure")
+        traces = tuple(trace for trace in figure.traces if trace.id == trace_id)
+        if len(traces) != 1:
+            raise ApprovalError("manual recovery requires one source-scoped trace")
+        if len(points) < 2 or any(point.x <= 0 or point.y <= 0 for point in points):
+            raise ApprovalError("manual recovery requires at least two positive points")
+        trace = traces[0]
+        source_log = tuple(sorted(_log_space_point(point, calibration) for point in trace.points))
+        candidate_log = tuple((point.x.log10(), point.y.log10()) for point in points)
+        domain_tolerance = Decimal("1e-9")
+        if (
+            abs(candidate_log[0][0] - source_log[0][0]) > domain_tolerance
+            or abs(candidate_log[-1][0] - source_log[-1][0]) > domain_tolerance
+        ):
+            raise ApprovalError("manual curve domain must equal the explicit traced endpoints")
+        x_values = tuple(point.x for point in points)
+        y_values = tuple(point.y for point in points)
+        variant = FaultTimeVoltageVariant(
+            id=f"{spec.semantic_id}.{spec.figure}",
+            selector=spec.variant_slots[0],
+            x_axis=CurveAxis(
+                quantity_kind=spec.x_quantity_kind,
+                unit=spec.x_unit,
+                scale="log10",
+                minimum=min(x_values),
+                maximum=max(x_values),
+            ),
+            y_axis=CurveAxis(
+                quantity_kind=spec.y_quantity_kind,
+                unit=spec.y_unit,
+                scale="log10",
+                minimum=min(y_values),
+                maximum=max(y_values),
+            ),
+            points=points,
+            segments=tuple(
+                CurveSegment(
+                    start=position,
+                    end=position + 1,
+                    segment_type="continuous",
+                    interpolation="log_log",
+                )
+                for position in range(len(points) - 1)
+            ),
+            applicability="manual recovery requires exact review",
+            source=figure.source,
+            reviewed_artifact_sha256=figure.artifact_sha256,
+        )
+        report = prove_variant_conservative(figure, trace, calibration, variant)
+        if not report.proven:
+            raise ApprovalError("manual curve is not conservative against source geometry")
+        proposed_rule = PiecewiseCurveRule(
+            id=spec.semantic_id,
+            variants=(variant,),
+            source=figure.source,
+        )
+        digitizations[index] = result.model_copy(
+            update={
+                "proposed_rule": proposed_rule,
+                "calibration": calibration,
+                "conservatism": report,
+                "blocking_review_items": (),
+            }
+        )
+    if any(result.proposed_rule is None for result in digitizations):
+        raise ApprovalError("all blocked figures must be recovered in one audited action")
+    variant_groups = tuple(
+        result.proposed_rule.variants
+        for result in digitizations
+        if result.proposed_rule is not None
+    )
+    rule, proposals = project_fault_time_voltage(
+        draft.raw_figures,
+        variant_groups[0],
+        variant_groups[1],
+        variant_groups[2],
+        identity,
+    )
+    blocking = tuple(
+        item
+        for item in draft.review_items
+        if item.kind == "curve" and item.code != "CURVE_VARIANT_REVIEW_REQUIRED"
+    )
+    changed = draft.model_copy(
+        update={
+            "curves": (rule,),
+            "curve_digitizations": tuple(digitizations),
+            "semantic_proposals": proposals,
+        }
+    )
+    return record_correction(
+        draft,
+        changed,
+        actor=actor,
+        notes=notes,
+        resolve=blocking,
+    )
+
+
 def replace_curve_segment(
     draft: ImportedRuleDraft,
     *,
@@ -1946,8 +2090,31 @@ def review_curve_variant(
         recorded_at=datetime.now(UTC),
         notes=notes.strip(),
     )
-    current = tuple(item for item in draft.curve_variant_reviews if item.variant_id != variant.id)
-    changed = draft.model_copy(update={"curve_variant_reviews": (*current, review)})
+    member_items = tuple(
+        item
+        for item in draft.review_items
+        if item.kind == "curve" and item.semantic_id == variant.id
+    )
+    if len(member_items) != 1:
+        raise ApprovalError("curve variant lacks one exact review item")
+    base = draft
+    if not any(
+        item.review_item_sha256 == member_items[0].sha256
+        for item in draft.review_resolutions
+    ):
+        base = record_correction(
+            draft,
+            draft,
+            actor=actor,
+            notes=notes,
+            resolve=member_items,
+        )
+    current = tuple(
+        item for item in base.curve_variant_reviews if item.variant_id != variant.id
+    )
+    changed = base.model_copy(
+        update={"curve_variant_reviews": (*current, review)}
+    )
     if all(
         any(
             item.variant_id == member.id
