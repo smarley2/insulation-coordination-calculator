@@ -398,7 +398,12 @@ def project_dvc_protection_matrix(
     return rules, proposals
 
 
-__all__ = ["ProtectionOutcome", "project_dvc_protection_matrix", "project_dvc_voltage_limits"]
+__all__ = [
+    "ProtectionOutcome",
+    "project_dvc_protection_matrix",
+    "project_dvc_voltage_limits",
+    "project_fault_time_voltage",
+]
 
 
 def project_fault_time_voltage(
@@ -429,6 +434,22 @@ def project_fault_time_voltage(
     selectors = tuple(variant.selector for variant in variants)
     if len(set(selectors)) != len(selectors):
         raise ValueError("curve variant selectors must be exact and unique")
+    for figure_number, figure, members in zip(
+        (5, 6, 7),
+        figures,
+        (figure5_variants, figure6_variants, figure7_variants),
+        strict=True,
+    ):
+        for variant in members:
+            if (
+                variant.reviewed_artifact_sha256 != figure.artifact_sha256
+                or variant.source.document_id != figure.source.document_id
+                or variant.source.page != figure.source.page
+                or variant.source.figure != figure.source.figure
+            ):
+                raise ValueError(
+                    f"Figure {figure_number} variant is not linked to its source artifact"
+                )
     for figure in figures:
         if figure.source.standard != identity.standard or figure.source.edition != identity.edition:
             raise ValueError("figure artifact does not match its identified source")
@@ -437,10 +458,10 @@ def project_fault_time_voltage(
         variants=variants,
         source=figures[0].source.model_copy(update={"figure": "5-7"}),
     )
-    aggregate = canonical_model_sha256(
-        _AggregateFigures(
-            digests=tuple(figure.artifact_sha256 for figure in figures),
-        )
+    from insulation_coordination.rules.importer.review import _aggregate_artifact_pairs
+
+    aggregate = _aggregate_artifact_pairs(
+        tuple((variant.id, variant.reviewed_artifact_sha256) for variant in variants)
     )
     proposal = SemanticProposal(
         semantic_id=rule.id,
@@ -450,7 +471,3 @@ def project_fault_time_voltage(
         source_artifact_sha256=aggregate,
     )
     return rule, (proposal,)
-
-
-class _AggregateFigures(FrozenModel):
-    digests: tuple[str, ...]

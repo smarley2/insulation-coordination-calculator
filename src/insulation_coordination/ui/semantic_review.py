@@ -17,6 +17,7 @@ from insulation_coordination.domain.rules import (
     SourceReference,
 )
 from insulation_coordination.rules.importer.approval import (
+    ApprovalError,
     approval_blockers,
     record_correction,
 )
@@ -111,6 +112,10 @@ class SemanticReviewModel:
         return self._draft
 
     def review(self, semantic_id: str, actor: str, notes: str) -> ImportedRuleDraft:
+        if proposal_for(self._draft, semantic_id).rule_kind == "curve":
+            raise ApprovalError(
+                "curve variants must be reviewed individually in Curve Review"
+            )
         self._draft = mark_proposal_reviewed(
             self._draft, semantic_id, actor=actor, notes=notes
         )

@@ -34,6 +34,7 @@ if TYPE_CHECKING:
         StandardIdentity,
     )
 from insulation_coordination.domain.rules import (
+    FaultTimeVoltageVariant,
     Identifier,
     PiecewiseCurveRule,
     SourceReference,
@@ -806,6 +807,34 @@ def prove_conservative(
         maximum_fidelity_error_pixels=tolerance,
         proven=proven,
     )
+
+
+def prove_variant_conservative(
+    figure: RawFigure,
+    trace: RawCurveTrace,
+    calibration: PlotCalibration,
+    variant: FaultTimeVoltageVariant,
+) -> ConservatismReport:
+    """Re-run the source-envelope proof for a reviewed semantic variant."""
+
+    if trace not in figure.traces or any(point.space != "pixel" for point in trace.points):
+        raise ValueError("curve trace does not belong to the variant source figure")
+    source_log = tuple(_log_space_point(point, calibration) for point in trace.points)
+    candidate_log = tuple((_log10(point.x), _log10(point.y)) for point in variant.points)
+    if not source_log or not candidate_log:
+        return ConservatismReport(
+            maximum_positive_voltage_error=Decimal(0),
+            maximum_fidelity_error_pixels=Decimal(0),
+            proven=False,
+        )
+    source_domain = (min(x for x, _ in source_log), max(x for x, _ in source_log))
+    candidate_domain = (min(x for x, _ in candidate_log), max(x for x, _ in candidate_log))
+    tolerance_pixels = _fidelity_tolerance(trace)
+    tolerance_log = _pixel_tolerance_to_value(tolerance_pixels, calibration.y.slope)
+    report = prove_conservative(source_log, candidate_log, tolerance_log)
+    if candidate_domain[0] < source_domain[0] or candidate_domain[1] > source_domain[1]:
+        return report.model_copy(update={"proven": False})
+    return report
 
 
 def digitize_curve_figure(

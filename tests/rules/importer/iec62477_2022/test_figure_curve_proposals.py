@@ -20,6 +20,7 @@ from insulation_coordination.rules.evaluator import (
 )
 from insulation_coordination.rules.importer.curves import RawFigure
 from insulation_coordination.rules.importer.extract import (
+    ImportedRuleDraft,
     canonical_model_sha256,
 )
 from insulation_coordination.rules.importer.identify import StandardIdentity
@@ -27,6 +28,7 @@ from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
     project_fault_time_voltage,
 )
+from insulation_coordination.rules.importer.review import _current_source_artifact_sha256
 
 SOURCE = SourceReference(
     document_id="synthetic-curves",
@@ -65,6 +67,13 @@ def _variant(
     env: str | None,
     artifact: str,
 ) -> FaultTimeVoltageVariant:
+    figure_by_artifact = {
+        "a" * 64: ("SF-5", 54),
+        "b" * 64: ("SF-6", 55),
+        "c" * 64: ("SF-7", 56),
+        "d" * 64: ("SF-5", 54),
+    }
+    figure, page = figure_by_artifact[artifact]
     return FaultTimeVoltageVariant(
         id=f"{ids.DVC_FAULT_TIME_VOLTAGE}.{suffix}",
         selector=FaultTimeVoltageSelector(
@@ -97,7 +106,7 @@ def _variant(
             CurveSegment(start=1, end=2, segment_type="continuous", interpolation="log_log"),
         ),
         applicability="review required",
-        source=SOURCE,
+        source=SOURCE.model_copy(update={"figure": figure, "page": page}),
         reviewed_artifact_sha256=artifact,
     )
 
@@ -201,6 +210,39 @@ def test_aggregate_artifact_hash_covers_ordered_figure_digests() -> None:
         IDENTITY,
     )
     assert first[0].source_artifact_sha256 != second[0].source_artifact_sha256
+
+
+def test_projected_source_hash_matches_review_gate() -> None:
+    rule, proposals = project_fault_time_voltage(
+        _figures(),
+        (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "a" * 64),),
+        (_variant("peak", "accessible_circuit", "ac_peak", "dvc-a", "indoor", "b" * 64),),
+        (_variant("dc", "conductive_accessible_part", "dc", None, None, "c" * 64),),
+        IDENTITY,
+    )
+    draft = ImportedRuleDraft.model_construct(
+        tables=(),
+        formulas=(),
+        mappings=(),
+        decisions=(),
+        procedures=(),
+        guidance=(),
+        curves=(rule,),
+    )
+    assert proposals[0].source_artifact_sha256 == _current_source_artifact_sha256(
+        draft, proposals[0]
+    )
+
+
+def test_variant_must_be_linked_to_its_figure_artifact() -> None:
+    with pytest.raises(ValueError, match="Figure 5 variant"):
+        project_fault_time_voltage(
+            _figures(),
+            (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "b" * 64),),
+            (_variant("peak", "accessible_circuit", "ac_peak", "dvc-a", "indoor", "b" * 64),),
+            (_variant("dc", "conductive_accessible_part", "dc", None, None, "c" * 64),),
+            IDENTITY,
+        )
 
 
 def test_missing_figure_blocks_projection() -> None:

@@ -75,6 +75,9 @@ def _missing_parts_message(loaded: set[str]) -> str:
 
 __all__ = [
     "ComponentFormulaCandidate",
+    "CurveTraceAssociation",
+    "CurveVariantRejection",
+    "CurveVariantReview",
     "EquationAuditSpec",
     "ExtractedEquation",
     "ExtractionError",
@@ -152,6 +155,31 @@ class SemanticProposal(FrozenModel):
         if len(self.review_item_sha256s) != len(set(self.review_item_sha256s)):
             raise ValueError("proposal review item SHA-256 values must be unique")
         return self
+
+
+class CurveVariantReview(FrozenModel):
+    """Exact draft-only review of one current curve variant and its source artifact."""
+
+    variant_id: Identifier
+    variant_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    source_artifact_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    actor: str = Field(min_length=1, max_length=200)
+    recorded_at: datetime
+    notes: NotesText
+
+
+class CurveTraceAssociation(FrozenModel):
+    variant_id: Identifier
+    figure_artifact_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    trace_id: Identifier
+
+
+class CurveVariantRejection(FrozenModel):
+    variant_id: Identifier
+    variant_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    actor: str = Field(min_length=1, max_length=200)
+    recorded_at: datetime
+    notes: NotesText
 
 
 class ImportReviewResolution(FrozenModel):
@@ -451,6 +479,9 @@ class ImportedRuleDraft(DraftRulePackage):
     raw_clause_fragments: tuple[RawClauseFragment, ...] = ()
     raw_figures: tuple[RawFigure, ...] = ()
     curve_digitizations: tuple[CurveDigitizationResult, ...] = ()
+    curve_variant_reviews: tuple[CurveVariantReview, ...] = ()
+    curve_trace_associations: tuple[CurveTraceAssociation, ...] = ()
+    curve_variant_rejections: tuple[CurveVariantRejection, ...] = ()
     extracted_equations: tuple[ExtractedEquation, ...] = ()
     semantic_proposals: tuple[SemanticProposal, ...] = ()
     source_identities: tuple[StandardIdentity, ...]
@@ -471,6 +502,8 @@ def _content_digest(
     procedures: tuple[ProcedureRule, ...] = (),
     guidance: tuple[GuidanceRule, ...] = (),
     curves: tuple[PiecewiseCurveRule, ...] = (),
+    raw_figures: tuple[RawFigure, ...] = (),
+    curve_digitizations: tuple[CurveDigitizationResult, ...] = (),
 ) -> str:
     payload = {
         "tables": [item.model_dump(mode="json") for item in tables],
@@ -487,6 +520,10 @@ def _content_digest(
         "procedures": [item.model_dump(mode="json") for item in procedures],
         "guidance": [item.model_dump(mode="json") for item in guidance],
         "curves": [item.model_dump(mode="json") for item in curves],
+        "raw_figures": [item.model_dump(mode="json") for item in raw_figures],
+        "curve_digitizations": [
+            item.model_dump(mode="json") for item in curve_digitizations
+        ],
     }
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
 

@@ -30,6 +30,15 @@ from insulation_coordination.rules.importer.clauses import (
     ClauseToken,
     RawClauseFragment,
 )
+from insulation_coordination.rules.importer.curves import (
+    AxisCalibration,
+    ConservatismReport,
+    CurveDigitizationResult,
+    PlotCalibration,
+    RawCurvePoint,
+    RawCurveTrace,
+    RawFigure,
+)
 from insulation_coordination.rules.importer.extract import (
     IMPORTER_VERSION,
     ImportedRuleDraft,
@@ -47,6 +56,7 @@ from insulation_coordination.rules.importer.review import (
     build_reviewed_draft,
     proposal_for,
 )
+from insulation_coordination.ui.curve_review import CurveReviewModel
 from insulation_coordination.ui.semantic_review import SemanticReviewModel
 from tests.fixtures.synthetic_rules import synthetic_rule_package
 
@@ -211,6 +221,58 @@ def built_draft(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
         }
     )
     monkeypatch.setattr(recipe_registry, "RECIPES", (recipe,))
+    calibration = PlotCalibration(
+        x=AxisCalibration(
+            scale="log10",
+            slope=Decimal("0.01"),
+            intercept=Decimal(0),
+            residual_pixels=Decimal(0),
+            minor_grid_spacing_pixels=Decimal(10),
+        ),
+        y=AxisCalibration(
+            scale="log10",
+            slope=Decimal("0.01"),
+            intercept=Decimal(0),
+            residual_pixels=Decimal(0),
+            minor_grid_spacing_pixels=Decimal(10),
+        ),
+    )
+    figure = RawFigure(
+        source=curve.source,
+        source_mode="vector_path",
+        source_bbox=(Decimal(0), Decimal(0), Decimal(100), Decimal(140)),
+        pixel_size=(100, 140),
+        transform=(Decimal(1), Decimal(0), Decimal(0), Decimal(1), Decimal(0), Decimal(0)),
+        ocr_tokens=(),
+        traces=(
+            RawCurveTrace(
+                id="synthetic-clause-curve",
+                points=(
+                    RawCurvePoint(
+                        x=Decimal(0), y=Decimal("-101.1"), space="pixel", primitive_ref="p0"
+                    ),
+                    RawCurvePoint(
+                        x=Decimal(100),
+                        y=Decimal("-131.2029995664"),
+                        space="pixel",
+                        primitive_ref="p1",
+                    ),
+                ),
+                stroke_width=Decimal(2),
+            ),
+        ),
+        artifact_sha256=curve.variants[0].reviewed_artifact_sha256,
+    )
+    digitization = CurveDigitizationResult(
+        proposed_rule=curve,
+        calibration=calibration,
+        conservatism=ConservatismReport(
+            maximum_positive_voltage_error=Decimal(0),
+            maximum_fidelity_error_pixels=Decimal(1),
+            proven=True,
+        ),
+        blocking_review_items=(),
+    )
     package = synthetic_rule_package()
     draft = ImportedRuleDraft(
         manifest=package.manifest.model_copy(
@@ -236,6 +298,8 @@ def built_draft(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
         review_resolutions=(resolution, curve_resolution),
         raw_grids=(),
         raw_clause_fragments=(fragment,),
+        raw_figures=(figure,),
+        curve_digitizations=(digitization,),
         source_identities=(IDENTITY,),
     )
     digest = _content_digest(
@@ -249,6 +313,8 @@ def built_draft(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
         draft.source_identities,
         draft.review_resolutions,
         curves=draft.curves,
+        raw_figures=draft.raw_figures,
+        curve_digitizations=draft.curve_digitizations,
     )
     recorded_at = datetime(2026, 8, 8, tzinfo=UTC)
     records = tuple(
@@ -308,11 +374,13 @@ def test_correction_changes_hash_and_resets_review(built_draft) -> None:
         actor="Synthetic Semantic Reviewer",
         notes="Reviewed.",
     )
-    model.review(
-        ids.DVC_FAULT_TIME_VOLTAGE,
+    curve_model = CurveReviewModel(model.draft)
+    curve_model.review_variant(
+        f"{ids.DVC_FAULT_TIME_VOLTAGE}.synthetic",
         actor="Synthetic Curve Reviewer",
         notes="Reviewed the synthetic curve.",
     )
+    model = SemanticReviewModel(curve_model.draft)
     before_artifact = model.proposal(ids.DVC_FAULT_APPLICABILITY).source_artifact_sha256
     assert model.can_approve is True
 
@@ -358,11 +426,13 @@ def test_complete_review_enables_approval(built_draft) -> None:
         actor="Synthetic Semantic Reviewer",
         notes="Reviewed.",
     )
-    model.review(
-        ids.DVC_FAULT_TIME_VOLTAGE,
+    curve_model = CurveReviewModel(model.draft)
+    curve_model.review_variant(
+        f"{ids.DVC_FAULT_TIME_VOLTAGE}.synthetic",
         actor="Synthetic Curve Reviewer",
         notes="Reviewed the synthetic curve.",
     )
+    model = SemanticReviewModel(curve_model.draft)
     proposal = proposal_for(model.draft, ids.DVC_FAULT_TIME_VOLTAGE)
     assert proposal.state == "reviewed"
     package = approve_draft(model.draft, "Synthetic Approver", "Approve synthetic draft.")

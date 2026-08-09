@@ -20,6 +20,7 @@ from insulation_coordination.rules.importer.extract import (
     ImportReviewResolution,
     SemanticProposal,
     _content_digest,
+    canonical_model_sha256,
 )
 from insulation_coordination.rules.importer.identify import StandardRecipe
 from insulation_coordination.rules.validation import validate_rule_package
@@ -452,9 +453,16 @@ def record_correction(
         original.curves,
         original.extracted_equations,
     )
-    raw_changed = (changed.raw_grids, changed.raw_clause_fragments) != (
+    raw_changed = (
+        changed.raw_grids,
+        changed.raw_clause_fragments,
+        changed.raw_figures,
+        changed.curve_digitizations,
+    ) != (
         original.raw_grids,
         original.raw_clause_fragments,
+        original.raw_figures,
+        original.curve_digitizations,
     )
     if not content_changed and not raw_changed and not resolve:
         raise ApprovalError("a correction must change rule content")
@@ -480,6 +488,8 @@ def record_correction(
         procedures=original.procedures,
         guidance=original.guidance,
         curves=original.curves,
+        raw_figures=original.raw_figures,
+        curve_digitizations=original.curve_digitizations,
     )
     recorded_at = datetime.now(UTC)
     resolutions = _require_valid_review_resolutions(
@@ -505,6 +515,8 @@ def record_correction(
         procedures=changed.procedures,
         guidance=changed.guidance,
         curves=changed.curves,
+        raw_figures=changed.raw_figures,
+        curve_digitizations=changed.curve_digitizations,
     )
     audit_records = tuple(
         ApprovalRecord(
@@ -543,6 +555,11 @@ def record_correction(
         review_resolutions=resolutions,
         raw_grids=changed.raw_grids,
         raw_clause_fragments=changed.raw_clause_fragments,
+        raw_figures=changed.raw_figures,
+        curve_digitizations=changed.curve_digitizations,
+        curve_variant_reviews=changed.curve_variant_reviews,
+        curve_trace_associations=changed.curve_trace_associations,
+        curve_variant_rejections=changed.curve_variant_rejections,
         extracted_equations=changed.extracted_equations,
         semantic_proposals=semantic_proposals,
         source_identities=changed.source_identities,
@@ -629,6 +646,10 @@ def _require_logged_content(draft: DraftRulePackage) -> None:
         procedures=draft.procedures,
         guidance=draft.guidance,
         curves=draft.curves,
+        raw_figures=(draft.raw_figures if isinstance(draft, ImportedRuleDraft) else ()),
+        curve_digitizations=(
+            draft.curve_digitizations if isinstance(draft, ImportedRuleDraft) else ()
+        ),
     )
     if actual != expected:
         raise ApprovalError("draft contains an unlogged content change")
@@ -1108,6 +1129,56 @@ def approval_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
                 ),
             )
         )
+    from insulation_coordination.rules.importer.recipes import RECIPES
+
+    required_curve_ids = {
+        semantic_id for recipe in RECIPES for semantic_id in recipe.required_curves
+    }
+    for curve in (curve for curve in draft.curves if curve.id in required_curve_ids):
+        for variant in curve.variants:
+            exact_reviews = tuple(
+                review
+                for review in draft.curve_variant_reviews
+                if review.variant_id == variant.id
+                and review.variant_sha256 == canonical_model_sha256(variant)
+                and review.source_artifact_sha256
+                == variant.reviewed_artifact_sha256
+            )
+            digitizations = tuple(
+                item
+                for item in draft.curve_digitizations
+                if item.proposed_rule is not None
+                and any(member.id == variant.id for member in item.proposed_rule.variants)
+            )
+            proven_members = (
+                tuple(
+                    member
+                    for member in digitizations[0].proposed_rule.variants
+                    if member.id == variant.id
+                )
+                if len(digitizations) == 1 and digitizations[0].proposed_rule is not None
+                else ()
+            )
+            proof_current = (
+                len(digitizations) == 1
+                and len(proven_members) == 1
+                and proven_members[0] == variant
+                and digitizations[0].calibration is not None
+                and digitizations[0].conservatism is not None
+                and digitizations[0].conservatism.proven
+            )
+            if len(exact_reviews) != 1 or not proof_current:
+                blockers.append(
+                    _semantic_blocker(
+                        draft,
+                        code="CURVE_VARIANT_REVIEW_REQUIRED",
+                        semantic_id=variant.id,
+                        message=(
+                            f"curve variant {variant.id} lacks one exact review "
+                            "and current conservative proof"
+                        ),
+                    )
+                )
     return tuple(blockers)
 
 

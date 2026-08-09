@@ -41,6 +41,7 @@ from insulation_coordination.rules.audit import (
 from insulation_coordination.rules.importer.approval import is_fully_resolved
 from insulation_coordination.rules.importer.extract import _REQUIRED_RECIPES, ImportedRuleDraft
 from insulation_coordination.rules.installation import install_rule_package
+from insulation_coordination.ui.curve_review import CurveReviewDialog
 from insulation_coordination.ui.equation_review import EquationReviewDialog
 from insulation_coordination.ui.raw_grid_review import RawGridReviewDialog, source_pdf_paths
 
@@ -142,6 +143,10 @@ class RulesManagerWindow(QWidget):
         self._review_equations_button.setEnabled(False)
         self._review_equations_button.clicked.connect(self._on_review_equations_clicked)
         review_actions.addWidget(self._review_equations_button)
+        self._review_curves_button = QPushButton("Review reconstructed curves…")
+        self._review_curves_button.setEnabled(False)
+        self._review_curves_button.clicked.connect(self._on_review_curves_clicked)
+        review_actions.addWidget(self._review_curves_button)
         review_layout.addLayout(review_actions)
 
         self._review_approve_button = QPushButton("Approve draft and build package…")
@@ -261,6 +266,10 @@ class RulesManagerWindow(QWidget):
         return self._review_equations_button.isEnabled()
 
     @property
+    def curve_review_enabled(self) -> bool:
+        return self._review_curves_button.isEnabled()
+
+    @property
     def review_approve_enabled(self) -> bool:
         return self._review_approve_button.isEnabled()
 
@@ -294,6 +303,7 @@ class RulesManagerWindow(QWidget):
             self._review_approve_button.setEnabled(False)
             self._review_tables_button.setEnabled(False)
             self._review_equations_button.setEnabled(False)
+            self._review_curves_button.setEnabled(False)
             return
         from insulation_coordination.rules.importer.review import (
             recipe_derived_items,
@@ -311,6 +321,9 @@ class RulesManagerWindow(QWidget):
         self._review_tables_button.setEnabled(not tables_done)
         self._review_equations_button.setEnabled(
             tables_done and bool(equation_pending or mapping_pending)
+        )
+        self._review_curves_button.setEnabled(
+            bool(self._draft.curves or self._draft.curve_digitizations)
         )
         for item in table_pending:
             flagged = sum(
@@ -362,6 +375,18 @@ class RulesManagerWindow(QWidget):
         if self._draft is None:
             return
         dialog = EquationReviewDialog(self._draft, actor="maintainer")
+        dialog.draft_changed.connect(self.set_draft)
+        dialog.exec()
+
+    def _on_review_curves_clicked(self) -> None:
+        if self._draft is None:
+            return
+        dialog = CurveReviewDialog(
+            self._draft,
+            actor="maintainer",
+            pdf_paths=self._draft_pdfs,
+            pdf_passwords=self._draft_passwords,
+        )
         dialog.draft_changed.connect(self.set_draft)
         dialog.exec()
 
