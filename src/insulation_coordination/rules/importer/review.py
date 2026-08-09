@@ -20,8 +20,11 @@ from typing import Any
 from insulation_coordination.domain.rules import (
     ApprovalRecord,
     CompatibilityMapping,
+    CurvePoint,
+    CurveSegment,
     DecisionRule,
     DraftRulePackage,
+    FaultTimeVoltageVariant,
     Formula,
     GuidanceRule,
     LinearInterpolate,
@@ -39,6 +42,7 @@ from insulation_coordination.domain.rules import (
 from insulation_coordination.domain.rules import Expression as RuleExpression
 from insulation_coordination.rules.archive import _canonical_json
 from insulation_coordination.rules.importer.approval import ApprovalError, record_correction
+from insulation_coordination.rules.importer.curves import PlotCalibration
 from insulation_coordination.rules.importer.extract import (
     ComponentFormulaCandidate,
     ImportedRuleDraft,
@@ -1480,3 +1484,175 @@ def placeholder_formula_values(expression: Any) -> tuple[Decimal, ...]:
     values: list[Decimal] = []
     _collect_literals(expression, values)
     return tuple(values)
+
+
+def _curve_rule(draft: ImportedRuleDraft, rule_id: str) -> PiecewiseCurveRule:
+    rule = next((rule for rule in draft.curves if rule.id == rule_id), None)
+    if rule is None:
+        raise ValueError(f"unknown curve rule: {rule_id}")
+    return rule
+
+
+def _replace_curve(
+    draft: ImportedRuleDraft,
+    rule_id: str,
+    changed_rule: PiecewiseCurveRule,
+    *,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    from insulation_coordination.rules.importer.approval import record_correction
+
+    changed = draft.model_copy(
+        update={
+            "curves": tuple(
+                changed_rule if rule.id == rule_id else rule for rule in draft.curves
+            )
+        }
+    )
+    return record_correction(draft, changed, actor=actor, notes=notes)
+
+
+def _variant(rule: PiecewiseCurveRule, variant_id: str) -> FaultTimeVoltageVariant:
+    variant = next((v for v in rule.variants if v.id == variant_id), None)
+    if variant is None:
+        raise ValueError(f"unknown curve variant: {variant_id}")
+    return variant
+
+
+def replace_curve_breakpoint(
+    draft: ImportedRuleDraft,
+    *,
+    variant_id: str,
+    index: int,
+    point: CurvePoint,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Replace one breakpoint of one variant; the aggregate proposal resets."""
+
+    rule = next((r for r in draft.curves for v in r.variants if v.id == variant_id), None)
+    if rule is None:
+        raise ValueError(f"unknown curve variant: {variant_id}")
+    variant = _variant(rule, variant_id)
+    if not 0 <= index < len(variant.points):
+        raise ValueError("breakpoint index outside the variant")
+    points = tuple(
+        point if position == index else existing
+        for position, existing in enumerate(variant.points)
+    )
+    changed_variant = variant.model_copy(update={"points": points})
+    changed_rule = rule.model_copy(
+        update={
+            "variants": tuple(
+                changed_variant if v.id == variant_id else v for v in rule.variants
+            )
+        }
+    )
+    return _replace_curve(draft, rule.id, changed_rule, actor=actor, notes=notes)
+
+
+def replace_curve_segment(
+    draft: ImportedRuleDraft,
+    *,
+    variant_id: str,
+    index: int,
+    segment: CurveSegment,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Replace one segment declaration of one variant; review resets."""
+
+    rule = next((r for r in draft.curves for v in r.variants if v.id == variant_id), None)
+    if rule is None:
+        raise ValueError(f"unknown curve variant: {variant_id}")
+    variant = _variant(rule, variant_id)
+    if not 0 <= index < len(variant.segments):
+        raise ValueError("segment index outside the variant")
+    segments = tuple(
+        segment if position == index else existing
+        for position, existing in enumerate(variant.segments)
+    )
+    changed_variant = variant.model_copy(update={"segments": segments})
+    changed_rule = rule.model_copy(
+        update={
+            "variants": tuple(
+                changed_variant if v.id == variant_id else v for v in rule.variants
+            )
+        }
+    )
+    return _replace_curve(draft, rule.id, changed_rule, actor=actor, notes=notes)
+
+
+def associate_curve_trace(
+    draft: ImportedRuleDraft,
+    *,
+    trace_id: str,
+    variant_id: str,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Associate one raw trace with one variant through its selector.
+
+    The association records which raw trace supplied the variant's geometry; the
+    variant's points must already derive from that trace (projection-time wiring).
+    Changing the association rewrites the variant provenance note and resets review.
+    """
+
+    rule = next((r for r in draft.curves for v in r.variants if v.id == variant_id), None)
+    if rule is None:
+        raise ValueError(f"unknown curve variant: {variant_id}")
+    trace = next(
+        (
+            trace
+            for figure in draft.raw_figures
+            for trace in figure.traces
+            if trace.id == trace_id
+        ),
+        None,
+    )
+    if trace is None:
+        raise ValueError(f"unknown raw trace: {trace_id}")
+    variant = _variant(rule, variant_id)
+    changed_variant = variant.model_copy(
+        update={"applicability": f"review required; trace:{trace_id}"}
+    )
+    changed_rule = rule.model_copy(
+        update={
+            "variants": tuple(
+                changed_variant if v.id == variant_id else v for v in rule.variants
+            )
+        }
+    )
+    return _replace_curve(draft, rule.id, changed_rule, actor=actor, notes=notes)
+
+
+def correct_curve_calibration(
+    draft: ImportedRuleDraft,
+    *,
+    figure_page: int,
+    calibration: PlotCalibration,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Replace one figure's calibration; the digitization and rule must rebuild."""
+
+    figure = next(
+        (figure for figure in draft.raw_figures if figure.source.page == figure_page),
+        None,
+    )
+    if figure is None:
+        raise ValueError(f"unknown raw figure on page {figure_page}")
+    changed = draft.model_copy(
+        update={
+            "curve_digitizations": tuple(
+                item.model_copy(update={"calibration": calibration})
+                if item.calibration is not None
+                else item
+                for item in draft.curve_digitizations
+            )
+        }
+    )
+    from insulation_coordination.rules.importer.approval import record_correction
+
+    return record_correction(draft, changed, actor=actor, notes=notes)

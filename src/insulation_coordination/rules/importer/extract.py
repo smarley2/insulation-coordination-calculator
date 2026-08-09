@@ -43,6 +43,10 @@ from insulation_coordination.rules.archive import _canonical_json
 
 if TYPE_CHECKING:
     from insulation_coordination.rules.importer.clauses import RawClauseFragment
+    from insulation_coordination.rules.importer.curves import (
+        CurveDigitizationResult,
+        RawFigure,
+    )
 
 from insulation_coordination.rules.importer.identify import (
     BlankCellSemantics,
@@ -445,6 +449,8 @@ class ImportedRuleDraft(DraftRulePackage):
     review_resolutions: tuple[ImportReviewResolution, ...] = ()
     raw_grids: tuple[RawGrid, ...] = ()
     raw_clause_fragments: tuple[RawClauseFragment, ...] = ()
+    raw_figures: tuple[RawFigure, ...] = ()
+    curve_digitizations: tuple[CurveDigitizationResult, ...] = ()
     extracted_equations: tuple[ExtractedEquation, ...] = ()
     semantic_proposals: tuple[SemanticProposal, ...] = ()
     source_identities: tuple[StandardIdentity, ...]
@@ -1652,9 +1658,17 @@ def extract_draft(
 
 def _rebuild_draft_model() -> None:
     from insulation_coordination.rules.importer.clauses import RawClauseFragment
+    from insulation_coordination.rules.importer.curves import (
+        CurveDigitizationResult,
+        RawFigure,
+    )
 
     ImportedRuleDraft.model_rebuild(
-        _types_namespace={"RawClauseFragment": RawClauseFragment}
+        _types_namespace={
+            "RawClauseFragment": RawClauseFragment,
+            "RawFigure": RawFigure,
+            "CurveDigitizationResult": CurveDigitizationResult,
+        }
     )
 
 
