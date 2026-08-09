@@ -13,7 +13,7 @@ from insulation_coordination.rules.importer.clauses import (
 )
 from insulation_coordination.rules.importer.extract import ExtractionError
 from insulation_coordination.rules.importer.identify import ClauseAuditSpec, StandardIdentity
-from tests.fixtures.synthetic_pdf import create_clause_pdf
+from tests.fixtures.synthetic_pdf import create_clause_pdf, create_paragraph_clause_pdf
 
 IDENTITY = StandardIdentity(
     standard="SYNTHETIC",
@@ -99,6 +99,19 @@ def test_wrong_root_kind_blocks_extraction(clause_page) -> None:
     spec = synthetic_clause_spec().model_copy(update={"expected_root_kind": "paragraph"})
     with pytest.raises(ExtractionError, match="clause structure"):
         extract_clause_fragment(clause_page, spec, IDENTITY)
+
+
+def test_wrapped_paragraph_becomes_one_node_and_extracts_figure_references(tmp_path) -> None:
+    path = tmp_path / "paragraph.pdf"
+    create_paragraph_clause_pdf(path)
+    spec = synthetic_clause_spec().model_copy(update={"expected_root_kind": "paragraph"})
+    with pdfplumber.open(path) as pdf:
+        fragment = extract_clause_fragment(pdf.pages[2], spec, IDENTITY)
+    assert len(fragment.nodes) == 1
+    assert fragment.nodes[0].kind == "paragraph"
+    assert {
+        token.normalized for token in fragment.tokens if token.kind == "reference"
+    } == {"figure-5", "figure-6", "figure-7"}
 
 
 def test_wrong_bbox_blocks_extraction(clause_page) -> None:

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from decimal import Decimal
-
 import pytest
 
 from insulation_coordination.domain.rules import SourceReference
@@ -22,57 +20,62 @@ SOURCE = SourceReference(
     page=45,
     table="S3",
 )
+DATA_ROWS = (3, 4, 6)
+DATA_COLUMNS = range(1, 7)
+CONTINUATIONS = {(5, 4), (7, 5)}
+OUTCOMES = ("none", "basic protection", "enhanced protection")
 
 
 def _cell(row: int, column: int) -> RawGridCell:
     source = SOURCE.model_copy(
         update={"row": f"grid row {row + 1}", "column": f"grid column {column + 1}"}
     )
-    if (row, column) == (1, 0):
+    if row in DATA_ROWS and column in DATA_COLUMNS:
+        logical_row = DATA_ROWS.index(row)
         return RawGridCell(
             row=row,
             column=column,
-            raw_text="",
-            role="blank",
-            parse_status="blank",
+            raw_text=OUTCOMES[(logical_row + column) % len(OUTCOMES)],
+            role="data",
+            logical_row=logical_row,
+            logical_column=f"protection-context-{column}",
+            parse_status="non_scalar",
             source=source,
         )
-    if row <= 1:
+    if row in DATA_ROWS and column == 0:
         return RawGridCell(
             row=row,
             column=column,
-            raw_text=f"HEADER_{row}_{column}",
-            role="header",
+            raw_text=f"DVC {DATA_ROWS.index(row) + 1}",
+            role="note",
             parse_status="text",
             source=source,
         )
-    if column == 0:
+    if (row, column) in CONTINUATIONS:
         return RawGridCell(
             row=row,
             column=column,
-            raw_text=f"dvc-row-{row - 1}",
-            role="header",
+            raw_text="source continuation",
+            role="note",
             parse_status="text",
             source=source,
         )
-    if column == 1:
+    if row == 8 and column == 0:
         return RawGridCell(
             row=row,
             column=column,
-            raw_text=f"category-row-{row - 1}",
-            role="header",
+            raw_text="source notes",
+            role="footnote",
             parse_status="text",
             source=source,
         )
-    token = "yes" if (row + column) % 2 else "no"
+    raw_text = f"HEADER_{row}_{column}" if row <= 2 else ""
     return RawGridCell(
         row=row,
         column=column,
-        raw_text=token,
-        role="data",
-        logical_row=row - 2,
-        logical_column=f"boolean-column-{column - 1}",
-        parse_status="text",
+        raw_text=raw_text,
+        role="header" if raw_text else "blank",
+        parse_status="text" if raw_text else "blank",
         source=source,
     )
 
@@ -89,56 +92,59 @@ def _grid() -> RawGrid:
     )
 
 
-def test_table_3_recipe_is_structural_and_uses_the_protection_matrix_target() -> None:
+def test_table_3_recipe_declares_physical_and_semantic_structure() -> None:
     assert TABLE_3.semantic_id == ids.DVC_PROTECTION_MATRIX
     assert TABLE_3.source_table == "3"
-    assert TABLE_3.title_anchor == "Table 3"
     assert TABLE_3.page_number == 45
     assert TABLE_3.expected_bbox == (71.0, 265.3, 524.3, 744.2)
     assert (TABLE_3.expected_raw_rows, TABLE_3.expected_raw_columns) == (9, 7)
-    assert TABLE_3.page_search_radius == 2
-    assert TABLE_3.merged_cells
+    assert (TABLE_3.expected_data_rows, TABLE_3.expected_data_columns) == (3, 6)
+    assert TABLE_3.segments[0].header_rows == (0, 1, 2)
+    assert TABLE_3.segments[0].data_rows == DATA_ROWS
+    assert TABLE_3.segments[0].note_rows == (5, 7)
+    assert TABLE_3.segments[0].footnote_rows == (8,)
+    assert tuple(column.source_column for column in TABLE_3.columns) == tuple(range(7))
 
 
-def test_merged_dvc_banner_expands_down_and_blank_stays_typed() -> None:
+def test_category_prefix_grammar_resolves_only_neutral_outcomes() -> None:
+    grammar = TABLE_3.token_grammar
+    assert grammar is not None
+    assert grammar.target == "categorical"
+    assert grammar.resolve("None with source marker") == "none"
+    assert grammar.resolve("Basic protection with source marker") == "basic_protection"
+    assert grammar.resolve("Enhanced protection with source marker") == "enhanced_protection"
+    assert grammar.resolve("unknown") is None
+
+
+def test_structure_retains_exactly_eighteen_data_cells_and_source_continuations() -> None:
     structured = apply_table_structure(_grid(), TABLE_3)
-    cells = {(cell.row, cell.column): cell for cell in structured.cells}
-
-    assert cells[(1, 0)].raw_text == cells[(0, 0)].raw_text
-    assert cells[(1, 0)].blank_semantics == "inherit"
+    data = tuple(cell for cell in structured.cells if cell.role == "data")
+    assert len(data) == 18
+    assert {(cell.logical_row, cell.logical_column) for cell in data} == {
+        (row, f"protection-context-{column}")
+        for row in range(3)
+        for column in range(1, 7)
+    }
+    assert all(
+        next(cell for cell in structured.cells if (cell.row, cell.column) == coordinate).role
+        == "note"
+        for coordinate in CONTINUATIONS
+    )
 
 
 def test_missing_physical_cell_blocks_structural_expansion() -> None:
     grid = _grid()
-    incomplete = grid.model_copy(update={"cells": grid.cells[:-1]})
-
     with pytest.raises(ExtractionError, match="missing physical cell"):
-        apply_table_structure(incomplete, TABLE_3)
+        apply_table_structure(grid.model_copy(update={"cells": grid.cells[:-1]}), TABLE_3)
 
 
-def test_declared_blank_rejects_unexpected_content() -> None:
+def test_unknown_category_blocks_structural_expansion() -> None:
     grid = _grid()
     cells = tuple(
-        cell.model_copy(
-            update={"raw_text": "999", "value": Decimal(999), "parse_status": "numeric"}
-        )
-        if (cell.row, cell.column) == (1, 0)
+        cell.model_copy(update={"raw_text": "unknown"})
+        if (cell.row, cell.column) == (3, 1)
         else cell
         for cell in grid.cells
     )
-
-    with pytest.raises(ExtractionError, match="declared blank"):
-        apply_table_structure(grid.model_copy(update={"cells": cells}), TABLE_3)
-
-
-def test_undeclared_blank_blocks_structural_expansion() -> None:
-    grid = _grid()
-    cells = tuple(
-        cell.model_copy(update={"raw_text": "", "role": "blank", "parse_status": "blank"})
-        if (cell.row, cell.column) == (0, 3)
-        else cell
-        for cell in grid.cells
-    )
-
-    with pytest.raises(ExtractionError, match="undeclared blank"):
+    with pytest.raises(ExtractionError, match="unknown categorical token"):
         apply_table_structure(grid.model_copy(update={"cells": cells}), TABLE_3)

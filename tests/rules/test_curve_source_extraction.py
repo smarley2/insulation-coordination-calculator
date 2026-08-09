@@ -180,6 +180,25 @@ def test_lossless_raster_curve_recovers_one_pixel_trace() -> None:
     assert traces[0].points[-1].x == Decimal(180)
 
 
+def test_colored_solid_and_dashed_curves_are_recovered_in_voltage_order() -> None:
+    image = Image.new("RGB", (240, 180), color="white")
+    draw = ImageDraw.Draw(image)
+    for x in range(20, 221, 20):
+        draw.line((x, 10, x, 155), fill=(40, 40, 40), width=1)
+    for y in range(15, 156, 20):
+        draw.line((20, y, 220, y), fill=(40, 40, 40), width=1)
+    draw.line((20, 45, 220, 45), fill=(205, 75, 70), width=4)
+    for start in range(20, 221, 18):
+        draw.line((start, 80, min(start + 10, 220), 80), fill=(75, 135, 195), width=4)
+        draw.line((start, 115, min(start + 10, 220), 115), fill=(25, 80, 140), width=4)
+
+    traces = _raster_traces(image, (), 3)
+
+    assert len(traces) == 3
+    endpoint_heights = [trace.points[-1].y for trace in traces]
+    assert endpoint_heights == sorted(endpoint_heights)
+
+
 def test_ambiguous_images_block_extraction(curve_pdf, monkeypatch) -> None:
     reader, pdf = _pages(curve_pdf)
     with pdf:
@@ -274,6 +293,37 @@ def test_clipping_path_blocks_extraction(curve_pdf) -> None:
             FakeOcrEngine(),
             IDENTITY,
         )
+
+
+def test_rectangular_clip_that_exactly_contains_lossless_image_is_allowed(curve_pdf) -> None:
+    """A reviewed image-sized clip does not alter the lossless source geometry."""
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, NameObject
+
+    clipped = curve_pdf.parent / "clipped-image.pdf"
+    writer = PdfWriter()
+    writer.append(curve_pdf)
+    page = writer.pages[1]
+    contents = page.get_contents()
+    stream = DecodedStreamObject()
+    stream.set_data(b"100 350 40 40 re W n\n" + contents.get_data())
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    with clipped.open("wb") as target:
+        writer.write(target)
+
+    reader, pdf = _pages(clipped)
+    with pdf:
+        figure = extract_raw_figure(
+            reader.pages[1],
+            pdf.pages[1],
+            synthetic_curve_spec().model_copy(update={"page_number": 2}),
+            FakeOcrEngine(),
+            IDENTITY,
+        )
+    assert figure.source_mode == "image_xobject"
+    assert figure.transform == (
+        Decimal(40), Decimal(0), Decimal(0), Decimal(40), Decimal(100), Decimal(350),
+    )
 
 
 def test_image_branch_retains_placement_transform(curve_pdf) -> None:

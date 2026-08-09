@@ -33,6 +33,7 @@ from insulation_coordination.rules.importer.extract import (
 from insulation_coordination.rules.importer.identify import StandardIdentity
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import RECIPE
+from insulation_coordination.rules.importer.recipes.iec62477_1_2022.curves import CURVES
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
     project_fault_time_voltage,
 )
@@ -127,16 +128,31 @@ def _figures() -> tuple[RawFigure, RawFigure, RawFigure]:
     )
 
 
+def _variants(figure_index: int, artifact: str) -> tuple[FaultTimeVoltageVariant, ...]:
+    return tuple(
+        _variant(
+            f"{CURVES[figure_index].figure}.{index}",
+            selector.subject,
+            selector.voltage_basis,
+            selector.dvc_context,
+            selector.environment_context,
+            artifact,
+        )
+        for index, selector in enumerate(CURVES[figure_index].variant_slots, start=1)
+    )
+
+
 def test_projected_variants_have_exact_distinct_selectors() -> None:
     rule, proposals = project_fault_time_voltage(
-        _figures(), (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "a" * 64),),
-        (_variant("dc", "accessible_circuit", "dc", "dvc-a", "indoor", "b" * 64),),
-        (_variant("peak", "conductive_accessible_part", "ac_peak", None, None, "c" * 64),),
+        _figures(),
+        _variants(0, "a" * 64),
+        _variants(1, "b" * 64),
+        _variants(2, "c" * 64),
         IDENTITY,
     )
     assert rule.id == ids.DVC_FAULT_TIME_VOLTAGE
     selectors = {variant.selector for variant in rule.variants}
-    assert len(selectors) == len(rule.variants) == 3
+    assert len(selectors) == len(rule.variants) == 8
     assert len(proposals) == 1
     assert proposals[0].semantic_id == ids.DVC_FAULT_TIME_VOLTAGE
     assert proposals[0].state == "proposed"
@@ -146,27 +162,29 @@ def test_projected_variants_have_exact_distinct_selectors() -> None:
 def test_figure_subjects_and_none_dimensions_are_exact() -> None:
     rule, _ = project_fault_time_voltage(
         _figures(),
-        (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "a" * 64),),
-        (_variant("dc", "accessible_circuit", "dc", "dvc-a", "indoor", "b" * 64),),
-        (_variant("peak", "conductive_accessible_part", "ac_peak", None, None, "c" * 64),),
+        _variants(0, "a" * 64),
+        _variants(1, "b" * 64),
+        _variants(2, "c" * 64),
         IDENTITY,
     )
-    by_id = {variant.id: variant for variant in rule.variants}
-    assert by_id[f"{ids.DVC_FAULT_TIME_VOLTAGE}.ac"].selector.subject == "accessible_circuit"
-    assert (
-        by_id[f"{ids.DVC_FAULT_TIME_VOLTAGE}.peak"].selector.subject
-        == "conductive_accessible_part"
+    assert all(
+        variant.selector.subject == "accessible_circuit"
+        for variant in rule.variants[:6]
     )
-    peak = by_id[f"{ids.DVC_FAULT_TIME_VOLTAGE}.peak"].selector
-    assert peak.dvc_context is None and peak.environment_context is None
+    assert all(
+        variant.selector.subject == "conductive_accessible_part"
+        and variant.selector.dvc_context is None
+        and variant.selector.environment_context is None
+        for variant in rule.variants[6:]
+    )
 
 
 def test_none_dimensions_do_not_wildcard() -> None:
     rule, _ = project_fault_time_voltage(
         _figures(),
-        (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "a" * 64),),
-        (_variant("dc", "accessible_circuit", "dc", "dvc-a", "indoor", "b" * 64),),
-        (_variant("peak", "conductive_accessible_part", "ac_peak", None, None, "c" * 64),),
+        _variants(0, "a" * 64),
+        _variants(1, "b" * 64),
+        _variants(2, "c" * 64),
         IDENTITY,
     )
     # A selector with a DVC context must NOT match the variant whose context is None.
@@ -183,9 +201,9 @@ def test_none_dimensions_do_not_wildcard() -> None:
 def test_exact_selector_evaluates_matching_variant() -> None:
     rule, _ = project_fault_time_voltage(
         _figures(),
-        (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "a" * 64),),
-        (_variant("dc", "accessible_circuit", "dc", "dvc-a", "indoor", "b" * 64),),
-        (_variant("peak", "conductive_accessible_part", "ac_peak", None, None, "c" * 64),),
+        _variants(0, "a" * 64),
+        _variants(1, "b" * 64),
+        _variants(2, "c" * 64),
         IDENTITY,
     )
     result = evaluate_piecewise_curve(
@@ -199,22 +217,22 @@ def test_exact_selector_evaluates_matching_variant() -> None:
         Decimal(10),
     )
     assert result.status == "matched"
-    assert result.variant_id == f"{ids.DVC_FAULT_TIME_VOLTAGE}.peak"
+    assert result.variant_id == f"{ids.DVC_FAULT_TIME_VOLTAGE}.7.2"
 
 
 def test_aggregate_artifact_hash_covers_ordered_figure_digests() -> None:
     _, first = project_fault_time_voltage(
         _figures(),
-        (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "a" * 64),),
-        (_variant("dc", "accessible_circuit", "dc", "dvc-a", "indoor", "b" * 64),),
-        (_variant("peak", "conductive_accessible_part", "ac_peak", None, None, "c" * 64),),
+        _variants(0, "a" * 64),
+        _variants(1, "b" * 64),
+        _variants(2, "c" * 64),
         IDENTITY,
     )
     _, second = project_fault_time_voltage(
         (_figure("SF-5", 54, "d" * 64), *_figures()[1:]),
-        (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "d" * 64),),
-        (_variant("dc", "accessible_circuit", "dc", "dvc-a", "indoor", "b" * 64),),
-        (_variant("peak", "conductive_accessible_part", "ac_peak", None, None, "c" * 64),),
+        _variants(0, "d" * 64),
+        _variants(1, "b" * 64),
+        _variants(2, "c" * 64),
         IDENTITY,
     )
     assert first[0].source_artifact_sha256 != second[0].source_artifact_sha256
@@ -223,9 +241,9 @@ def test_aggregate_artifact_hash_covers_ordered_figure_digests() -> None:
 def test_projected_source_hash_matches_review_gate() -> None:
     rule, proposals = project_fault_time_voltage(
         _figures(),
-        (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "a" * 64),),
-        (_variant("dc", "accessible_circuit", "dc", "dvc-a", "indoor", "b" * 64),),
-        (_variant("peak", "conductive_accessible_part", "ac_peak", None, None, "c" * 64),),
+        _variants(0, "a" * 64),
+        _variants(1, "b" * 64),
+        _variants(2, "c" * 64),
         IDENTITY,
     )
     draft = ImportedRuleDraft.model_construct(
@@ -243,12 +261,17 @@ def test_projected_source_hash_matches_review_gate() -> None:
 
 
 def test_variant_must_be_linked_to_its_figure_artifact() -> None:
+    figure5 = _variants(0, "a" * 64)
+    figure5 = (
+        figure5[0].model_copy(update={"reviewed_artifact_sha256": "b" * 64}),
+        *figure5[1:],
+    )
     with pytest.raises(ValueError, match="Figure 5 variant"):
         project_fault_time_voltage(
             _figures(),
-            (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "b" * 64),),
-            (_variant("dc", "accessible_circuit", "dc", "dvc-a", "indoor", "b" * 64),),
-            (_variant("peak", "conductive_accessible_part", "ac_peak", None, None, "c" * 64),),
+            figure5,
+            _variants(1, "b" * 64),
+            _variants(2, "c" * 64),
             IDENTITY,
         )
 
@@ -257,31 +280,42 @@ def test_missing_figure_blocks_projection() -> None:
     with pytest.raises(ValueError, match="Figure"):
         project_fault_time_voltage(
             _figures()[:2],
-            (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "a" * 64),),
-            (_variant("dc", "accessible_circuit", "dc", "dvc-a", "indoor", "b" * 64),),
+            _variants(0, "a" * 64),
+            _variants(1, "b" * 64),
             (),
             IDENTITY,
         )
 
 
-def test_empty_variant_group_blocks_projection() -> None:
-    with pytest.raises(ValueError, match="each require exactly one"):
+def test_incomplete_variant_group_blocks_projection() -> None:
+    with pytest.raises(ValueError, match="exact reviewed variant inventory"):
         project_fault_time_voltage(
             _figures(),
-            (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "a" * 64),),
+            _variants(0, "a" * 64),
             (),
-            (_variant("peak", "conductive_accessible_part", "ac_peak", None, None, "c" * 64),),
+            _variants(2, "c" * 64),
             IDENTITY,
         )
 
 
 def test_wrong_figure_semantic_role_blocks_projection() -> None:
-    with pytest.raises(ValueError, match="Figure 6 variant has the wrong semantic role"):
+    figure6 = _variants(1, "b" * 64)
+    figure6 = (
+        figure6[0].model_copy(
+            update={
+                "selector": figure6[0].selector.model_copy(
+                    update={"subject": "conductive_accessible_part"}
+                )
+            }
+        ),
+        *figure6[1:],
+    )
+    with pytest.raises(ValueError, match="exact reviewed variant inventory"):
         project_fault_time_voltage(
             _figures(),
-            (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "a" * 64),),
-            (_variant("peak", "accessible_circuit", "ac_peak", "dvc-a", "indoor", "b" * 64),),
-            (_variant("peak", "conductive_accessible_part", "ac_peak", None, None, "c" * 64),),
+            _variants(0, "a" * 64),
+            figure6,
+            _variants(2, "c" * 64),
             IDENTITY,
         )
 
@@ -314,26 +348,23 @@ def test_real_extraction_stage_projects_all_recipe_figures(
         )
 
     def fake_digitize(figure, spec, _ocr, _identity):
-        suffix = {"5": "ac", "6": "dc", "7": "peak"}[spec.figure]
-        variant = _variant(
-            suffix,
-            spec.variant_slots[0].subject,
-            spec.variant_slots[0].voltage_basis,
-            spec.variant_slots[0].dvc_context,
-            spec.variant_slots[0].environment_context,
-            figure.artifact_sha256,
-        ).model_copy(
-            update={
-                "id": f"{ids.DVC_FAULT_TIME_VOLTAGE}.{spec.figure}",
-                "source": figure.source,
-            }
+        variants = tuple(
+            _variant(
+                f"{spec.figure}.{index}",
+                selector.subject,
+                selector.voltage_basis,
+                selector.dvc_context,
+                selector.environment_context,
+                figure.artifact_sha256,
+            ).model_copy(update={"source": figure.source})
+            for index, selector in enumerate(spec.variant_slots, start=1)
         )
         from insulation_coordination.domain.rules import PiecewiseCurveRule
 
         return CurveDigitizationResult(
             proposed_rule=PiecewiseCurveRule(
                 id=ids.DVC_FAULT_TIME_VOLTAGE,
-                variants=(variant,),
+                variants=variants,
                 source=figure.source,
             ),
             calibration=None,
@@ -357,7 +388,7 @@ def test_real_extraction_stage_projects_all_recipe_figures(
     assert len(figures) == len(digitizations) == 3
     assert len(curves) == len(proposals) == 1
     assert curves[0].id == ids.DVC_FAULT_TIME_VOLTAGE
-    assert len(review_items) == 3
+    assert len(review_items) == 8
     assert {item.semantic_id for item in review_items} == {
         variant.id for variant in curves[0].variants
     }

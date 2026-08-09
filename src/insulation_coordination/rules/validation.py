@@ -126,6 +126,14 @@ def _record_source_valid(source: SourceReference) -> bool:
     return bool(source.clause and (source.table or source.figure))
 
 
+def _clause_source_valid(source: SourceReference) -> bool:
+    return bool(source.clause)
+
+
+def _curve_source_valid(source: SourceReference) -> bool:
+    return bool(source.figure or _record_source_valid(source))
+
+
 def _cell_source_valid(source: SourceReference) -> bool:
     return bool(
         source.clause
@@ -260,9 +268,19 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
     is_iec_import = package.manifest.importer_version.startswith("iec-pdf-")
     trusted_iec_package = is_iec_import and package.manifest.approved
     if trusted_iec_package:
+        from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
         from insulation_coordination.rules.importer.recipes import RECIPES
 
-        expected_table_ids = {spec.semantic_id for recipe in RECIPES for spec in recipe.tables}
+        decision_projected_tables = {
+            ids.DVC_VOLTAGE_LIMITS,
+            ids.DVC_PROTECTION_MATRIX,
+        }
+        expected_table_ids = {
+            spec.semantic_id
+            for recipe in RECIPES
+            for spec in recipe.tables
+            if spec.semantic_id not in decision_projected_tables
+        }
         expected_formula_ids = {spec.semantic_id for recipe in RECIPES for spec in recipe.formulas}
         expected_mapping_ids = {spec.id for recipe in RECIPES for spec in recipe.mappings}
     else:
@@ -384,8 +402,8 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         )
         and all(_record_source_valid(mapping.source) for mapping in package.mappings)
         and all(
-            _record_source_valid(decision.source)
-            and all(_record_source_valid(row.source) for row in decision.rows)
+            _clause_source_valid(decision.source)
+            and all(_clause_source_valid(row.source) for row in decision.rows)
             for decision in package.decisions
         )
         and all(
@@ -402,8 +420,8 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         )
         and all(_record_source_valid(guidance.source) for guidance in package.guidance)
         and all(
-            _record_source_valid(curve.source)
-            and all(_record_source_valid(variant.source) for variant in curve.variants)
+            _curve_source_valid(curve.source)
+            and all(_curve_source_valid(variant.source) for variant in curve.variants)
             for curve in package.curves
         )
     )

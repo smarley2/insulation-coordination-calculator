@@ -67,6 +67,12 @@ def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft
         )
     if item.kind == "mapping":
         return any(spec.id == item.semantic_id for recipe in _recipes() for spec in recipe.mappings)
+    if item.kind == "clause":
+        return any(
+            fragment.id == f"raw-{item.semantic_id}"
+            and _source_matches(fragment.source, item.source)
+            for fragment in changed.raw_clause_fragments
+        )
     if item.kind == "curve":
         return any(
             figure.source.page == item.source.page
@@ -716,9 +722,18 @@ def _require_compatibility_mapping(draft: DraftRulePackage) -> None:
 
 
 def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
+    from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
     from insulation_coordination.rules.importer.recipes import RECIPES
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
+        project_dvc_protection_matrix,
+        project_dvc_voltage_limits,
+    )
 
     table_specs = tuple(spec for recipe in RECIPES for spec in recipe.tables)
+    custom_table_ids = {ids.DVC_VOLTAGE_LIMITS, ids.DVC_PROTECTION_MATRIX}
+    typed_table_specs = tuple(
+        spec for spec in table_specs if spec.semantic_id not in custom_table_ids
+    )
     formula_specs = tuple(spec for recipe in RECIPES for spec in recipe.formulas)
     mapping_specs = tuple(spec for recipe in RECIPES for spec in recipe.mappings)
     tables = {table.id: table for table in draft.tables}
@@ -726,7 +741,7 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
     mappings = {mapping.id: mapping for mapping in draft.mappings}
     grids = {grid.id: grid for grid in draft.raw_grids}
     if (
-        set(tables) != {spec.semantic_id for spec in table_specs}
+        set(tables) != {spec.semantic_id for spec in typed_table_specs}
         or set(formulas) != {spec.semantic_id for spec in formula_specs}
         or set(mappings) != {spec.id for spec in mapping_specs}
         or set(grids) != {f"raw-{spec.semantic_id}" for spec in table_specs}
@@ -737,8 +752,22 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
     for recipe_id, recipe in recipes_by_id.items():
         identity = identities_by_recipe[recipe_id]
         for spec in recipe.tables:
-            table = tables[spec.semantic_id]
             grid = grids[f"raw-{spec.semantic_id}"]
+            if spec.semantic_id in custom_table_ids:
+                expected, _proposals = (
+                    project_dvc_voltage_limits(grid, identity)
+                    if spec.semantic_id == ids.DVC_VOLTAGE_LIMITS
+                    else project_dvc_protection_matrix(grid, identity)
+                )
+                actual = tuple(
+                    rule for rule in draft.decisions if rule.id in {item.id for item in expected}
+                )
+                if actual != expected:
+                    raise ApprovalError(
+                        "reviewed decision does not correspond to its raw recipe grid"
+                    )
+                continue
+            table = tables[spec.semantic_id]
             expected_source = SourceReference(
                 document_id=identity.recipe_id,
                 standard=identity.standard,
@@ -952,7 +981,7 @@ def _require_consistent_shared_source_cells(draft: ImportedRuleDraft) -> None:
     from; two cells with an equal ``source`` are two copies of the same cell. A
     reviewer correcting one copy and not the other must not approve.
     """
-    first_seen: dict[SourceReference, tuple[str, object]] = {}
+    first_seen: dict[tuple[object, ...], tuple[str, object]] = {}
     for grid in draft.raw_grids:
         for cell in grid.cells:
             values: object = (
@@ -972,9 +1001,23 @@ def _require_consistent_shared_source_cells(draft: ImportedRuleDraft) -> None:
             )
             if values is None or values == ((), ()):
                 continue
-            seen = first_seen.get(cell.source)
+            physical_source = tuple(
+                getattr(cell.source, field)
+                for field in (
+                    "document_id",
+                    "standard",
+                    "edition",
+                    "page",
+                    "clause",
+                    "table",
+                    "figure",
+                    "row",
+                    "column",
+                )
+            )
+            seen = first_seen.get(physical_source)
             if seen is None:
-                first_seen[cell.source] = (grid.id, values)
+                first_seen[physical_source] = (grid.id, values)
                 continue
             other_grid_id, other_value = seen
             if other_value != values:

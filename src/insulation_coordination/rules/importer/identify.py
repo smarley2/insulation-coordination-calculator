@@ -192,29 +192,38 @@ class ReferenceSlotSpec(FrozenModel):
 class TokenGrammarSpec(FrozenModel):
     """A reviewed neutral-token grammar for non-numeric data cells.
 
-    Maps the normalized token text extracted from a data cell onto a typed value.
-    Only "boolean" targets exist: a table that needs another type needs its own
-    structural review, not a new hard-coded fallback. Extraction never converts
-    tokens itself; it only checks that every data-cell token belongs to the
-    grammar and blocks on anything else.
+    Maps normalized token text extracted from a data cell onto a typed value.
+    Prefix matching supports source cells that append reviewed footnote markers
+    or qualifiers to a neutral category. Extraction never guesses an unknown
+    token; it checks that every data-cell token belongs to the grammar.
     """
 
-    target: Literal["boolean"]
-    tokens: tuple[tuple[Identifier, bool], ...] = Field(min_length=2)
+    target: Literal["boolean", "categorical"]
+    tokens: tuple[tuple[Identifier, bool | Identifier], ...] = Field(min_length=2)
+    match: Literal["exact", "prefix"] = "exact"
 
     @model_validator(mode="after")
     def _unique_tokens(self) -> TokenGrammarSpec:
         texts = tuple(text for text, _value in self.tokens)
         if len(texts) != len(set(texts)):
             raise ValueError("token grammar must not repeat a token")
+        if self.target == "boolean" and any(type(value) is not bool for _, value in self.tokens):
+            raise ValueError("boolean token grammar values must be booleans")
+        if self.target == "categorical" and any(
+            not isinstance(value, str) for _, value in self.tokens
+        ):
+            raise ValueError("categorical token grammar values must be identifiers")
         return self
 
-    def resolve(self, raw_text: str) -> bool | None:
+    def resolve(self, raw_text: str) -> bool | Identifier | None:
         """The typed value for one extracted token, or None when unknown."""
 
         normalized = _normalized(raw_text)
         for text, value in self.tokens:
-            if _normalized(text) == normalized:
+            candidate = _normalized(text)
+            if candidate == normalized or (
+                self.match == "prefix" and normalized.startswith(candidate)
+            ):
                 return value
         return None
 
@@ -369,6 +378,7 @@ class CurveAuditSpec(FrozenModel):
     y_unit: Identifier
     x_scale: Literal["log10"]
     y_scale: Literal["log10"]
+    x_source_unit: Identifier | None = None
     variant_slots: tuple[FaultTimeVoltageSelector, ...] = Field(min_length=1)
     permitted_segment_types: tuple[CurveSegmentType, ...] = Field(min_length=1)
     permitted_interpolations: tuple[CurveInterpolation, ...] = Field(min_length=1)

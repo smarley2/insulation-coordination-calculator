@@ -279,10 +279,9 @@ def _altitude_band_columns() -> tuple[TableColumnSpec, ...]:
     )
 
 
-#: Table 3 maps each DVC row (banner-merged DVC name plus a per-row neutral
-#: category) against five boolean protection conditions. Every data cell carries a
-#: reviewed yes/no token, never a number; the declared grammar is the extraction
-#: contract and any other token blocks extraction instead of being guessed.
+#: Table 3 has three semantic DVC rows and six protection-context columns inside
+#: a physical 9x7 grid. Physical rows 5 and 7 retain wrapped source continuations;
+#: row 8 retains source notes. Public identifiers are positional and neutral.
 TABLE_3 = TableAuditSpec(
     semantic_id=ids.DVC_PROTECTION_MATRIX,
     source_table="3",
@@ -294,21 +293,59 @@ TABLE_3 = TableAuditSpec(
     expected_raw_columns=7,
     expected_bbox=(71.0, 265.3, 524.3, 744.2),
     data_strategy="rectangle",
-    data_row_start=2,
-    data_column_start=2,
-    expected_data_rows=7,
-    expected_data_columns=5,
-    row_axis_id="protection_category",
+    data_row_start=None,
+    data_column_start=None,
+    expected_data_rows=3,
+    expected_data_columns=6,
+    row_axis_id="dvc",
     row_axis_unit="1",
-    column_axis_id="protection_condition",
+    column_axis_id="protection_context",
     column_axis_unit="1",
     assertions=("complete_grid", "raw_value_correspondence"),
     page_search_radius=2,
-    merged_cells=(MergedCellSpec(row=0, column=0, row_span=2, inherit="down"),),
-    blank_cells=(BlankCellSpec(row=1, column=0, semantics="inherit"),),
+    segments=(
+        TableSegmentSpec(
+            id="table-3",
+            page_number=45,
+            title_anchor="Table 3",
+            expected_raw_rows=9,
+            expected_raw_columns=7,
+            expected_bbox=(71.0, 265.3, 524.3, 744.2),
+            source_columns=tuple(range(7)),
+            header_rows=(0, 1, 2),
+            data_rows=(3, 4, 6),
+            note_rows=(5, 7),
+            footnote_rows=(8,),
+            page_search_radius=2,
+        ),
+    ),
+    columns=(
+        TableColumnSpec(
+            semantic_id="dvc_source",
+            heading="dvc source row",
+            source_column=0,
+            role="context",
+            unit="1",
+        ),
+        *(
+            TableColumnSpec(
+                semantic_id=f"protection-context-{column}",
+                heading=f"protection context {column}",
+                source_column=column,
+                role="data",
+                unit="1",
+            )
+            for column in range(1, 7)
+        ),
+    ),
     token_grammar=TokenGrammarSpec(
-        target="boolean",
-        tokens=(("yes", True), ("no", False)),
+        target="categorical",
+        tokens=(
+            ("none", "none"),
+            ("basic", "basic_protection"),
+            ("enhanced", "enhanced_protection"),
+        ),
+        match="prefix",
     ),
 )
 

@@ -904,8 +904,8 @@ git commit -m "feat(importer): project DVC voltage limits"
 - Test: `tests/rules/importer/iec62477_2022/test_table3_projection.py`
 
 **Interfaces:**
-- Consumes: reviewed Table 3 `RawGrid`, boolean decision support from Task 2, typed provenance, semantic proposals.
-- Produces: `ProtectionOutcome`; `project_dvc_protection_matrix(grid, identity) -> tuple[DecisionRule, tuple[SemanticProposal, ...]]` with categorical/boolean inputs and typed protection outputs.
+- Consumes: reviewed physical 9×7 Table 3 `RawGrid`, categorical decision support from Task 2, typed provenance, semantic proposals.
+- Produces: `ProtectionOutcome`; `project_dvc_protection_matrix(grid, identity) -> tuple[DecisionRule, tuple[SemanticProposal, ...]]` with three DVC inputs, six neutral protection contexts, and one categorical protection-requirement output.
 
 - [ ] **Step 1: Write failing Table 3 tests**
 
@@ -940,13 +940,13 @@ In IEC `projection.py`, define:
 
 ```python
 class ProtectionOutcome(FrozenModel):
-    category: Identifier
-    evidence_required: bool
-    applicable: bool
+    dvc: Identifier
+    protection_context: Identifier
+    requirement: Literal["none", "basic_protection", "enhanced_protection"]
     source: SourceReference
 ```
 
-Declare only PDF page 45, bbox `(71.0, 265.3, 524.3, 744.2)`, expected shape 9×7, merge structure, and neutral token grammar. Convert reviewed yes/no tokens to real booleans. Project `ProtectionOutcome` fields to typed `DecisionValue` outputs, not display text. Reject unknown tokens and incomplete Cartesian coverage with blocking review items.
+Declare only PDF page 45, bbox `(71.0, 265.3, 524.3, 744.2)`, expected shape 9×7, three semantic data rows, six outcome columns, two continuation rows, the notes row, and a neutral categorical-prefix grammar. Project the 18 reviewed cells to one exhaustive categorical `DecisionRule`. Reject unknown tokens, numeric outcomes, and incomplete Cartesian coverage with blocking review items. Do not invent a boolean condition input or derived evidence/applicability rules.
 
 - [ ] **Step 4: Run focused tests and confirm green**
 
@@ -990,7 +990,7 @@ git commit -m "feat(importer): project DVC protection matrix"
 
 - [ ] **Step 1: Write failing clause tests**
 
-Create a synthetic two-column page fragment with neutral clause identifiers and tokens. Assert extraction respects bbox/reading order, normalization preserves token spans and source boxes, projection consumes only reviewed tokens, and ambiguity blocks:
+Create synthetic bullet and wrapped-paragraph fragments with neutral clause identifiers and tokens. Assert extraction respects bbox/reading order, normalization preserves token spans and source boxes, Figure references become typed tokens, projection consumes only reviewed tokens, and ambiguity blocks:
 
 ```python
 fragment = extract_clause_fragment(page, synthetic_clause_spec())
@@ -999,7 +999,7 @@ assert all(token.source.page == 3 for token in fragment.tokens)
 assert normalize_clause_fragment(fragment).raw_sha256 == fragment.raw_sha256
 ```
 
-Add projection assertions for typed applicability inputs/outputs and a mutation that swaps two neutral tokens and changes the canonical rule hash.
+Add projection assertions for the four distinct typed `subject`/`voltage_basis` routes represented by the eight Figure 5–7 variants. Missing or foreign Figure references must block.
 
 - [ ] **Step 2: Run tests and confirm red**
 
@@ -1554,7 +1554,7 @@ def set_segment(
     return self.draft
 ```
 
-Public IEC recipe stores only figure/page/bbox/image-dimension locators and typed selector role definitions, never extracted labels or values. `project_fault_time_voltage` creates one proposed rule under `iec62477_2022.dvc.fault_time_voltage`; every variant has exact four-dimension selector, breakpoints, segments, interpolation, applicability, source, and reviewed-artifact link. Figures 5/6 use `subject="accessible_circuit"`; Figure 7 uses `subject="conductive_accessible_part"` and explicit `None` for inapplicable DVC/environment dimensions. Curve Review renders local licensed crop through `QImage`, semantic reconstruction through `QGraphicsPathItem`, and never persists pixels. Corrections regenerate canonical hashes. Proposal artifact hash covers the ordered Figure 5–7 artifact digests; only exact per-variant reviews plus matching aggregate rule/artifact hashes clear blockers.
+Public IEC recipe stores only figure/page/bbox/image-dimension locators and typed selector role definitions, never extracted labels or values. `project_fault_time_voltage` creates one proposed rule under `iec62477_2022.dvc.fault_time_voltage`; every variant has exact four-dimension selector, breakpoints, segments, interpolation, applicability, source, and reviewed-artifact link. Figure 5 contributes three DC accessible-circuit variants, Figure 6 three AC-peak accessible-circuit variants, and Figure 7 DC plus AC-peak conductive-accessible-part variants with explicit `None` for inapplicable DVC/environment dimensions. The source duration axis is milliseconds and is converted to seconds. Colored solid/dashed strokes are recovered as eight distinct source-scoped traces. Curve Review renders the local licensed crop through `QImage`, semantic reconstruction through `QGraphicsPathItem`, and never persists pixels. Blocked manual recovery requires every declared slot and an explicit trace association. Corrections regenerate canonical hashes. Proposal artifact hash covers the ordered Figure 5–7 variant evidence; only exact per-variant reviews plus matching aggregate rule/artifact hashes clear blockers.
 
 - [ ] **Step 4: Run focused tests and confirm green**
 

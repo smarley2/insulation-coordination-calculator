@@ -846,12 +846,28 @@ def test_blocked_real_shape_can_be_recovered_without_a_preexisting_curve(
         )
         for figure, page, digest in (("5", 54, "a"), ("6", 55, "b"), ("7", 56, "c"))
     )
-    manual_trace = figures[2].traces[0].model_copy(update={"id": "manual-trace-7"})
+    figures = tuple(
+        figure.model_copy(
+            update={
+                "traces": tuple(
+                    figure.traces[0].model_copy(
+                        update={"id": f"trace-{figure.source.figure}-{slot_index + 1}"}
+                    )
+                    for slot_index in range(len(spec.variant_slots))
+                )
+            }
+        )
+        for figure, spec in zip(figures, IEC_RECIPE.curves, strict=True)
+    )
+    manual_traces = tuple(
+        figures[2].traces[0].model_copy(update={"id": f"manual-trace-7-{index + 1}"})
+        for index in range(len(IEC_RECIPE.curves[2].variant_slots))
+    )
     figures = (*figures[:2], figures[2].model_copy(update={"traces": ()}))
     variant_items = tuple(
         ImportReviewItem(
             code="CURVE_VARIANT_REVIEW_REQUIRED",
-            semantic_id=f"{ids.DVC_FAULT_TIME_VOLTAGE}.{figure.source.figure}",
+            semantic_id=semantic_id,
             kind="curve",
             source=figure.source.model_copy(
                 update={
@@ -863,7 +879,11 @@ def test_blocked_real_shape_can_be_recovered_without_a_preexisting_curve(
             ),
             expected_contract="review recovered synthetic curve",
         )
-        for figure in figures
+        for figure, spec in zip(figures, IEC_RECIPE.curves, strict=True)
+        for slot_index in range(len(spec.variant_slots))
+        for semantic_id in (
+            f"{ids.DVC_FAULT_TIME_VOLTAGE}.{figure.source.figure}.{slot_index + 1}",
+        )
     )
     blocking_items = tuple(
         ImportReviewItem(
@@ -945,31 +965,39 @@ def test_blocked_real_shape_can_be_recovered_without_a_preexisting_curve(
     model.recover_blocked(
         tuple(
             (
-                index,
-                figure.traces[0].id if figure.traces else manual_trace,
+                figure_index,
+                slot_index,
+                (
+                    figure.traces[slot_index].id
+                    if figure.traces
+                    else manual_traces[slot_index]
+                ),
                 calibration,
                 points,
             )
-            for index, figure in enumerate(figures)
+            for figure_index, (figure, spec) in enumerate(
+                zip(figures, IEC_RECIPE.curves, strict=True)
+            )
+            for slot_index in range(len(spec.variant_slots))
         ),
         actor="Synthetic Reviewer",
         notes="Recover all blocked synthetic figures in one audited action.",
     )
 
     assert len(model.draft.curves) == 1
-    assert len(model.draft.curves[0].variants) == 3
+    assert len(model.draft.curves[0].variants) == 8
     assert all(not item.blocking_review_items for item in model.draft.curve_digitizations)
     assert len(model.draft.semantic_proposals) == 1
-    assert model.draft.manual_curve_traces[0].trace == manual_trace
+    assert tuple(item.trace for item in model.draft.manual_curve_traces) == manual_traces
     assert model.manual_entry_enabled is False
     model.set_breakpoint(
-        f"{ids.DVC_FAULT_TIME_VOLTAGE}.7",
+        f"{ids.DVC_FAULT_TIME_VOLTAGE}.7.1",
         1,
         CurvePoint(x=Decimal(10), y=Decimal(45)),
         actor="Synthetic Reviewer",
         notes="Correct a recovered manual-trace breakpoint.",
     )
-    assert model.draft.curves[0].variants[2].points[1].y == Decimal(45)
+    assert model.draft.curves[0].variants[6].points[1].y == Decimal(45)
 
 
 def _local_pdf_draft(draft: ImportedRuleDraft, path) -> ImportedRuleDraft:

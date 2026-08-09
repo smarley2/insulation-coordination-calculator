@@ -89,8 +89,8 @@ def test_table_2_references_resolve_to_single_slice_c_targets(
     }
     required = {
         ids.DVC_FAULT_TIME_VOLTAGE,
-        f"{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.ac",
-        f"{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.dc",
+        f"{ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC}.ac",
+        f"{ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC}.dc",
     }
     targets = (
         *package.tables,

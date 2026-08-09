@@ -16,8 +16,10 @@ from insulation_coordination.rules.importer.curves import (
     RawCurvePoint,
     RawCurveTrace,
     RawFigure,
+    _axis_ticks,
     calibrate_log_axis,
     digitize_curve_figure,
+    prove_variant_conservative,
 )
 from insulation_coordination.rules.importer.extract import canonical_model_sha256
 from insulation_coordination.rules.importer.identify import CurveAuditSpec, StandardIdentity
@@ -144,6 +146,21 @@ def test_calibration_fits_log_axes() -> None:
     assert calibration.residual_pixels <= Decimal(40)
 
 
+def test_axis_tick_selection_rejects_duplicate_pixel_positions() -> None:
+    ticks = _axis_ticks(
+        (
+            _tick("1", 40, 190),
+            _tick("10", 40, 190),
+            _tick("10", 110, 190),
+            _tick("100", 180, 190),
+        ),
+        axis="x",
+        pixel_size=(200, 200),
+    )
+
+    assert all(ticks[index + 1][0] > ticks[index][0] for index in range(len(ticks) - 1))
+
+
 def test_digitize_is_deterministic() -> None:
     figure = _two_stroke_figure()
     first = digitize_synthetic_chart(figure, FakeOcrEngine((*X_TICKS, *Y_TICKS)))
@@ -160,6 +177,12 @@ def test_digitize_is_deterministic() -> None:
     assert first.conservatism.maximum_positive_voltage_error <= Decimal(0)
     assert first.conservatism.proven is True
     assert first.blocking_review_items == ()
+    assert prove_variant_conservative(
+        figure,
+        figure.traces[0],
+        first.calibration,
+        first.proposed_rule.variants[0],
+    ).proven is True
 
 
 def test_fewer_than_two_ticks_blocks() -> None:
@@ -251,6 +274,33 @@ def test_two_traces_without_association_block() -> None:
     assert any(
         item.code == "CURVE_TRACE_AMBIGUOUS" for item in result.blocking_review_items
     )
+
+
+def test_trace_count_matching_reviewed_slots_emits_one_variant_per_slot() -> None:
+    first = _stroke(((40, 40), (110, 80), (180, 100)))
+    second = _stroke(((40, 80), (110, 120), (180, 160))).model_copy(
+        update={"id": "trace-2"}
+    )
+    figure = _figure((first, second), (*X_TICKS, *Y_TICKS))
+    base = synthetic_spec().variant_slots[0]
+    spec = synthetic_spec().model_copy(
+        update={
+            "variant_slots": (
+                base.model_copy(update={"dvc_context": "higher"}),
+                base.model_copy(update={"dvc_context": "lower"}),
+            )
+        }
+    )
+
+    result = digitize_curve_figure(
+        figure,
+        spec,
+        FakeOcrEngine((*X_TICKS, *Y_TICKS)),
+        IDENTITY,
+    )
+
+    assert result.proposed_rule is not None
+    assert tuple(variant.selector for variant in result.proposed_rule.variants) == spec.variant_slots
 
 
 def test_proposed_rule_carries_engineering_units_not_pixels() -> None:

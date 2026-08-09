@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from decimal import Decimal
 
 import pytest
 
@@ -64,7 +63,7 @@ SPEC = ClauseAuditSpec(
     clause="9.9.9",
     page_number=44,
     expected_bbox=(70.0, 660.0, 524.0, 760.0),
-    expected_root_kind="bullets",
+    expected_root_kind="paragraph",
     output_kind="decision",
 )
 
@@ -76,13 +75,13 @@ def synthetic_identity() -> StandardIdentity:
 def _node(order: int, text: str) -> ClauseNode:
     return ClauseNode(
         order=order,
-        kind="bullet",
+        kind="paragraph",
         raw_text=text,
         source=SOURCE.model_copy(update={"row": f"bullet {order + 1}"}),
     )
 
 
-def _token(kind: str, raw: str, normalized: str | Decimal, order: int) -> ClauseToken:
+def _token(kind: str, raw: str, normalized: str, order: int) -> ClauseToken:
     return ClauseToken(
         kind=kind,
         raw_text=raw,
@@ -91,21 +90,12 @@ def _token(kind: str, raw: str, normalized: str | Decimal, order: int) -> Clause
     )
 
 
-def _fragment(*, swap: bool = False) -> RawClauseFragment:
-    nodes = (
-        _node(0, "first neutral alternative not exceeding 30 s"),
-        _node(1, "second neutral alternative"),
-    )
+def _fragment(*, references: tuple[str, ...] = ("figure-5", "figure-6", "figure-7")) -> RawClauseFragment:
+    nodes = (_node(0, "neutral fault-voltage paragraph with three figure slots"),)
     tokens = [
-        _token("condition", "first", "condition-a", 0),
-        _token("quantity", "30", Decimal(30), 0),
-        _token("unit", "s", "s", 0),
-        _token("operator", "not exceeding", "lte", 0),
-        _token("condition", "second", "condition-b", 1),
-        _token("reference", "curve slot", ids.DVC_FAULT_TIME_VOLTAGE, 1),
+        _token("reference", f"slot {figure}", figure, 0)
+        for figure in references
     ]
-    if swap:
-        tokens[0], tokens[4] = tokens[4], tokens[0]
     fragment = RawClauseFragment(
         id=f"raw-{ids.DVC_FAULT_APPLICABILITY}",
         raw_sha256="0" * 64,
@@ -124,13 +114,9 @@ def test_projection_emits_typed_applicability_inputs_and_outputs() -> None:
     rule = rules[0]
     assert rule.id == ids.DVC_FAULT_APPLICABILITY
     assert {item.name for item in rule.inputs} == {
-        "dvc",
-        "supply_condition",
-        "fault_duration_s",
+        "subject",
+        "voltage_basis",
     }
-    duration = next(item for item in rule.inputs if item.name == "fault_duration_s")
-    assert duration.kind == "numeric"
-    assert duration.unit == "s"
     assert {output.name for output in rule.outputs} == {
         "curve_applicability",
         "required_curve",
@@ -145,92 +131,27 @@ def test_projection_emits_typed_applicability_inputs_and_outputs() -> None:
     assert all(proposal.state == "proposed" for proposal in proposals)
 
 
-def test_projection_evaluates_both_alternatives() -> None:
+def test_projection_evaluates_all_four_curve_selector_routes() -> None:
     rules, _ = project_dvc_fault_applicability(_fragment(), synthetic_identity())
     rule = rules[0]
-    first = evaluate_decision(
-        rule,
-        {
-            "dvc": "dvc-row-1",
-            "supply_condition": "condition-a",
-            "fault_duration_s": Decimal(10),
-        },
-    )
-    assert first.values[0].boolean is True
-    second = evaluate_decision(
-        rule,
-        {
-            "dvc": "dvc-row-1",
-            "supply_condition": "condition-b",
-            "fault_duration_s": Decimal(10),
-        },
-    )
-    assert second.values[0].boolean is True
-    over = evaluate_decision(
-        rule,
-        {
-            "dvc": "dvc-row-1",
-            "supply_condition": "condition-a",
-            "fault_duration_s": Decimal(40),
-        },
-    )
-    assert over.status == "no_match"
-    curve_value = next(value for value in first.values if value.name == "required_curve")
-    assert curve_value.categorical == ids.DVC_FAULT_TIME_VOLTAGE
+    for subject, basis in (
+        ("accessible_circuit", "dc"),
+        ("accessible_circuit", "ac_peak"),
+        ("conductive_accessible_part", "dc"),
+        ("conductive_accessible_part", "ac_peak"),
+    ):
+        result = evaluate_decision(rule, {"subject": subject, "voltage_basis": basis})
+        assert result.values[0].boolean is True
+        curve_value = next(value for value in result.values if value.name == "required_curve")
+        assert curve_value.categorical == ids.DVC_FAULT_TIME_VOLTAGE
 
 
-def test_swapped_tokens_change_the_canonical_rule_hash() -> None:
-    original, _ = project_dvc_fault_applicability(_fragment(), synthetic_identity())
-    swapped, _ = project_dvc_fault_applicability(
-        _fragment(swap=True), synthetic_identity()
-    )
-    assert canonical_model_sha256(original[0]) != canonical_model_sha256(swapped[0])
-
-
-def test_missing_condition_token_blocks_projection() -> None:
-    fragment = _fragment()
-    kept = tuple(
-        token
-        for token in fragment.tokens
-        if not (token.kind == "condition" and token.normalized == "condition-b")
-    )
-    broken = fragment.model_copy(update={"tokens": kept})
-    with pytest.raises(ValueError, match="AMBIGUOUS_CLAUSE_STRUCTURE"):
-        project_dvc_fault_applicability(broken, synthetic_identity())
-
-
-def test_missing_operator_blocks_projection() -> None:
-    fragment = _fragment()
-    kept = tuple(token for token in fragment.tokens if token.kind != "operator")
-    broken = fragment.model_copy(update={"tokens": kept})
-    with pytest.raises(ValueError, match="AMBIGUOUS_CLAUSE_STRUCTURE"):
-        project_dvc_fault_applicability(broken, synthetic_identity())
-
-
-def test_unreviewed_numeric_quantity_blocks_projection() -> None:
-    fragment = _fragment()
-    changed = tuple(
-        token.model_copy(update={"normalized": Decimal(31)})
-        if token.kind == "quantity"
-        else token
-        for token in fragment.tokens
-    )
-    broken = fragment.model_copy(update={"tokens": changed})
-    with pytest.raises(ValueError, match="AMBIGUOUS_CLAUSE_STRUCTURE"):
-        project_dvc_fault_applicability(broken, synthetic_identity())
-
-
-def test_unknown_unit_blocks_projection() -> None:
-    fragment = _fragment()
-    changed = tuple(
-        token.model_copy(update={"normalized": "min"})
-        if token.kind == "unit"
-        else token
-        for token in fragment.tokens
-    )
-    broken = fragment.model_copy(update={"tokens": changed})
-    with pytest.raises(ValueError, match="AMBIGUOUS_CLAUSE_STRUCTURE"):
-        project_dvc_fault_applicability(broken, synthetic_identity())
+def test_missing_or_unknown_figure_reference_blocks_projection() -> None:
+    for references in (("figure-5", "figure-6"), ("figure-5", "figure-6", "figure-8")):
+        with pytest.raises(ValueError, match="AMBIGUOUS_CLAUSE_STRUCTURE"):
+            project_dvc_fault_applicability(
+                _fragment(references=references), synthetic_identity()
+            )
 
 
 def test_wrong_fragment_identity_blocks_projection() -> None:
@@ -357,8 +278,8 @@ def test_build_and_review_lifecycle_resets_after_fragment_change(
     changed = fragment.model_copy(
         update={
             "tokens": tuple(
-                token.model_copy(update={"normalized": Decimal(29)})
-                if token.kind == "quantity"
+                token.model_copy(update={"raw_text": "corrected source figure slot"})
+                if token.normalized == "figure-5"
                 else token
                 for token in fragment.tokens
             )
@@ -368,7 +289,7 @@ def test_build_and_review_lifecycle_resets_after_fragment_change(
         reviewed,
         reviewed.model_copy(update={"raw_clause_fragments": (changed,)}),
         actor="Synthetic Source Reviewer",
-        notes="Correct one reviewed synthetic clause quantity.",
+        notes="Correct one reviewed synthetic clause reference.",
     )
     assert (
         next(
@@ -459,7 +380,7 @@ def test_rule_change_with_unchanged_artifact_resets_reviewed_proposal(
     rule = next(
         item for item in reviewed.decisions if item.id == ids.DVC_FAULT_APPLICABILITY
     )
-    changed_rule = rule.model_copy(update={"exhaustive": True})
+    changed_rule = rule.model_copy(update={"applicability": "reviewed synthetic route"})
     corrected = record_correction(
         reviewed,
         reviewed.model_copy(
@@ -471,7 +392,7 @@ def test_rule_change_with_unchanged_artifact_resets_reviewed_proposal(
             }
         ),
         actor="Synthetic Rule Builder",
-        notes="Tighten the clause decision to exhaustive matching.",
+        notes="Clarify the clause decision applicability.",
     )
     proposal = next(
         item

@@ -80,7 +80,7 @@ SPEC = ClauseAuditSpec(
     clause="9.9.9",
     page_number=44,
     expected_bbox=(70.0, 660.0, 524.0, 760.0),
-    expected_root_kind="bullets",
+    expected_root_kind="paragraph",
     output_kind="decision",
 )
 
@@ -88,7 +88,7 @@ SPEC = ClauseAuditSpec(
 def _node(order: int, text: str) -> ClauseNode:
     return ClauseNode(
         order=order,
-        kind="bullet",
+        kind="paragraph",
         raw_text=text,
         source=SOURCE.model_copy(update={"row": f"bullet {order + 1}"}),
     )
@@ -104,17 +104,11 @@ def _token(kind: str, raw: str, normalized: str | Decimal, order: int) -> Clause
 
 
 def _fragment() -> RawClauseFragment:
-    nodes = (
-        _node(0, "first neutral alternative not exceeding 30 s"),
-        _node(1, "second neutral alternative"),
-    )
+    nodes = (_node(0, "neutral paragraph with three reviewed figure references"),)
     tokens = (
-        _token("condition", "first", "condition-a", 0),
-        _token("quantity", "30", Decimal(30), 0),
-        _token("unit", "s", "s", 0),
-        _token("operator", "not exceeding", "lte", 0),
-        _token("condition", "second", "condition-b", 1),
-        _token("reference", "curve slot", ids.DVC_FAULT_TIME_VOLTAGE, 1),
+        _token("reference", "Figure 5", "figure-5", 0),
+        _token("reference", "Figure 6", "figure-6", 0),
+        _token("reference", "Figure 7", "figure-7", 0),
     )
     fragment = RawClauseFragment(
         id=f"raw-{ids.DVC_FAULT_APPLICABILITY}",
@@ -389,23 +383,22 @@ def test_correction_changes_hash_and_resets_review(built_draft) -> None:
     changed = fragment.model_copy(
         update={
             "tokens": tuple(
-                token.model_copy(update={"normalized": Decimal(29)})
-                if token.kind == "quantity"
+                token.model_copy(update={"raw_text": "corrected Figure 5 source"})
+                if token.normalized == "figure-5"
                 else token
                 for token in fragment.tokens
             ),
             "nodes": (
                 fragment.nodes[0].model_copy(
-                    update={"raw_text": "first neutral alternative not exceeding 29 s"}
+                    update={"raw_text": "corrected neutral paragraph with three references"}
                 ),
-                *fragment.nodes[1:],
             ),
         }
     )
     model.correct(
         model.draft.model_copy(update={"raw_clause_fragments": (changed,)}),
         actor="Synthetic Source Reviewer",
-        notes="Correct one reviewed synthetic clause quantity.",
+        notes="Correct one reviewed synthetic clause reference.",
     )
     assert model.proposal(ids.DVC_FAULT_APPLICABILITY).state == "proposed"
     assert model.proposal(ids.DVC_FAULT_TIME_VOLTAGE).state == "reviewed"

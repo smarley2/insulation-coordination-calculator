@@ -133,6 +133,15 @@ def _tokens_for_node(
     source: SourceReference,
 ) -> tuple[ClauseToken, ...]:
     tokens: list[ClauseToken] = []
+    for match in re.finditer(r"\bfigure\s+([0-9]+)\b", node.raw_text, flags=re.IGNORECASE):
+        tokens.append(
+            ClauseToken(
+                kind="reference",
+                raw_text=match.group(0),
+                normalized=f"figure-{match.group(1)}",
+                source=source,
+            )
+        )
     lowered = node.raw_text.casefold()
     for phrase, code in _COMPARISON_WORDS.items():
         if phrase in lowered:
@@ -185,30 +194,33 @@ def extract_clause_fragment(
         )
 
     nodes: list[ClauseNode] = []
-    seen_bullet = False
-    for line in lines:
-        if _is_bullet(line.text):
-            seen_bullet = True
-            nodes.append(
-                ClauseNode(
-                    order=len(nodes),
-                    kind="bullet" if spec.expected_root_kind == "bullets" else "paragraph",
-                    raw_text=_strip_bullet(line.text),
-                    source=base.model_copy(update={"row": f"line top {line.top:.1f}"}),
-                )
+    if spec.expected_root_kind == "paragraph":
+        nodes.append(
+            ClauseNode(
+                order=0,
+                kind="paragraph",
+                raw_text=" ".join(line.text.strip() for line in lines),
+                source=base.model_copy(
+                    update={"row": f"paragraph starting at line top {lines[0].top:.1f}"}
+                ),
             )
-        elif seen_bullet and nodes:
-            merged = f"{nodes[-1].raw_text} {line.text.strip()}"
-            nodes[-1] = nodes[-1].model_copy(update={"raw_text": merged})
-        elif spec.expected_root_kind == "paragraph":
-            nodes.append(
-                ClauseNode(
-                    order=len(nodes),
-                    kind="paragraph",
-                    raw_text=line.text,
-                    source=base.model_copy(update={"row": f"line top {line.top:.1f}"}),
+        )
+    else:
+        seen_bullet = False
+        for line in lines:
+            if _is_bullet(line.text):
+                seen_bullet = True
+                nodes.append(
+                    ClauseNode(
+                        order=len(nodes),
+                        kind="bullet",
+                        raw_text=_strip_bullet(line.text),
+                        source=base.model_copy(update={"row": f"line top {line.top:.1f}"}),
+                    )
                 )
-            )
+            elif seen_bullet and nodes:
+                merged = f"{nodes[-1].raw_text} {line.text.strip()}"
+                nodes[-1] = nodes[-1].model_copy(update={"raw_text": merged})
     nodes = [
         node.model_copy(update={"order": order}) for order, node in enumerate(nodes)
     ]

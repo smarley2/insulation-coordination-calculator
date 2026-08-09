@@ -404,7 +404,7 @@ def apply_table_structure(grid: RawGrid, spec: TableAuditSpec) -> RawGrid:
                 or spec.token_grammar.resolve(cell.raw_text) is None
             ):
                 raise ExtractionError(
-                    f"table {spec.semantic_id} has an unknown boolean token at "
+                    f"table {spec.semantic_id} has an unknown {spec.token_grammar.target} token at "
                     f"{(cell.row, cell.column)}"
                 )
     if structural:
@@ -429,7 +429,11 @@ def apply_table_structure(grid: RawGrid, spec: TableAuditSpec) -> RawGrid:
                         source=cell.source,
                     )
                     if slot is not None and cell.raw_text.strip()
-                    else None
+                    else (
+                        cell.reference_token
+                        if blanks.get(coordinate) == "inherit"
+                        else None
+                    )
                 ),
             }
         )
@@ -448,11 +452,20 @@ def apply_table_structure(grid: RawGrid, spec: TableAuditSpec) -> RawGrid:
         }
         for coordinate in covered - {anchor_coordinate}:
             cell = by_coordinate[coordinate]
-            if (
+            unexpanded = (
                 cell.role not in {"blank", "data"}
                 or cell.parse_status != "blank"
                 or cell.blank_semantics != "inherit"
-            ):
+            )
+            already_expanded = (
+                cell.blank_semantics == "inherit"
+                and cell.raw_text == anchor.raw_text
+                and cell.value == anchor.value
+                and cell.parse_status == anchor.parse_status
+                and cell.reference_token == anchor.reference_token
+                and cell.source == anchor.source
+            )
+            if unexpanded and not already_expanded:
                 raise ExtractionError(
                     f"table {spec.semantic_id} has an unresolved merged cell at {coordinate}"
                 )
@@ -886,6 +899,7 @@ def _source(
     figure: str | None = None,
     row: str | None = None,
     column: str | None = None,
+    note: str | None = None,
 ) -> SourceReference:
     return SourceReference(
         document_id=identity.recipe_id,
@@ -897,6 +911,7 @@ def _source(
         figure=figure,
         row=row,
         column=column,
+        note=note,
     )
 
 
@@ -1294,6 +1309,11 @@ def _extract_layout_table(
                             table=spec.source_table,
                             row=f"grid row {physical_row + 1}",
                             column=f"grid column {source_column + 1}",
+                            note=(
+                                f"segment:{segment.id}"
+                                if identity.recipe_id == "iec62477-1-2022"
+                                else None
+                            ),
                         ),
                     )
                 )
@@ -1339,8 +1359,10 @@ def _extract_layout_table(
             expected_contract=f"raw-cell:{spec.semantic_id}:numeric",
         )
         for cell in cells
-        if cell.role == "data"
+        if spec.token_grammar is None
+        and cell.role == "data"
         and cell.reference_token is None
+        and cell.blank_semantics != "not_applicable"
         and cell.parse_status not in {"numeric", "compound", "ambiguous_compound"}
         ),
     )
@@ -1632,7 +1654,7 @@ def _extract_curve_artifacts(
     variant_review_items = tuple(
         ImportReviewItem(
             code="CURVE_VARIANT_REVIEW_REQUIRED",
-            semantic_id=f"{spec.semantic_id}.{spec.figure}",
+            semantic_id=semantic_id,
             kind="curve",
             source=figure.source.model_copy(
                 update={
@@ -1645,6 +1667,12 @@ def _extract_curve_artifacts(
             expected_contract="verify the reconstructed curve against the local source figure",
         )
         for spec, figure in zip(recipe.curves, figures, strict=True)
+        for slot_index, _selector in enumerate(spec.variant_slots, start=1)
+        for semantic_id in (
+            f"{spec.semantic_id}.{spec.figure}.{slot_index}"
+            if len(spec.variant_slots) > 1
+            else f"{spec.semantic_id}.{spec.figure}",
+        )
     )
     if blocking_items:
         return (
@@ -1797,6 +1825,18 @@ def extract_draft(
         curves += extracted_curves
         semantic_proposals += extracted_proposals
     _require_unique_ids(tables, formulas, mappings)
+    curve_trace_associations = tuple(
+        CurveTraceAssociation(
+            variant_id=variant.id,
+            figure_artifact_sha256=figure.artifact_sha256,
+            trace_id=trace.id,
+        )
+        for figure, result in zip(raw_figures, curve_digitizations, strict=True)
+        if result.proposed_rule is not None
+        for variant, trace in zip(
+            result.proposed_rule.variants, figure.traces, strict=True
+        )
+    )
 
     recorded_at = datetime.now(UTC)
     review_resolutions = tuple(
@@ -1834,7 +1874,7 @@ def extract_draft(
             *(f"curve:{curve.id}" for curve in curves),
             *(f"raw-figure:{figure.source.figure}" for figure in raw_figures),
             *(f"review:{item.code}:{item.semantic_id}" for item in review_items),
-            f"content:{_content_digest(tables, formulas, mappings, review_items, raw_grids, raw_clause_fragments=raw_clause_fragments, extracted_equations=extracted_equations, curves=curves, raw_figures=raw_figures, curve_digitizations=curve_digitizations)}",
+            f"content:{_content_digest(tables, formulas, mappings, review_items, raw_grids, raw_clause_fragments=raw_clause_fragments, extracted_equations=extracted_equations, curves=curves, raw_figures=raw_figures, curve_digitizations=curve_digitizations, curve_trace_associations=curve_trace_associations)}",
         )
     )
     ordered_identities = tuple(
@@ -1863,6 +1903,7 @@ def extract_draft(
         curves=curves,
         raw_figures=raw_figures,
         curve_digitizations=curve_digitizations,
+        curve_trace_associations=curve_trace_associations,
     )
     records = tuple(
         record.model_copy(update={"notes": f"content:{content_digest}"})
@@ -1894,6 +1935,7 @@ def extract_draft(
         curves=curves,
         raw_figures=raw_figures,
         curve_digitizations=curve_digitizations,
+        curve_trace_associations=curve_trace_associations,
         semantic_proposals=semantic_proposals,
         source_identities=ordered_identities,
     )

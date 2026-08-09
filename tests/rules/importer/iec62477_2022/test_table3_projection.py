@@ -1,18 +1,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from decimal import Decimal
 
 import pytest
 
-from insulation_coordination.domain.rules import ApprovalRecord, SourceReference
+from insulation_coordination.domain.rules import ApprovalRecord, DecisionRule, SourceReference
 from insulation_coordination.rules.evaluator import evaluate_decision
 from insulation_coordination.rules.importer import recipes as recipe_registry
-from insulation_coordination.rules.importer.approval import (
-    ApprovalError,
-    approval_blockers,
-    record_correction,
-)
+from insulation_coordination.rules.importer.approval import approval_blockers, record_correction
 from insulation_coordination.rules.importer.extract import (
     IMPORTER_VERSION,
     ImportedRuleDraft,
@@ -26,9 +21,7 @@ from insulation_coordination.rules.importer.extract import (
 )
 from insulation_coordination.rules.importer.identify import StandardIdentity
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
-from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
-    RECIPE as IEC_RECIPE,
-)
+from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import RECIPE as IEC_RECIPE
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
     project_dvc_protection_matrix,
 )
@@ -53,70 +46,48 @@ IDENTITY = StandardIdentity(
     page_count=45,
     recipe_id="synthetic-table-3",
 )
-DATA_ROWS = range(2, 9)
-DATA_COLUMNS = range(2, 7)
+DATA_ROWS = (3, 4, 6)
+DATA_COLUMNS = range(1, 7)
+OUTCOMES = ("none", "basic protection", "enhanced protection")
+TYPED_OUTCOMES = ("none", "basic_protection", "enhanced_protection")
 
 
-def synthetic_identity() -> StandardIdentity:
-    return IDENTITY
-
-
-def _token(row: int, column: int) -> str:
-    # One unique token per DVC row (a per-row column) so every projected row is
-    # load-bearing for exhaustive coverage; the rest alternate.
-    if column == 2 + ((row - 2) % 5):
-        return "yes"
-    return "no" if (row + column) % 2 else "yes"
+def _outcome(row: int, column: int) -> str:
+    return OUTCOMES[(DATA_ROWS.index(row) + column) % len(OUTCOMES)]
 
 
 def _cell(row: int, column: int) -> RawGridCell:
     source = SOURCE.model_copy(
         update={"row": f"grid row {row + 1}", "column": f"grid column {column + 1}"}
     )
-    if (row, column) == (1, 0):
+    if row in DATA_ROWS and column in DATA_COLUMNS:
+        logical_row = DATA_ROWS.index(row)
         return RawGridCell(
             row=row,
             column=column,
-            raw_text="",
-            role="blank",
-            parse_status="blank",
+            raw_text=_outcome(row, column),
+            role="data",
+            logical_row=logical_row,
+            logical_column=f"protection-context-{column}",
+            parse_status="non_scalar",
             source=source,
         )
-    if row <= 1:
-        return RawGridCell(
-            row=row,
-            column=column,
-            raw_text=f"HEADER_{row}_{column}",
-            role="header",
-            parse_status="text",
-            source=source,
-        )
-    if column == 0:
-        return RawGridCell(
-            row=row,
-            column=column,
-            raw_text=f"dvc-row-{row - 1}",
-            role="header",
-            parse_status="text",
-            source=source,
-        )
-    if column == 1:
-        return RawGridCell(
-            row=row,
-            column=column,
-            raw_text=f"category-row-{row - 1}",
-            role="header",
-            parse_status="text",
-            source=source,
-        )
+    if row in DATA_ROWS and column == 0:
+        raw_text, role = f"DVC {DATA_ROWS.index(row) + 1}", "note"
+    elif (row, column) in {(5, 4), (7, 5)}:
+        raw_text, role = "source continuation", "note"
+    elif row == 8 and column == 0:
+        raw_text, role = "source notes", "footnote"
+    elif row <= 2:
+        raw_text, role = f"HEADER_{row}_{column}", "header"
+    else:
+        raw_text, role = "", "blank"
     return RawGridCell(
         row=row,
         column=column,
-        raw_text=_token(row, column),
-        role="data",
-        logical_row=row - 2,
-        logical_column=f"boolean-column-{column - 1}",
-        parse_status="text",
+        raw_text=raw_text,
+        role=role,
+        parse_status="blank" if not raw_text else "text",
         source=source,
     )
 
@@ -133,275 +104,87 @@ def _grid() -> RawGrid:
     )
 
 
-def test_projection_emits_boolean_matchers_exhaustive_coverage_and_proposals() -> None:
-    rules, proposals = project_dvc_protection_matrix(_grid(), synthetic_identity())
-    boolean_match_values = {
-        matcher.boolean
-        for rule in rules
-        for row in rule.rows
-        for matcher in row.matchers
-        if matcher.boolean is not None
-    }
-    assert boolean_match_values == {False, True}
-    assert {proposal.semantic_id for proposal in proposals} == {rule.id for rule in rules}
-    assert all(len(rule.rows) == 7 * 5 * 2 for rule in rules)
+def test_projection_emits_one_exhaustive_categorical_matrix() -> None:
+    rules, proposals = project_dvc_protection_matrix(_grid(), IDENTITY)
+    assert len(rules) == len(proposals) == 1
+    rule = rules[0]
+    assert rule.id == ids.DVC_PROTECTION_MATRIX
+    assert rule.exhaustive
+    assert len(rule.rows) == 18
+    assert [(item.name, item.kind, len(item.allowed_values)) for item in rule.inputs] == [
+        ("dvc", "categorical", 3),
+        ("protection_context", "categorical", 6),
+    ]
+    assert rule.outputs[0].name == "protection_requirement"
+    assert rule.outputs[0].kind == "categorical"
+    assert rule.outputs[0].allowed_values == TYPED_OUTCOMES
+    assert proposals[0].semantic_id == rule.id
 
 
-def test_evidence_and_applicability_fields_use_the_named_derivation() -> None:
-    """The two boolean fields are distinct outputs with distinct rule IDs, each
-
-    derived per the explicit ``_PROTECTION_OUTCOME_DERIVATION`` rule: a reviewed
-    "yes" cell requires both protective measures (applicable) and their
-    verification evidence (evidence_required); a "no" cell requires neither.
-    The test pins the derivation name and both fields independently rather than
-    asserting they blindly equal the token.
-    """
-    from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
-        projection as table3_projection,
-    )
-
-    assert table3_projection._PROTECTION_OUTCOME_DERIVATION == "reviewed-cell-token"
-    rules, _ = project_dvc_protection_matrix(_grid(), synthetic_identity())
-    by_output = {rule.outputs[0].name: rule for rule in rules}
-    assert set(by_output) == {"evidence_required", "applicable"}
-    assert by_output["evidence_required"].id == ids.DVC_PROTECTION_MATRIX
-    assert by_output["applicable"].id == f"{ids.DVC_PROTECTION_MATRIX}.applicable"
-    # Both derivations are stated for both token values, independently.
-    for token in (False, True):
-        evidence, applicable = table3_projection._derive_protection_outcome_fields(token)
-        assert evidence is token
-        assert applicable is token
-
-
-def test_every_category_condition_and_boolean_half_evaluates_without_raising() -> None:
-    from itertools import product
-
-    rules, _ = project_dvc_protection_matrix(_grid(), synthetic_identity())
-    for rule in rules:
-        allowed = {
-            item.name: item.allowed_values
-            for item in rule.inputs
-            if item.kind == "categorical"
-        }
-        assert set(allowed) == {"dvc", "protection_condition"}
-        assert len(allowed["dvc"]) == 7
-        assert len(allowed["protection_condition"]) == 5
-        for category, condition, met in product(
-            allowed["dvc"], allowed["protection_condition"], (False, True)
-        ):
+def test_every_source_combination_evaluates_to_its_reviewed_category() -> None:
+    rule = project_dvc_protection_matrix(_grid(), IDENTITY)[0][0]
+    for logical_row, physical_row in enumerate(DATA_ROWS, start=1):
+        for column in DATA_COLUMNS:
             result = evaluate_decision(
                 rule,
-                {
-                    "dvc": category,
-                    "protection_condition": condition,
-                    "protection_condition_met": met,
-                },
+                {"dvc": f"dvc-{logical_row}", "protection_context": f"protection-context-{column}"},
             )
-            assert all(value.boolean is not None for value in result.values)
+            expected = TYPED_OUTCOMES[OUTCOMES.index(_outcome(physical_row, column))]
+            assert result.values[0].categorical == expected
 
 
-def test_off_grid_evaluation_combinations_follow_the_reviewed_cell_token() -> None:
-    rules, _ = project_dvc_protection_matrix(_grid(), synthetic_identity())
-    for rule in rules:
-        for row_index, (grid_row, grid_column) in enumerate(
-            (row, column) for row in DATA_ROWS for column in DATA_COLUMNS
-        ):
-            category = f"category-row-{grid_row - 1}"
-            condition = f"condition-column-{grid_column - 1}"
-            for met in (False, True):
-                result = evaluate_decision(
-                    rule,
-                    {
-                        "dvc": category,
-                        "protection_condition": condition,
-                        "protection_condition_met": met,
-                    },
-                )
-                outcome = next(
-                    outcome
-                    for outcome in _expected_outcomes()
-                    if outcome.category == category
-                    and outcome.source.row == f"grid row {grid_row + 1}"
-                    and outcome.source.column == f"grid column {grid_column + 1}"
-                )
-                expected = getattr(outcome, rule.outputs[0].name) == met
-                assert all(value.boolean is expected for value in result.values), (
-                    f"{rule.id} row {row_index} must derive from the reviewed token"
-                )
-
-
-def _expected_outcomes():
-    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
-        ProtectionOutcome,
-    )
-
-    return tuple(
-        ProtectionOutcome(
-            category=f"category-row-{row - 1}",
-            evidence_required=_token(row, column) == "yes",
-            applicable=_token(row, column) == "yes",
-            source=SOURCE.model_copy(
-                update={
-                    "row": f"grid row {row + 1}",
-                    "column": f"grid column {column + 1}",
-                }
-            ),
-        )
+def test_rows_carry_exact_cell_provenance() -> None:
+    rule = project_dvc_protection_matrix(_grid(), IDENTITY)[0][0]
+    assert {
+        (row.source.row, row.source.column)
+        for row in rule.rows
+    } == {
+        (f"grid row {row + 1}", f"grid column {column + 1}")
         for row in DATA_ROWS
         for column in DATA_COLUMNS
-    )
+    }
 
 
-def test_projection_mixes_categorical_axes_boolean_inputs_and_typed_outputs() -> None:
-    rules, _ = project_dvc_protection_matrix(_grid(), synthetic_identity())
-    assert all(
-        any(item.name == "dvc" and item.kind == "categorical" for item in rule.inputs)
-        and any(item.kind == "boolean" for item in rule.inputs)
-        for rule in rules
-    )
-    assert all(rule.exhaustive for rule in rules)
-    assert all(output.kind == "boolean" for rule in rules for output in rule.outputs)
-    assert all(
-        value.boolean is not None for rule in rules for row in rule.rows for value in row.values
-    )
-
-
-def test_projection_rows_carry_source_row_and_column_provenance() -> None:
-    rules, _ = project_dvc_protection_matrix(_grid(), synthetic_identity())
-
-    assert all(
-        row.source.page is not None
-        and row.source.table is not None
-        and row.source.row is not None
-        and row.source.column is not None
-        for rule in rules
-        for row in rule.rows
-    )
-
-
-def test_projection_rules_evaluate_the_reviewed_boolean_tokens() -> None:
-    rules, _ = project_dvc_protection_matrix(_grid(), synthetic_identity())
-    for rule in rules:
-        boolean_inputs = tuple(item.name for item in rule.inputs if item.kind == "boolean")
-        assert len(boolean_inputs) == 1
-        # Deliberately evaluate combinations that are NOT copied from any row's
-        # own matchers: flip the boolean half of every cell's assignment and
-        # require the outcome to flip with it around the reviewed cell token.
-        for grid_row in DATA_ROWS:
-            for grid_column in DATA_COLUMNS:
-                token = _token(grid_row, grid_column) == "yes"
-                base = {
-                    "dvc": f"category-row-{grid_row - 1}",
-                    "protection_condition": f"condition-column-{grid_column - 1}",
-                }
-                met_result = evaluate_decision(rule, {**base, "protection_condition_met": True})
-                unmet_result = evaluate_decision(
-                    rule, {**base, "protection_condition_met": False}
-                )
-                assert met_result.values[0].boolean is token
-                assert unmet_result.values[0].boolean is not token
-
-
-def test_deleting_one_boolean_row_fails_exhaustive_rule_validation() -> None:
-    from insulation_coordination.domain.rules import DecisionRule
-
-    rules, _ = project_dvc_protection_matrix(_grid(), synthetic_identity())
-    rule = rules[0]
-    removed_any = False
-    for candidate in rule.rows:
-        broken = tuple(row for row in rule.rows if row is not candidate)
-        try:
-            DecisionRule(
-                id=rule.id,
-                inputs=rule.inputs,
-                outputs=rule.outputs,
-                rows=broken,
-                exhaustive=True,
-                source=rule.source,
-            )
-        except ValueError as error:
-            assert "exhaustive" in str(error)
-            removed_any = True
-            break
-    assert removed_any, "no single row deletion broke exhaustive coverage"
-
-
-def test_unknown_boolean_token_blocks_projection() -> None:
+def test_unknown_or_numeric_outcome_blocks_projection() -> None:
     grid = _grid()
-    cells = tuple(
-        cell.model_copy(update={"raw_text": "maybe"}) if (cell.row, cell.column) == (2, 2) else cell
-        for cell in grid.cells
-    )
-
-    with pytest.raises(ValueError, match="unknown boolean token"):
-        project_dvc_protection_matrix(
-            grid.model_copy(update={"cells": cells}), synthetic_identity()
-        )
-
-
-def test_numeric_content_in_a_boolean_cell_blocks_projection() -> None:
-    from decimal import Decimal
-
-    grid = _grid()
-    cells = tuple(
-        cell.model_copy(update={"raw_text": "42", "value": Decimal(42), "parse_status": "numeric"})
-        if (cell.row, cell.column) == (2, 2)
+    unknown = tuple(
+        cell.model_copy(update={"raw_text": "maybe"})
+        if (cell.row, cell.column) == (3, 1)
         else cell
         for cell in grid.cells
     )
+    with pytest.raises(ValueError, match="unknown categorical token"):
+        project_dvc_protection_matrix(grid.model_copy(update={"cells": unknown}), IDENTITY)
 
-    with pytest.raises(ValueError, match="unknown boolean token"):
-        project_dvc_protection_matrix(
-            grid.model_copy(update={"cells": cells}), synthetic_identity()
-        )
+    numeric = tuple(
+        cell.model_copy(update={"value": 1, "parse_status": "numeric"})
+        if (cell.row, cell.column) == (3, 1)
+        else cell
+        for cell in grid.cells
+    )
+    with pytest.raises(ValueError, match="unknown categorical token"):
+        project_dvc_protection_matrix(grid.model_copy(update={"cells": numeric}), IDENTITY)
 
 
-def test_incomplete_cartesian_coverage_blocks_projection() -> None:
+def test_missing_cell_and_wrong_identity_block_projection() -> None:
     grid = _grid()
-    cells = tuple(cell for cell in grid.cells if (cell.row, cell.column) != (8, 6))
-
-    # Mutation: deleting a physical cell must surface the structural missing-cell
-    # guard, unambiguously.
     with pytest.raises(ValueError, match="missing physical cell"):
-        project_dvc_protection_matrix(
-            grid.model_copy(update={"cells": cells}), synthetic_identity()
-        )
-
-
-def test_missing_category_condition_cell_fails_cartesian_coverage() -> None:
-    """A grid with every physical cell present but one data cell blanked must fail
-
-    the projection's own incomplete-Cartesian-coverage guard, not the structural
-    missing-cell guard.
-    """
-    grid = _grid()
-    cells = tuple(
-        cell.model_copy(
-            update={
-                "raw_text": "0",
-                "role": "header",
-                "logical_row": None,
-                "logical_column": None,
-                "value": Decimal(0),
-                "parse_status": "numeric",
-            }
-        )
-        if (cell.row, cell.column) == (8, 6)
-        else cell
-        for cell in grid.cells
-    )
-
-    with pytest.raises(ValueError, match="incomplete Cartesian coverage"):
-        project_dvc_protection_matrix(
-            grid.model_copy(update={"cells": cells}), synthetic_identity()
-        )
-
-
-def test_wrong_grid_identity_blocks_projection() -> None:
-    grid = _grid().model_copy(update={"id": "raw-other-table"})
-
+        project_dvc_protection_matrix(grid.model_copy(update={"cells": grid.cells[:-1]}), IDENTITY)
     with pytest.raises(ValueError, match="protection matrix"):
-        project_dvc_protection_matrix(grid, synthetic_identity())
+        project_dvc_protection_matrix(grid.model_copy(update={"id": "raw-other"}), IDENTITY)
+
+
+def test_deleting_one_outcome_breaks_exhaustive_coverage() -> None:
+    rule = project_dvc_protection_matrix(_grid(), IDENTITY)[0][0]
+    with pytest.raises(ValueError, match="exhaustive"):
+        DecisionRule(
+            id=rule.id,
+            inputs=rule.inputs,
+            outputs=rule.outputs,
+            rows=rule.rows[:-1],
+            exhaustive=True,
+            source=rule.source,
+        )
 
 
 def _logged_table3_extraction(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
@@ -413,24 +196,11 @@ def _logged_table3_extraction(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDr
         source=SOURCE,
         expected_contract="synthetic structural Table 3 review",
     )
-    derived_review_item = ImportReviewItem(
-        code="SYNTHETIC_TABLE_3_DERIVED_REVIEW",
-        semantic_id=f"{ids.DVC_PROTECTION_MATRIX}.applicable",
-        kind="table",
-        source=SOURCE,
-        expected_contract="synthetic derived Table 3 review",
-    )
     resolution = ImportReviewResolution(
         review_item_sha256=review_item.sha256,
         actor="Synthetic Source Reviewer",
         recorded_at=datetime(2026, 8, 8, tzinfo=UTC),
         notes="Reviewed the synthetic Table 3 source artifact.",
-    )
-    derived_resolution = ImportReviewResolution(
-        review_item_sha256=derived_review_item.sha256,
-        actor="Synthetic Source Reviewer",
-        recorded_at=datetime(2026, 8, 8, tzinfo=UTC),
-        notes="Reviewed the synthetic derived Table 3 rule.",
     )
     recipe = IEC_RECIPE.model_copy(
         update={
@@ -456,8 +226,8 @@ def _logged_table3_extraction(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDr
         tables=(),
         formulas=(),
         mappings=(),
-        review_items=(review_item, derived_review_item),
-        review_resolutions=(resolution, derived_resolution),
+        review_items=(review_item,),
+        review_resolutions=(resolution,),
         raw_grids=(grid,),
         source_identities=(IDENTITY,),
     )
@@ -483,31 +253,25 @@ def _logged_table3_extraction(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDr
     )
 
 
-def test_build_and_review_lifecycle_resets_after_authoritative_grid_change(
+def test_review_lifecycle_resets_after_authoritative_grid_change(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     built = build_reviewed_draft(
         _logged_table3_extraction(monkeypatch),
         actor="Synthetic Rule Builder",
-        notes="Build Table 3 decisions.",
+        notes="Build Table 3 decision.",
     )
-    assert built.semantic_proposals
-    assert all(proposal.state == "proposed" for proposal in built.semantic_proposals)
-
-    reviewed = built
-    for proposal in built.semantic_proposals:
-        reviewed = mark_proposal_reviewed(
-            reviewed,
-            proposal.semantic_id,
-            actor="Synthetic Semantic Reviewer",
-            notes="Reviewed the generated decision.",
-        )
-    assert all(proposal.state == "reviewed" for proposal in reviewed.semantic_proposals)
-
+    assert len(built.semantic_proposals) == 1
+    reviewed = mark_proposal_reviewed(
+        built,
+        ids.DVC_PROTECTION_MATRIX,
+        actor="Synthetic Semantic Reviewer",
+        notes="Reviewed the generated decision.",
+    )
     grid = reviewed.raw_grids[0]
     cells = tuple(
-        cell.model_copy(update={"parse_status": "non_scalar"})
-        if (cell.row, cell.column) == (2, 2)
+        cell.model_copy(update={"parse_status": "text"})
+        if (cell.row, cell.column) == (3, 1)
         else cell
         for cell in grid.cells
     )
@@ -515,31 +279,9 @@ def test_build_and_review_lifecycle_resets_after_authoritative_grid_change(
         reviewed,
         reviewed.model_copy(update={"raw_grids": (grid.model_copy(update={"cells": cells}),)}),
         actor="Synthetic Source Reviewer",
-        notes="Correct one reviewed synthetic boolean token.",
+        notes="Correct one reviewed synthetic category.",
     )
-
-    assert all(proposal.state == "proposed" for proposal in corrected.semantic_proposals)
+    assert corrected.semantic_proposals[0].state == "proposed"
     assert {blocker.code for blocker in approval_blockers(corrected)} >= {
         "SEMANTIC_PROPOSAL_PROPOSED"
     }
-
-
-def test_unrelated_prefixed_decision_cannot_borrow_table3_grounding(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    built = build_reviewed_draft(
-        _logged_table3_extraction(monkeypatch),
-        actor="Synthetic Rule Builder",
-        notes="Build Table 3 decisions.",
-    )
-    unrelated = built.decisions[0].model_copy(
-        update={"id": f"{ids.DVC_PROTECTION_MATRIX}.unrelated"}
-    )
-
-    with pytest.raises(ApprovalError, match="review item inventory"):
-        record_correction(
-            built,
-            built.model_copy(update={"decisions": (*built.decisions, unrelated)}),
-            actor="Synthetic Rule Builder",
-            notes="Attempt an unrelated prefixed decision.",
-        )

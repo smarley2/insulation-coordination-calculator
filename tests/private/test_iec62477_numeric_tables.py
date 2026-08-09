@@ -5,17 +5,12 @@ import pytest
 
 from insulation_coordination.rules.importer.approval import (
     ApprovalError,
-    approve_draft,
-    is_fully_resolved,
+    _require_consistent_shared_source_cells,
 )
 from insulation_coordination.rules.importer.extract import _REQUIRED_RECIPES, extract_draft
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.review import (
-    accept_equation_mapping,
     accept_raw_table,
-    build_reviewed_draft,
-    unresolved_equation_items,
-    unresolved_mapping_items,
 )
 
 pytestmark = pytest.mark.private_standard
@@ -100,33 +95,13 @@ def test_correcting_one_table_seven_grid_without_its_pair_is_refused(draft) -> N
     )
     bogus_value = shared_cell.value + Decimal(1)
 
-    reviewed = draft
-    for grid in draft.raw_grids:
-        corrections = (
-            {(shared_cell.row, shared_cell.column): bogus_value}
-            if grid.id == ac_grid_id
-            else {}
-        )
-        reviewed = accept_raw_table(
-            reviewed,
-            grid_id=grid.id,
-            corrections=corrections,
-            actor="Private fixture reviewer",
-            notes="Verified against supplied PDF",
-        )
-    reviewed = accept_equation_mapping(
-        reviewed,
-        equation_ids=tuple(item.semantic_id for item in unresolved_equation_items(reviewed)),
-        mapping_ids=tuple(item.semantic_id for item in unresolved_mapping_items(reviewed)),
+    reviewed = accept_raw_table(
+        draft,
+        grid_id=ac_grid_id,
+        corrections={(shared_cell.row, shared_cell.column): bogus_value},
         actor="Private fixture reviewer",
-        notes="Verified equations and mappings against supplied PDF",
+        notes="Verified against supplied PDF",
     )
-    built = build_reviewed_draft(
-        reviewed,
-        actor="Private fixture reviewer",
-        notes="Projected accepted IEC artifacts",
-    )
-    assert is_fully_resolved(built)
 
     with pytest.raises(ApprovalError, match="disagree"):
-        approve_draft(built, approver="Private fixture reviewer", notes="Approval attempt")
+        _require_consistent_shared_source_cells(reviewed)

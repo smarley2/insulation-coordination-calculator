@@ -39,6 +39,7 @@ from insulation_coordination.domain.rules import (
     CurveSegmentType,
     FaultTimeVoltageVariant,
 )
+from insulation_coordination.rules.importer import recipes as recipe_registry
 from insulation_coordination.rules.importer.approval import ApprovalError, approval_blockers
 from insulation_coordination.rules.importer.curves import (
     AxisCalibration,
@@ -232,7 +233,7 @@ class CurveReviewModel:
     def recover_blocked(
         self,
         replacements: tuple[
-            tuple[int, str | RawCurveTrace, PlotCalibration, tuple[CurvePoint, ...]], ...
+            tuple[int, int, str | RawCurveTrace, PlotCalibration, tuple[CurvePoint, ...]], ...
         ],
         *,
         actor: str,
@@ -663,7 +664,7 @@ class CurveReviewDialog(QDialog):
 
     def _recover_blocked_figures(self, notes: str) -> None:
         replacements: list[
-            tuple[int, str | RawCurveTrace, PlotCalibration, tuple[CurvePoint, ...]]
+            tuple[int, int, str | RawCurveTrace, PlotCalibration, tuple[CurvePoint, ...]]
         ] = []
         for index, (figure, result) in enumerate(
             zip(
@@ -673,40 +674,6 @@ class CurveReviewDialog(QDialog):
         ):
             if result.proposed_rule is not None:
                 continue
-            trace_input: str | RawCurveTrace
-            if figure.traces:
-                trace_input, accepted = QInputDialog.getItem(
-                    self,
-                    f"Recover Figure {figure.source.figure}",
-                    "Source trace",
-                    tuple(trace.id for trace in figure.traces),
-                    editable=False,
-                )
-                if not accepted:
-                    return
-            else:
-                raw_value, accepted = QInputDialog.getText(
-                    self,
-                    f"Recover Figure {figure.source.figure}",
-                    "Semicolon-separated source pixel x,y points",
-                )
-                if not accepted:
-                    return
-                raw_points = tuple(
-                    RawCurvePoint(
-                        x=Decimal(pair.split(",", 1)[0].strip()),
-                        y=Decimal(pair.split(",", 1)[1].strip()),
-                        space="pixel",
-                        primitive_ref=f"manual-{position}",
-                    )
-                    for position, pair in enumerate(raw_value.split(";"))
-                    if pair.strip()
-                )
-                trace_input = RawCurveTrace(
-                    id=f"manual-trace-{figure.source.figure}",
-                    points=raw_points,
-                    stroke_width=Decimal(1),
-                )
             axes: list[AxisCalibration] = []
             for axis in ("x", "y"):
                 value, accepted = QInputDialog.getText(
@@ -729,29 +696,72 @@ class CurveReviewDialog(QDialog):
                         minor_grid_spacing_pixels=spacing,
                     )
                 )
-            value, accepted = QInputDialog.getText(
-                self,
-                f"Recover Figure {figure.source.figure}",
-                "Semicolon-separated x,y engineering points",
+            spec = next(
+                spec
+                for recipe in recipe_registry.RECIPES
+                if recipe.id == "iec62477-1-2022"
+                for spec in recipe.curves
+                if spec.figure == figure.source.figure
             )
-            if not accepted:
-                return
-            points = tuple(
-                CurvePoint(
-                    x=Decimal(pair.split(",", 1)[0].strip()),
-                    y=Decimal(pair.split(",", 1)[1].strip()),
+            for slot_index, selector in enumerate(spec.variant_slots):
+                trace_input: str | RawCurveTrace
+                if figure.traces:
+                    trace_input, accepted = QInputDialog.getItem(
+                        self,
+                        f"Recover Figure {figure.source.figure}",
+                        f"Source trace for {selector.subject}/{selector.voltage_basis}",
+                        tuple(trace.id for trace in figure.traces),
+                        editable=False,
+                    )
+                    if not accepted:
+                        return
+                else:
+                    raw_value, accepted = QInputDialog.getText(
+                        self,
+                        f"Recover Figure {figure.source.figure}",
+                        f"Source pixel x,y points for slot {slot_index + 1}",
+                    )
+                    if not accepted:
+                        return
+                    raw_points = tuple(
+                        RawCurvePoint(
+                            x=Decimal(pair.split(",", 1)[0].strip()),
+                            y=Decimal(pair.split(",", 1)[1].strip()),
+                            space="pixel",
+                            primitive_ref=f"manual-{slot_index}-{position}",
+                        )
+                        for position, pair in enumerate(raw_value.split(";"))
+                        if pair.strip()
+                    )
+                    trace_input = RawCurveTrace(
+                        id=f"manual-trace-{figure.source.figure}-{slot_index + 1}",
+                        points=raw_points,
+                        stroke_width=Decimal(1),
+                    )
+                value, accepted = QInputDialog.getText(
+                    self,
+                    f"Recover Figure {figure.source.figure}",
+                    f"Engineering x,y points for slot {slot_index + 1}",
                 )
-                for pair in value.split(";")
-                if pair.strip()
-            )
-            replacements.append(
-                (
-                    index,
-                    trace_input,
-                    PlotCalibration(x=axes[0], y=axes[1]),
-                    points,
+                if not accepted:
+                    return
+                points = tuple(
+                    CurvePoint(
+                        x=Decimal(pair.split(",", 1)[0].strip()),
+                        y=Decimal(pair.split(",", 1)[1].strip()),
+                    )
+                    for pair in value.split(";")
+                    if pair.strip()
                 )
-            )
+                replacements.append(
+                    (
+                        index,
+                        slot_index,
+                        trace_input,
+                        PlotCalibration(x=axes[0], y=axes[1]),
+                        points,
+                    )
+                )
         self._model.recover_blocked(
             tuple(replacements), actor=self._actor, notes=notes
         )

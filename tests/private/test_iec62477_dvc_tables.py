@@ -55,10 +55,39 @@ def test_initial_draft_proposes_nothing_reviewed(draft) -> None:
 def _review_all_c2_proposals(draft):
     reviewed = draft
     for item in unresolved_table_items(reviewed):
+        grid_id = f"raw-{item.semantic_id}"
+        grid = next(grid for grid in reviewed.raw_grids if grid.id == grid_id)
+        pending = tuple(
+            raw
+            for raw in unresolved_raw_review_items(reviewed)
+            if raw.semantic_id.startswith(f"{grid_id}:")
+            and raw.code in {"AMBIGUOUS_COMPOUND_CELL", "AMBIGUOUS_COMPONENT_FORMULA"}
+        )
+        occurrences = {
+            tuple(map(int, raw.semantic_id.rsplit(":", 3)[1:]))
+            for raw in pending
+        }
+        associations = {}
+        formulas = {}
+        for row, column, source_index in occurrences:
+            cell = next(
+                cell
+                for cell in grid.cells
+                if (cell.row, cell.column) == (row, column)
+            )
+            component_id = cell.compound_component_ids[source_index]
+            associations[(row, column, source_index)] = component_id
+            formulas[(row, column, source_index)] = next(
+                formula_id
+                for candidate_id, formula_id in cell.allowed_component_formula_ids
+                if candidate_id == component_id
+            )
         reviewed = accept_raw_table(
             reviewed,
-            grid_id=f"raw-{item.semantic_id}",
+            grid_id=grid_id,
             corrections={},
+            component_associations=associations,
+            formula_selections=formulas,
             actor="Maintainer",
             notes="Reviewed extracted table.",
         )

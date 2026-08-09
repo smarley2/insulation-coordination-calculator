@@ -164,6 +164,43 @@ def create_clause_pdf(path: Path) -> None:
         writer.write(target)
 
 
+def create_paragraph_clause_pdf(path: Path) -> None:
+    """Three-page synthetic document with one wrapped paragraph and figure slots."""
+
+    writer = PdfWriter()
+    for page_index in range(3):
+        page = writer.add_blank_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
+        page[NameObject("/Resources")] = DictionaryObject(
+            {
+                NameObject("/Font"): DictionaryObject(
+                    {
+                        NameObject("/F1"): DictionaryObject(
+                            {
+                                NameObject("/Type"): NameObject("/Font"),
+                                NameObject("/Subtype"): NameObject("/Type1"),
+                                NameObject("/BaseFont"): NameObject("/Helvetica"),
+                            }
+                        )
+                    }
+                )
+            }
+        )
+        commands = (
+            [
+                _text_command(80, 480, "Neutral paragraph references Figure 5 and Figure 6."),
+                _text_command(80, 460, "Its wrapped continuation references Figure 7."),
+            ]
+            if page_index == 2
+            else [_text_command(72, 700, f"synthetic filler page {page_index + 1}")]
+        )
+        stream = DecodedStreamObject()
+        stream.set_data(b"\n".join(commands))
+        page[NameObject("/Contents")] = writer._add_object(stream)
+    writer.add_metadata({"/Title": "synthetic paragraph fixture", "/ICC-Synthetic": "true"})
+    with path.open("wb") as target:
+        writer.write(target)
+
+
 def create_curve_source_pdf(path: Path) -> None:
     """Two-page synthetic curve-source fixture. No IEC content.
 

@@ -7,8 +7,6 @@ to applicability decisions; any structure outside the reviewed roles blocks with
 
 from __future__ import annotations
 
-from decimal import Decimal
-
 from insulation_coordination.domain.rules import (
     DecisionInput,
     DecisionOutput,
@@ -27,6 +25,7 @@ from insulation_coordination.rules.importer.identify import (
     StandardIdentity,
 )
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
+from insulation_coordination.rules.importer.recipes.iec62477_1_2022.curves import CURVES
 
 CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ClauseAuditSpec(
@@ -34,19 +33,15 @@ CLAUSES: tuple[ClauseAuditSpec, ...] = (
         clause="4.4.2",
         page_number=44,
         expected_bbox=(70.9, 664.0, 524.4, 740.0),
-        expected_root_kind="bullets",
+        expected_root_kind="paragraph",
         output_kind="decision",
     ),
 )
 
-#: Reviewed token-role contract for the DVC fault-applicability fragment. The
-#: fragment holds exactly one duration bound (operator, quantity, unit) shared by
-#: every bullet, one condition role per bullet, and exactly one curve reference
-#: role naming the fault-time-voltage curve rule. Anything else blocks.
-_CONTRACT_QUANTITY_COUNT = 1
-_CONTRACT_UNIT = "s"
-_CONTRACT_OPERATORS = frozenset({"lte", "lt", "gte", "gt"})
-_CONTRACT_REFERENCE = ids.DVC_FAULT_TIME_VOLTAGE
+#: Reviewed structural contract: the paragraph references each maintained source
+#: figure at least once and no foreign figure. Engineering selector semantics come
+#: from those figures' reviewed curve recipes, not guessed from paragraph prose.
+_CONTRACT_REFERENCES = frozenset(f"figure-{spec.figure}" for spec in CURVES)
 
 
 class ClauseStructureError(ValueError):
@@ -68,62 +63,36 @@ def project_dvc_fault_applicability(
     if fragment.source.standard != identity.standard or fragment.source.edition != identity.edition:
         raise ValueError("DVC fault applicability fragment does not match its identified source")
 
-    conditions = tuple(
-        str(token.normalized) for token in fragment.tokens if token.kind == "condition"
-    )
-    operators = tuple(
-        token.normalized for token in fragment.tokens if token.kind == "operator"
-    )
-    quantities = tuple(
-        token.normalized for token in fragment.tokens if token.kind == "quantity"
-    )
-    units = tuple(token.normalized for token in fragment.tokens if token.kind == "unit")
-    references = tuple(
-        token.normalized for token in fragment.tokens if token.kind == "reference"
-    )
-    if len(conditions) != len(fragment.nodes) or len(set(conditions)) != len(conditions):
-        _fail("expected exactly one distinct condition token per clause node")
-    if len(operators) != 1 or str(operators[0]) not in _CONTRACT_OPERATORS:
-        _fail("expected exactly one reviewed duration operator")
-    if len(quantities) != _CONTRACT_QUANTITY_COUNT or not isinstance(
-        quantities[0], Decimal
-    ):
-        _fail("expected exactly one reviewed duration quantity")
-    quantity_node = next(
-        token.source.row
-        for token in fragment.tokens
-        if token.kind == "quantity"
-    )
-    source_node = next(
-        node for node in fragment.nodes if node.source.row == quantity_node
-    )
-    if str(quantities[0]) not in source_node.raw_text.replace(",", "."):
-        _fail("duration quantity does not match its reviewed source text")
-    if len(units) != 1 or str(units[0]) != _CONTRACT_UNIT:
-        _fail("expected exactly one reviewed duration unit")
-    if len(references) != 1 or str(references[0]) != _CONTRACT_REFERENCE:
-        _fail("expected exactly one reviewed curve reference")
+    if len(fragment.nodes) != 1 or fragment.nodes[0].kind != "paragraph":
+        _fail("expected one reviewed paragraph")
+    references = {
+        str(token.normalized) for token in fragment.tokens if token.kind == "reference"
+    }
+    if references != _CONTRACT_REFERENCES:
+        _fail("expected the exact maintained curve-figure inventory")
 
-    duration = quantities[0]
-    assert isinstance(duration, Decimal)
-    operator = str(operators[0])
-    inclusive = operator in ("lte", "gte")
-    lower_bound = operator in ("lte", "lt")
-    dvc_values = tuple(f"dvc-row-{row}" for row in range(1, 8))
+    selectors = tuple(
+        dict.fromkeys(
+            (selector.subject, selector.voltage_basis)
+            for spec in CURVES
+            for selector in spec.variant_slots
+        )
+    )
+    subjects = tuple(dict.fromkeys(subject for subject, _basis in selectors))
+    voltage_bases = tuple(dict.fromkeys(basis for _subject, basis in selectors))
     rule = DecisionRule(
         id=ids.DVC_FAULT_APPLICABILITY,
         inputs=(
             DecisionInput(
-                name="dvc",
+                name="subject",
                 kind="categorical",
-                allowed_values=dvc_values,
+                allowed_values=subjects,
             ),
             DecisionInput(
-                name="supply_condition",
+                name="voltage_basis",
                 kind="categorical",
-                allowed_values=conditions,
+                allowed_values=voltage_bases,
             ),
-            DecisionInput(name="fault_duration_s", kind="numeric", unit="s"),
         ),
         outputs=(
             DecisionOutput(name="curve_applicability", kind="boolean"),
@@ -136,16 +105,8 @@ def project_dvc_fault_applicability(
         rows=tuple(
             DecisionRow(
                 matchers=(
-                    Matcher(input="dvc", op="equals", values=(dvc,)),
-                    Matcher(input="supply_condition", op="equals", values=(condition,)),
-                    Matcher(
-                        input="fault_duration_s",
-                        op="range",
-                        minimum=None if lower_bound else duration,
-                        maximum=duration if lower_bound else None,
-                        minimum_inclusive=inclusive,
-                        maximum_inclusive=inclusive,
-                    ),
+                    Matcher(input="subject", op="equals", values=(subject,)),
+                    Matcher(input="voltage_basis", op="equals", values=(basis,)),
                 ),
                 values=(
                     DecisionValue(name="curve_applicability", boolean=True),
@@ -156,8 +117,7 @@ def project_dvc_fault_applicability(
                 ),
                 source=fragment.source,
             )
-            for dvc in dvc_values
-            for condition in conditions
+            for subject, basis in selectors
         ),
         exhaustive=False,
         source=fragment.source,

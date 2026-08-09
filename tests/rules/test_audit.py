@@ -134,6 +134,32 @@ def test_validation_requires_typed_curve_source_links(
     ).passed is False
 
 
+def test_figure_derived_curve_accepts_a_figure_only_locator(
+    synthetic_package: RulePackage,
+) -> None:
+    curve = synthetic_package.curves[0]
+    source = curve.source.model_copy(
+        update={"clause": None, "table": None, "figure": "SF-1"}
+    )
+    package = synthetic_package.model_copy(
+        update={
+            "curves": (
+                curve.model_copy(
+                    update={
+                        "source": source,
+                        "variants": tuple(
+                            variant.model_copy(update={"source": source})
+                            for variant in curve.variants
+                        ),
+                    }
+                ),
+            )
+        }
+    )
+
+    assert _result(validate_rule_package(package), "source_references").passed is True
+
+
 def test_source_references_reach_decision_rows_and_procedure_steps(
     synthetic_package: RulePackage,
 ) -> None:
@@ -644,6 +670,30 @@ def test_validation_rejects_incomplete_source_locators_on_new_rule_kinds(
     package = synthetic_package.model_copy(update=update)
 
     assert _result(validate_rule_package(package), "source_references").passed is False
+
+
+def test_clause_derived_decision_accepts_a_clause_only_locator(
+    synthetic_package: RulePackage,
+) -> None:
+    decision = synthetic_package.decisions[0]
+    source = decision.source.model_copy(update={"table": None, "figure": None})
+    package = synthetic_package.model_copy(
+        update={
+            "decisions": (
+                decision.model_copy(
+                    update={
+                        "source": source,
+                        "rows": tuple(
+                            row.model_copy(update={"source": source})
+                            for row in decision.rows
+                        ),
+                    }
+                ),
+            )
+        }
+    )
+
+    assert _result(validate_rule_package(package), "source_references").passed is True
 
 
 def test_owner_note_does_not_replace_table_or_figure_locator(

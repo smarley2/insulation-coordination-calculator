@@ -56,70 +56,45 @@ IDENTITY = StandardIdentity(
     page_count=44,
     recipe_id="synthetic-table-2",
 )
-REFERENCE_TARGETS = {
-    (6, 2): ids.DVC_FAULT_TIME_VOLTAGE,
-    (6, 3): ids.DVC_FAULT_TIME_VOLTAGE,
-    (6, 4): ids.DVC_FAULT_TIME_VOLTAGE,
-    (7, 4): f"{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.ac",
-    (7, 5): f"{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.dc",
+REFERENCE_COORDINATES = {(3, 5), (5, 4)}
+STRUCTURAL_BLANKS = {(7, column) for column in range(1, 6)}
+INHERITED_BLANKS = {
+    (1, 0), (2, 0),
+    (0, 2), (0, 3), (0, 4), (0, 5),
+    (1, 2), (1, 3), (1, 4),
+    (4, 4), (4, 5), (5, 5), (6, 4),
 }
-INHERITED_BLANKS = {(1, 0), (0, 2), (0, 3), (0, 4), (0, 5)}
 
 
 def _cell(row: int, column: int) -> RawGridCell:
     source = SOURCE.model_copy(
         update={"row": f"grid row {row + 1}", "column": f"grid column {column + 1}"}
     )
-    if (row, column) == (5, 5):
-        return RawGridCell(
-            row=row,
-            column=column,
-            raw_text="",
-            role="data",
-            logical_row=row - 2,
-            logical_column=f"column-{column - 1}",
-            parse_status="blank",
-            source=source,
-        )
-    if (row, column) in INHERITED_BLANKS:
-        return RawGridCell(
-            row=row,
-            column=column,
-            raw_text="",
-            role="blank",
-            parse_status="blank",
-            source=source,
-        )
-    if (row, column) in REFERENCE_TARGETS:
-        return RawGridCell(
-            row=row,
-            column=column,
-            raw_text="CURVE_REF" if row == 6 else "TOV_REF",
-            role="data",
-            logical_row=row - 2,
-            logical_column=f"column-{column - 1}",
-            parse_status="text",
-            source=source,
-        )
-    if row >= 2 and column >= 2:
-        value = Decimal(row * 100 + column * 7)
-        return RawGridCell(
-            row=row,
-            column=column,
-            raw_text=str(value),
-            role="data",
-            logical_row=row - 2,
-            logical_column=f"column-{column - 1}",
-            value=value,
-            parse_status="numeric",
-            source=source,
-        )
+    data = row in range(3, 7) and column in range(1, 6)
+    not_applicable = (row, column) == (6, 5)
+    blank = (
+        (row, column) in INHERITED_BLANKS
+        or (row, column) in STRUCTURAL_BLANKS
+        or not_applicable
+    )
+    reference = (row, column) in REFERENCE_COORDINATES
+    text = "NA" if not_applicable else ("" if blank else ("REF" if reference else "HEADER"))
+    value = Decimal(row * 100 + column * 7) if data and not blank else None
+    if reference:
+        value = None
     return RawGridCell(
         row=row,
         column=column,
-        raw_text=f"HEADER_{row}_{column}",
-        role="header",
-        parse_status="text",
+        raw_text=text if value is None else str(value),
+        role="data" if data else ("blank" if blank else "header"),
+        logical_row=row - 3 if data else None,
+        logical_column=f"column-{column}" if data else None,
+        value=value,
+        parse_status=(
+            "non_scalar"
+            if not_applicable
+            else ("blank" if blank else ("numeric" if value is not None else "text"))
+        ),
         source=source,
     )
 
@@ -136,23 +111,18 @@ def _grid() -> RawGrid:
     )
 
 
-def test_projection_emits_numeric_and_semantic_outcomes_with_provenance() -> None:
+def test_projection_emits_five_quantities_without_synthetic_inputs() -> None:
     rules, proposals = project_dvc_voltage_limits(_grid(), IDENTITY)
-    references = {
-        output.reference
-        for rule in rules
-        for row in rule.rows
-        for output in row.values
-        if output.reference is not None
-    }
-
-    assert ids.DVC_FAULT_TIME_VOLTAGE in references
-    assert f"{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.ac" in references
-    assert f"{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.dc" in references
-    assert all(proposal.state == "proposed" for proposal in proposals)
-    assert any(
-        value.numeric is not None for rule in rules for row in rule.rows for value in row.values
+    numeric = next(rule for rule in rules if rule.id == ids.DVC_VOLTAGE_LIMITS)
+    assert {item.name for item in numeric.inputs} == {"dvc", "voltage_quantity", "unit"}
+    quantity = next(item for item in numeric.inputs if item.name == "voltage_quantity")
+    assert len(quantity.allowed_values) == 5
+    assert not any(
+        matcher.input in {"operating_condition", "conditional_alternative"}
+        for row in numeric.rows
+        for matcher in row.matchers
     )
+    assert all(proposal.state == "proposed" for proposal in proposals)
     assert all(
         row.source.page is not None
         and row.source.table is not None
@@ -163,47 +133,53 @@ def test_projection_emits_numeric_and_semantic_outcomes_with_provenance() -> Non
     )
 
 
-def test_figure_reference_never_copies_a_curve_value() -> None:
+def test_curve_reference_rule_targets_only_the_fault_time_curve() -> None:
     rules, _ = project_dvc_voltage_limits(_grid(), IDENTITY)
-    curve_rows = [
-        row
-        for rule in rules
-        for row in rule.rows
-        if any(value.reference == ids.DVC_FAULT_TIME_VOLTAGE for value in row.values)
-    ]
+    rule = next(
+        item for item in rules
+        if item.id == f"{ids.DVC_VOLTAGE_LIMITS}.fault_time_reference"
+    )
+    assert [output.name for output in rule.outputs] == ["fault_time_voltage"]
+    assert {
+        value.reference for row in rule.rows for value in row.values
+    } == {ids.DVC_FAULT_TIME_VOLTAGE}
+    assert all(value.numeric is None for row in rule.rows for value in row.values)
 
-    assert curve_rows
-    assert all(value.numeric is None for row in curve_rows for value in row.values)
 
-
-def test_conditional_alternatives_use_boolean_matchers_and_evaluate_differently() -> None:
+def test_impulse_reference_rule_targets_exact_ac_and_dc_tables() -> None:
     rules, _ = project_dvc_voltage_limits(_grid(), IDENTITY)
-    numeric = next(rule for rule in rules if rule.id == ids.DVC_VOLTAGE_LIMITS)
-    conditional = next(item for item in numeric.inputs if item.name == "conditional_alternative")
-    assert conditional.kind == "boolean"
+    rule = next(
+        item for item in rules
+        if item.id == f"{ids.DVC_VOLTAGE_LIMITS}.impulse_reference"
+    )
+    assert {output.name for output in rule.outputs} == {"ac_reference", "dc_reference"}
     assert all(
-        matcher.boolean is not None and not matcher.values
-        for row in numeric.rows
-        for matcher in row.matchers
-        if matcher.input == "conditional_alternative"
+        {value.reference for value in row.values}
+        == {
+            f"{ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC}.ac",
+            f"{ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC}.dc",
+        }
+        for row in rule.rows
     )
 
-    common = {
-        "dvc": "dvc-row-3",
-        "operating_condition": "condition-row-3",
-        "voltage_quantity": "quantity-1",
+def test_numeric_rule_evaluates_a_physical_row_and_quantity_column() -> None:
+    numeric = next(
+        rule for rule in project_dvc_voltage_limits(_grid(), IDENTITY)[0]
+        if rule.id == ids.DVC_VOLTAGE_LIMITS
+    )
+    result = evaluate_decision(numeric, {
+        "dvc": "dvc-1",
+        "voltage_quantity": "voltage-quantity-1",
         "unit": "V",
-    }
-    false_result = evaluate_decision(numeric, {**common, "conditional_alternative": False})
-    true_result = evaluate_decision(numeric, {**common, "conditional_alternative": True})
-    assert false_result.values[0].numeric != true_result.values[0].numeric
+    })
+    assert result.values[0].numeric == Decimal(307)
 
 
 def test_unresolved_neutral_token_blocks_projection() -> None:
     grid = _grid()
     cells = tuple(
         cell.model_copy(update={"raw_text": "UNKNOWN", "value": None, "parse_status": "text"})
-        if (cell.row, cell.column) == (2, 2)
+        if (cell.row, cell.column) == (3, 1)
         else cell
         for cell in grid.cells
     )
@@ -302,7 +278,7 @@ def test_build_and_review_lifecycle_resets_after_authoritative_grid_change(
     grid = reviewed.raw_grids[0]
     cells = tuple(
         cell.model_copy(update={"value": cell.value + Decimal(1)})
-        if (cell.row, cell.column) == (2, 2) and cell.value is not None
+        if (cell.row, cell.column) == (3, 1) and cell.value is not None
         else cell
         for cell in grid.cells
     )

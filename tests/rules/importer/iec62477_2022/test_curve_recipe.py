@@ -21,25 +21,34 @@ def test_curve_specs_share_one_semantic_id_and_log_axes() -> None:
     assert {spec.semantic_id for spec in CURVES} == {"iec62477_2022.dvc.fault_time_voltage"}
     for spec in CURVES:
         assert spec.x_scale == "log10"
+        assert spec.x_source_unit == "ms"
         assert spec.y_scale == "log10"
         assert spec.variant_slots
         assert spec.permitted_segment_types
         assert spec.permitted_interpolations
 
 
-def test_curve_specs_declare_one_exact_semantic_role_per_figure() -> None:
+def test_curve_specs_declare_the_exact_eight_semantic_roles() -> None:
     selectors = tuple(spec.variant_slots for spec in CURVES)
-    assert all(len(slots) == 1 for slots in selectors)
-    figure5, figure6, figure7 = (slots[0] for slots in selectors)
-    assert (figure5.subject, figure5.voltage_basis) == ("accessible_circuit", "ac_rms")
-    assert (figure6.subject, figure6.voltage_basis) == ("accessible_circuit", "dc")
-    assert figure5.dvc_context is not None and figure5.environment_context is not None
-    assert figure6.dvc_context is not None and figure6.environment_context is not None
-    assert (figure7.subject, figure7.voltage_basis) == (
-        "conductive_accessible_part",
+    assert tuple(map(len, selectors)) == (3, 3, 2)
+    assert all(
+        selector.subject == "accessible_circuit"
+        and selector.voltage_basis == basis
+        and selector.dvc_context is not None
+        and selector.environment_context is not None
+        for slots, basis in zip(selectors[:2], ("dc", "ac_peak"), strict=True)
+        for selector in slots
+    )
+    assert tuple(selector.voltage_basis for selector in selectors[2]) == (
+        "dc",
         "ac_peak",
     )
-    assert figure7.dvc_context is None and figure7.environment_context is None
+    assert all(
+        selector.subject == "conductive_accessible_part"
+        and selector.dvc_context is None
+        and selector.environment_context is None
+        for selector in selectors[2]
+    )
 
 
 def test_recipe_exposes_curves_tuple() -> None:

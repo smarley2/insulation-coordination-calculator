@@ -44,6 +44,7 @@ from insulation_coordination.domain.rules import Expression as RuleExpression
 from insulation_coordination.rules.archive import _canonical_json
 from insulation_coordination.rules.importer.approval import ApprovalError, record_correction
 from insulation_coordination.rules.importer.curves import (
+    ConservatismReport,
     CurveDigitizationResult,
     PlotCalibration,
     RawCurveTrace,
@@ -168,12 +169,12 @@ def _source_semantic_id(proposal: SemanticProposal) -> str:
     table_decision_sources = {
         ids.DVC_VOLTAGE_LIMITS: (
             ids.DVC_VOLTAGE_LIMITS,
-            f"{ids.DVC_VOLTAGE_LIMITS}.references",
+            f"{ids.DVC_VOLTAGE_LIMITS}.fault_time_reference",
+            f"{ids.DVC_VOLTAGE_LIMITS}.impulse_reference",
             f"{ids.DVC_VOLTAGE_LIMITS}.not_applicable",
         ),
         ids.DVC_PROTECTION_MATRIX: (
             ids.DVC_PROTECTION_MATRIX,
-            f"{ids.DVC_PROTECTION_MATRIX}.applicable",
         ),
         ids.DVC_FAULT_APPLICABILITY: (ids.DVC_FAULT_APPLICABILITY,),
     }
@@ -1216,9 +1217,11 @@ def _matches(source: SourceReference, expected: SourceReference) -> bool:
 
 def required_content_report(draft: ImportedRuleDraft) -> tuple[RequiredContentStatus, ...]:
     """Required tables/formulas/mappings and whether typed content is present."""
+    from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
     from insulation_coordination.rules.importer.recipes import RECIPES
 
     table_ids = {table.id: table for table in draft.tables}
+    decision_ids = {decision.id for decision in draft.decisions}
     formula_ids = {formula.id: formula for formula in draft.formulas}
     mapping_ids = {mapping.id: mapping for mapping in draft.mappings}
     fragment_ids = {fragment.id for fragment in draft.raw_clause_fragments}
@@ -1234,8 +1237,21 @@ def required_content_report(draft: ImportedRuleDraft) -> tuple[RequiredContentSt
                 clause=table_spec.clause,
                 table=table_spec.source_table,
             )
+            decision_routes = {
+                ids.DVC_VOLTAGE_LIMITS: {
+                    ids.DVC_VOLTAGE_LIMITS,
+                    f"{ids.DVC_VOLTAGE_LIMITS}.fault_time_reference",
+                    f"{ids.DVC_VOLTAGE_LIMITS}.impulse_reference",
+                    f"{ids.DVC_VOLTAGE_LIMITS}.not_applicable",
+                },
+                ids.DVC_PROTECTION_MATRIX: {ids.DVC_PROTECTION_MATRIX},
+            }.get(table_spec.semantic_id)
             table = table_ids.get(table_spec.semantic_id)
-            present = table is not None and _matches(table.source, expected)
+            present = (
+                decision_routes <= decision_ids
+                if decision_routes is not None
+                else table is not None and _matches(table.source, expected)
+            )
             statuses.append(
                 RequiredContentStatus(
                     standard=recipe.standard,
@@ -1648,6 +1664,35 @@ def _require_exact_trace_domain(
         raise ApprovalError("curve domain must equal the active source trace endpoints")
 
 
+def _combined_conservatism_report(
+    draft: ImportedRuleDraft,
+    digitization: CurveDigitizationResult,
+    variants: tuple[FaultTimeVoltageVariant, ...],
+    calibration: PlotCalibration,
+) -> ConservatismReport:
+    reports = tuple(
+        prove_variant_conservative(
+            figure,
+            trace,
+            calibration,
+            variant,
+        )
+        for variant in variants
+        for figure, _current, trace in (_variant_evidence(draft, variant),)
+    )
+    if not reports or digitization.proposed_rule is None:
+        raise ApprovalError("curve digitization lacks a complete proof inventory")
+    return ConservatismReport(
+        maximum_positive_voltage_error=max(
+            report.maximum_positive_voltage_error for report in reports
+        ),
+        maximum_fidelity_error_pixels=max(
+            report.maximum_fidelity_error_pixels for report in reports
+        ),
+        proven=all(report.proven for report in reports),
+    )
+
+
 def validate_current_curve_evidence(
     draft: ImportedRuleDraft,
     variant: FaultTimeVoltageVariant,
@@ -1666,7 +1711,13 @@ def validate_current_curve_evidence(
         raise ApprovalError("curve interpolation has no analytic conservative proof")
     _require_exact_trace_domain(trace, calibration, variant)
     report = prove_variant_conservative(figure, trace, calibration, variant)
-    if not report.proven or digitization.conservatism != report:
+    proposed = digitization.proposed_rule
+    if proposed is None:
+        raise ApprovalError("curve proof lacks its proposed variant inventory")
+    combined = _combined_conservatism_report(
+        draft, digitization, proposed.variants, calibration
+    )
+    if not report.proven or digitization.conservatism != combined:
         raise ApprovalError("curve variant lacks a freshly recomputed conservative proof")
     expected = _reviewed_variant(
         variant,
@@ -1676,8 +1727,7 @@ def validate_current_curve_evidence(
     )
     if variant.reviewed_artifact_sha256 != expected.reviewed_artifact_sha256:
         raise ApprovalError("curve variant provenance is stale for current source evidence")
-    proposed = digitization.proposed_rule
-    if proposed is None or tuple(member for member in proposed.variants if member.id == variant.id) != (
+    if tuple(member for member in proposed.variants if member.id == variant.id) != (
         variant,
     ):
         raise ApprovalError("curve proof does not match the current semantic variant")
@@ -1735,11 +1785,19 @@ def _reprove_curve_variant(
             )
         }
     )
+    combined_report = _combined_conservatism_report(
+        draft,
+        digitization,
+        changed_proposed.variants,
+        active_calibration,
+    )
+    if not combined_report.proven:
+        raise ApprovalError("curve correction invalidates a sibling conservative proof")
     changed_digitization = digitization.model_copy(
         update={
             "proposed_rule": changed_proposed,
             "calibration": active_calibration,
-            "conservatism": report,
+            "conservatism": combined_report,
             "blocking_review_items": (),
         }
     )
@@ -1834,7 +1892,7 @@ def recover_blocked_curve_figures(
     draft: ImportedRuleDraft,
     *,
     replacements: tuple[
-        tuple[int, str | RawCurveTrace, PlotCalibration, tuple[CurvePoint, ...]], ...
+        tuple[int, int, str | RawCurveTrace, PlotCalibration, tuple[CurvePoint, ...]], ...
     ],
     actor: str,
     notes: str,
@@ -1843,12 +1901,12 @@ def recover_blocked_curve_figures(
 
     if not replacements:
         raise ApprovalError("manual recovery requires at least one blocked figure")
-    by_index = {
-        index: (trace_input, calibration, points)
-        for index, trace_input, calibration, points in replacements
+    by_slot = {
+        (figure_index, slot_index): (trace_input, calibration, points)
+        for figure_index, slot_index, trace_input, calibration, points in replacements
     }
-    if len(by_index) != len(replacements):
-        raise ApprovalError("manual recovery contains duplicate figure entries")
+    if len(by_slot) != len(replacements):
+        raise ApprovalError("manual recovery contains duplicate variant entries")
     from insulation_coordination.rules.importer.recipes import RECIPES
     from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
         project_fault_time_voltage,
@@ -1868,15 +1926,33 @@ def recover_blocked_curve_figures(
         raise ApprovalError("manual recovery lacks the IEC curve recipe identity")
     if len(draft.raw_figures) != len(draft.curve_digitizations) or len(recipe.curves) != 3:
         raise ApprovalError("manual recovery has an incomplete figure inventory")
+    blocked_indexes = {
+        index
+        for index, result in enumerate(draft.curve_digitizations)
+        if result.proposed_rule is None and result.blocking_review_items
+    }
+    expected_slots = {
+        (figure_index, slot_index)
+        for figure_index in blocked_indexes
+        for slot_index in range(len(recipe.curves[figure_index].variant_slots))
+    }
+    if set(by_slot) != expected_slots:
+        raise ApprovalError("manual recovery must cover every blocked curve variant exactly once")
     digitizations = list(draft.curve_digitizations)
-    recovered_variants: dict[int, FaultTimeVoltageVariant] = {}
+    recovered_variants: dict[str, FaultTimeVoltageVariant] = {}
+    raw_variants: dict[int, dict[int, FaultTimeVoltageVariant]] = {}
+    reports: dict[int, list[ConservatismReport]] = {}
+    associations = list(draft.curve_trace_associations)
+    selected_trace_ids: dict[int, set[str]] = {}
     manual_traces = list(draft.manual_curve_traces)
-    for index, (trace_input, calibration, points) in by_index.items():
-        if not 0 <= index < len(digitizations):
+    for (figure_index, slot_index), (trace_input, calibration, points) in sorted(
+        by_slot.items()
+    ):
+        if not 0 <= figure_index < len(digitizations):
             raise ApprovalError("manual recovery figure index is outside the inventory")
-        result = digitizations[index]
-        figure = draft.raw_figures[index]
-        spec = recipe.curves[index]
+        result = digitizations[figure_index]
+        figure = draft.raw_figures[figure_index]
+        spec = recipe.curves[figure_index]
         if result.proposed_rule is not None or not result.blocking_review_items:
             raise ApprovalError("manual recovery is allowed only for a blocked figure")
         available = tuple(
@@ -1908,6 +1984,10 @@ def recover_blocked_curve_figures(
             if len(traces) != 1:
                 raise ApprovalError("manual recovery requires one source-scoped trace")
             trace = traces[0]
+        used = selected_trace_ids.setdefault(figure_index, set())
+        if trace.id in used:
+            raise ApprovalError("manual recovery cannot reuse one trace for multiple variants")
+        used.add(trace.id)
         if len(points) < 2 or any(point.x <= 0 or point.y <= 0 for point in points):
             raise ApprovalError("manual recovery requires at least two positive points")
         source_log = tuple(sorted(_log_space_point(point, calibration) for point in trace.points))
@@ -1920,9 +2000,12 @@ def recover_blocked_curve_figures(
             raise ApprovalError("manual curve domain must equal the explicit traced endpoints")
         x_values = tuple(point.x for point in points)
         y_values = tuple(point.y for point in points)
+        variant_id = f"{spec.semantic_id}.{spec.figure}"
+        if len(spec.variant_slots) > 1:
+            variant_id = f"{variant_id}.{slot_index + 1}"
         variant = FaultTimeVoltageVariant(
-            id=f"{spec.semantic_id}.{spec.figure}",
-            selector=spec.variant_slots[0],
+            id=variant_id,
+            selector=spec.variant_slots[slot_index],
             x_axis=CurveAxis(
                 quantity_kind=spec.x_quantity_kind,
                 unit=spec.x_unit,
@@ -1954,22 +2037,53 @@ def recover_blocked_curve_figures(
         report = prove_variant_conservative(figure, trace, calibration, variant)
         if not report.proven:
             raise ApprovalError("manual curve is not conservative against source geometry")
-        proposed_rule = PiecewiseCurveRule(
-            id=spec.semantic_id,
-            variants=(variant,),
-            source=figure.source,
-        )
-        recovered_variants[index] = _reviewed_variant(
+        raw_variants.setdefault(figure_index, {})[slot_index] = variant
+        reports.setdefault(figure_index, []).append(report)
+        recovered_variants[variant.id] = _reviewed_variant(
             variant,
             figure=figure,
             trace=trace,
             calibration=calibration,
         )
-        digitizations[index] = result.model_copy(
+        associations.append(
+            CurveTraceAssociation(
+                variant_id=variant.id,
+                figure_artifact_sha256=figure.artifact_sha256,
+                trace_id=trace.id,
+            )
+        )
+    for figure_index in blocked_indexes:
+        result = digitizations[figure_index]
+        figure = draft.raw_figures[figure_index]
+        spec = recipe.curves[figure_index]
+        members = tuple(
+            raw_variants[figure_index][slot_index]
+            for slot_index in range(len(spec.variant_slots))
+        )
+        member_reports = reports[figure_index]
+        calibration = by_slot[(figure_index, 0)][1]
+        if any(
+            by_slot[(figure_index, slot_index)][1] != calibration
+            for slot_index in range(len(spec.variant_slots))
+        ):
+            raise ApprovalError("manual variants from one figure must share one calibration")
+        digitizations[figure_index] = result.model_copy(
             update={
-                "proposed_rule": proposed_rule,
+                "proposed_rule": PiecewiseCurveRule(
+                    id=spec.semantic_id,
+                    variants=members,
+                    source=figure.source,
+                ),
                 "calibration": calibration,
-                "conservatism": report,
+                "conservatism": ConservatismReport(
+                    maximum_positive_voltage_error=max(
+                        report.maximum_positive_voltage_error for report in member_reports
+                    ),
+                    maximum_fidelity_error_pixels=max(
+                        report.maximum_fidelity_error_pixels for report in member_reports
+                    ),
+                    proven=True,
+                ),
                 "blocking_review_items": (),
             }
         )
@@ -1990,18 +2104,23 @@ def recover_blocked_curve_figures(
     rule = rule.model_copy(
         update={
             "variants": tuple(
-                recovered_variants.get(index, variant)
-                for index, variant in enumerate(rule.variants)
+                recovered_variants.get(variant.id, variant)
+                for variant in rule.variants
             )
         }
     )
-    for index, reviewed_variant in recovered_variants.items():
-        proposed = digitizations[index].proposed_rule
+    for figure_index in blocked_indexes:
+        proposed = digitizations[figure_index].proposed_rule
         assert proposed is not None
-        digitizations[index] = digitizations[index].model_copy(
+        digitizations[figure_index] = digitizations[figure_index].model_copy(
             update={
                 "proposed_rule": proposed.model_copy(
-                    update={"variants": (reviewed_variant,)}
+                    update={
+                        "variants": tuple(
+                            recovered_variants[variant.id]
+                            for variant in proposed.variants
+                        )
+                    }
                 )
             }
         )
@@ -2014,6 +2133,7 @@ def recover_blocked_curve_figures(
         update={
             "curves": (rule,),
             "curve_digitizations": tuple(digitizations),
+            "curve_trace_associations": tuple(associations),
             "manual_curve_traces": tuple(manual_traces),
             "semantic_proposals": proposals,
         }

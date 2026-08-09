@@ -325,6 +325,13 @@ basis are always required. Figure 7 variants use `subject="conductive_accessible
 `None` for dimensions that do not apply; Figures 5 and 6 use
 `subject="accessible_circuit"` with their reviewed DVC/environment keys.
 
+The maintained inventory is exact: Figure 5 contributes three DC accessible-circuit variants,
+Figure 6 contributes the corresponding three AC-peak variants, and Figure 7 contributes DC and
+AC-peak conductive-accessible-part variants. The source duration axis is calibrated in
+milliseconds and converted to seconds before semantic projection. Colored solid or dashed source
+strokes are recovered as separate source-scoped traces and paired with the declared 3/3/2 slots;
+any missing, extra, duplicated, or reused trace blocks review.
+
 `select_curve_variant` compares complete keys:
 
 - zero matches returns a typed `no_match` result;
@@ -406,15 +413,21 @@ projection or execution.
 
 ## Table 3 semantic extraction
 
-Table 3 uses a dedicated structural recipe and projects
-`iec62477_2022.dvc.protection_matrix` as a `DecisionRule`. Typed inputs cover circuit DVC,
-surroundings or adjacent-circuit context, accessibility context, and applicable exceptions.
-Typed outputs use neutral protection categories and evidence/applicability states.
+Table 3 uses its physical 9-row by 7-column grid as the audit boundary. Three physical rows are
+semantic DVC rows, six columns are protection contexts, two physical rows retain wrapped source
+continuations, and the final physical row retains the source notes. The public recipe stores only
+that structure and neutral positional context identifiers; it does not copy the source headings or
+notes.
 
-Every supported source combination becomes one ordered row or an explicit outside-scope result.
-Notes and exceptions remain source-scoped review artifacts; copied IEC prose is not stored in
-public code. Missing combinations, duplicate combinations, ambiguous merged headers, or
-unresolved exceptions block execution.
+The table projects one exhaustive `iec62477_2022.dvc.protection_matrix` `DecisionRule`. Its inputs
+are the three DVC identifiers and six protection-context identifiers. Its categorical output is
+`protection_requirement`, with the neutral values `none`, `basic_protection`, and
+`enhanced_protection`. Source cells are recognized only by those reviewed category prefixes;
+unknown, numeric, blank, duplicated, or incomplete cells block projection. There is no invented
+`protection_condition_met` input and no derived evidence/applicability boolean.
+
+Every one of the 18 source combinations becomes one ordered row with cell provenance. Wrapped
+continuations and notes remain in the hashed raw grid and its source-scoped review artifacts.
 
 ## Generic clause and bullet extraction
 
@@ -440,8 +453,12 @@ normalization recognizes paragraph boundaries, bullets, enumerated alternatives,
 quantities, and units while preserving the raw source span. Unsupported grammar or uncertain
 branch attachment blocks; it is never flattened into guessed prose.
 
-The DVC fault/time applicability clauses use this machinery and reference the reviewed curve
-variants. Clause rules do not duplicate curve coordinates.
+The DVC fault-voltage applicability source is one wrapped paragraph, not a bullet list and not a
+duration threshold. Its typed reference inventory must contain each maintained Figure 5–7 curve
+source and no foreign figure. Projection routes the four distinct `subject`/`voltage_basis`
+combinations represented by the eight reviewed variants to the aggregate fault-time-voltage
+curve rule. Clause rules do not duplicate
+curve coordinates or invent a duration condition.
 
 ## Table 7 TOV completion
 

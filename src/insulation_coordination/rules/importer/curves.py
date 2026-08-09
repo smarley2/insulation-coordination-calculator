@@ -12,13 +12,14 @@ import csv
 import hashlib
 import io
 import os
+import re
 import subprocess
 import tempfile
 from collections import deque
 from decimal import Decimal, InvalidOperation
 from itertools import pairwise
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, cast, runtime_checkable
 
 import pdfplumber
 from PIL import Image
@@ -272,20 +273,37 @@ def _locate(reader_page: PageObject, spec: CurveAuditSpec) -> LocatedCurveSource
     vector_points = 0
     image_operands: list[tuple[str, tuple[float, float, float, float, float, float]]] = []
     current_matrix = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
-    stack: list[tuple[float, float, float, float, float, float]] = []
+    active_clip: tuple[float, float, float, float] | None = None
+    pending_rectangle: tuple[float, float, float, float] | None = None
+    clipping_seen = False
+    stack: list[
+        tuple[
+            tuple[float, float, float, float, float, float],
+            tuple[float, float, float, float] | None,
+        ]
+    ] = []
     for operands, operator in stream.operations:
         op = operator.decode() if isinstance(operator, bytes) else str(operator)
         if op == "q":
-            stack.append(current_matrix)
+            stack.append((current_matrix, active_clip))
         elif op == "Q":
             if stack:
-                current_matrix = stack.pop()
-        elif op == "W":
-            # Clipping changes which geometry lands inside the figure; rather than
-            # interpret the clip path, block so a reviewer confirms the figure.
-            raise ExtractionError(
-                f"CURVE_SOURCE_CLIPPED: clipping path present for {spec.figure}"
-            )
+                current_matrix, active_clip = stack.pop()
+        elif op in {"W", "W*"}:
+            clipping_seen = True
+            if pending_rectangle is None:
+                raise ExtractionError(
+                    f"CURVE_SOURCE_CLIPPED: non-rectangular clipping path for {spec.figure}"
+                )
+            if active_clip is None:
+                active_clip = pending_rectangle
+            else:
+                active_clip = (
+                    max(active_clip[0], pending_rectangle[0]),
+                    max(active_clip[1], pending_rectangle[1]),
+                    min(active_clip[2], pending_rectangle[2]),
+                    min(active_clip[3], pending_rectangle[3]),
+                )
         elif op == "cm":
             a, b, c, d, e, f = (float(str(value)) for value in operands)
             current_matrix = (a, b, c, d, e, f)
@@ -304,6 +322,19 @@ def _locate(reader_page: PageObject, spec: CurveAuditSpec) -> LocatedCurveSource
             iy0 = min(point[1] for point in corners)
             iy1 = max(point[1] for point in corners)
             if ix0 < x1 and ix1 > x0 and iy0 < pdf_top and iy1 > pdf_bottom:
+                # PDF producers commonly round a clip rectangle and the matching
+                # image matrix independently. Sub-point differences preserve the
+                # same source geometry; larger crops still block.
+                clip_tolerance = 0.1
+                if active_clip is not None and not (
+                    active_clip[0] <= ix0 + clip_tolerance
+                    and active_clip[1] <= iy0 + clip_tolerance
+                    and active_clip[2] >= ix1 - clip_tolerance
+                    and active_clip[3] >= iy1 - clip_tolerance
+                ):
+                    raise ExtractionError(
+                        f"CURVE_SOURCE_CLIPPED: image is cropped for {spec.figure}"
+                    )
                 image_operands.append((str(operands[0]), current_matrix))
         elif op in _PATH_POINT_OPERATORS:
             numbers = [float(str(value)) for value in operands]
@@ -312,7 +343,35 @@ def _locate(reader_page: PageObject, spec: CurveAuditSpec) -> LocatedCurveSource
             ty = current_matrix[1] * px + current_matrix[3] * py + current_matrix[5]
             if x0 <= tx <= x1 and pdf_bottom <= ty <= pdf_top:
                 vector_points += 1
+            if op == "re":
+                width, height = numbers[2], numbers[3]
+                rectangle_corners = tuple(
+                    (
+                        current_matrix[0] * rx + current_matrix[2] * ry + current_matrix[4],
+                        current_matrix[1] * rx + current_matrix[3] * ry + current_matrix[5],
+                    )
+                    for rx, ry in (
+                        (px, py),
+                        (px + width, py),
+                        (px, py + height),
+                        (px + width, py + height),
+                    )
+                )
+                pending_rectangle = (
+                    min(point[0] for point in rectangle_corners),
+                    min(point[1] for point in rectangle_corners),
+                    max(point[0] for point in rectangle_corners),
+                    max(point[1] for point in rectangle_corners),
+                )
+            else:
+                pending_rectangle = None
+        elif op in {"n", *_PAINT_OPERATORS}:
+            pending_rectangle = None
     if vector_points >= 2:
+        if clipping_seen:
+            raise ExtractionError(
+                f"CURVE_SOURCE_CLIPPED: clipping path present for {spec.figure}"
+            )
         return LocatedCurveSource(
             mode="vector_path",
             image_name=None,
@@ -408,7 +467,9 @@ def _vector_traces(
 
 
 def _raster_traces(
-    image: Image.Image, tokens: tuple[OcrToken, ...]
+    image: Image.Image,
+    tokens: tuple[OcrToken, ...],
+    expected_traces: int | None = None,
 ) -> tuple[RawCurveTrace, ...]:
     """Recover unambiguous long dark strokes from a lossless chart image.
 
@@ -417,7 +478,106 @@ def _raster_traces(
     digitizer blocks for maintainer association instead of guessing.
     """
 
-    gray = image.convert("L")
+    rgb = image.convert("RGB")
+    width, height = rgb.size
+    colored: list[tuple[int, int, tuple[int, int, int]]] = []
+    for y in range(max(1, int(height * 0.02)), min(height, int(height * 0.88))):
+        for x in range(max(1, int(width * 0.04)), min(width, int(width * 0.98))):
+            red, green, blue = cast(tuple[int, int, int], rgb.getpixel((x, y)))
+            if max(red, green, blue) - min(red, green, blue) >= 35:
+                colored.append((x, y, (red, green, blue)))
+    if colored:
+        histogram: dict[tuple[int, int, int], int] = {}
+        for _x, _y, color in colored:
+            histogram[color] = histogram.get(color, 0) + 1
+        minimum_pixels = max(20, width // 8)
+        candidates = {
+            color: count for color, count in histogram.items() if count >= minimum_pixels
+        }
+        anchors: list[tuple[int, int, int]] = []
+        while candidates and (
+            expected_traces is None or len(anchors) < expected_traces
+        ):
+            if not anchors:
+                selected = max(candidates, key=lambda color: (candidates[color], color))
+            else:
+                selected = max(
+                    candidates,
+                    key=lambda color: (
+                        min(
+                            sum(
+                                (component - existing) ** 2
+                                for component, existing in zip(color, anchor)
+                            )
+                            for anchor in anchors
+                        )
+                        * candidates[color],
+                        color,
+                    ),
+                )
+            anchors.append(selected)
+            candidates = {
+                color: count
+                for color, count in candidates.items()
+                if sum(
+                    (component - existing) ** 2
+                    for component, existing in zip(color, selected)
+                )
+                >= 45**2
+            }
+        color_traces: list[RawCurveTrace] = []
+        for anchor in anchors:
+            cluster = set()
+            for x, y, color in colored:
+                distances = tuple(
+                    sum(
+                        (component - expected) ** 2
+                        for component, expected in zip(color, candidate)
+                    )
+                    for candidate in anchors
+                )
+                if distances.index(min(distances)) == anchors.index(anchor) and min(distances) <= 100**2:
+                    cluster.add((x, y))
+            if not cluster:
+                continue
+            x_span = max(x for x, _ in cluster) - min(x for x, _ in cluster)
+            if x_span < width // 3:
+                continue
+            color_by_x: dict[int, list[int]] = {}
+            for x, y in cluster:
+                color_by_x.setdefault(x, []).append(y)
+            points = tuple(
+                RawCurvePoint(
+                    x=Decimal(x),
+                    y=Decimal(sorted(ys)[len(ys) // 2]),
+                    space="pixel",
+                    primitive_ref=f"color-column-{x}",
+                )
+                for x, ys in sorted(color_by_x.items())
+            )
+            color_traces.append(
+                RawCurveTrace(
+                    id=f"trace-{len(color_traces) + 1}",
+                    points=points,
+                    stroke_width=max(
+                        Decimal(1), Decimal(len(cluster)) / Decimal(len(points))
+                    ),
+                )
+            )
+        if color_traces:
+
+            def endpoint_y(trace: RawCurveTrace) -> Decimal:
+                count = max(3, len(trace.points) // 20)
+                tail = trace.points[-count:]
+                return sum(point.y for point in tail) / Decimal(len(tail))
+
+            ordered = sorted(color_traces, key=endpoint_y)
+            return tuple(
+                trace.model_copy(update={"id": f"trace-{index}"})
+                for index, trace in enumerate(ordered, start=1)
+            )
+
+    gray = rgb.convert("L")
     width, height = gray.size
     dark: set[tuple[int, int]] = set()
     for y in range(height):
@@ -472,9 +632,9 @@ def _raster_traces(
     )
     traces: list[RawCurveTrace] = []
     for index, component in enumerate(plausible, start=1):
-        by_x: dict[int, list[int]] = {}
+        raster_by_x: dict[int, list[int]] = {}
         for x, y in component:
-            by_x.setdefault(x, []).append(y)
+            raster_by_x.setdefault(x, []).append(y)
         points = tuple(
             RawCurvePoint(
                 x=Decimal(x),
@@ -482,7 +642,7 @@ def _raster_traces(
                 space="pixel",
                 primitive_ref=f"raster-column-{x}",
             )
-            for x, ys in sorted(by_x.items())
+            for x, ys in sorted(raster_by_x.items())
         )
         traces.append(
             RawCurveTrace(
@@ -492,6 +652,35 @@ def _raster_traces(
             )
         )
     return tuple(traces)
+
+
+def _curve_ocr_tokens(image: Image.Image, ocr: OcrEngine) -> tuple[OcrToken, ...]:
+    """OCR the complete artifact plus enlarged axis strips in source-pixel space."""
+
+    tokens = list(ocr.recognize(image))
+    width, height = image.size
+    crop_boxes = (
+        (int(width * 0.05), int(height * 0.75), width, int(height * 0.90)),
+        (0, 0, int(width * 0.17), int(height * 0.88)),
+    )
+    scale = 2
+    for left, top, right, bottom in crop_boxes:
+        crop = image.crop((left, top, right, bottom))
+        enlarged = crop.resize((crop.width * scale, crop.height * scale))
+        for token in ocr.recognize(enlarged):
+            tokens.append(
+                token.model_copy(
+                    update={
+                        "box": PixelBox(
+                            left=left + token.box.left // scale,
+                            top=top + token.box.top // scale,
+                            right=left + max(token.box.left // scale + 1, token.box.right // scale),
+                            bottom=top + max(token.box.top // scale + 1, token.box.bottom // scale),
+                        )
+                    }
+                )
+            )
+    return tuple(tokens)
 
 
 def extract_raw_figure(
@@ -516,7 +705,7 @@ def extract_raw_figure(
         pdf_traces = _vector_traces(reader_page, spec)
         rendered = plumber_page.crop(spec.expected_bbox).to_image(resolution=110).original
         try:
-            tokens = ocr.recognize(rendered)
+            tokens = _curve_ocr_tokens(rendered, ocr)
         except OcrError:
             tokens = ()
         width, height = rendered.size
@@ -617,10 +806,10 @@ def extract_raw_figure(
             f"CURVE_SOURCE_MISMATCH: pixel size differs for {spec.figure}"
         )
     try:
-        tokens = ocr.recognize(image)
+        tokens = _curve_ocr_tokens(image, ocr)
     except OcrError:
         tokens = ()
-    traces = _raster_traces(image, tokens)
+    traces = _raster_traces(image, tokens, len(spec.variant_slots))
     if image_file.indirect_reference is None:
         raise ExtractionError("CURVE_SOURCE_MISSING: image has no indirect reference")
     get_data = getattr(xobject, "get_data", None)
@@ -818,7 +1007,8 @@ def _blocking_item(code: str, spec: CurveAuditSpec, contract: str) -> ImportRevi
 
 def _tick_value(token: OcrToken) -> Decimal | None:
     try:
-        return Decimal(token.text.replace(",", "."))
+        compact = re.sub(r"[\s\u00a0]", "", token.text).replace(",", ".")
+        return Decimal(compact)
     except InvalidOperation:
         return None
 
@@ -827,17 +1017,14 @@ def _axis_ticks(
     tokens: tuple[OcrToken, ...],
     *,
     axis: Literal["x", "y"],
-    bbox: tuple[float, float, float, float],
+    pixel_size: tuple[int, int],
+    source_to_target: Decimal = Decimal(1),
 ) -> tuple[tuple[Decimal, Decimal], ...]:
-    """Numeric tokens in the axis strip: bottom 15% of the bbox for x (sorted by
-    pixel x), left 15% for y (sorted by descending pixel y = ascending value)."""
+    """Numeric tokens in image-pixel axis strips, reduced to a longest monotone
+    log sequence so split thousands and in-plot annotations cannot become ticks."""
 
-    x0, top, x1, bottom = bbox
-    width = Decimal(str(x1 - x0))
-    height = Decimal(str(bottom - top))
-    x_strip = Decimal(str(bottom)) - Decimal("0.15") * height
-    y_strip = Decimal(str(x0)) + Decimal("0.15") * width
-    ticks: list[tuple[Decimal, Decimal]] = []
+    width, height = (Decimal(item) for item in pixel_size)
+    by_value: dict[Decimal, tuple[Decimal, Decimal]] = {}
     for token in tokens:
         value = _tick_value(token)
         if value is None or value <= 0:
@@ -845,18 +1032,40 @@ def _axis_ticks(
         center_x = Decimal(token.box.left + token.box.right) / 2
         center_y = Decimal(token.box.top + token.box.bottom) / 2
         if axis == "x":
-            if center_y < x_strip or center_x < y_strip:
+            if not (
+                Decimal("0.75") * height <= center_y <= Decimal("0.99") * height
+                and Decimal("0.05") * width <= center_x <= Decimal("0.97") * width
+            ):
                 continue
-            ticks.append((center_x, _log10(value)))
+            position = center_x
+            current = by_value.get(value)
+            if current is None or position < current[0]:
+                by_value[value] = (position, _log10(value * source_to_target))
         else:
-            if center_x > y_strip or center_y > x_strip:
+            if not (
+                Decimal("0.03") * width <= center_x <= Decimal("0.15") * width
+                and Decimal("0.03") * height <= center_y <= Decimal("0.88") * height
+            ):
                 continue
-            ticks.append((center_y, _log10(value)))
-    # y pixel grows downward while value grows upward; calibrate on -pixel so both
-    # axes feed the fit a strictly increasing pixel→log mapping.
-    if axis == "y":
-        return tuple(sorted((-pixel, log) for pixel, log in ticks))
-    return tuple(sorted(ticks))
+            position = -center_y
+            current = by_value.get(value)
+            if current is None:
+                by_value[value] = (position, _log10(value))
+    ordered = sorted(by_value.values())
+    longest: list[list[tuple[Decimal, Decimal]]] = []
+    for index, tick in enumerate(ordered):
+        preceding = [
+            longest[prior]
+            for prior in range(index)
+            if ordered[prior][0] < tick[0] and ordered[prior][1] < tick[1]
+        ]
+        longest.append(
+            [*(max(preceding, key=lambda sequence: len(sequence)) if preceding else []), tick]
+        )
+    if not longest:
+        return ()
+    longest.sort(key=lambda sequence: len(sequence))
+    return tuple(longest[-1])
 
 
 def _log10(value: Decimal) -> Decimal:
@@ -905,6 +1114,7 @@ def prove_conservative(
 
     source_points = tuple(sorted(source))
     candidate_points = tuple(sorted(candidate))
+    roundtrip_epsilon = Decimal("1e-24")
     maximum_positive = Decimal(0)
     proven = True
     probe_xs = {x for x, _ in source_points} | {x for x, _ in candidate_points}
@@ -936,8 +1146,8 @@ def prove_conservative(
         if candidate_y is None:
             continue
         error = candidate_y - lower
-        maximum_positive = max(maximum_positive, error)
-        if candidate_y > lower:
+        if error > roundtrip_epsilon:
+            maximum_positive = max(maximum_positive, error)
             proven = False
     return ConservatismReport(
         maximum_positive_voltage_error=maximum_positive,
@@ -1040,13 +1250,37 @@ def digitize_curve_figure(
                 _blocking_item("CURVE_OCR_FAILED", spec, str(error)),
             ),
         )
+    source_unit = spec.x_source_unit or spec.x_unit
+    if (source_unit, spec.x_unit) == ("ms", "s"):
+        x_source_to_target = Decimal("0.001")
+    elif source_unit == spec.x_unit:
+        x_source_to_target = Decimal(1)
+    else:
+        return CurveDigitizationResult(
+            proposed_rule=None,
+            calibration=None,
+            conservatism=None,
+            blocking_review_items=(
+                _blocking_item(
+                    "CURVE_CALIBRATION_FAILED",
+                    spec,
+                    "unsupported source-axis unit conversion",
+                ),
+            ),
+        )
+    pixel_size = figure.pixel_size or (1, 1)
     try:
         x_calibration = calibrate_log_axis(
-            _axis_ticks(tokens, axis="x", bbox=spec.expected_bbox),
+            _axis_ticks(
+                tokens,
+                axis="x",
+                pixel_size=pixel_size,
+                source_to_target=x_source_to_target,
+            ),
             minor_grid_spacing_pixels=Decimal(80),
         )
         y_calibration = calibrate_log_axis(
-            _axis_ticks(tokens, axis="y", bbox=spec.expected_bbox),
+            _axis_ticks(tokens, axis="y", pixel_size=pixel_size),
             minor_grid_spacing_pixels=Decimal(80),
         )
     except ExtractionError as error:
@@ -1059,7 +1293,7 @@ def digitize_curve_figure(
             ),
         )
     calibration = PlotCalibration(x=x_calibration, y=y_calibration)
-    if len(figure.traces) != 1:
+    if len(figure.traces) != len(spec.variant_slots):
         return CurveDigitizationResult(
             proposed_rule=None,
             calibration=calibration,
@@ -1068,12 +1302,12 @@ def digitize_curve_figure(
                 _blocking_item(
                     "CURVE_TRACE_AMBIGUOUS",
                     spec,
-                    f"expected exactly one connected stroke, found {len(figure.traces)}",
+                    f"expected {len(spec.variant_slots)} reviewed strokes, "
+                    f"found {len(figure.traces)}",
                 ),
             ),
         )
-    trace = figure.traces[0]
-    if len(trace.points) < 2:
+    if any(len(trace.points) < 2 for trace in figure.traces):
         return CurveDigitizationResult(
             proposed_rule=None,
             calibration=calibration,
@@ -1084,31 +1318,6 @@ def digitize_curve_figure(
                 ),
             ),
         )
-    tolerance_pixels = _fidelity_tolerance(trace)
-    y_tolerance = _pixel_tolerance_to_value(tolerance_pixels, calibration.y.slope)
-
-    # Work in log10 space: source envelope and candidate share coordinates, and the
-    # emitted log_log segments are exactly linear there.
-    source_log = tuple(
-        sorted(_log_space_point(point, calibration) for point in trace.points)
-    )
-    # Preserve the explicit traced domain exactly; only voltage moves downward by
-    # the measured fidelity tolerance.
-    candidate_log = tuple((x, y - y_tolerance) for x, y in source_log)
-    report = prove_conservative(source_log, candidate_log, y_tolerance)
-    if not report.proven:
-        return CurveDigitizationResult(
-            proposed_rule=None,
-            calibration=calibration,
-            conservatism=report,
-            blocking_review_items=(
-                _blocking_item(
-                    "CURVE_CONSERVATISM_UNPROVEN",
-                    spec,
-                    "candidate segment exceeds the lower uncertainty envelope",
-                ),
-            ),
-        )
     from insulation_coordination.domain.rules import (
         CurveAxis,
         CurvePoint,
@@ -1116,65 +1325,107 @@ def digitize_curve_figure(
         FaultTimeVoltageVariant,
     )
 
-    value_points = tuple(
-        (_log10_to_value(x_log), _log10_to_value(y_log))
-        for x_log, y_log in candidate_log
-    )
-    if any(x <= 0 or y <= 0 for x, y in value_points):
-        return CurveDigitizationResult(
-            proposed_rule=None,
-            calibration=calibration,
-            conservatism=report,
-            blocking_review_items=(
-                _blocking_item(
-                    "CURVE_CONSERVATISM_UNPROVEN",
-                    spec,
-                    "conservative rounding left the log domain",
-                ),
-            ),
+    variants: list[FaultTimeVoltageVariant] = []
+    reports: list[ConservatismReport] = []
+    for index, (trace, selector) in enumerate(
+        zip(figure.traces, spec.variant_slots, strict=True), start=1
+    ):
+        tolerance_pixels = _fidelity_tolerance(trace)
+        y_tolerance = _pixel_tolerance_to_value(
+            tolerance_pixels, calibration.y.slope
         )
-    x_values = [x for x, _ in value_points]
-    y_values = [y for _, y in value_points]
-    variant = FaultTimeVoltageVariant(
-        id=f"{spec.semantic_id}.{spec.figure}",
-        selector=spec.variant_slots[0],
-        x_axis=CurveAxis(
-            quantity_kind=spec.x_quantity_kind,
-            unit=spec.x_unit,
-            scale="log10",
-            minimum=min(x_values),
-            maximum=max(x_values),
-        ),
-        y_axis=CurveAxis(
-            quantity_kind=spec.y_quantity_kind,
-            unit=spec.y_unit,
-            scale="log10",
-            minimum=min(y_values),
-            maximum=max(y_values),
-        ),
-        points=tuple(CurvePoint(x=x, y=y) for x, y in value_points),
-        segments=tuple(
-            CurveSegment(
-                start=index,
-                end=index + 1,
-                segment_type="continuous",
-                interpolation="log_log",
+        source_log = tuple(
+            sorted(_log_space_point(point, calibration) for point in trace.points)
+        )
+        candidate_log = tuple((x, y - y_tolerance) for x, y in source_log)
+        report = prove_conservative(source_log, candidate_log, y_tolerance)
+        reports.append(report)
+        if not report.proven:
+            return CurveDigitizationResult(
+                proposed_rule=None,
+                calibration=calibration,
+                conservatism=report,
+                blocking_review_items=(
+                    _blocking_item(
+                        "CURVE_CONSERVATISM_UNPROVEN",
+                        spec,
+                        "candidate segment exceeds the lower uncertainty envelope",
+                    ),
+                ),
             )
-            for index in range(len(value_points) - 1)
-        ),
-        applicability="review required",
-        source=figure.source,
-        reviewed_artifact_sha256=figure.artifact_sha256,
-    )
+        value_points = tuple(
+            (_log10_to_value(x_log), _log10_to_value(y_log))
+            for x_log, y_log in candidate_log
+        )
+        if any(x <= 0 or y <= 0 for x, y in value_points):
+            return CurveDigitizationResult(
+                proposed_rule=None,
+                calibration=calibration,
+                conservatism=report,
+                blocking_review_items=(
+                    _blocking_item(
+                        "CURVE_CONSERVATISM_UNPROVEN",
+                        spec,
+                        "conservative rounding left the log domain",
+                    ),
+                ),
+            )
+        x_values = [x for x, _ in value_points]
+        y_values = [y for _, y in value_points]
+        variant_id = f"{spec.semantic_id}.{spec.figure}"
+        if len(spec.variant_slots) > 1:
+            variant_id = f"{variant_id}.{index}"
+        variants.append(
+            FaultTimeVoltageVariant(
+                id=variant_id,
+                selector=selector,
+                x_axis=CurveAxis(
+                    quantity_kind=spec.x_quantity_kind,
+                    unit=spec.x_unit,
+                    scale="log10",
+                    minimum=min(x_values),
+                    maximum=max(x_values),
+                ),
+                y_axis=CurveAxis(
+                    quantity_kind=spec.y_quantity_kind,
+                    unit=spec.y_unit,
+                    scale="log10",
+                    minimum=min(y_values),
+                    maximum=max(y_values),
+                ),
+                points=tuple(CurvePoint(x=x, y=y) for x, y in value_points),
+                segments=tuple(
+                    CurveSegment(
+                        start=segment_index,
+                        end=segment_index + 1,
+                        segment_type="continuous",
+                        interpolation="log_log",
+                    )
+                    for segment_index in range(len(value_points) - 1)
+                ),
+                applicability="review required",
+                source=figure.source,
+                reviewed_artifact_sha256=figure.artifact_sha256,
+            )
+        )
     rule = PiecewiseCurveRule(
         id=spec.semantic_id,
-        variants=(variant,),
+        variants=tuple(variants),
         source=figure.source,
+    )
+    combined_report = ConservatismReport(
+        maximum_positive_voltage_error=max(
+            report.maximum_positive_voltage_error for report in reports
+        ),
+        maximum_fidelity_error_pixels=max(
+            report.maximum_fidelity_error_pixels for report in reports
+        ),
+        proven=all(report.proven for report in reports),
     )
     return CurveDigitizationResult(
         proposed_rule=rule,
         calibration=calibration,
-        conservatism=report,
+        conservatism=combined_report,
         blocking_review_items=(),
     )
 
