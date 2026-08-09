@@ -586,27 +586,42 @@ def _raster_traces(
             for trace in color_traces:
                 if not any(same_stroke(trace, existing) for existing in distinct):
                     distinct.append(trace)
-            for color in candidates:
-                ink = tuple(255 - component for component in color)
-                if any(
-                    (
-                        sum(
-                            component * existing
-                            for component, existing in zip(ink, anchor)
-                        )
-                        ** 2
-                        * 10_000
-                        >= 9_604
-                        * sum(component**2 for component in ink)
-                        * sum(existing**2 for existing in anchor)
-                    )
-                    for anchor in (
-                        tuple(255 - component for component in selected)
-                        for selected in anchors
-                    )
+
+            def same_ink_hue(
+                left: tuple[int, int, int], right: tuple[int, int, int]
+            ) -> bool:
+                left_ink = tuple(255 - component for component in left)
+                right_ink = tuple(255 - component for component in right)
+                dot = sum(
+                    component * existing
+                    for component, existing in zip(left_ink, right_ink)
+                )
+                return (
+                    dot**2 * 10_000
+                    >= 9_604
+                    * sum(component**2 for component in left_ink)
+                    * sum(component**2 for component in right_ink)
+                )
+
+            def same_antialiased_stroke(
+                left: RawCurveTrace, right: RawCurveTrace
+            ) -> bool:
+                left_y = {point.x: point.y for point in left.points}
+                right_y = {point.x: point.y for point in right.points}
+                shared = left_y.keys() & right_y.keys()
+                if Decimal(len(shared)) < Decimal("0.8") * Decimal(
+                    min(len(left_y), len(right_y))
                 ):
-                    continue
-                extra_pixels = {
+                    return False
+                close = sum(
+                    abs(left_y[x] - right_y[x]) <= Decimal(10) for x in shared
+                )
+                return Decimal(close) >= Decimal("0.8") * Decimal(len(shared))
+
+            def direct_color_trace(
+                color: tuple[int, int, int], trace_id: str
+            ) -> RawCurveTrace | None:
+                pixels = {
                     (x, y)
                     for x, y, observed in colored
                     if sum(
@@ -615,18 +630,16 @@ def _raster_traces(
                     )
                     <= 35**2
                 }
-                if not extra_pixels:
-                    continue
-                x_span = max(x for x, _ in extra_pixels) - min(
-                    x for x, _ in extra_pixels
-                )
+                if not pixels:
+                    return None
+                x_span = max(x for x, _ in pixels) - min(x for x, _ in pixels)
                 if x_span < width // 3:
-                    continue
+                    return None
                 by_x: dict[int, list[int]] = {}
-                for x, y in extra_pixels:
+                for x, y in pixels:
                     by_x.setdefault(x, []).append(y)
-                extra = RawCurveTrace(
-                    id=f"trace-{len(distinct) + 1}",
+                return RawCurveTrace(
+                    id=trace_id,
                     points=tuple(
                         RawCurvePoint(
                             x=Decimal(x),
@@ -638,9 +651,27 @@ def _raster_traces(
                     ),
                     stroke_width=max(
                         Decimal(1),
-                        Decimal(len(extra_pixels)) / Decimal(len(by_x)),
+                        Decimal(len(pixels)) / Decimal(len(by_x)),
                     ),
                 )
+
+            direct_anchors = tuple(
+                direct_color_trace(selected, f"anchor-{index}")
+                for index, selected in enumerate(anchors, start=1)
+            )
+            for color in candidates:
+                extra = direct_color_trace(color, f"trace-{len(distinct) + 1}")
+                if extra is None:
+                    continue
+                if any(
+                    same_ink_hue(color, selected)
+                    and direct_anchor is not None
+                    and same_antialiased_stroke(extra, direct_anchor)
+                    for selected, direct_anchor in zip(
+                        anchors, direct_anchors, strict=True
+                    )
+                ):
+                    continue
                 if not any(same_stroke(extra, existing) for existing in distinct):
                     distinct.append(extra)
             color_traces = distinct

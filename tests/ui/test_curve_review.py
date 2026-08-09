@@ -56,6 +56,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
 )
 from insulation_coordination.rules.importer.review import (
     _aggregate_artifact_pairs,
+    associate_curve_traces,
     validate_current_curve_evidence,
 )
 from insulation_coordination.ui.curve_review import CurveReviewDialog, CurveReviewModel
@@ -655,16 +656,36 @@ def test_calibration_correction_atomically_reproves_all_figure_variants(
     assert after.proposed_rule == model.draft.curves[0]
 
 
-def test_trace_association_rejects_reuse_across_figure_variants(draft) -> None:
+def test_trace_association_atomically_swaps_occupied_figure_traces(draft) -> None:
     multi = _multi_variant_draft(draft, 2)
-    second = multi.curves[0].variants[1]
+    first, second = multi.curves[0].variants
+    model = CurveReviewModel(multi)
 
-    with pytest.raises(ApprovalError, match="trace inventory|reuse"):
-        CurveReviewModel(multi).associate_trace(
-            "trace-1",
-            second.id,
+    model.associate_trace(
+        "trace-1",
+        second.id,
+        actor="Synthetic Reviewer",
+        notes="Swap two mis-associated sibling traces atomically.",
+    )
+
+    assert {
+        item.variant_id: item.trace_id
+        for item in model.draft.curve_trace_associations
+    } == {first.id: "trace-2", second.id: "trace-1"}
+    for variant in model.draft.curves[0].variants:
+        validate_current_curve_evidence(model.draft, variant)
+
+
+def test_atomic_trace_association_rejects_duplicate_final_mapping(draft) -> None:
+    multi = _multi_variant_draft(draft, 2)
+    first, second = multi.curves[0].variants
+
+    with pytest.raises(ApprovalError, match="one-to-one"):
+        associate_curve_traces(
+            multi,
+            variant_trace_ids={first.id: "trace-1", second.id: "trace-1"},
             actor="Synthetic Reviewer",
-            notes="Attempt to reuse the first sibling trace.",
+            notes="Attempt a duplicate final trace mapping.",
         )
 
     duplicated = multi.model_copy(
@@ -960,6 +981,17 @@ def test_blocked_real_shape_can_be_recovered_without_a_preexisting_curve(
             }
         )
         for figure, spec in zip(figures, IEC_RECIPE.curves, strict=True)
+    )
+    figures = (
+        figures[0].model_copy(
+            update={
+                "traces": (
+                    *figures[0].traces,
+                    figures[0].traces[0].model_copy(update={"id": "ignored-trace-5"}),
+                )
+            }
+        ),
+        *figures[1:],
     )
     manual_traces = tuple(
         figures[2].traces[0].model_copy(update={"id": f"manual-trace-7-{index + 1}"})

@@ -227,6 +227,17 @@ def test_colored_trace_recovery_merges_antialias_shades_of_one_stroke() -> None:
     assert len(traces) == 1
 
 
+def test_colored_trace_recovery_keeps_spatially_separate_same_hue_strokes() -> None:
+    image = Image.new("RGB", (240, 180), color="white")
+    draw = ImageDraw.Draw(image)
+    draw.line((20, 45, 220, 45), fill=(205, 75, 70), width=3)
+    draw.line((20, 115, 220, 115), fill=(235, 185, 180), width=3)
+
+    traces = _raster_traces(image, (), 1)
+
+    assert len(traces) == 2
+
+
 def test_ambiguous_images_block_extraction(curve_pdf, monkeypatch) -> None:
     reader, pdf = _pages(curve_pdf)
     with pdf:

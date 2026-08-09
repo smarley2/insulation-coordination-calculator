@@ -1651,11 +1651,7 @@ def _require_exact_trace_inventory(
     )
     traces = (*figure.traces, *manual_traces)
     trace_ids = tuple(trace.id for trace in traces)
-    if (
-        not variants
-        or len(trace_ids) != len(variants)
-        or len(set(trace_ids)) != len(trace_ids)
-    ):
+    if not variants or len(trace_ids) < len(variants) or len(set(trace_ids)) != len(trace_ids):
         raise ApprovalError(
             "curve figure trace inventory must exactly match its variant inventory"
         )
@@ -1666,7 +1662,11 @@ def _require_exact_trace_inventory(
         if item.variant_id in variant_ids
     )
     if len(variants) == 1 and not associations:
-        return
+        if len(trace_ids) == 1:
+            return
+        raise ApprovalError(
+            "curve figure with extra traces requires an audited active association"
+        )
     if (
         len(associations) != len(variants)
         or {item.variant_id for item in associations} != variant_ids
@@ -1675,7 +1675,7 @@ def _require_exact_trace_inventory(
             for item in associations
         )
         or len({item.trace_id for item in associations}) != len(associations)
-        or {item.trace_id for item in associations} != set(trace_ids)
+        or not {item.trace_id for item in associations} <= set(trace_ids)
     ):
         raise ApprovalError(
             "curve figure trace inventory must associate every variant one-to-one"
@@ -2242,109 +2242,12 @@ def replace_curve_segment(
     )
 
 
-def associate_curve_trace(
+def _rebuild_figure_curve(
     draft: ImportedRuleDraft,
     *,
-    trace_id: str,
-    variant_id: str,
-    actor: str,
-    notes: str,
-) -> ImportedRuleDraft:
-    """Associate one raw trace with one variant through its selector.
-
-    The association records which raw trace supplied the variant's geometry; the
-    variant's points must already derive from that trace (projection-time wiring).
-    Changing the association rewrites the variant provenance note and resets review.
-    """
-
-    rule = next((r for r in draft.curves for v in r.variants if v.id == variant_id), None)
-    if rule is None:
-        raise ValueError(f"unknown curve variant: {variant_id}")
-    variant = _variant(rule, variant_id)
-    figures = tuple(
-        figure
-        for figure in draft.raw_figures
-        if _source_matches(figure.source, variant.source)
-    )
-    if len(figures) != 1:
-        raise ApprovalError("curve variant must have exactly one matching source figure")
-    figure = figures[0]
-    manual_traces = tuple(
-        item.trace
-        for item in draft.manual_curve_traces
-        if item.figure_artifact_sha256 == figure.artifact_sha256
-    )
-    traces = tuple(
-        trace for trace in (*figure.traces, *manual_traces) if trace.id == trace_id
-    )
-    if not traces:
-        if any(
-            trace.id == trace_id
-            for other in draft.raw_figures
-            if other is not figure
-            for trace in other.traces
-        ):
-            raise ApprovalError(
-                "curve trace does not belong to the variant source figure"
-            )
-        raise ValueError(f"unknown raw trace: {trace_id}")
-    if len(traces) != 1:
-        raise ApprovalError(f"ambiguous raw trace: {trace_id}")
-    trace = traces[0]
-    association = CurveTraceAssociation(
-        variant_id=variant.id,
-        figure_artifact_sha256=figure.artifact_sha256,
-        trace_id=trace.id,
-    )
-    associated = draft.model_copy(
-        update={
-            "curve_trace_associations": (
-                *(
-                    item
-                    for item in draft.curve_trace_associations
-                    if item.variant_id != variant.id
-                ),
-                association,
-            )
-        }
-    )
-    changed_variant, digitizations = _reprove_curve_variant(
-        associated, variant, trace=trace
-    )
-    changed_rule = rule.model_copy(
-        update={
-            "variants": tuple(
-                changed_variant if v.id == variant_id else v for v in rule.variants
-            )
-        }
-    )
-    return _replace_curve(
-        associated,
-        rule.id,
-        changed_rule,
-        actor=actor,
-        notes=notes,
-        curve_digitizations=digitizations,
-        original_draft=draft,
-    )
-
-
-def correct_curve_calibration(
-    draft: ImportedRuleDraft,
-    *,
-    figure_page: int,
+    figure: RawFigure,
     calibration: PlotCalibration,
-    actor: str,
-    notes: str,
-) -> ImportedRuleDraft:
-    """Replace one figure's calibration; the digitization and rule must rebuild."""
-
-    figure = next(
-        (figure for figure in draft.raw_figures if figure.source.page == figure_page),
-        None,
-    )
-    if figure is None:
-        raise ValueError(f"unknown raw figure on page {figure_page}")
+) -> tuple[PiecewiseCurveRule, PiecewiseCurveRule, tuple[CurveDigitizationResult, ...]]:
     variants = tuple(
         variant
         for rule in draft.curves
@@ -2352,12 +2255,12 @@ def correct_curve_calibration(
         if _source_matches(variant.source, figure.source)
     )
     if not variants:
-        raise ApprovalError("calibration correction requires figure variants")
+        raise ApprovalError("curve correction requires figure variants")
     rules = tuple(
         rule for rule in draft.curves if any(variant in rule.variants for variant in variants)
     )
     if len(rules) != 1:
-        raise ApprovalError("calibration correction requires one aggregate curve rule")
+        raise ApprovalError("curve correction requires one aggregate curve rule")
     rule = rules[0]
     reviewed: dict[str, FaultTimeVoltageVariant] = {}
     reports: list[ConservatismReport] = []
@@ -2372,7 +2275,7 @@ def correct_curve_calibration(
         report = prove_variant_conservative(active_figure, trace, calibration, rebuilt)
         if not report.proven:
             raise ApprovalError(
-                "calibration correction is not conservative against source geometry"
+                "curve correction is not conservative against source geometry"
             )
         reports.append(report)
         reviewed[variant.id] = _reviewed_variant(
@@ -2414,10 +2317,205 @@ def correct_curve_calibration(
     changed_rule = rule.model_copy(
         update={
             "variants": tuple(
-                reviewed.get(member.id, member)
-                for member in rule.variants
+                reviewed.get(member.id, member) for member in rule.variants
             )
         }
+    )
+    return rule, changed_rule, digitizations
+
+
+def associate_curve_traces(
+    draft: ImportedRuleDraft,
+    *,
+    variant_trace_ids: Mapping[str, str],
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Atomically replace one figure's complete variant-to-trace permutation."""
+
+    if not variant_trace_ids:
+        raise ApprovalError("curve trace association mapping is empty")
+    selected = tuple(
+        variant
+        for rule in draft.curves
+        for variant in rule.variants
+        if variant.id in variant_trace_ids
+    )
+    if len(selected) != len(variant_trace_ids):
+        raise ValueError("curve trace association contains an unknown variant")
+    figures = tuple(
+        figure
+        for figure in draft.raw_figures
+        if _source_matches(figure.source, selected[0].source)
+    )
+    if len(figures) != 1 or any(
+        not _source_matches(variant.source, figures[0].source) for variant in selected
+    ):
+        raise ApprovalError("curve trace association must target exactly one source figure")
+    figure = figures[0]
+    siblings = tuple(
+        variant
+        for rule in draft.curves
+        for variant in rule.variants
+        if _source_matches(variant.source, figure.source)
+    )
+    if set(variant_trace_ids) != {variant.id for variant in siblings}:
+        raise ApprovalError("curve trace association must cover every figure variant")
+    if len(set(variant_trace_ids.values())) != len(variant_trace_ids):
+        raise ApprovalError("curve trace association must be one-to-one")
+    manual_traces = tuple(
+        item.trace
+        for item in draft.manual_curve_traces
+        if item.figure_artifact_sha256 == figure.artifact_sha256
+    )
+    available_ids = {trace.id for trace in (*figure.traces, *manual_traces)}
+    if not set(variant_trace_ids.values()) <= available_ids:
+        raise ApprovalError("curve trace association references foreign source evidence")
+    _figure, digitization, _trace = _variant_evidence(draft, siblings[0])
+    assert digitization.calibration is not None
+    traces_by_id = {
+        trace.id: trace for trace in (*figure.traces, *manual_traces)
+    }
+    for variant in siblings:
+        _require_exact_trace_domain(
+            traces_by_id[variant_trace_ids[variant.id]],
+            digitization.calibration,
+            variant,
+        )
+    sibling_ids = {variant.id for variant in siblings}
+    associated = draft.model_copy(
+        update={
+            "curve_trace_associations": (
+                *(
+                    item
+                    for item in draft.curve_trace_associations
+                    if item.variant_id not in sibling_ids
+                ),
+                *(
+                    CurveTraceAssociation(
+                        variant_id=variant.id,
+                        figure_artifact_sha256=figure.artifact_sha256,
+                        trace_id=variant_trace_ids[variant.id],
+                    )
+                    for variant in siblings
+                ),
+            )
+        }
+    )
+    rule, changed_rule, digitizations = _rebuild_figure_curve(
+        associated,
+        figure=figure,
+        calibration=digitization.calibration,
+    )
+    return _replace_curve(
+        associated,
+        rule.id,
+        changed_rule,
+        actor=actor,
+        notes=notes,
+        curve_digitizations=digitizations,
+        original_draft=draft,
+    )
+
+
+def associate_curve_trace(
+    draft: ImportedRuleDraft,
+    *,
+    trace_id: str,
+    variant_id: str,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Select one trace; swap its occupied sibling association atomically."""
+
+    rule = next((r for r in draft.curves for v in r.variants if v.id == variant_id), None)
+    if rule is None:
+        raise ValueError(f"unknown curve variant: {variant_id}")
+    variant = _variant(rule, variant_id)
+    figures = tuple(
+        figure
+        for figure in draft.raw_figures
+        if _source_matches(figure.source, variant.source)
+    )
+    if len(figures) != 1:
+        raise ApprovalError("curve variant must have exactly one matching source figure")
+    figure = figures[0]
+    siblings = tuple(
+        member for member in rule.variants if _source_matches(member.source, figure.source)
+    )
+    associations = {
+        item.variant_id: item.trace_id
+        for item in draft.curve_trace_associations
+        if item.variant_id in {member.id for member in siblings}
+    }
+    if not associations and len(siblings) == 1:
+        manual_traces = tuple(
+            item.trace
+            for item in draft.manual_curve_traces
+            if item.figure_artifact_sha256 == figure.artifact_sha256
+        )
+        traces = (*figure.traces, *manual_traces)
+        if len(traces) != 1:
+            raise ApprovalError("curve trace selection requires an active source inventory")
+        associations[variant.id] = traces[0].id
+    if set(associations) != {member.id for member in siblings}:
+        raise ApprovalError("curve trace selection requires complete current associations")
+    available = {
+        trace.id
+        for trace in (
+            *figure.traces,
+            *(
+                item.trace
+                for item in draft.manual_curve_traces
+                if item.figure_artifact_sha256 == figure.artifact_sha256
+            ),
+        )
+    }
+    if trace_id not in available:
+        if any(
+            trace.id == trace_id
+            for other in draft.raw_figures
+            if other is not figure
+            for trace in other.traces
+        ):
+            raise ApprovalError("curve trace does not belong to the variant source figure")
+        raise ValueError(f"unknown raw trace: {trace_id}")
+    old_trace_id = associations[variant.id]
+    occupant = next(
+        (member_id for member_id, current in associations.items() if current == trace_id),
+        None,
+    )
+    associations[variant.id] = trace_id
+    if occupant is not None and occupant != variant.id:
+        associations[occupant] = old_trace_id
+    return associate_curve_traces(
+        draft,
+        variant_trace_ids=associations,
+        actor=actor,
+        notes=notes,
+    )
+
+
+def correct_curve_calibration(
+    draft: ImportedRuleDraft,
+    *,
+    figure_page: int,
+    calibration: PlotCalibration,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Replace one figure's calibration; the digitization and rule must rebuild."""
+
+    figure = next(
+        (figure for figure in draft.raw_figures if figure.source.page == figure_page),
+        None,
+    )
+    if figure is None:
+        raise ValueError(f"unknown raw figure on page {figure_page}")
+    rule, changed_rule, digitizations = _rebuild_figure_curve(
+        draft,
+        figure=figure,
+        calibration=calibration,
     )
     return _replace_curve(
         draft,
