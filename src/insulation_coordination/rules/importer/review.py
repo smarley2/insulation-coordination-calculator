@@ -59,6 +59,7 @@ from insulation_coordination.rules.importer.extract import (
     CurveVariantReview,
     ImportedRuleDraft,
     ImportReviewItem,
+    ManualCurveTrace,
     RawGrid,
     RawGridCell,
     SemanticProposal,
@@ -1513,6 +1514,7 @@ def _replace_curve(
     actor: str,
     notes: str,
     curve_digitizations: tuple[CurveDigitizationResult, ...] | None = None,
+    original_draft: ImportedRuleDraft | None = None,
 ) -> ImportedRuleDraft:
     from insulation_coordination.rules.importer.approval import record_correction
 
@@ -1538,7 +1540,7 @@ def _replace_curve(
             ),
         }
     )
-    return record_correction(draft, changed, actor=actor, notes=notes)
+    return record_correction(original_draft or draft, changed, actor=actor, notes=notes)
 
 
 def _variant(rule: PiecewiseCurveRule, variant_id: str) -> FaultTimeVoltageVariant:
@@ -1571,12 +1573,20 @@ def _variant_evidence(
     associations = tuple(
         item for item in draft.curve_trace_associations if item.variant_id == variant.id
     )
+    manual_traces = tuple(
+        item.trace
+        for item in draft.manual_curve_traces
+        if item.figure_artifact_sha256 == figure.artifact_sha256
+    )
+    available_traces = (*figure.traces, *manual_traces)
     if associations:
         if len(associations) != 1 or associations[0].figure_artifact_sha256 != figure.artifact_sha256:
             raise ApprovalError("curve variant has stale or ambiguous trace association")
-        traces = tuple(trace for trace in figure.traces if trace.id == associations[0].trace_id)
+        traces = tuple(
+            trace for trace in available_traces if trace.id == associations[0].trace_id
+        )
     else:
-        traces = figure.traces
+        traces = available_traces
     if len(traces) != 1:
         raise ApprovalError("curve variant must have exactly one associated source trace")
     return figure, digitizations[0], traces[0]
@@ -1608,6 +1618,50 @@ def _reviewed_variant(
     return variant.model_copy(update={"reviewed_artifact_sha256": artifact_sha256})
 
 
+def _require_exact_trace_domain(
+    trace: RawCurveTrace,
+    calibration: PlotCalibration,
+    variant: FaultTimeVoltageVariant,
+) -> None:
+    source = tuple(sorted(_log_space_point(point, calibration) for point in trace.points))
+    candidate = tuple((point.x.log10(), point.y.log10()) for point in variant.points)
+    tolerance = Decimal("1e-9")
+    if (
+        not source
+        or not candidate
+        or abs(candidate[0][0] - source[0][0]) > tolerance
+        or abs(candidate[-1][0] - source[-1][0]) > tolerance
+    ):
+        raise ApprovalError("curve domain must equal the active source trace endpoints")
+
+
+def validate_current_curve_evidence(
+    draft: ImportedRuleDraft,
+    variant: FaultTimeVoltageVariant,
+) -> None:
+    """Recompute the executable variant proof from its current source evidence."""
+
+    figure, digitization, trace = _variant_evidence(draft, variant)
+    calibration = digitization.calibration
+    if calibration is None:
+        raise ApprovalError("curve variant lacks current calibration evidence")
+    if any(
+        (segment.segment_type, segment.interpolation)
+        not in {("continuous", "log_log"), ("plateau", "constant")}
+        for segment in variant.segments
+    ):
+        raise ApprovalError("curve interpolation has no analytic conservative proof")
+    _require_exact_trace_domain(trace, calibration, variant)
+    report = prove_variant_conservative(figure, trace, calibration, variant)
+    if not report.proven or digitization.conservatism != report:
+        raise ApprovalError("curve variant lacks a freshly recomputed conservative proof")
+    proposed = digitization.proposed_rule
+    if proposed is None or tuple(member for member in proposed.variants if member.id == variant.id) != (
+        variant,
+    ):
+        raise ApprovalError("curve proof does not match the current semantic variant")
+
+
 def _reprove_curve_variant(
     draft: ImportedRuleDraft,
     variant: FaultTimeVoltageVariant,
@@ -1630,6 +1684,7 @@ def _reprove_curve_variant(
         raise ApprovalError(
             "curve interpolation has no analytic conservative proof"
         )
+    _require_exact_trace_domain(active_trace, active_calibration, variant)
     prior = next(
         member
         for member in digitization.proposed_rule.variants  # type: ignore[union-attr]
@@ -1758,7 +1813,7 @@ def recover_blocked_curve_figures(
     draft: ImportedRuleDraft,
     *,
     replacements: tuple[
-        tuple[int, str, PlotCalibration, tuple[CurvePoint, ...]], ...
+        tuple[int, str | RawCurveTrace, PlotCalibration, tuple[CurvePoint, ...]], ...
     ],
     actor: str,
     notes: str,
@@ -1767,7 +1822,10 @@ def recover_blocked_curve_figures(
 
     if not replacements:
         raise ApprovalError("manual recovery requires at least one blocked figure")
-    by_index = {index: (trace_id, calibration, points) for index, trace_id, calibration, points in replacements}
+    by_index = {
+        index: (trace_input, calibration, points)
+        for index, trace_input, calibration, points in replacements
+    }
     if len(by_index) != len(replacements):
         raise ApprovalError("manual recovery contains duplicate figure entries")
     from insulation_coordination.rules.importer.recipes import RECIPES
@@ -1790,7 +1848,8 @@ def recover_blocked_curve_figures(
     if len(draft.raw_figures) != len(draft.curve_digitizations) or len(recipe.curves) != 3:
         raise ApprovalError("manual recovery has an incomplete figure inventory")
     digitizations = list(draft.curve_digitizations)
-    for index, (trace_id, calibration, points) in by_index.items():
+    manual_traces = list(draft.manual_curve_traces)
+    for index, (trace_input, calibration, points) in by_index.items():
         if not 0 <= index < len(digitizations):
             raise ApprovalError("manual recovery figure index is outside the inventory")
         result = digitizations[index]
@@ -1798,12 +1857,37 @@ def recover_blocked_curve_figures(
         spec = recipe.curves[index]
         if result.proposed_rule is not None or not result.blocking_review_items:
             raise ApprovalError("manual recovery is allowed only for a blocked figure")
-        traces = tuple(trace for trace in figure.traces if trace.id == trace_id)
-        if len(traces) != 1:
-            raise ApprovalError("manual recovery requires one source-scoped trace")
+        available = tuple(
+            item.trace
+            for item in manual_traces
+            if item.figure_artifact_sha256 == figure.artifact_sha256
+        )
+        if isinstance(trace_input, RawCurveTrace):
+            if any(point.space != "pixel" for point in trace_input.points):
+                raise ApprovalError("manual source trace must use figure pixel coordinates")
+            if any(trace.id == trace_input.id for trace in (*figure.traces, *available)):
+                raise ApprovalError("manual source trace ID duplicates existing evidence")
+            manual_traces.append(
+                ManualCurveTrace(
+                    figure_artifact_sha256=figure.artifact_sha256,
+                    trace=trace_input,
+                    actor=actor.strip(),
+                    recorded_at=datetime.now(UTC),
+                    notes=notes.strip(),
+                )
+            )
+            trace = trace_input
+        else:
+            traces = tuple(
+                trace
+                for trace in (*figure.traces, *available)
+                if trace.id == trace_input
+            )
+            if len(traces) != 1:
+                raise ApprovalError("manual recovery requires one source-scoped trace")
+            trace = traces[0]
         if len(points) < 2 or any(point.x <= 0 or point.y <= 0 for point in points):
             raise ApprovalError("manual recovery requires at least two positive points")
-        trace = traces[0]
         source_log = tuple(sorted(_log_space_point(point, calibration) for point in trace.points))
         candidate_log = tuple((point.x.log10(), point.y.log10()) for point in points)
         domain_tolerance = Decimal("1e-9")
@@ -1884,6 +1968,7 @@ def recover_blocked_curve_figures(
         update={
             "curves": (rule,),
             "curve_digitizations": tuple(digitizations),
+            "manual_curve_traces": tuple(manual_traces),
             "semantic_proposals": proposals,
         }
     )
@@ -2003,6 +2088,7 @@ def associate_curve_trace(
         actor=actor,
         notes=notes,
         curve_digitizations=digitizations,
+        original_draft=draft,
     )
 
 
@@ -2079,9 +2165,7 @@ def review_curve_variant(
         for rejection in draft.curve_variant_rejections
     ):
         raise ApprovalError("rejected curve variant must be corrected before review")
-    _figure, digitization, _trace = _variant_evidence(draft, variant)
-    if digitization.conservatism is None or not digitization.conservatism.proven:
-        raise ApprovalError("curve variant lacks a current conservative proof")
+    validate_current_curve_evidence(draft, variant)
     review = CurveVariantReview(
         variant_id=variant.id,
         variant_sha256=canonical_model_sha256(variant),
@@ -2114,6 +2198,12 @@ def review_curve_variant(
     )
     changed = base.model_copy(
         update={"curve_variant_reviews": (*current, review)}
+    )
+    changed = record_correction(
+        base,
+        changed,
+        actor=actor,
+        notes=f"record exact curve variant review: {notes}",
     )
     if all(
         any(
@@ -2156,7 +2246,7 @@ def reject_curve_variant(
         else proposal
         for proposal in draft.semantic_proposals
     )
-    return draft.model_copy(
+    changed = draft.model_copy(
         update={
             "semantic_proposals": proposals,
             "curve_variant_reviews": tuple(
@@ -2172,3 +2262,4 @@ def reject_curve_variant(
             ),
         }
     )
+    return record_correction(draft, changed, actor=actor, notes=notes)

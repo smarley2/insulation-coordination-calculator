@@ -43,6 +43,8 @@ from insulation_coordination.rules.importer.approval import ApprovalError, appro
 from insulation_coordination.rules.importer.curves import (
     AxisCalibration,
     PlotCalibration,
+    RawCurvePoint,
+    RawCurveTrace,
     RawFigure,
 )
 from insulation_coordination.rules.importer.extract import ImportedRuleDraft
@@ -230,7 +232,7 @@ class CurveReviewModel:
     def recover_blocked(
         self,
         replacements: tuple[
-            tuple[int, str, PlotCalibration, tuple[CurvePoint, ...]], ...
+            tuple[int, str | RawCurveTrace, PlotCalibration, tuple[CurvePoint, ...]], ...
         ],
         *,
         actor: str,
@@ -661,7 +663,7 @@ class CurveReviewDialog(QDialog):
 
     def _recover_blocked_figures(self, notes: str) -> None:
         replacements: list[
-            tuple[int, str, PlotCalibration, tuple[CurvePoint, ...]]
+            tuple[int, str | RawCurveTrace, PlotCalibration, tuple[CurvePoint, ...]]
         ] = []
         for index, (figure, result) in enumerate(
             zip(
@@ -671,20 +673,40 @@ class CurveReviewDialog(QDialog):
         ):
             if result.proposed_rule is not None:
                 continue
-            if not figure.traces:
-                self._status.setText(
-                    f"Figure {figure.source.figure} has no recoverable source trace."
+            trace_input: str | RawCurveTrace
+            if figure.traces:
+                trace_input, accepted = QInputDialog.getItem(
+                    self,
+                    f"Recover Figure {figure.source.figure}",
+                    "Source trace",
+                    tuple(trace.id for trace in figure.traces),
+                    editable=False,
                 )
-                return
-            trace_id, accepted = QInputDialog.getItem(
-                self,
-                f"Recover Figure {figure.source.figure}",
-                "Source trace",
-                tuple(trace.id for trace in figure.traces),
-                editable=False,
-            )
-            if not accepted:
-                return
+                if not accepted:
+                    return
+            else:
+                raw_value, accepted = QInputDialog.getText(
+                    self,
+                    f"Recover Figure {figure.source.figure}",
+                    "Semicolon-separated source pixel x,y points",
+                )
+                if not accepted:
+                    return
+                raw_points = tuple(
+                    RawCurvePoint(
+                        x=Decimal(pair.split(",", 1)[0].strip()),
+                        y=Decimal(pair.split(",", 1)[1].strip()),
+                        space="pixel",
+                        primitive_ref=f"manual-{position}",
+                    )
+                    for position, pair in enumerate(raw_value.split(";"))
+                    if pair.strip()
+                )
+                trace_input = RawCurveTrace(
+                    id=f"manual-trace-{figure.source.figure}",
+                    points=raw_points,
+                    stroke_width=Decimal(1),
+                )
             axes: list[AxisCalibration] = []
             for axis in ("x", "y"):
                 value, accepted = QInputDialog.getText(
@@ -725,7 +747,7 @@ class CurveReviewDialog(QDialog):
             replacements.append(
                 (
                     index,
-                    trace_id,
+                    trace_input,
                     PlotCalibration(x=axes[0], y=axes[1]),
                     points,
                 )

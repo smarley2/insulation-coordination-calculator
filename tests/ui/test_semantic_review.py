@@ -268,7 +268,7 @@ def built_draft(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
         calibration=calibration,
         conservatism=ConservatismReport(
             maximum_positive_voltage_error=Decimal(0),
-            maximum_fidelity_error_pixels=Decimal(1),
+            maximum_fidelity_error_pixels=Decimal("0.01"),
             proven=True,
         ),
         blocking_review_items=(),

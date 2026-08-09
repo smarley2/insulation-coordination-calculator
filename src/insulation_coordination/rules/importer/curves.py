@@ -652,6 +652,16 @@ class AxisCalibration(FrozenModel):
     residual_pixels: Decimal
     minor_grid_spacing_pixels: Decimal
 
+    @model_validator(mode="after")
+    def _valid_axis_fit(self) -> AxisCalibration:
+        if self.slope <= 0:
+            raise ValueError("log-axis calibration slope must be positive")
+        if self.residual_pixels < 0 or self.minor_grid_spacing_pixels <= 0:
+            raise ValueError("axis calibration pixel errors must be non-negative")
+        if self.residual_pixels > self.minor_grid_spacing_pixels / 2:
+            raise ValueError("axis calibration residual exceeds half minor-grid spacing")
+        return self
+
 
 class PlotCalibration(FrozenModel):
     x: AxisCalibration
@@ -944,8 +954,8 @@ def prove_variant_conservative(
 ) -> ConservatismReport:
     """Re-run the source-envelope proof for a reviewed semantic variant."""
 
-    if trace not in figure.traces or any(point.space != "pixel" for point in trace.points):
-        raise ValueError("curve trace does not belong to the variant source figure")
+    if any(point.space != "pixel" for point in trace.points):
+        raise ValueError("curve proof requires source-pixel trace geometry")
     source_log = tuple(_log_space_point(point, calibration) for point in trace.points)
     candidate_log = tuple((_log10(point.x), _log10(point.y)) for point in variant.points)
     if not source_log or not candidate_log:

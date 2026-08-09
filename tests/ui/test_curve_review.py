@@ -196,7 +196,7 @@ def draft(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
         calibration=calibration,
         conservatism=ConservatismReport(
             maximum_positive_voltage_error=Decimal(0),
-            maximum_fidelity_error_pixels=Decimal(1),
+            maximum_fidelity_error_pixels=Decimal("0.01"),
             proven=True,
         ),
         blocking_review_items=(),
@@ -340,6 +340,49 @@ def test_proof_evidence_cannot_change_without_reproven_curve(draft) -> None:
         )
 
 
+def test_curve_and_digitization_change_requires_fresh_current_proof(draft) -> None:
+    variant = draft.curves[0].variants[0]
+    unsafe = variant.model_copy(
+        update={
+            "points": (
+                variant.points[0],
+                variant.points[1].model_copy(update={"y": Decimal(500)}),
+                variant.points[2],
+            )
+        }
+    )
+    rule = draft.curves[0].model_copy(update={"variants": (unsafe,)})
+    digitization = draft.curve_digitizations[0]
+    assert digitization.proposed_rule is not None
+    changed = draft.model_copy(
+        update={
+            "curves": (rule,),
+            "curve_digitizations": (
+                digitization.model_copy(
+                    update={
+                        "proposed_rule": digitization.proposed_rule.model_copy(
+                            update={"variants": (unsafe,)}
+                        )
+                    }
+                ),
+            ),
+        }
+    )
+    corrected = record_correction(
+        draft,
+        changed,
+        actor="Synthetic Reviewer",
+        notes="Attempt to retain a stale proof after an unsafe edit.",
+    )
+
+    with pytest.raises(ApprovalError, match="recomputed conservative proof"):
+        CurveReviewModel(corrected).review_variant(
+            VARIANT_ID,
+            actor="Synthetic Reviewer",
+            notes="Attempt to review stale proof evidence.",
+        )
+
+
 def test_unproved_segment_interpolation_is_rejected(draft) -> None:
     model = CurveReviewModel(draft)
     with pytest.raises(ApprovalError, match="interpolation"):
@@ -461,27 +504,51 @@ def test_each_variant_requires_an_exact_review(draft) -> None:
             "state": "proposed",
         }
     )
-    model = CurveReviewModel(
-        draft.model_copy(
-            update={
-                "curves": (rule,),
-                "curve_digitizations": (
-                    draft.curve_digitizations[0].model_copy(
-                        update={
-                            "proposed_rule": draft.curve_digitizations[0]
-                            .proposed_rule.model_copy(update={"variants": (first, second)})
-                        }
-                    ),
+    multi = draft.model_copy(
+        update={
+            "curves": (rule,),
+            "curve_digitizations": (
+                draft.curve_digitizations[0].model_copy(
+                    update={
+                        "proposed_rule": draft.curve_digitizations[0]
+                        .proposed_rule.model_copy(update={"variants": (first, second)})
+                    }
                 ),
-                    "semantic_proposals": (proposal,),
-                    "review_items": (*draft.review_items, second_item),
-                    "review_resolutions": (
-                        *draft.review_resolutions,
-                        second_resolution,
-                    ),
-                }
-        )
+            ),
+            "semantic_proposals": (proposal,),
+            "review_items": (*draft.review_items, second_item),
+            "review_resolutions": (*draft.review_resolutions, second_resolution),
+        }
     )
+    digest = _content_digest(
+        multi.tables,
+        multi.formulas,
+        multi.mappings,
+        multi.review_items,
+        multi.raw_grids,
+        multi.raw_clause_fragments,
+        multi.manifest.source_documents,
+        multi.source_identities,
+        multi.review_resolutions,
+        curves=multi.curves,
+        raw_figures=multi.raw_figures,
+        curve_digitizations=multi.curve_digitizations,
+    )
+    multi = multi.model_copy(
+        update={
+            "manifest": multi.manifest.model_copy(
+                update={
+                    "approval_records": tuple(
+                        record.model_copy(update={"notes": f"content:{digest}"})
+                        if record.action == "extraction" and record.notes.startswith("content:")
+                        else record
+                        for record in multi.manifest.approval_records
+                    )
+                }
+            )
+        }
+    )
+    model = CurveReviewModel(multi)
 
     model.review_variant(
         first.id,
@@ -570,6 +637,67 @@ def test_trace_association_is_source_scoped_and_reproved(draft) -> None:
     assert model.draft.curve_digitizations[0].conservatism.proven
 
 
+def test_shorter_trace_association_is_rejected_by_domain(draft) -> None:
+    original = draft.raw_figures[0].traces[0]
+    shorter = original.model_copy(
+        update={"id": "shorter-trace", "points": original.points[1:]}
+    )
+    figure = draft.raw_figures[0].model_copy(update={"traces": (original, shorter)})
+    changed = draft.model_copy(update={"raw_figures": (figure,)})
+    digest = _content_digest(
+        changed.tables,
+        changed.formulas,
+        changed.mappings,
+        changed.review_items,
+        changed.raw_grids,
+        changed.raw_clause_fragments,
+        changed.manifest.source_documents,
+        changed.source_identities,
+        changed.review_resolutions,
+        curves=changed.curves,
+        raw_figures=changed.raw_figures,
+        curve_digitizations=changed.curve_digitizations,
+    )
+    changed = changed.model_copy(
+        update={
+            "manifest": changed.manifest.model_copy(
+                update={
+                    "approval_records": tuple(
+                        record.model_copy(update={"notes": f"content:{digest}"})
+                        if record.action == "extraction" and record.notes.startswith("content:")
+                        else record
+                        for record in changed.manifest.approval_records
+                    )
+                }
+            )
+        }
+    )
+
+    with pytest.raises(ApprovalError, match="domain"):
+        CurveReviewModel(changed).associate_trace(
+            shorter.id,
+            VARIANT_ID,
+            actor="Synthetic Reviewer",
+            notes="Attempt to associate a shorter source trace.",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("slope", Decimal(-1)), ("residual_pixels", Decimal(6))),
+)
+def test_manual_axis_calibration_enforces_fit_invariants(field, value) -> None:
+    values = {
+        "slope": Decimal(1),
+        "intercept": Decimal(0),
+        "residual_pixels": Decimal(0),
+        "minor_grid_spacing_pixels": Decimal(10),
+    }
+    values[field] = value
+    with pytest.raises(ValueError, match="calibration|residual"):
+        AxisCalibration(scale="log10", **values)
+
+
 def test_cross_figure_trace_association_is_rejected(draft) -> None:
     other = draft.raw_figures[0].model_copy(
         update={
@@ -656,6 +784,8 @@ def test_blocked_real_shape_can_be_recovered_without_a_preexisting_curve(
         )
         for figure, page, digest in (("5", 54, "a"), ("6", 55, "b"), ("7", 56, "c"))
     )
+    manual_trace = figures[2].traces[0].model_copy(update={"id": "manual-trace-7"})
+    figures = (*figures[:2], figures[2].model_copy(update={"traces": ()}))
     variant_items = tuple(
         ImportReviewItem(
             code="CURVE_VARIANT_REVIEW_REQUIRED",
@@ -752,7 +882,12 @@ def test_blocked_real_shape_can_be_recovered_without_a_preexisting_curve(
 
     model.recover_blocked(
         tuple(
-            (index, figure.traces[0].id, calibration, points)
+            (
+                index,
+                figure.traces[0].id if figure.traces else manual_trace,
+                calibration,
+                points,
+            )
             for index, figure in enumerate(figures)
         ),
         actor="Synthetic Reviewer",
@@ -763,6 +898,7 @@ def test_blocked_real_shape_can_be_recovered_without_a_preexisting_curve(
     assert len(model.draft.curves[0].variants) == 3
     assert all(not item.blocking_review_items for item in model.draft.curve_digitizations)
     assert len(model.draft.semantic_proposals) == 1
+    assert model.draft.manual_curve_traces[0].trace == manual_trace
     assert model.manual_entry_enabled is False
 
 

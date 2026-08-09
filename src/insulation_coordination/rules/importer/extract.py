@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from insulation_coordination.rules.importer.curves import (
         CurveDigitizationResult,
         OcrEngine,
+        RawCurveTrace,
         RawFigure,
     )
 
@@ -86,6 +87,7 @@ __all__ = [
     "FormulaAuditSpec",
     "ImportReviewItem",
     "ImportedRuleDraft",
+    "ManualCurveTrace",
     "MappingAuditSpec",
     "ProposalState",
     "RawGrid",
@@ -174,6 +176,16 @@ class CurveTraceAssociation(FrozenModel):
     variant_id: Identifier
     figure_artifact_sha256: str = Field(pattern=r"[0-9a-f]{64}")
     trace_id: Identifier
+
+
+class ManualCurveTrace(FrozenModel):
+    """Audited maintainer-supplied pixel trace; extracted figures remain immutable."""
+
+    figure_artifact_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    trace: RawCurveTrace
+    actor: str = Field(min_length=1, max_length=200)
+    recorded_at: datetime
+    notes: NotesText
 
 
 class CurveVariantRejection(FrozenModel):
@@ -484,6 +496,7 @@ class ImportedRuleDraft(DraftRulePackage):
     curve_variant_reviews: tuple[CurveVariantReview, ...] = ()
     curve_trace_associations: tuple[CurveTraceAssociation, ...] = ()
     curve_variant_rejections: tuple[CurveVariantRejection, ...] = ()
+    manual_curve_traces: tuple[ManualCurveTrace, ...] = ()
     extracted_equations: tuple[ExtractedEquation, ...] = ()
     semantic_proposals: tuple[SemanticProposal, ...] = ()
     source_identities: tuple[StandardIdentity, ...]
@@ -506,6 +519,10 @@ def _content_digest(
     curves: tuple[PiecewiseCurveRule, ...] = (),
     raw_figures: tuple[RawFigure, ...] = (),
     curve_digitizations: tuple[CurveDigitizationResult, ...] = (),
+    curve_variant_reviews: tuple[CurveVariantReview, ...] = (),
+    curve_trace_associations: tuple[CurveTraceAssociation, ...] = (),
+    curve_variant_rejections: tuple[CurveVariantRejection, ...] = (),
+    manual_curve_traces: tuple[ManualCurveTrace, ...] = (),
 ) -> str:
     payload = {
         "tables": [item.model_dump(mode="json") for item in tables],
@@ -525,6 +542,18 @@ def _content_digest(
         "raw_figures": [item.model_dump(mode="json") for item in raw_figures],
         "curve_digitizations": [
             item.model_dump(mode="json") for item in curve_digitizations
+        ],
+        "curve_variant_reviews": [
+            item.model_dump(mode="json") for item in curve_variant_reviews
+        ],
+        "curve_trace_associations": [
+            item.model_dump(mode="json") for item in curve_trace_associations
+        ],
+        "curve_variant_rejections": [
+            item.model_dump(mode="json") for item in curve_variant_rejections
+        ],
+        "manual_curve_traces": [
+            item.model_dump(mode="json") for item in manual_curve_traces
         ],
     }
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
@@ -1865,6 +1894,7 @@ def _rebuild_draft_model() -> None:
     from insulation_coordination.rules.importer.clauses import RawClauseFragment
     from insulation_coordination.rules.importer.curves import (
         CurveDigitizationResult,
+        RawCurveTrace,
         RawFigure,
     )
 
@@ -1873,8 +1903,10 @@ def _rebuild_draft_model() -> None:
             "RawClauseFragment": RawClauseFragment,
             "RawFigure": RawFigure,
             "CurveDigitizationResult": CurveDigitizationResult,
+            "RawCurveTrace": RawCurveTrace,
         }
     )
+    ManualCurveTrace.model_rebuild(_types_namespace={"RawCurveTrace": RawCurveTrace})
 
 
 _rebuild_draft_model()
