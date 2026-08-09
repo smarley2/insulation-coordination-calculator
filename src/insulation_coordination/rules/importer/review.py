@@ -1518,6 +1518,19 @@ def _replace_curve(
 ) -> ImportedRuleDraft:
     from insulation_coordination.rules.importer.approval import record_correction
 
+    original_rule = next((rule for rule in draft.curves if rule.id == rule_id), None)
+    before_variants = (
+        {variant.id: variant for variant in original_rule.variants}
+        if original_rule is not None
+        else {}
+    )
+    after_variants = {variant.id: variant for variant in changed_rule.variants}
+    changed_variant_ids = {
+        variant_id
+        for variant_id in set(before_variants) | set(after_variants)
+        if before_variants.get(variant_id) != after_variants.get(variant_id)
+    }
+
     changed = draft.model_copy(
         update={
             "curves": tuple(
@@ -1526,12 +1539,12 @@ def _replace_curve(
             "curve_variant_reviews": tuple(
                 review
                 for review in draft.curve_variant_reviews
-                if review.variant_id not in {variant.id for variant in changed_rule.variants}
+                if review.variant_id not in changed_variant_ids
             ),
             "curve_variant_rejections": tuple(
                 rejection
                 for rejection in draft.curve_variant_rejections
-                if rejection.variant_id not in {variant.id for variant in changed_rule.variants}
+                if rejection.variant_id not in changed_variant_ids
             ),
             "curve_digitizations": (
                 curve_digitizations
@@ -1655,6 +1668,14 @@ def validate_current_curve_evidence(
     report = prove_variant_conservative(figure, trace, calibration, variant)
     if not report.proven or digitization.conservatism != report:
         raise ApprovalError("curve variant lacks a freshly recomputed conservative proof")
+    expected = _reviewed_variant(
+        variant,
+        figure=figure,
+        trace=trace,
+        calibration=calibration,
+    )
+    if variant.reviewed_artifact_sha256 != expected.reviewed_artifact_sha256:
+        raise ApprovalError("curve variant provenance is stale for current source evidence")
     proposed = digitization.proposed_rule
     if proposed is None or tuple(member for member in proposed.variants if member.id == variant.id) != (
         variant,
@@ -1672,8 +1693,8 @@ def _reprove_curve_variant(
 ) -> tuple[FaultTimeVoltageVariant, tuple[CurveDigitizationResult, ...]]:
     figure, digitization, current_trace = _variant_evidence(draft, variant)
     active_trace = trace or current_trace
-    if active_trace not in figure.traces:
-        raise ApprovalError("curve trace does not belong to the variant source figure")
+    if active_trace != current_trace:
+        raise ApprovalError("curve trace does not match the active source evidence")
     active_calibration = calibration or digitization.calibration
     assert active_calibration is not None
     if any(
@@ -1848,6 +1869,7 @@ def recover_blocked_curve_figures(
     if len(draft.raw_figures) != len(draft.curve_digitizations) or len(recipe.curves) != 3:
         raise ApprovalError("manual recovery has an incomplete figure inventory")
     digitizations = list(draft.curve_digitizations)
+    recovered_variants: dict[int, FaultTimeVoltageVariant] = {}
     manual_traces = list(draft.manual_curve_traces)
     for index, (trace_input, calibration, points) in by_index.items():
         if not 0 <= index < len(digitizations):
@@ -1937,6 +1959,12 @@ def recover_blocked_curve_figures(
             variants=(variant,),
             source=figure.source,
         )
+        recovered_variants[index] = _reviewed_variant(
+            variant,
+            figure=figure,
+            trace=trace,
+            calibration=calibration,
+        )
         digitizations[index] = result.model_copy(
             update={
                 "proposed_rule": proposed_rule,
@@ -1959,6 +1987,24 @@ def recover_blocked_curve_figures(
         variant_groups[2],
         identity,
     )
+    rule = rule.model_copy(
+        update={
+            "variants": tuple(
+                recovered_variants.get(index, variant)
+                for index, variant in enumerate(rule.variants)
+            )
+        }
+    )
+    for index, reviewed_variant in recovered_variants.items():
+        proposed = digitizations[index].proposed_rule
+        assert proposed is not None
+        digitizations[index] = digitizations[index].model_copy(
+            update={
+                "proposed_rule": proposed.model_copy(
+                    update={"variants": (reviewed_variant,)}
+                )
+            }
+        )
     blocking = tuple(
         item
         for item in draft.review_items
@@ -2165,6 +2211,27 @@ def review_curve_variant(
         for rejection in draft.curve_variant_rejections
     ):
         raise ApprovalError("rejected curve variant must be corrected before review")
+    figure, _digitization, _trace = _variant_evidence(draft, variant)
+    if variant.reviewed_artifact_sha256 == figure.artifact_sha256:
+        changed_variant, digitizations = _reprove_curve_variant(draft, variant)
+        changed_rule = rule.model_copy(
+            update={
+                "variants": tuple(
+                    changed_variant if member.id == variant.id else member
+                    for member in rule.variants
+                )
+            }
+        )
+        draft = _replace_curve(
+            draft,
+            rule.id,
+            changed_rule,
+            actor=actor,
+            notes=f"bind exact curve review provenance: {notes}",
+            curve_digitizations=digitizations,
+        )
+        rule = next(rule for rule in draft.curves if rule.id == changed_rule.id)
+        variant = _variant(rule, variant_id)
     validate_current_curve_evidence(draft, variant)
     review = CurveVariantReview(
         variant_id=variant.id,

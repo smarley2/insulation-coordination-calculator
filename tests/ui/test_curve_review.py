@@ -375,7 +375,7 @@ def test_curve_and_digitization_change_requires_fresh_current_proof(draft) -> No
         notes="Attempt to retain a stale proof after an unsafe edit.",
     )
 
-    with pytest.raises(ApprovalError, match="recomputed conservative proof"):
+    with pytest.raises(ApprovalError, match="conservative"):
         CurveReviewModel(corrected).review_variant(
             VARIANT_ID,
             actor="Synthetic Reviewer",
@@ -682,6 +682,68 @@ def test_shorter_trace_association_is_rejected_by_domain(draft) -> None:
         )
 
 
+def test_direct_association_change_invalidates_current_provenance(draft) -> None:
+    original = draft.raw_figures[0].traces[0]
+    trace_a = original.model_copy(update={"id": "trace-a"})
+    trace_b = original.model_copy(update={"id": "trace-b"})
+    figure = draft.raw_figures[0].model_copy(update={"traces": (trace_a, trace_b)})
+    changed = draft.model_copy(update={"raw_figures": (figure,)})
+    digest = _content_digest(
+        changed.tables,
+        changed.formulas,
+        changed.mappings,
+        changed.review_items,
+        changed.raw_grids,
+        changed.raw_clause_fragments,
+        changed.manifest.source_documents,
+        changed.source_identities,
+        changed.review_resolutions,
+        curves=changed.curves,
+        raw_figures=changed.raw_figures,
+        curve_digitizations=changed.curve_digitizations,
+    )
+    changed = changed.model_copy(
+        update={
+            "manifest": changed.manifest.model_copy(
+                update={
+                    "approval_records": tuple(
+                        record.model_copy(update={"notes": f"content:{digest}"})
+                        if record.action == "extraction" and record.notes.startswith("content:")
+                        else record
+                        for record in changed.manifest.approval_records
+                    )
+                }
+            )
+        }
+    )
+    model = CurveReviewModel(changed)
+    model.associate_trace(
+        trace_a.id,
+        VARIANT_ID,
+        actor="Synthetic Reviewer",
+        notes="Associate trace A.",
+    )
+    model.review_variant(
+        VARIANT_ID,
+        actor="Synthetic Reviewer",
+        notes="Review trace A evidence.",
+    )
+    association = model.draft.curve_trace_associations[0].model_copy(
+        update={"trace_id": trace_b.id}
+    )
+    stale = record_correction(
+        model.draft,
+        model.draft.model_copy(update={"curve_trace_associations": (association,)}),
+        actor="Synthetic Reviewer",
+        notes="Change association without rebuilding provenance.",
+    )
+
+    assert any(
+        blocker.code == "CURVE_VARIANT_REVIEW_REQUIRED"
+        for blocker in approval_blockers(stale)
+    )
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     (("slope", Decimal(-1)), ("residual_pixels", Decimal(6))),
@@ -900,6 +962,14 @@ def test_blocked_real_shape_can_be_recovered_without_a_preexisting_curve(
     assert len(model.draft.semantic_proposals) == 1
     assert model.draft.manual_curve_traces[0].trace == manual_trace
     assert model.manual_entry_enabled is False
+    model.set_breakpoint(
+        f"{ids.DVC_FAULT_TIME_VOLTAGE}.7",
+        1,
+        CurvePoint(x=Decimal(10), y=Decimal(45)),
+        actor="Synthetic Reviewer",
+        notes="Correct a recovered manual-trace breakpoint.",
+    )
+    assert model.draft.curves[0].variants[2].points[1].y == Decimal(45)
 
 
 def _local_pdf_draft(draft: ImportedRuleDraft, path) -> ImportedRuleDraft:
