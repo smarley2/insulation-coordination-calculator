@@ -366,22 +366,41 @@ Table 2 uses a dedicated `TableAuditSpec` with explicit merged-cell inheritance,
 roles, header paths, footnote scopes, and blank classifications. Generic compound-cell parsing
 preserves every scalar token and reference token separately.
 
+Private-fixture verification corrected the original synthetic layout assumption. The physical
+grid remains 8 by 6, but its semantic body is four DVC rows by five distinct voltage-quantity
+columns, beginning at physical row 3 and column 1. The structural recipe declares the following
+merged regions without embedding source text or values:
+
+- the top-left header spans rows 0 through 2;
+- the top quantity header spans columns 1 through 5;
+- the normal-condition header spans columns 1 through 4;
+- the first impulse value spans physical rows 3 and 4;
+- the Figure 5/6 reference spans physical rows 3 through 5; and
+- the Table 7 impulse reference spans physical rows 5 and 6.
+
+The final body cell at row 6, column 5 is explicitly not applicable. Every other physical blank
+inside a declared merged region is inherited from its anchor; an undeclared blank remains a
+blocking extraction error. Inherited data cells retain their own logical row/column position but
+use the anchor's reviewed value or reference token and source span.
+
 Projection creates `iec62477_2022.dvc.voltage_limits` as a `DecisionRule`, not as a runtime table.
 Its typed inputs and outputs distinguish:
 
 - DVC identity;
-- operating-condition category;
-- voltage quantity kind;
+- the five distinct voltage quantity kinds;
 - unit;
-- conditional alternative/applicability context; and
 - numeric, not-applicable, or semantic-reference outcomes.
 
-Conditional alternatives become separate decision rows with explicit matchers. Merged source
-cells are inherited only across recipe-declared spans. A source reference to Table 7 resolves to
-the existing Table 7 semantic family. A source reference to Figures 5 through 7 resolves to
-`iec62477_2022.dvc.fault_time_voltage`; curve values are never copied into Table 2.
+There is no invented conditional-alternative pairing: each physical quantity column is a distinct
+selector. Merged source cells are inherited only across recipe-declared spans. Figure references
+project into a dedicated decision whose single reference output resolves to
+`iec62477_2022.dvc.fault_time_voltage`; curve values are never copied into Table 2. The Table 7
+reference is an impulse-withstand reference, not a temporary-overvoltage reference. It projects
+into a separate decision with explicit AC and DC reference outputs resolving to the existing
+`iec62477_2022.supply.impulse_by_system_voltage_ovc.ac` and `.dc` tables. This represents the one
+physical merged reference without falsely assigning AC/DC supply type to different DVC rows.
 
-Unresolved merged cells, alternatives, references, quantities, units, blanks, or footnotes block
+Unresolved merged cells, references, quantities, units, blanks, or footnotes block
 projection or execution.
 
 ## Table 3 semantic extraction
