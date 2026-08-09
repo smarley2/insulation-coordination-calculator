@@ -199,6 +199,34 @@ def test_colored_solid_and_dashed_curves_are_recovered_in_voltage_order() -> Non
     assert endpoint_heights == sorted(endpoint_heights)
 
 
+def test_colored_trace_recovery_does_not_hide_an_extra_candidate() -> None:
+    image = Image.new("RGB", (240, 180), color="white")
+    draw = ImageDraw.Draw(image)
+    for y, color in zip(
+        (35, 65, 95),
+        ((205, 75, 70), (75, 135, 195), (25, 80, 140)),
+        strict=True,
+    ):
+        draw.line((20, y, 220, y), fill=color, width=4)
+    draw.line((40, 125, 200, 125), fill=(60, 180, 70), width=2)
+
+    traces = _raster_traces(image, (), 3)
+
+    assert len(traces) == 4
+
+
+def test_colored_trace_recovery_merges_antialias_shades_of_one_stroke() -> None:
+    image = Image.new("RGB", (240, 180), color="white")
+    draw = ImageDraw.Draw(image)
+    draw.line((20, 79, 220, 79), fill=(225, 155, 150), width=1)
+    draw.line((20, 80, 220, 80), fill=(205, 75, 70), width=2)
+    draw.line((20, 82, 220, 82), fill=(235, 185, 180), width=1)
+
+    traces = _raster_traces(image, (), 1)
+
+    assert len(traces) == 1
+
+
 def test_ambiguous_images_block_extraction(curve_pdf, monkeypatch) -> None:
     reader, pdf = _pages(curve_pdf)
     with pdf:

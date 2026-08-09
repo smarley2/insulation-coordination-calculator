@@ -566,6 +566,85 @@ def _raster_traces(
             )
         if color_traces:
 
+            def same_stroke(
+                left: RawCurveTrace, right: RawCurveTrace
+            ) -> bool:
+                left_y = {point.x: point.y for point in left.points}
+                right_y = {point.x: point.y for point in right.points}
+                shared = left_y.keys() & right_y.keys()
+                required_overlap = Decimal("0.8") * Decimal(
+                    min(len(left_y), len(right_y))
+                )
+                if Decimal(len(shared)) < required_overlap:
+                    return False
+                close = sum(
+                    abs(left_y[x] - right_y[x]) <= Decimal(3) for x in shared
+                )
+                return Decimal(close) >= Decimal("0.8") * Decimal(len(shared))
+
+            distinct: list[RawCurveTrace] = []
+            for trace in color_traces:
+                if not any(same_stroke(trace, existing) for existing in distinct):
+                    distinct.append(trace)
+            for color in candidates:
+                ink = tuple(255 - component for component in color)
+                if any(
+                    (
+                        sum(
+                            component * existing
+                            for component, existing in zip(ink, anchor)
+                        )
+                        ** 2
+                        * 10_000
+                        >= 9_604
+                        * sum(component**2 for component in ink)
+                        * sum(existing**2 for existing in anchor)
+                    )
+                    for anchor in (
+                        tuple(255 - component for component in selected)
+                        for selected in anchors
+                    )
+                ):
+                    continue
+                extra_pixels = {
+                    (x, y)
+                    for x, y, observed in colored
+                    if sum(
+                        (component - expected) ** 2
+                        for component, expected in zip(observed, color)
+                    )
+                    <= 35**2
+                }
+                if not extra_pixels:
+                    continue
+                x_span = max(x for x, _ in extra_pixels) - min(
+                    x for x, _ in extra_pixels
+                )
+                if x_span < width // 3:
+                    continue
+                by_x: dict[int, list[int]] = {}
+                for x, y in extra_pixels:
+                    by_x.setdefault(x, []).append(y)
+                extra = RawCurveTrace(
+                    id=f"trace-{len(distinct) + 1}",
+                    points=tuple(
+                        RawCurvePoint(
+                            x=Decimal(x),
+                            y=Decimal(sorted(ys)[len(ys) // 2]),
+                            space="pixel",
+                            primitive_ref=f"color-column-{x}",
+                        )
+                        for x, ys in sorted(by_x.items())
+                    ),
+                    stroke_width=max(
+                        Decimal(1),
+                        Decimal(len(extra_pixels)) / Decimal(len(by_x)),
+                    ),
+                )
+                if not any(same_stroke(extra, existing) for existing in distinct):
+                    distinct.append(extra)
+            color_traces = distinct
+
             def endpoint_y(trace: RawCurveTrace) -> Decimal:
                 count = max(3, len(trace.points) // 20)
                 tail = trace.points[-count:]

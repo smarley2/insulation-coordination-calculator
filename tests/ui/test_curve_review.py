@@ -41,6 +41,7 @@ from insulation_coordination.rules.importer.curves import (
 )
 from insulation_coordination.rules.importer.extract import (
     IMPORTER_VERSION,
+    CurveTraceAssociation,
     ImportedRuleDraft,
     ImportReviewItem,
     ImportReviewResolution,
@@ -53,7 +54,10 @@ from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
     RECIPE as IEC_RECIPE,
 )
-from insulation_coordination.rules.importer.review import _aggregate_artifact_pairs
+from insulation_coordination.rules.importer.review import (
+    _aggregate_artifact_pairs,
+    validate_current_curve_evidence,
+)
 from insulation_coordination.ui.curve_review import CurveReviewDialog, CurveReviewModel
 from insulation_coordination.ui.rules_manager import RulesManagerWindow
 from tests.fixtures.synthetic_rules import synthetic_rule_package
@@ -74,6 +78,112 @@ IDENTITY = StandardIdentity(
     recipe_id="synthetic-curves",
 )
 VARIANT_ID = f"{ids.DVC_FAULT_TIME_VOLTAGE}.synthetic"
+
+
+def _multi_variant_draft(
+    draft: ImportedRuleDraft, count: int
+) -> ImportedRuleDraft:
+    first = draft.curves[0].variants[0]
+    selectors = (
+        first.selector,
+        first.selector.model_copy(update={"voltage_basis": "dc"}),
+        first.selector.model_copy(update={"subject": "conductive_accessible_part"}),
+    )
+    variants = tuple(
+        first.model_copy(
+            update={
+                "id": f"{VARIANT_ID}.{index}",
+                "selector": selectors[index - 1],
+            }
+        )
+        for index in range(1, count + 1)
+    )
+    source_trace = draft.raw_figures[0].traces[0]
+    traces = tuple(
+        source_trace.model_copy(update={"id": f"trace-{index}"})
+        for index in range(1, count + 1)
+    )
+    figure = draft.raw_figures[0].model_copy(update={"traces": traces})
+    rule = draft.curves[0].model_copy(update={"variants": variants})
+    digitization = draft.curve_digitizations[0].model_copy(
+        update={
+            "proposed_rule": draft.curve_digitizations[0]
+            .proposed_rule.model_copy(update={"variants": variants})
+        }
+    )
+    associations = tuple(
+        CurveTraceAssociation(
+            variant_id=variant.id,
+            figure_artifact_sha256=figure.artifact_sha256,
+            trace_id=trace.id,
+        )
+        for variant, trace in zip(variants, traces, strict=True)
+    )
+    review_items = tuple(
+        draft.review_items[0].model_copy(update={"semantic_id": variant.id})
+        for variant in variants
+    )
+    review_resolutions = tuple(
+        draft.review_resolutions[0].model_copy(
+            update={"review_item_sha256": item.sha256}
+        )
+        for item in review_items
+    )
+    proposal = draft.semantic_proposals[0].model_copy(
+        update={
+            "rule_sha256": canonical_model_sha256(rule),
+            "source_artifact_sha256": _aggregate_artifact_pairs(
+                tuple(
+                    (variant.id, variant.reviewed_artifact_sha256)
+                    for variant in variants
+                )
+            ),
+            "state": "proposed",
+            "review_item_sha256s": tuple(item.sha256 for item in review_items),
+        }
+    )
+    changed = draft.model_copy(
+        update={
+            "curves": (rule,),
+            "raw_figures": (figure,),
+            "curve_digitizations": (digitization,),
+            "curve_trace_associations": associations,
+            "semantic_proposals": (proposal,),
+            "review_items": review_items,
+            "review_resolutions": review_resolutions,
+        }
+    )
+    digest = _content_digest(
+        changed.tables,
+        changed.formulas,
+        changed.mappings,
+        changed.review_items,
+        changed.raw_grids,
+        changed.raw_clause_fragments,
+        changed.manifest.source_documents,
+        changed.source_identities,
+        changed.review_resolutions,
+        changed.extracted_equations,
+        curves=changed.curves,
+        raw_figures=changed.raw_figures,
+        curve_digitizations=changed.curve_digitizations,
+        curve_trace_associations=changed.curve_trace_associations,
+    )
+    return changed.model_copy(
+        update={
+            "manifest": changed.manifest.model_copy(
+                update={
+                    "approval_records": tuple(
+                        record.model_copy(update={"notes": f"content:{digest}"})
+                        if record.action == "extraction"
+                        and record.notes.startswith("content:")
+                        else record
+                        for record in changed.manifest.approval_records
+                    )
+                }
+            )
+        }
+    )
 
 
 def _curve() -> PiecewiseCurveRule:
@@ -473,81 +583,8 @@ def test_curve_review_resolves_the_extracted_variant_inventory(draft) -> None:
 
 
 def test_each_variant_requires_an_exact_review(draft) -> None:
-    first = draft.curves[0].variants[0]
-    second = first.model_copy(
-        update={
-            "id": f"{ids.DVC_FAULT_TIME_VOLTAGE}.second",
-            "selector": first.selector.model_copy(update={"voltage_basis": "dc"}),
-        }
-    )
-    rule = draft.curves[0].model_copy(update={"variants": (first, second)})
-    second_item = draft.review_items[0].model_copy(update={"semantic_id": second.id})
-    second_resolution = draft.review_resolutions[0].model_copy(
-        update={"review_item_sha256": second_item.sha256}
-    )
-    proposal = draft.semantic_proposals[0].model_copy(
-        update={
-            "rule_sha256": canonical_model_sha256(rule),
-            "source_artifact_sha256": _aggregate_artifact_pairs(
-                tuple(
-                    (variant.id, variant.reviewed_artifact_sha256)
-                    for variant in rule.variants
-                )
-            ),
-            "review_item_sha256s": tuple(
-                item.sha256
-                for item in sorted(
-                    (*draft.review_items, second_item),
-                    key=lambda item: f"{item.semantic_id}:{item.code}",
-                )
-            ),
-            "state": "proposed",
-        }
-    )
-    multi = draft.model_copy(
-        update={
-            "curves": (rule,),
-            "curve_digitizations": (
-                draft.curve_digitizations[0].model_copy(
-                    update={
-                        "proposed_rule": draft.curve_digitizations[0]
-                        .proposed_rule.model_copy(update={"variants": (first, second)})
-                    }
-                ),
-            ),
-            "semantic_proposals": (proposal,),
-            "review_items": (*draft.review_items, second_item),
-            "review_resolutions": (*draft.review_resolutions, second_resolution),
-        }
-    )
-    digest = _content_digest(
-        multi.tables,
-        multi.formulas,
-        multi.mappings,
-        multi.review_items,
-        multi.raw_grids,
-        multi.raw_clause_fragments,
-        multi.manifest.source_documents,
-        multi.source_identities,
-        multi.review_resolutions,
-        curves=multi.curves,
-        raw_figures=multi.raw_figures,
-        curve_digitizations=multi.curve_digitizations,
-    )
-    multi = multi.model_copy(
-        update={
-            "manifest": multi.manifest.model_copy(
-                update={
-                    "approval_records": tuple(
-                        record.model_copy(update={"notes": f"content:{digest}"})
-                        if record.action == "extraction" and record.notes.startswith("content:")
-                        else record
-                        for record in multi.manifest.approval_records
-                    )
-                }
-            )
-        }
-    )
+    multi = _multi_variant_draft(draft, 2)
+    first, second = multi.curves[0].variants
     model = CurveReviewModel(multi)
 
     model.review_variant(
@@ -589,10 +626,110 @@ def test_calibration_correction_targets_one_figure_and_reproves(draft) -> None:
     assert model.draft.curves[0].variants[0].points != points_before
 
 
+@pytest.mark.parametrize("variant_count", (2, 3))
+def test_calibration_correction_atomically_reproves_all_figure_variants(
+    draft, variant_count
+) -> None:
+    multi = _multi_variant_draft(draft, variant_count)
+    before = multi.curve_digitizations[0].calibration
+    assert before is not None
+    points_before = tuple(variant.points for variant in multi.curves[0].variants)
+
+    model = CurveReviewModel(multi)
+    model.set_calibration(
+        54,
+        "y",
+        before.y.model_copy(update={"intercept": Decimal("0.05")}),
+        actor="Synthetic Reviewer",
+        notes="Correct one shared multi-variant figure calibration.",
+    )
+
+    after = model.draft.curve_digitizations[0]
+    assert after.conservatism is not None and after.conservatism.proven
+    assert all(
+        variant.points != prior
+        for variant, prior in zip(
+            model.draft.curves[0].variants, points_before, strict=True
+        )
+    )
+    assert after.proposed_rule == model.draft.curves[0]
+
+
+def test_trace_association_rejects_reuse_across_figure_variants(draft) -> None:
+    multi = _multi_variant_draft(draft, 2)
+    second = multi.curves[0].variants[1]
+
+    with pytest.raises(ApprovalError, match="trace inventory|reuse"):
+        CurveReviewModel(multi).associate_trace(
+            "trace-1",
+            second.id,
+            actor="Synthetic Reviewer",
+            notes="Attempt to reuse the first sibling trace.",
+        )
+
+    duplicated = multi.model_copy(
+        update={
+            "curve_trace_associations": tuple(
+                association.model_copy(update={"trace_id": "trace-1"})
+                if association.variant_id == second.id
+                else association
+                for association in multi.curve_trace_associations
+            )
+        }
+    )
+    with pytest.raises(ApprovalError, match="trace inventory|reuse"):
+        validate_current_curve_evidence(duplicated, multi.curves[0].variants[0])
+
+
+def test_trace_association_resolves_duplicate_ids_within_variant_figure(draft) -> None:
+    other_source = SOURCE.model_copy(update={"page": 55, "figure": "SF-6"})
+    other_figure = draft.raw_figures[0].model_copy(
+        update={"source": other_source, "artifact_sha256": "b" * 64}
+    )
+    changed = draft.model_copy(update={"raw_figures": (*draft.raw_figures, other_figure)})
+    digest = _content_digest(
+        changed.tables,
+        changed.formulas,
+        changed.mappings,
+        changed.review_items,
+        changed.raw_grids,
+        changed.raw_clause_fragments,
+        changed.manifest.source_documents,
+        changed.source_identities,
+        changed.review_resolutions,
+        changed.extracted_equations,
+        curves=changed.curves,
+        raw_figures=changed.raw_figures,
+        curve_digitizations=changed.curve_digitizations,
+    )
+    changed = changed.model_copy(
+        update={
+            "manifest": changed.manifest.model_copy(
+                update={
+                    "approval_records": tuple(
+                        record.model_copy(update={"notes": f"content:{digest}"})
+                        if record.action == "extraction"
+                        and record.notes.startswith("content:")
+                        else record
+                        for record in changed.manifest.approval_records
+                    )
+                }
+            )
+        }
+    )
+
+    CurveReviewModel(changed).associate_trace(
+        "synthetic-trace",
+        VARIANT_ID,
+        actor="Synthetic Reviewer",
+        notes="Resolve the figure-local trace ID.",
+    )
+
+
 def test_trace_association_is_source_scoped_and_reproved(draft) -> None:
     original = draft.raw_figures[0].traces[0]
     alternate = original.model_copy(update={"id": "alternate-trace"})
-    figure = draft.raw_figures[0].model_copy(update={"traces": (original, alternate)})
+    figure = draft.raw_figures[0].model_copy(update={"traces": (alternate,)})
     changed = draft.model_copy(update={"raw_figures": (figure,)})
     digest = _content_digest(
         changed.tables,
@@ -642,7 +779,7 @@ def test_shorter_trace_association_is_rejected_by_domain(draft) -> None:
     shorter = original.model_copy(
         update={"id": "shorter-trace", "points": original.points[1:]}
     )
-    figure = draft.raw_figures[0].model_copy(update={"traces": (original, shorter)})
+    figure = draft.raw_figures[0].model_copy(update={"traces": (shorter,)})
     changed = draft.model_copy(update={"raw_figures": (figure,)})
     digest = _content_digest(
         changed.tables,
@@ -683,57 +820,22 @@ def test_shorter_trace_association_is_rejected_by_domain(draft) -> None:
 
 
 def test_direct_association_change_invalidates_current_provenance(draft) -> None:
-    original = draft.raw_figures[0].traces[0]
-    trace_a = original.model_copy(update={"id": "trace-a"})
-    trace_b = original.model_copy(update={"id": "trace-b"})
-    figure = draft.raw_figures[0].model_copy(update={"traces": (trace_a, trace_b)})
-    changed = draft.model_copy(update={"raw_figures": (figure,)})
-    digest = _content_digest(
-        changed.tables,
-        changed.formulas,
-        changed.mappings,
-        changed.review_items,
-        changed.raw_grids,
-        changed.raw_clause_fragments,
-        changed.manifest.source_documents,
-        changed.source_identities,
-        changed.review_resolutions,
-        curves=changed.curves,
-        raw_figures=changed.raw_figures,
-        curve_digitizations=changed.curve_digitizations,
-    )
-    changed = changed.model_copy(
-        update={
-            "manifest": changed.manifest.model_copy(
-                update={
-                    "approval_records": tuple(
-                        record.model_copy(update={"notes": f"content:{digest}"})
-                        if record.action == "extraction" and record.notes.startswith("content:")
-                        else record
-                        for record in changed.manifest.approval_records
-                    )
-                }
-            )
-        }
-    )
-    model = CurveReviewModel(changed)
-    model.associate_trace(
-        trace_a.id,
-        VARIANT_ID,
-        actor="Synthetic Reviewer",
-        notes="Associate trace A.",
-    )
-    model.review_variant(
-        VARIANT_ID,
-        actor="Synthetic Reviewer",
-        notes="Review trace A evidence.",
-    )
-    association = model.draft.curve_trace_associations[0].model_copy(
-        update={"trace_id": trace_b.id}
+    model = CurveReviewModel(_multi_variant_draft(draft, 2))
+    for variant in model.draft.curves[0].variants:
+        model.review_variant(
+            variant.id,
+            actor="Synthetic Reviewer",
+            notes="Review the current trace evidence.",
+        )
+    associations = tuple(
+        association.model_copy(
+            update={"trace_id": "trace-2" if association.trace_id == "trace-1" else "trace-1"}
+        )
+        for association in model.draft.curve_trace_associations
     )
     stale = record_correction(
         model.draft,
-        model.draft.model_copy(update={"curve_trace_associations": (association,)}),
+        model.draft.model_copy(update={"curve_trace_associations": associations}),
         actor="Synthetic Reviewer",
         notes="Change association without rebuilding provenance.",
     )

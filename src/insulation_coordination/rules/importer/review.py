@@ -1599,6 +1599,7 @@ def _variant_evidence(
     )
     if len(digitizations) != 1 or digitizations[0].calibration is None:
         raise ApprovalError("curve variant must have exactly one calibrated digitization")
+    _require_exact_trace_inventory(draft, figure, digitizations[0])
     associations = tuple(
         item for item in draft.curve_trace_associations if item.variant_id == variant.id
     )
@@ -1626,6 +1627,59 @@ def _source_matches(actual: SourceReference, expected: SourceReference) -> bool:
         getattr(actual, field) == getattr(expected, field)
         for field in ("document_id", "standard", "edition", "page", "figure")
     )
+
+
+def _require_exact_trace_inventory(
+    draft: ImportedRuleDraft,
+    figure: RawFigure,
+    digitization: CurveDigitizationResult,
+) -> None:
+    """Require one distinct plausible source trace for every figure variant."""
+
+    proposed = digitization.proposed_rule
+    if proposed is None:
+        raise ApprovalError("curve figure lacks a proposed trace inventory")
+    variants = tuple(
+        variant
+        for variant in proposed.variants
+        if _source_matches(variant.source, figure.source)
+    )
+    manual_traces = tuple(
+        item.trace
+        for item in draft.manual_curve_traces
+        if item.figure_artifact_sha256 == figure.artifact_sha256
+    )
+    traces = (*figure.traces, *manual_traces)
+    trace_ids = tuple(trace.id for trace in traces)
+    if (
+        not variants
+        or len(trace_ids) != len(variants)
+        or len(set(trace_ids)) != len(trace_ids)
+    ):
+        raise ApprovalError(
+            "curve figure trace inventory must exactly match its variant inventory"
+        )
+    variant_ids = {variant.id for variant in variants}
+    associations = tuple(
+        item
+        for item in draft.curve_trace_associations
+        if item.variant_id in variant_ids
+    )
+    if len(variants) == 1 and not associations:
+        return
+    if (
+        len(associations) != len(variants)
+        or {item.variant_id for item in associations} != variant_ids
+        or any(
+            item.figure_artifact_sha256 != figure.artifact_sha256
+            for item in associations
+        )
+        or len({item.trace_id for item in associations}) != len(associations)
+        or {item.trace_id for item in associations} != set(trace_ids)
+    ):
+        raise ApprovalError(
+            "curve figure trace inventory must associate every variant one-to-one"
+        )
 
 
 def _reviewed_variant(
@@ -2206,20 +2260,37 @@ def associate_curve_trace(
     rule = next((r for r in draft.curves for v in r.variants if v.id == variant_id), None)
     if rule is None:
         raise ValueError(f"unknown curve variant: {variant_id}")
-    occurrences = tuple(
-        (figure, trace)
-        for figure in draft.raw_figures
-        for trace in figure.traces
-        if trace.id == trace_id
-    )
-    if not occurrences:
-        raise ValueError(f"unknown raw trace: {trace_id}")
-    if len(occurrences) != 1:
-        raise ApprovalError(f"ambiguous raw trace: {trace_id}")
-    figure, trace = occurrences[0]
     variant = _variant(rule, variant_id)
-    if not _source_matches(figure.source, variant.source):
-        raise ApprovalError("curve trace does not belong to the variant source figure")
+    figures = tuple(
+        figure
+        for figure in draft.raw_figures
+        if _source_matches(figure.source, variant.source)
+    )
+    if len(figures) != 1:
+        raise ApprovalError("curve variant must have exactly one matching source figure")
+    figure = figures[0]
+    manual_traces = tuple(
+        item.trace
+        for item in draft.manual_curve_traces
+        if item.figure_artifact_sha256 == figure.artifact_sha256
+    )
+    traces = tuple(
+        trace for trace in (*figure.traces, *manual_traces) if trace.id == trace_id
+    )
+    if not traces:
+        if any(
+            trace.id == trace_id
+            for other in draft.raw_figures
+            if other is not figure
+            for trace in other.traces
+        ):
+            raise ApprovalError(
+                "curve trace does not belong to the variant source figure"
+            )
+        raise ValueError(f"unknown raw trace: {trace_id}")
+    if len(traces) != 1:
+        raise ApprovalError(f"ambiguous raw trace: {trace_id}")
+    trace = traces[0]
     association = CurveTraceAssociation(
         variant_id=variant.id,
         figure_artifact_sha256=figure.artifact_sha256,
@@ -2280,22 +2351,70 @@ def correct_curve_calibration(
         for variant in rule.variants
         if _source_matches(variant.source, figure.source)
     )
-    if len(variants) != 1:
-        raise ApprovalError("calibration correction requires exactly one figure variant")
-    variant = variants[0]
-    _figure, _digitization, trace = _variant_evidence(draft, variant)
-    rebuilt = rebuild_variant_from_calibration(trace, calibration, variant)
-    changed_variant, digitizations = _reprove_curve_variant(
-        draft,
-        rebuilt,
-        calibration=calibration,
-        allow_domain_rebuild=True,
+    if not variants:
+        raise ApprovalError("calibration correction requires figure variants")
+    rules = tuple(
+        rule for rule in draft.curves if any(variant in rule.variants for variant in variants)
     )
-    rule = next(rule for rule in draft.curves if variant in rule.variants)
+    if len(rules) != 1:
+        raise ApprovalError("calibration correction requires one aggregate curve rule")
+    rule = rules[0]
+    reviewed: dict[str, FaultTimeVoltageVariant] = {}
+    reports: list[ConservatismReport] = []
+    digitization: CurveDigitizationResult | None = None
+    for variant in variants:
+        active_figure, current_digitization, trace = _variant_evidence(draft, variant)
+        if digitization is not None and current_digitization is not digitization:
+            raise ApprovalError("figure variants do not share one calibration inventory")
+        digitization = current_digitization
+        rebuilt = rebuild_variant_from_calibration(trace, calibration, variant)
+        _require_exact_trace_domain(trace, calibration, rebuilt)
+        report = prove_variant_conservative(active_figure, trace, calibration, rebuilt)
+        if not report.proven:
+            raise ApprovalError(
+                "calibration correction is not conservative against source geometry"
+            )
+        reports.append(report)
+        reviewed[variant.id] = _reviewed_variant(
+            rebuilt,
+            figure=active_figure,
+            trace=trace,
+            calibration=calibration,
+        )
+    assert digitization is not None and digitization.proposed_rule is not None
+    changed_proposed = digitization.proposed_rule.model_copy(
+        update={
+            "variants": tuple(
+                reviewed.get(member.id, member)
+                for member in digitization.proposed_rule.variants
+            )
+        }
+    )
+    combined = ConservatismReport(
+        maximum_positive_voltage_error=max(
+            report.maximum_positive_voltage_error for report in reports
+        ),
+        maximum_fidelity_error_pixels=max(
+            report.maximum_fidelity_error_pixels for report in reports
+        ),
+        proven=all(report.proven for report in reports),
+    )
+    changed_digitization = digitization.model_copy(
+        update={
+            "proposed_rule": changed_proposed,
+            "calibration": calibration,
+            "conservatism": combined,
+            "blocking_review_items": (),
+        }
+    )
+    digitizations = tuple(
+        changed_digitization if item is digitization else item
+        for item in draft.curve_digitizations
+    )
     changed_rule = rule.model_copy(
         update={
             "variants": tuple(
-                changed_variant if member.id == variant.id else member
+                reviewed.get(member.id, member)
                 for member in rule.variants
             )
         }
