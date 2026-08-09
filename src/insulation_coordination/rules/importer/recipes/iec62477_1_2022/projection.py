@@ -428,12 +428,30 @@ def project_fault_time_voltage(
     pages = tuple(figure.source.page for figure in figures)
     if pages != (54, 55, 56):
         raise ValueError(f"Figure pages must be 54, 55, 56 in order, got {pages}")
+    member_groups = (figure5_variants, figure6_variants, figure7_variants)
+    if any(len(members) != 1 for members in member_groups):
+        raise ValueError("Figure 5, 6, and 7 each require exactly one curve variant")
     variants = (*figure5_variants, *figure6_variants, *figure7_variants)
-    if not variants:
-        raise ValueError("at least one reviewed variant is required")
     selectors = tuple(variant.selector for variant in variants)
     if len(set(selectors)) != len(selectors):
         raise ValueError("curve variant selectors must be exact and unique")
+    expected_roles = (
+        ("accessible_circuit", "ac_rms", True),
+        ("accessible_circuit", "dc", True),
+        ("conductive_accessible_part", "ac_peak", False),
+    )
+    for figure_number, variant, (subject, basis, contextual) in zip(
+        (5, 6, 7), variants, expected_roles, strict=True
+    ):
+        selector = variant.selector
+        if selector.subject != subject or selector.voltage_basis != basis:
+            raise ValueError(f"Figure {figure_number} variant has the wrong semantic role")
+        has_context = (
+            selector.dvc_context is not None
+            and selector.environment_context is not None
+        )
+        if has_context != contextual:
+            raise ValueError(f"Figure {figure_number} variant has the wrong context dimensions")
     for figure_number, figure, members in zip(
         (5, 6, 7),
         figures,

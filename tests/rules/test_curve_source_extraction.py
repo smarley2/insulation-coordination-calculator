@@ -91,7 +91,9 @@ def test_vector_paths_win_even_when_an_image_exists(curve_pdf) -> None:
     assert figure.source_mode == "vector_path"
     assert figure.traces
     assert all(trace.points for trace in figure.traces)
-    assert all(point.space == "pdf" for trace in figure.traces for point in trace.points)
+    assert all(point.space == "pixel" for trace in figure.traces for point in trace.points)
+    assert figure.pixel_size is not None
+    assert figure.ocr_tokens
 
 
 def test_raster_only_page_falls_back_to_xobject(curve_pdf) -> None:
@@ -130,6 +132,20 @@ def test_crop_bbox_and_transform_are_retained(curve_pdf) -> None:
         )
     assert figure.source_bbox == tuple(Decimal(str(v)) for v in BBOX)
     assert len(figure.transform) == 6
+
+
+def test_vector_geometry_is_mapped_into_rendered_crop_pixels(curve_pdf) -> None:
+    reader, pdf = _pages(curve_pdf)
+    with pdf:
+        figure = extract_raw_figure(
+            reader.pages[0], pdf.pages[0], synthetic_curve_spec(), FakeOcrEngine(), IDENTITY
+        )
+    assert figure.pixel_size is not None
+    width, height = figure.pixel_size
+    for trace in figure.traces:
+        for point in trace.points:
+            assert Decimal(0) <= point.x <= Decimal(width)
+            assert Decimal(0) <= point.y <= Decimal(height)
 
 
 def test_raster_figure_carries_ocr_tokens(curve_pdf) -> None:

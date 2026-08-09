@@ -425,10 +425,37 @@ def extract_raw_figure(
     bbox = tuple(Decimal(str(value)) for value in spec.expected_bbox)
     located = _locate(reader_page, spec)
     if located.mode == "vector_path":
-        traces = _vector_traces(reader_page, spec)
+        pdf_traces = _vector_traces(reader_page, spec)
+        rendered = plumber_page.crop(spec.expected_bbox).to_image(resolution=110).original
+        tokens = ocr.recognize(rendered)
+        width, height = rendered.size
+        x0, top, x1, bottom = spec.expected_bbox
+        page_height = float(reader_page.mediabox.height)
+        pdf_top = page_height - top
+        scale_x = Decimal(width) / Decimal(str(x1 - x0))
+        scale_y = Decimal(height) / Decimal(str(bottom - top))
+        traces = tuple(
+            trace.model_copy(
+                update={
+                    "points": tuple(
+                        point.model_copy(
+                            update={
+                                "x": (point.x - Decimal(str(x0))) * scale_x,
+                                "y": (Decimal(str(pdf_top)) - point.y) * scale_y,
+                                "space": "pixel",
+                            }
+                        )
+                        for point in trace.points
+                    )
+                }
+            )
+            for trace in pdf_traces
+        )
         payload = (
             f"vector:{spec.semantic_id}:{spec.expected_bbox}:"
-            f"{ocr.identity.config_sha256}:"
+            f"{ocr.identity.name}:{ocr.identity.version}:{ocr.identity.config_sha256}:"
+            + ";".join(token.text for token in tokens)
+            + ":"
             + ";".join(
                 f"{trace.id}:{','.join(f'{p.x}/{p.y}' for p in trace.points)}"
                 for trace in traces
@@ -438,11 +465,16 @@ def extract_raw_figure(
             source=source,
             source_mode="vector_path",
             source_bbox=bbox,  # type: ignore[arg-type]
-            pixel_size=None,
+            pixel_size=(width, height),
             transform=(
-                Decimal(1), Decimal(0), Decimal(0), Decimal(1), Decimal(0), Decimal(0),
+                scale_x,
+                Decimal(0),
+                Decimal(0),
+                -scale_y,
+                -Decimal(str(x0)) * scale_x,
+                Decimal(str(pdf_top)) * scale_y,
             ),
-            ocr_tokens=(),
+            ocr_tokens=tokens,
             traces=traces,
             artifact_sha256=hashlib.sha256(payload.encode("utf-8")).hexdigest(),
         )
@@ -827,14 +859,63 @@ def prove_variant_conservative(
             maximum_fidelity_error_pixels=Decimal(0),
             proven=False,
         )
-    source_domain = (min(x for x, _ in source_log), max(x for x, _ in source_log))
-    candidate_domain = (min(x for x, _ in candidate_log), max(x for x, _ in candidate_log))
     tolerance_pixels = _fidelity_tolerance(trace)
     tolerance_log = _pixel_tolerance_to_value(tolerance_pixels, calibration.y.slope)
     report = prove_conservative(source_log, candidate_log, tolerance_log)
-    if candidate_domain[0] < source_domain[0] or candidate_domain[1] > source_domain[1]:
-        return report.model_copy(update={"proven": False})
     return report
+
+
+def rebuild_variant_from_calibration(
+    trace: RawCurveTrace,
+    calibration: PlotCalibration,
+    variant: FaultTimeVoltageVariant,
+) -> FaultTimeVoltageVariant:
+    """Reconstruct engineering points when reviewed pixel calibration changes."""
+
+    from insulation_coordination.domain.rules import CurvePoint, CurveSegment
+
+    source_log = tuple(sorted(_log_space_point(point, calibration) for point in trace.points))
+    if len(source_log) < 2:
+        raise ValueError("curve trace has fewer than two points")
+    tolerance_pixels = _fidelity_tolerance(trace)
+    x_margin = _pixel_tolerance_to_value(tolerance_pixels, calibration.x.slope)
+    y_margin = _pixel_tolerance_to_value(tolerance_pixels, calibration.y.slope)
+    first, last = source_log[0], source_log[-1]
+    candidate_log = (
+        (first[0] - x_margin, first[1] - y_margin),
+        *((x, y - y_margin) for x, y in source_log),
+        (last[0] + x_margin, last[1] - y_margin),
+    )
+    values = tuple(
+        CurvePoint(x=_log10_to_value(x), y=_log10_to_value(y))
+        for x, y in candidate_log
+    )
+    return variant.model_copy(
+        update={
+            "x_axis": variant.x_axis.model_copy(
+                update={
+                    "minimum": min(point.x for point in values),
+                    "maximum": max(point.x for point in values),
+                }
+            ),
+            "y_axis": variant.y_axis.model_copy(
+                update={
+                    "minimum": min(point.y for point in values),
+                    "maximum": max(point.y for point in values),
+                }
+            ),
+            "points": values,
+            "segments": tuple(
+                CurveSegment(
+                    start=index,
+                    end=index + 1,
+                    segment_type="continuous",
+                    interpolation="log_log",
+                )
+                for index in range(len(values) - 1)
+            ),
+        }
+    )
 
 
 def digitize_curve_figure(

@@ -434,6 +434,8 @@ def record_correction(
         raise ApprovalError("a correction cannot rewrite review resolutions")
     _require_safe_raw_grid_correction(original, changed)
     _require_safe_equation_correction(original, changed)
+    if changed.raw_figures != original.raw_figures:
+        raise ApprovalError("a correction cannot rewrite extracted raw figure evidence")
     content_changed = (
         changed.tables,
         changed.formulas,
@@ -464,6 +466,13 @@ def record_correction(
         original.raw_figures,
         original.curve_digitizations,
     )
+    if (
+        changed.curve_digitizations != original.curve_digitizations
+        and changed.curves == original.curves
+    ):
+        raise ApprovalError(
+            "curve proof evidence can change only with its re-proven semantic curve"
+        )
     if not content_changed and not raw_changed and not resolve:
         raise ApprovalError("a correction must change rule content")
     original_reviews = original.review_items

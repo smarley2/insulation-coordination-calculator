@@ -48,6 +48,7 @@ from insulation_coordination.rules.importer.curves import (
     RawCurveTrace,
     RawFigure,
     prove_variant_conservative,
+    rebuild_variant_from_calibration,
 )
 from insulation_coordination.rules.importer.extract import (
     ComponentFormulaCandidate,
@@ -1611,6 +1612,7 @@ def _reprove_curve_variant(
     *,
     calibration: PlotCalibration | None = None,
     trace: RawCurveTrace | None = None,
+    allow_domain_rebuild: bool = False,
 ) -> tuple[FaultTimeVoltageVariant, tuple[CurveDigitizationResult, ...]]:
     figure, digitization, current_trace = _variant_evidence(draft, variant)
     active_trace = trace or current_trace
@@ -1618,6 +1620,24 @@ def _reprove_curve_variant(
         raise ApprovalError("curve trace does not belong to the variant source figure")
     active_calibration = calibration or digitization.calibration
     assert active_calibration is not None
+    if any(
+        (segment.segment_type, segment.interpolation)
+        not in {("continuous", "log_log"), ("plateau", "constant")}
+        for segment in variant.segments
+    ):
+        raise ApprovalError(
+            "curve interpolation has no analytic conservative proof"
+        )
+    prior = next(
+        member
+        for member in digitization.proposed_rule.variants  # type: ignore[union-attr]
+        if member.id == variant.id
+    )
+    if not allow_domain_rebuild and (
+        variant.points[0].x != prior.points[0].x
+        or variant.points[-1].x != prior.points[-1].x
+    ):
+        raise ApprovalError("curve correction cannot shorten or extend the reviewed domain")
     report = prove_variant_conservative(figure, active_trace, active_calibration, variant)
     if not report.proven:
         raise ApprovalError("curve correction is not conservative against source geometry")
@@ -1678,7 +1698,47 @@ def replace_curve_breakpoint(
     changed_rule = rule.model_copy(
         update={
             "variants": tuple(
-                changed_variant if v.id == variant_id else v for v in rule.variants
+                changed_variant if member.id == variant_id else member
+                for member in rule.variants
+            )
+        }
+    )
+    return _replace_curve(
+        draft,
+        rule.id,
+        changed_rule,
+        actor=actor,
+        notes=notes,
+        curve_digitizations=digitizations,
+    )
+
+
+def replace_curve_points(
+    draft: ImportedRuleDraft,
+    *,
+    variant_id: str,
+    points: tuple[CurvePoint, ...],
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Replace all points in one rejected automatic variant as one audited edit."""
+
+    if not any(item.variant_id == variant_id for item in draft.curve_variant_rejections):
+        raise ApprovalError("manual curve points require a blocking failure or rejection")
+    rule = next((r for r in draft.curves for v in r.variants if v.id == variant_id), None)
+    if rule is None:
+        raise ValueError(f"unknown curve variant: {variant_id}")
+    variant = _variant(rule, variant_id)
+    if len(points) != len(variant.points):
+        raise ApprovalError("manual curve points must preserve the reviewed point inventory")
+    changed_variant, digitizations = _reprove_curve_variant(
+        draft, variant.model_copy(update={"points": points})
+    )
+    changed_rule = rule.model_copy(
+        update={
+            "variants": tuple(
+                changed_variant if member.id == variant_id else member
+                for member in rule.variants
             )
         }
     )
@@ -1827,8 +1887,13 @@ def correct_curve_calibration(
     if len(variants) != 1:
         raise ApprovalError("calibration correction requires exactly one figure variant")
     variant = variants[0]
+    _figure, _digitization, trace = _variant_evidence(draft, variant)
+    rebuilt = rebuild_variant_from_calibration(trace, calibration, variant)
     changed_variant, digitizations = _reprove_curve_variant(
-        draft, variant, calibration=calibration
+        draft,
+        rebuilt,
+        calibration=calibration,
+        allow_domain_rebuild=True,
     )
     rule = next(rule for rule in draft.curves if variant in rule.variants)
     changed_rule = rule.model_copy(

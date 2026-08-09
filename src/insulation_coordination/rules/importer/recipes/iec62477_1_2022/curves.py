@@ -6,30 +6,30 @@ vocabulary. No curve coordinates, labels, or source values live here.
 
 from __future__ import annotations
 
-from typing import Literal
-
 from insulation_coordination.domain.rules import FaultTimeVoltageSelector
 from insulation_coordination.rules.importer.identify import CurveAuditSpec
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 
-_SELECTOR_SUBJECTS: tuple[Literal["accessible_circuit", "conductive_accessible_part"], ...] = (
-    "accessible_circuit",
-    "conductive_accessible_part",
-)
-_SELECTOR_BASES: tuple[Literal["ac_rms", "ac_peak", "dc"], ...] = ("ac_rms", "ac_peak", "dc")
-
-
-def _variant_slots() -> tuple[FaultTimeVoltageSelector, ...]:
-    return tuple(
-        FaultTimeVoltageSelector(
-            subject=subject,
-            voltage_basis=basis,
-            dvc_context=None,
-            environment_context=None,
-        )
-        for subject in _SELECTOR_SUBJECTS
-        for basis in _SELECTOR_BASES
-    )
+_SELECTORS = {
+    "5": FaultTimeVoltageSelector(
+        subject="accessible_circuit",
+        voltage_basis="ac_rms",
+        dvc_context="applicable",
+        environment_context="applicable",
+    ),
+    "6": FaultTimeVoltageSelector(
+        subject="accessible_circuit",
+        voltage_basis="dc",
+        dvc_context="applicable",
+        environment_context="applicable",
+    ),
+    "7": FaultTimeVoltageSelector(
+        subject="conductive_accessible_part",
+        voltage_basis="ac_peak",
+        dvc_context=None,
+        environment_context=None,
+    ),
+}
 
 
 def _spec(figure: str, page: int) -> CurveAuditSpec:
@@ -45,7 +45,7 @@ def _spec(figure: str, page: int) -> CurveAuditSpec:
         y_unit="V",
         x_scale="log10",
         y_scale="log10",
-        variant_slots=_variant_slots(),
+        variant_slots=(_SELECTORS[figure],),
         permitted_segment_types=("continuous", "plateau"),
         permitted_interpolations=("log_log", "constant"),
     )

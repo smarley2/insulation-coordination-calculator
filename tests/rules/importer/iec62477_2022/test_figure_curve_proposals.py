@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
+from pypdf import PdfWriter
 
 from insulation_coordination.domain.rules import (
     CurveAxis,
@@ -18,13 +20,19 @@ from insulation_coordination.rules.evaluator import (
     evaluate_piecewise_curve,
     select_curve_variant,
 )
-from insulation_coordination.rules.importer.curves import RawFigure
+from insulation_coordination.rules.importer.curves import (
+    ConservatismReport,
+    CurveDigitizationResult,
+    RawFigure,
+)
 from insulation_coordination.rules.importer.extract import (
     ImportedRuleDraft,
+    _extract_curve_artifacts,
     canonical_model_sha256,
 )
 from insulation_coordination.rules.importer.identify import StandardIdentity
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
+from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import RECIPE
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
     project_fault_time_voltage,
 )
@@ -122,8 +130,8 @@ def _figures() -> tuple[RawFigure, RawFigure, RawFigure]:
 def test_projected_variants_have_exact_distinct_selectors() -> None:
     rule, proposals = project_fault_time_voltage(
         _figures(), (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "a" * 64),),
-        (_variant("peak", "accessible_circuit", "ac_peak", "dvc-a", "indoor", "b" * 64),),
-        (_variant("dc", "conductive_accessible_part", "dc", None, None, "c" * 64),),
+        (_variant("dc", "accessible_circuit", "dc", "dvc-a", "indoor", "b" * 64),),
+        (_variant("peak", "conductive_accessible_part", "ac_peak", None, None, "c" * 64),),
         IDENTITY,
     )
     assert rule.id == ids.DVC_FAULT_TIME_VOLTAGE
@@ -139,32 +147,32 @@ def test_figure_subjects_and_none_dimensions_are_exact() -> None:
     rule, _ = project_fault_time_voltage(
         _figures(),
         (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "a" * 64),),
-        (_variant("peak", "accessible_circuit", "ac_peak", "dvc-a", "indoor", "b" * 64),),
-        (_variant("dc", "conductive_accessible_part", "dc", None, None, "c" * 64),),
+        (_variant("dc", "accessible_circuit", "dc", "dvc-a", "indoor", "b" * 64),),
+        (_variant("peak", "conductive_accessible_part", "ac_peak", None, None, "c" * 64),),
         IDENTITY,
     )
     by_id = {variant.id: variant for variant in rule.variants}
     assert by_id[f"{ids.DVC_FAULT_TIME_VOLTAGE}.ac"].selector.subject == "accessible_circuit"
     assert (
-        by_id[f"{ids.DVC_FAULT_TIME_VOLTAGE}.dc"].selector.subject
+        by_id[f"{ids.DVC_FAULT_TIME_VOLTAGE}.peak"].selector.subject
         == "conductive_accessible_part"
     )
-    dc = by_id[f"{ids.DVC_FAULT_TIME_VOLTAGE}.dc"].selector
-    assert dc.dvc_context is None and dc.environment_context is None
+    peak = by_id[f"{ids.DVC_FAULT_TIME_VOLTAGE}.peak"].selector
+    assert peak.dvc_context is None and peak.environment_context is None
 
 
 def test_none_dimensions_do_not_wildcard() -> None:
     rule, _ = project_fault_time_voltage(
         _figures(),
         (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "a" * 64),),
-        (_variant("peak", "accessible_circuit", "ac_peak", "dvc-a", "indoor", "b" * 64),),
-        (_variant("dc", "conductive_accessible_part", "dc", None, None, "c" * 64),),
+        (_variant("dc", "accessible_circuit", "dc", "dvc-a", "indoor", "b" * 64),),
+        (_variant("peak", "conductive_accessible_part", "ac_peak", None, None, "c" * 64),),
         IDENTITY,
     )
     # A selector with a DVC context must NOT match the variant whose context is None.
     probe = FaultTimeVoltageSelector(
         subject="conductive_accessible_part",
-        voltage_basis="dc",
+        voltage_basis="ac_peak",
         dvc_context="dvc-a",
         environment_context=None,
     )
@@ -176,37 +184,37 @@ def test_exact_selector_evaluates_matching_variant() -> None:
     rule, _ = project_fault_time_voltage(
         _figures(),
         (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "a" * 64),),
-        (_variant("peak", "accessible_circuit", "ac_peak", "dvc-a", "indoor", "b" * 64),),
-        (_variant("dc", "conductive_accessible_part", "dc", None, None, "c" * 64),),
+        (_variant("dc", "accessible_circuit", "dc", "dvc-a", "indoor", "b" * 64),),
+        (_variant("peak", "conductive_accessible_part", "ac_peak", None, None, "c" * 64),),
         IDENTITY,
     )
     result = evaluate_piecewise_curve(
         rule,
         FaultTimeVoltageSelector(
             subject="conductive_accessible_part",
-            voltage_basis="dc",
+            voltage_basis="ac_peak",
             dvc_context=None,
             environment_context=None,
         ),
         Decimal(10),
     )
     assert result.status == "matched"
-    assert result.variant_id == f"{ids.DVC_FAULT_TIME_VOLTAGE}.dc"
+    assert result.variant_id == f"{ids.DVC_FAULT_TIME_VOLTAGE}.peak"
 
 
 def test_aggregate_artifact_hash_covers_ordered_figure_digests() -> None:
     _, first = project_fault_time_voltage(
         _figures(),
         (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "a" * 64),),
-        (_variant("peak", "accessible_circuit", "ac_peak", "dvc-a", "indoor", "b" * 64),),
-        (_variant("dc", "conductive_accessible_part", "dc", None, None, "c" * 64),),
+        (_variant("dc", "accessible_circuit", "dc", "dvc-a", "indoor", "b" * 64),),
+        (_variant("peak", "conductive_accessible_part", "ac_peak", None, None, "c" * 64),),
         IDENTITY,
     )
     _, second = project_fault_time_voltage(
         (_figure("SF-5", 54, "d" * 64), *_figures()[1:]),
         (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "d" * 64),),
-        (_variant("peak", "accessible_circuit", "ac_peak", "dvc-a", "indoor", "b" * 64),),
-        (_variant("dc", "conductive_accessible_part", "dc", None, None, "c" * 64),),
+        (_variant("dc", "accessible_circuit", "dc", "dvc-a", "indoor", "b" * 64),),
+        (_variant("peak", "conductive_accessible_part", "ac_peak", None, None, "c" * 64),),
         IDENTITY,
     )
     assert first[0].source_artifact_sha256 != second[0].source_artifact_sha256
@@ -216,8 +224,8 @@ def test_projected_source_hash_matches_review_gate() -> None:
     rule, proposals = project_fault_time_voltage(
         _figures(),
         (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "a" * 64),),
-        (_variant("peak", "accessible_circuit", "ac_peak", "dvc-a", "indoor", "b" * 64),),
-        (_variant("dc", "conductive_accessible_part", "dc", None, None, "c" * 64),),
+        (_variant("dc", "accessible_circuit", "dc", "dvc-a", "indoor", "b" * 64),),
+        (_variant("peak", "conductive_accessible_part", "ac_peak", None, None, "c" * 64),),
         IDENTITY,
     )
     draft = ImportedRuleDraft.model_construct(
@@ -239,8 +247,8 @@ def test_variant_must_be_linked_to_its_figure_artifact() -> None:
         project_fault_time_voltage(
             _figures(),
             (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "b" * 64),),
-            (_variant("peak", "accessible_circuit", "ac_peak", "dvc-a", "indoor", "b" * 64),),
-            (_variant("dc", "conductive_accessible_part", "dc", None, None, "c" * 64),),
+            (_variant("dc", "accessible_circuit", "dc", "dvc-a", "indoor", "b" * 64),),
+            (_variant("peak", "conductive_accessible_part", "ac_peak", None, None, "c" * 64),),
             IDENTITY,
         )
 
@@ -250,7 +258,103 @@ def test_missing_figure_blocks_projection() -> None:
         project_fault_time_voltage(
             _figures()[:2],
             (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "a" * 64),),
-            (_variant("peak", "accessible_circuit", "ac_peak", "dvc-a", "indoor", "b" * 64),),
+            (_variant("dc", "accessible_circuit", "dc", "dvc-a", "indoor", "b" * 64),),
             (),
             IDENTITY,
         )
+
+
+def test_empty_variant_group_blocks_projection() -> None:
+    with pytest.raises(ValueError, match="each require exactly one"):
+        project_fault_time_voltage(
+            _figures(),
+            (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "a" * 64),),
+            (),
+            (_variant("peak", "conductive_accessible_part", "ac_peak", None, None, "c" * 64),),
+            IDENTITY,
+        )
+
+
+def test_wrong_figure_semantic_role_blocks_projection() -> None:
+    with pytest.raises(ValueError, match="Figure 6 variant has the wrong semantic role"):
+        project_fault_time_voltage(
+            _figures(),
+            (_variant("ac", "accessible_circuit", "ac_rms", "dvc-a", "indoor", "a" * 64),),
+            (_variant("peak", "accessible_circuit", "ac_peak", "dvc-a", "indoor", "b" * 64),),
+            (_variant("peak", "conductive_accessible_part", "ac_peak", None, None, "c" * 64),),
+            IDENTITY,
+        )
+
+
+def test_real_extraction_stage_projects_all_recipe_figures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "synthetic-56-pages.pdf"
+    writer = PdfWriter()
+    for _ in range(56):
+        writer.add_blank_page(width=612, height=792)
+    with path.open("wb") as stream:
+        writer.write(stream)
+
+    artifacts = {"5": "a" * 64, "6": "b" * 64, "7": "c" * 64}
+
+    def fake_extract(_reader_page, _plumber_page, spec, _ocr, identity):
+        return _figure(spec.figure, spec.page_number, artifacts[spec.figure]).model_copy(
+            update={
+                "source": SOURCE.model_copy(
+                    update={
+                        "document_id": identity.recipe_id,
+                        "standard": identity.standard,
+                        "edition": identity.edition,
+                        "page": spec.page_number,
+                        "figure": spec.figure,
+                    }
+                )
+            }
+        )
+
+    def fake_digitize(figure, spec, _ocr, _identity):
+        suffix = {"5": "ac", "6": "dc", "7": "peak"}[spec.figure]
+        variant = _variant(
+            suffix,
+            spec.variant_slots[0].subject,
+            spec.variant_slots[0].voltage_basis,
+            spec.variant_slots[0].dvc_context,
+            spec.variant_slots[0].environment_context,
+            figure.artifact_sha256,
+        ).model_copy(
+            update={
+                "id": f"{ids.DVC_FAULT_TIME_VOLTAGE}.{spec.figure}",
+                "source": figure.source,
+            }
+        )
+        from insulation_coordination.domain.rules import PiecewiseCurveRule
+
+        return CurveDigitizationResult(
+            proposed_rule=PiecewiseCurveRule(
+                id=ids.DVC_FAULT_TIME_VOLTAGE,
+                variants=(variant,),
+                source=figure.source,
+            ),
+            calibration=None,
+            conservatism=ConservatismReport(
+                maximum_positive_voltage_error=Decimal(0),
+                maximum_fidelity_error_pixels=Decimal(0),
+                proven=True,
+            ),
+            blocking_review_items=(),
+        )
+
+    monkeypatch.setattr(
+        "insulation_coordination.rules.importer.curves.extract_raw_figure", fake_extract
+    )
+    monkeypatch.setattr(
+        "insulation_coordination.rules.importer.curves.digitize_curve_figure", fake_digitize
+    )
+    figures, digitizations, curves, proposals, blockers = _extract_curve_artifacts(
+        path, IDENTITY.model_copy(update={"recipe_id": "iec62477-1-2022"}), RECIPE, object()
+    )
+    assert len(figures) == len(digitizations) == 3
+    assert len(curves) == len(proposals) == 1
+    assert curves[0].id == ids.DVC_FAULT_TIME_VOLTAGE
+    assert blockers == ()

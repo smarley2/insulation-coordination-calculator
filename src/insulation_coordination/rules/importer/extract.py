@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from insulation_coordination.rules.importer.clauses import RawClauseFragment
     from insulation_coordination.rules.importer.curves import (
         CurveDigitizationResult,
+        OcrEngine,
         RawFigure,
     )
 
@@ -559,7 +560,23 @@ def _recipe(identity: StandardIdentity) -> StandardRecipe:
         mapping.model_copy(update={"page_number": mapping.page_number + offset})
         for mapping in recipe.mappings
     )
-    return recipe.model_copy(update={"tables": tables, "formulas": formulas, "mappings": mappings})
+    clauses = tuple(
+        clause.model_copy(update={"page_number": clause.page_number + offset})
+        for clause in recipe.clauses
+    )
+    curves = tuple(
+        curve.model_copy(update={"page_number": curve.page_number + offset})
+        for curve in recipe.curves
+    )
+    return recipe.model_copy(
+        update={
+            "tables": tables,
+            "formulas": formulas,
+            "mappings": mappings,
+            "clauses": clauses,
+            "curves": curves,
+        }
+    )
 
 
 _NUMBER_TOKEN = r"(?:[0-9]{1,3}(?:[ \u00a0][0-9]{3})+|[0-9]+)(?:[.,][0-9]+)?"
@@ -1526,8 +1543,73 @@ def _extract_equations(
     return tuple(equations)
 
 
+def _extract_curve_artifacts(
+    path: Path,
+    identity: StandardIdentity,
+    recipe: StandardRecipe,
+    ocr: OcrEngine,
+    *,
+    password: str | None = None,
+) -> tuple[
+    tuple[RawFigure, ...],
+    tuple[CurveDigitizationResult, ...],
+    tuple[PiecewiseCurveRule, ...],
+    tuple[SemanticProposal, ...],
+    tuple[ImportReviewItem, ...],
+]:
+    """Extract, digitize, and semantically associate every recipe curve figure."""
+
+    if not recipe.curves:
+        return (), (), (), (), ()
+    from insulation_coordination.rules.importer.curves import (
+        digitize_curve_figure,
+        extract_raw_figure,
+    )
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
+        project_fault_time_voltage,
+    )
+
+    reader = PdfReader(path)
+    if reader.is_encrypted and reader.decrypt(password or "") == 0:
+        raise ExtractionError("recognized curve PDF password was rejected")
+    figures: list[RawFigure] = []
+    digitizations: list[CurveDigitizationResult] = []
+    with pdfplumber.open(path, password=password or "") as pdf:
+        for spec in recipe.curves:
+            try:
+                reader_page = reader.pages[spec.page_number - 1]
+                plumber_page = pdf.pages[spec.page_number - 1]
+            except IndexError as error:
+                raise ExtractionError(
+                    f"CURVE_SOURCE_MISSING: page {spec.page_number} for Figure {spec.figure}"
+                ) from error
+            figure = extract_raw_figure(reader_page, plumber_page, spec, ocr, identity)
+            figures.append(figure)
+            digitizations.append(digitize_curve_figure(figure, spec, ocr, identity))
+
+    blocking_items = tuple(
+        item for result in digitizations for item in result.blocking_review_items
+    )
+    if blocking_items:
+        return tuple(figures), tuple(digitizations), (), (), blocking_items
+    if identity.recipe_id != "iec62477-1-2022" or len(digitizations) != 3:
+        raise ExtractionError("no semantic projection is registered for extracted curves")
+    proposed_rules = tuple(result.proposed_rule for result in digitizations)
+    if any(rule is None for rule in proposed_rules):
+        raise ExtractionError("curve digitization completed without a proposed rule")
+    variants = tuple(rule.variants for rule in proposed_rules if rule is not None)
+    rule, proposals = project_fault_time_voltage(
+        tuple(figures), variants[0], variants[1], variants[2], identity
+    )
+    return tuple(figures), tuple(digitizations), (rule,), proposals, ()
+
+
 def _extract_one(
-    path: Path, identity: StandardIdentity
+    path: Path,
+    identity: StandardIdentity,
+    ocr: OcrEngine,
+    *,
+    password: str | None = None,
 ) -> tuple[
     tuple[Table, ...],
     tuple[Formula, ...],
@@ -1536,11 +1618,30 @@ def _extract_one(
     tuple[RawGrid, ...],
     tuple[RawClauseFragment, ...],
     tuple[ExtractedEquation, ...],
+    tuple[RawFigure, ...],
+    tuple[CurveDigitizationResult, ...],
+    tuple[PiecewiseCurveRule, ...],
+    tuple[SemanticProposal, ...],
 ]:
     recipe = _recipe(identity)
     grids, fragments, review_items = _extract_real_layout(path, identity, recipe)
     equations = _extract_equations(path, identity, recipe)
-    return (), (), (), review_items, grids, fragments, equations
+    figures, digitizations, curves, proposals, curve_reviews = _extract_curve_artifacts(
+        path, identity, recipe, ocr, password=password
+    )
+    return (
+        (),
+        (),
+        (),
+        review_items + curve_reviews,
+        grids,
+        fragments,
+        equations,
+        figures,
+        digitizations,
+        curves,
+        proposals,
+    )
 
 
 def _require_unique_ids(
@@ -1560,6 +1661,8 @@ def _require_unique_ids(
 def extract_draft(
     paths: tuple[Path, ...],
     passwords: Mapping[Path, str] | None = None,
+    *,
+    ocr_engine: OcrEngine | None = None,
 ) -> ImportedRuleDraft:
     """Extract recognized sources into a deliberately unusable immutable draft."""
 
@@ -1582,6 +1685,14 @@ def extract_draft(
     raw_grids: tuple[RawGrid, ...] = ()
     raw_clause_fragments: tuple[RawClauseFragment, ...] = ()
     extracted_equations: tuple[ExtractedEquation, ...] = ()
+    raw_figures: tuple[RawFigure, ...] = ()
+    curve_digitizations: tuple[CurveDigitizationResult, ...] = ()
+    curves: tuple[PiecewiseCurveRule, ...] = ()
+    semantic_proposals: tuple[SemanticProposal, ...] = ()
+    if ocr_engine is None:
+        from insulation_coordination.rules.importer.curves import TesseractOcrEngine
+
+        ocr_engine = TesseractOcrEngine()
     for path, identity in sorted(identified, key=lambda pair: pair[1].recipe_id):
         (
             extracted_tables,
@@ -1591,7 +1702,16 @@ def extract_draft(
             extracted_grids,
             extracted_fragments,
             extracted_source_equations,
-        ) = _extract_one(path, identity)
+            extracted_figures,
+            extracted_digitizations,
+            extracted_curves,
+            extracted_proposals,
+        ) = _extract_one(
+            path,
+            identity,
+            ocr_engine,
+            password=(passwords or {}).get(path),
+        )
         tables += extracted_tables
         formulas += extracted_formulas
         mappings += extracted_mappings
@@ -1599,6 +1719,10 @@ def extract_draft(
         raw_grids += extracted_grids
         raw_clause_fragments += extracted_fragments
         extracted_equations += extracted_source_equations
+        raw_figures += extracted_figures
+        curve_digitizations += extracted_digitizations
+        curves += extracted_curves
+        semantic_proposals += extracted_proposals
     _require_unique_ids(tables, formulas, mappings)
 
     recorded_at = datetime.now(UTC)
@@ -1634,8 +1758,10 @@ def extract_draft(
             *(f"raw-grid:{grid.id}" for grid in raw_grids),
             *(f"raw-clause:{fragment.id}" for fragment in raw_clause_fragments),
             *(f"equation:{equation.id}" for equation in extracted_equations),
+            *(f"curve:{curve.id}" for curve in curves),
+            *(f"raw-figure:{figure.source.figure}" for figure in raw_figures),
             *(f"review:{item.code}:{item.semantic_id}" for item in review_items),
-            f"content:{_content_digest(tables, formulas, mappings, review_items, raw_grids, raw_clause_fragments=raw_clause_fragments, extracted_equations=extracted_equations)}",
+            f"content:{_content_digest(tables, formulas, mappings, review_items, raw_grids, raw_clause_fragments=raw_clause_fragments, extracted_equations=extracted_equations, curves=curves, raw_figures=raw_figures, curve_digitizations=curve_digitizations)}",
         )
     )
     ordered_identities = tuple(
@@ -1661,6 +1787,9 @@ def extract_draft(
         ordered_identities,
         review_resolutions,
         extracted_equations=extracted_equations,
+        curves=curves,
+        raw_figures=raw_figures,
+        curve_digitizations=curve_digitizations,
     )
     records = tuple(
         record.model_copy(update={"notes": f"content:{content_digest}"})
@@ -1689,6 +1818,10 @@ def extract_draft(
         raw_grids=raw_grids,
         raw_clause_fragments=raw_clause_fragments,
         extracted_equations=extracted_equations,
+        curves=curves,
+        raw_figures=raw_figures,
+        curve_digitizations=curve_digitizations,
+        semantic_proposals=semantic_proposals,
         source_identities=ordered_identities,
     )
 

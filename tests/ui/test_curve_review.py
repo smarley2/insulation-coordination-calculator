@@ -28,6 +28,7 @@ from insulation_coordination.rules.importer.approval import (
     ApprovalError,
     approval_blockers,
     approve_draft,
+    record_correction,
 )
 from insulation_coordination.rules.importer.curves import (
     AxisCalibration,
@@ -313,21 +314,57 @@ def test_unsafe_breakpoint_correction_is_rejected(draft) -> None:
         )
 
 
-def test_segment_correction_changes_interpolation(draft) -> None:
-    model = CurveReviewModel(draft)
-    model.set_segment(
-        VARIANT_ID,
-        1,
-        1,
-        2,
-        "continuous",
-        "log_x",
-        actor="Synthetic Reviewer",
-        notes="Switch the synthetic tail interpolation.",
+def test_proof_evidence_cannot_change_without_reproven_curve(draft) -> None:
+    digitization = draft.curve_digitizations[0]
+    assert digitization.calibration is not None
+    changed_calibration = digitization.calibration.model_copy(
+        update={
+            "x": digitization.calibration.x.model_copy(
+                update={"intercept": digitization.calibration.x.intercept + Decimal("0.1")}
+            )
+        }
     )
-    rule = next(rule for rule in model.draft.curves if rule.id == ids.DVC_FAULT_TIME_VOLTAGE)
-    assert rule.variants[0].segments[1].segment_type == "continuous"
-    assert rule.variants[0].segments[1].interpolation == "log_x"
+    changed = draft.model_copy(
+        update={
+            "curve_digitizations": (
+                digitization.model_copy(update={"calibration": changed_calibration}),
+            )
+        }
+    )
+    with pytest.raises(ApprovalError, match="proof evidence"):
+        record_correction(
+            draft,
+            changed,
+            actor="Synthetic Reviewer",
+            notes="Attempt to alter proof evidence without rebuilding the curve.",
+        )
+
+
+def test_unproved_segment_interpolation_is_rejected(draft) -> None:
+    model = CurveReviewModel(draft)
+    with pytest.raises(ApprovalError, match="interpolation"):
+        model.set_segment(
+            VARIANT_ID,
+            1,
+            1,
+            2,
+            "continuous",
+            "linear",
+            actor="Synthetic Reviewer",
+            notes="Attempt an unproved linear interpolation.",
+        )
+
+
+def test_shortening_reviewed_curve_domain_is_rejected(draft) -> None:
+    model = CurveReviewModel(draft)
+    with pytest.raises(ApprovalError, match="domain"):
+        model.set_breakpoint(
+            VARIANT_ID,
+            0,
+            CurvePoint(x=Decimal(2), y=Decimal(90)),
+            actor="Synthetic Reviewer",
+            notes="Attempt to shorten the reviewed source domain.",
+        )
 
 
 def test_review_variant_marks_aggregate_proposal_reviewed(draft) -> None:
@@ -406,20 +443,22 @@ def test_calibration_correction_targets_one_figure_and_reproves(draft) -> None:
     model = CurveReviewModel(draft)
     before = model.draft.curve_digitizations[0].calibration
     assert before is not None
-    changed_axis = before.x.model_copy(update={"residual_pixels": Decimal("0.1")})
+    changed_axis = before.y.model_copy(update={"intercept": Decimal("0.05")})
+    points_before = model.draft.curves[0].variants[0].points
     model.set_calibration(
         54,
-        "x",
+        "y",
         changed_axis,
         actor="Synthetic Reviewer",
         notes="Nudge the synthetic x calibration.",
     )
     after = model.draft.curve_digitizations[0]
     assert after.calibration is not None
-    assert after.calibration.x == changed_axis
-    assert after.calibration.y == before.y
+    assert after.calibration.x == before.x
+    assert after.calibration.y == changed_axis
     assert after.conservatism is not None and after.conservatism.proven
     assert model.draft.raw_figures == draft.raw_figures
+    assert model.draft.curves[0].variants[0].points != points_before
 
 
 def test_trace_association_is_source_scoped_and_reproved(draft) -> None:
@@ -502,6 +541,18 @@ def test_manual_entry_is_gated_by_blocking_failure_or_rejection(draft) -> None:
         notes="Automatic reconstruction needs manual replacement.",
     )
     assert model.manual_entry_enabled is True
+    model.set_manual_points(
+        VARIANT_ID,
+        (
+            CurvePoint(x=Decimal(1), y=Decimal(95)),
+            CurvePoint(x=Decimal(10), y=Decimal(45)),
+            CurvePoint(x=Decimal(100), y=Decimal(18)),
+        ),
+        actor="Synthetic Reviewer",
+        notes="Replace the rejected automatic points manually.",
+    )
+    assert model.draft.curves[0].variants[0].points[1].y == Decimal(45)
+    assert model.manual_entry_enabled is False
 
     blocked_digitization = draft.curve_digitizations[0].model_copy(
         update={
@@ -548,6 +599,10 @@ def test_dialog_loads_verified_local_pdf_and_curve_overlay(qtbot, draft, tmp_pat
     assert dialog.source_loaded is True
     assert isinstance(dialog.overlay_item, QGraphicsPathItem)
     assert dialog.overlay_item.path().elementCount() == 3
+    path_geometry = dialog.overlay_item.path()
+    assert path_geometry.elementAt(0).x == pytest.approx(0)
+    assert path_geometry.elementAt(1).x == pytest.approx(153, abs=1)
+    assert path_geometry.elementAt(2).x == pytest.approx(306, abs=1)
     dialog.set_overlay_visible(False)
     assert dialog.overlay_item.isVisible() is False
 
@@ -642,3 +697,32 @@ def test_stale_digitization_proof_blocks_approval(draft) -> None:
         item.code == "CURVE_VARIANT_REVIEW_REQUIRED"
         for item in approval_blockers(tampered)
     )
+
+
+def test_raw_figure_change_is_not_a_permitted_review_correction(draft) -> None:
+    figure = draft.raw_figures[0]
+    trace = figure.traces[0]
+    changed_trace = trace.model_copy(
+        update={
+            "points": (
+                trace.points[0].model_copy(update={"y": trace.points[0].y + 1}),
+                *trace.points[1:],
+            )
+        }
+    )
+    changed = draft.model_copy(
+        update={
+            "raw_figures": (
+                figure.model_copy(
+                    update={"traces": (changed_trace,), "artifact_sha256": "b" * 64}
+                ),
+            )
+        }
+    )
+    with pytest.raises(ApprovalError, match="raw figure"):
+        record_correction(
+            draft,
+            changed,
+            actor="Synthetic Reviewer",
+            notes="Attempt to rewrite source evidence.",
+        )

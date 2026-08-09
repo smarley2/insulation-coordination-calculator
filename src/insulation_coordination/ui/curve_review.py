@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import io
 from collections.abc import Mapping
+from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
     QGraphicsView,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -49,6 +51,7 @@ from insulation_coordination.rules.importer.review import (
     correct_curve_calibration,
     reject_curve_variant,
     replace_curve_breakpoint,
+    replace_curve_points,
     replace_curve_segment,
     review_curve_variant,
 )
@@ -206,6 +209,23 @@ class CurveReviewModel:
         )
         return self._draft
 
+    def set_manual_points(
+        self,
+        variant_id: str,
+        points: tuple[CurvePoint, ...],
+        *,
+        actor: str,
+        notes: str,
+    ) -> ImportedRuleDraft:
+        self._draft = replace_curve_points(
+            self._draft,
+            variant_id=variant_id,
+            points=points,
+            actor=actor,
+            notes=notes,
+        )
+        return self._draft
+
     @property
     def manual_entry_enabled(self) -> bool:
         return bool(self._draft.curve_variant_rejections) or any(
@@ -270,9 +290,24 @@ class CurveReviewDialog(QDialog):
         self._notes = QLineEdit()
         self._notes.setPlaceholderText("Review or rejection notes (required)")
         layout.addWidget(self._notes)
+        correction_actions = QHBoxLayout()
+        self._calibration_button = QPushButton("Correct calibration…")
+        self._calibration_button.clicked.connect(self._correct_calibration)
+        correction_actions.addWidget(self._calibration_button)
+        self._trace_button = QPushButton("Associate trace…")
+        self._trace_button.clicked.connect(self._associate_trace)
+        correction_actions.addWidget(self._trace_button)
+        self._breakpoint_button = QPushButton("Correct breakpoint…")
+        self._breakpoint_button.clicked.connect(self._correct_breakpoint)
+        correction_actions.addWidget(self._breakpoint_button)
+        self._segment_button = QPushButton("Correct segment…")
+        self._segment_button.clicked.connect(self._correct_segment)
+        correction_actions.addWidget(self._segment_button)
+        layout.addLayout(correction_actions)
         actions = QHBoxLayout()
         self._manual_button = QPushButton("Enter points manually…")
         self._manual_button.setEnabled(self._model.manual_entry_enabled)
+        self._manual_button.clicked.connect(self._enter_manual_points)
         actions.addWidget(self._manual_button)
         self._reject_button = QPushButton("Reject automatic reconstruction")
         self._reject_button.clicked.connect(self._reject_current)
@@ -375,10 +410,22 @@ class CurveReviewDialog(QDialog):
 
         self._scene.clear()
         self._scene.addPixmap(QPixmap.fromImage(image))
+        source_width, source_height = figure.pixel_size or (
+            max(1, image.width()),
+            max(1, image.height()),
+        )
+        scale_x = image.width() / source_width
+        scale_y = image.height() / source_height
         overlay = QPainterPath()
         for index, point in enumerate(variant.points):
-            x = float((point.x.log10() - calibration.x.intercept) / calibration.x.slope)
-            y = float(-((point.y.log10() - calibration.y.intercept) / calibration.y.slope))
+            x = (
+                float((point.x.log10() - calibration.x.intercept) / calibration.x.slope)
+                * scale_x
+            )
+            y = (
+                float(-((point.y.log10() - calibration.y.intercept) / calibration.y.slope))
+                * scale_y
+            )
             if index == 0:
                 overlay.moveTo(x, y)
             else:
@@ -405,6 +452,179 @@ class CurveReviewDialog(QDialog):
             notes=notes,
         )
         self.draft_changed.emit(self._model.draft)
+
+    def _required_notes(self) -> str | None:
+        notes = self._notes.text().strip()
+        return notes or None
+
+    def _correct_calibration(self) -> None:
+        notes = self._required_notes()
+        if notes is None:
+            return
+        variant = self._current_variant()
+        _figure, current = self._figure_and_calibration(variant)
+        assert current is not None and variant.source.page is not None
+        axis, accepted = QInputDialog.getItem(
+            self, "Correct calibration", "Axis", ("x", "y"), editable=False
+        )
+        if not accepted:
+            return
+        existing = current.x if axis == "x" else current.y
+        value, accepted = QInputDialog.getText(
+            self,
+            "Correct calibration",
+            "slope, intercept, residual pixels, minor-grid pixels",
+            text=(
+                f"{existing.slope},{existing.intercept},"
+                f"{existing.residual_pixels},{existing.minor_grid_spacing_pixels}"
+            ),
+        )
+        if not accepted:
+            return
+        slope, intercept, residual, spacing = (
+            Decimal(part.strip()) for part in value.split(",")
+        )
+        self._model.set_calibration(
+            variant.source.page,
+            axis,  # type: ignore[arg-type]
+            AxisCalibration(
+                scale="log10",
+                slope=slope,
+                intercept=intercept,
+                residual_pixels=residual,
+                minor_grid_spacing_pixels=spacing,
+            ),
+            actor=self._actor,
+            notes=notes,
+        )
+        self.draft_changed.emit(self._model.draft)
+        self._load_current_variant(self._variant_selector.currentIndex())
+
+    def _associate_trace(self) -> None:
+        notes = self._required_notes()
+        if notes is None:
+            return
+        variant = self._current_variant()
+        figure, _calibration = self._figure_and_calibration(variant)
+        trace_id, accepted = QInputDialog.getItem(
+            self,
+            "Associate trace",
+            "Source trace",
+            tuple(trace.id for trace in figure.traces),
+            editable=False,
+        )
+        if not accepted:
+            return
+        self._model.associate_trace(
+            trace_id, variant.id, actor=self._actor, notes=notes
+        )
+        self.draft_changed.emit(self._model.draft)
+        self._load_current_variant(self._variant_selector.currentIndex())
+
+    def _correct_breakpoint(self) -> None:
+        notes = self._required_notes()
+        if notes is None:
+            return
+        variant = self._current_variant()
+        index, accepted = QInputDialog.getInt(
+            self,
+            "Correct breakpoint",
+            "Point index",
+            0,
+            0,
+            len(variant.points) - 1,
+        )
+        if not accepted:
+            return
+        point = variant.points[index]
+        value, accepted = QInputDialog.getText(
+            self,
+            "Correct breakpoint",
+            "x, y engineering values",
+            text=f"{point.x},{point.y}",
+        )
+        if not accepted:
+            return
+        x, y = (Decimal(part.strip()) for part in value.split(","))
+        self._model.set_breakpoint(
+            variant.id,
+            index,
+            CurvePoint(x=x, y=y),
+            actor=self._actor,
+            notes=notes,
+        )
+        self.draft_changed.emit(self._model.draft)
+        self._load_current_variant(self._variant_selector.currentIndex())
+
+    def _correct_segment(self) -> None:
+        notes = self._required_notes()
+        if notes is None:
+            return
+        variant = self._current_variant()
+        index, accepted = QInputDialog.getInt(
+            self,
+            "Correct segment",
+            "Segment index",
+            0,
+            0,
+            len(variant.segments) - 1,
+        )
+        if not accepted:
+            return
+        interpolation, accepted = QInputDialog.getItem(
+            self,
+            "Correct segment",
+            "Interpolation",
+            ("log_log", "constant"),
+            editable=False,
+        )
+        if not accepted:
+            return
+        segment = variant.segments[index]
+        segment_type = "plateau" if interpolation == "constant" else "continuous"
+        self._model.set_segment(
+            variant.id,
+            index,
+            segment.start,
+            segment.end,
+            segment_type,  # type: ignore[arg-type]
+            interpolation,  # type: ignore[arg-type]
+            actor=self._actor,
+            notes=notes,
+        )
+        self.draft_changed.emit(self._model.draft)
+        self._load_current_variant(self._variant_selector.currentIndex())
+
+    def _enter_manual_points(self) -> None:
+        notes = self._required_notes()
+        if notes is None or not self._model.manual_entry_enabled:
+            return
+        variant = self._current_variant()
+        value, accepted = QInputDialog.getText(
+            self,
+            "Enter points manually",
+            "Semicolon-separated x,y engineering points",
+            text=";".join(f"{point.x},{point.y}" for point in variant.points),
+        )
+        if not accepted:
+            return
+        points = tuple(
+            CurvePoint(
+                x=Decimal(pair.split(",", 1)[0].strip()),
+                y=Decimal(pair.split(",", 1)[1].strip()),
+            )
+            for pair in value.split(";")
+            if pair.strip()
+        )
+        self._model.set_manual_points(
+            variant.id,
+            points,
+            actor=self._actor,
+            notes=notes,
+        )
+        self._manual_button.setEnabled(self._model.manual_entry_enabled)
+        self.draft_changed.emit(self._model.draft)
+        self._load_current_variant(self._variant_selector.currentIndex())
 
     def _reject_current(self) -> None:
         notes = self._notes.text().strip()
