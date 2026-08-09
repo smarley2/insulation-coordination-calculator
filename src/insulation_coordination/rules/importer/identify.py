@@ -159,7 +159,13 @@ class TableColumnSpec(FrozenModel):
         return self
 
 
-BlankCellSemantics = Literal["inherit", "not_applicable", "reference", "missing"]
+BlankCellSemantics = Literal[
+    "inherit",
+    "not_applicable",
+    "reference",
+    "structural",
+    "missing",
+]
 
 
 class MergedCellSpec(FrozenModel):

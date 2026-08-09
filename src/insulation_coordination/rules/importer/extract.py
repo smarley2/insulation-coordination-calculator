@@ -381,11 +381,16 @@ def apply_table_structure(grid: RawGrid, spec: TableAuditSpec) -> RawGrid:
     for coordinate, semantics in blanks.items():
         cell = by_coordinate[coordinate]
         expanded_inherit = semantics == "inherit" and cell.blank_semantics == "inherit"
+        explicit_not_applicable = (
+            semantics == "not_applicable"
+            and cell.value is None
+            and cell.parse_status in {"text", "non_scalar"}
+        )
         if semantics == "missing":
             raise ExtractionError(
                 f"table {spec.semantic_id} has unresolved missing semantics at {coordinate}"
             )
-        if cell.raw_text.strip() and not expanded_inherit:
+        if cell.raw_text.strip() and not (expanded_inherit or explicit_not_applicable):
             raise ExtractionError(
                 f"table {spec.semantic_id} has content in declared blank at {coordinate}"
             )
@@ -443,7 +448,11 @@ def apply_table_structure(grid: RawGrid, spec: TableAuditSpec) -> RawGrid:
         }
         for coordinate in covered - {anchor_coordinate}:
             cell = by_coordinate[coordinate]
-            if cell.role != "blank" or cell.blank_semantics != "inherit":
+            if (
+                cell.role not in {"blank", "data"}
+                or cell.parse_status != "blank"
+                or cell.blank_semantics != "inherit"
+            ):
                 raise ExtractionError(
                     f"table {spec.semantic_id} has an unresolved merged cell at {coordinate}"
                 )

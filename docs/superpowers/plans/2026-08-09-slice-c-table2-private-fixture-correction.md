@@ -24,6 +24,7 @@
 **Files:**
 - Modify: `src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/tables.py`
 - Modify: `src/insulation_coordination/rules/importer/extract.py`
+- Modify: `src/insulation_coordination/rules/importer/identify.py`
 - Modify: `tests/rules/importer/iec62477_2022/test_table2_extraction.py`
 
 **Interfaces:**
@@ -32,7 +33,7 @@
 
 - [ ] **Step 1: Rewrite the synthetic Table 2 fixture and add failing structural assertions**
 
-Build neutral cells with data rows `range(3, 7)` and columns `range(1, 6)`. Declare synthetic merged blanks at `(4, 4)`, `(4, 5)`, `(5, 5)`, and `(6, 4)`, plus not-applicable `(6, 5)`. Assert:
+Build neutral cells with data rows `range(3, 7)` and columns `range(1, 6)`. Declare synthetic merged blanks at `(4, 4)`, `(4, 5)`, `(5, 5)`, and `(6, 4)`, not-applicable `(6, 5)`, and structural footnote continuations `(7, 1)` through `(7, 5)`. Assert:
 
 ```python
 assert (TABLE_2.data_row_start, TABLE_2.data_column_start) == (3, 1)
@@ -85,6 +86,8 @@ MergedCellSpec(row=5, column=4, row_span=2, inherit="down")
 
 Declare every covered empty coordinate as `BlankCellSpec(..., semantics="inherit")`, and `(6, 5)` as `not_applicable`. Use one curve slot at `(3, 5)` targeting `DVC_FAULT_TIME_VOLTAGE`, and one Table 7 family slot at `(5, 4)` targeting `SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC`.
 
+Extend `BlankCellSemantics` with `"structural"` and declare footnote-row continuation cells `(7, 1)` through `(7, 5)` with that meaning. They must remain physically empty and are never projected as outcomes.
+
 In `apply_table_structure`, accept a covered cell when it is blank, marked `inherit`, and has role `blank` or `data`:
 
 ```python
@@ -111,7 +114,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/insulation_coordination/rules/importer/extract.py src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/tables.py tests/rules/importer/iec62477_2022/test_table2_extraction.py
+git add src/insulation_coordination/rules/importer/extract.py src/insulation_coordination/rules/importer/identify.py src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/tables.py tests/rules/importer/iec62477_2022/test_table2_extraction.py docs/superpowers/specs/2026-08-08-iec62477-slice-c-dvc-and-curves-design.md docs/superpowers/plans/2026-08-09-slice-c-table2-private-fixture-correction.md
 git commit -m "fix(importer): match IEC Table 2 structure"
 ```
 

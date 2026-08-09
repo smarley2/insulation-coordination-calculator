@@ -378,10 +378,11 @@ merged regions without embedding source text or values:
 - the Figure 5/6 reference spans physical rows 3 through 5; and
 - the Table 7 impulse reference spans physical rows 5 and 6.
 
-The final body cell at row 6, column 5 is explicitly not applicable. Every other physical blank
-inside a declared merged region is inherited from its anchor; an undeclared blank remains a
-blocking extraction error. Inherited data cells retain their own logical row/column position but
-use the anchor's reviewed value or reference token and source span.
+The final body cell at row 6, column 5 is explicitly not applicable. Empty continuation cells in
+the footnote row are declared as structural blanks. Every other physical blank inside a declared
+merged region is inherited from its anchor; an undeclared blank remains a blocking extraction
+error. Inherited data cells retain their own logical row/column position but use the anchor's
+reviewed value or reference token and source span.
 
 Projection creates `iec62477_2022.dvc.voltage_limits` as a `DecisionRule`, not as a runtime table.
 Its typed inputs and outputs distinguish:
