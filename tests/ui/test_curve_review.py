@@ -1072,6 +1072,33 @@ def test_reviewed_curve_approves(draft) -> None:
     assert not hasattr(package, "raw_figures") or package.manifest.approved
 
 
+def test_required_curve_with_missing_recipe_variants_blocks(draft, monkeypatch) -> None:
+    model = CurveReviewModel(draft)
+    model.review_variant(
+        VARIANT_ID,
+        actor="Synthetic Curve Reviewer",
+        notes="Reviewed the only current curve variant.",
+    )
+    recipe = IEC_RECIPE.model_copy(
+        update={
+            "id": IDENTITY.recipe_id,
+            "standard": IDENTITY.standard,
+            "edition": IDENTITY.edition,
+            "expected_page_count": IDENTITY.page_count,
+            "tables": (),
+            "formulas": (),
+            "mappings": (),
+            "clauses": (),
+        }
+    )
+    monkeypatch.setattr(recipe_registry, "RECIPES", (recipe,))
+
+    assert any(
+        item.code == "CURVE_VARIANT_INVENTORY_REQUIRED"
+        for item in approval_blockers(model.draft)
+    )
+
+
 def test_stale_digitization_proof_blocks_approval(draft) -> None:
     model = CurveReviewModel(draft)
     model.review_variant(

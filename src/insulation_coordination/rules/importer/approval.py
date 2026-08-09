@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import Counter
 from datetime import UTC, datetime
 
 from insulation_coordination.domain.rules import (
     ApprovalRecord,
     DraftRulePackage,
     Expression,
+    PiecewiseCurveRule,
     RulePackage,
     RulePackageError,
     SourceReference,
@@ -1176,6 +1178,18 @@ def approval_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
                 ),
             )
         )
+    for semantic_id in incomplete_required_curve_variants(draft):
+        blockers.append(
+            _semantic_blocker(
+                draft,
+                code="CURVE_VARIANT_INVENTORY_REQUIRED",
+                semantic_id=semantic_id,
+                message=(
+                    f"required curve {semantic_id} does not contain exactly the "
+                    "recipe-declared source figures and selectors"
+                ),
+            )
+        )
     from insulation_coordination.rules.importer.recipes import RECIPES
 
     required_curve_ids = {
@@ -1213,6 +1227,44 @@ def approval_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
                     )
                 )
     return tuple(blockers)
+
+
+def incomplete_required_curve_variants(draft: ImportedRuleDraft) -> tuple[str, ...]:
+    """Required curves whose current variants differ from the recipe inventory."""
+
+    incomplete: set[str] = set()
+    curves_by_id: dict[str, list[PiecewiseCurveRule]] = {}
+    for curve in draft.curves:
+        curves_by_id.setdefault(curve.id, []).append(curve)
+    for recipe in _recipes():
+        for semantic_id in recipe.required_curves:
+            specs = tuple(spec for spec in recipe.curves if spec.semantic_id == semantic_id)
+            if not specs or semantic_id not in curves_by_id:
+                continue
+            curves = curves_by_id[semantic_id]
+            expected = Counter(
+                (
+                    recipe.standard,
+                    recipe.edition,
+                    spec.figure,
+                    selector,
+                )
+                for spec in specs
+                for selector in spec.variant_slots
+            )
+            actual = Counter(
+                (
+                    variant.source.standard,
+                    variant.source.edition,
+                    variant.source.figure,
+                    variant.selector,
+                )
+                for curve in curves
+                for variant in curve.variants
+            )
+            if len(curves) != 1 or actual != expected:
+                incomplete.add(semantic_id)
+    return tuple(sorted(incomplete))
 
 
 def missing_required_curves(draft: ImportedRuleDraft) -> tuple[str, ...]:

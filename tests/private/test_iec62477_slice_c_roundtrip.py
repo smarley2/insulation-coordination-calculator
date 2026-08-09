@@ -16,7 +16,11 @@ from insulation_coordination.rules.evaluator import (
     select_curve_variant,
 )
 from insulation_coordination.rules.importer.approval import approve_draft
-from insulation_coordination.rules.importer.extract import _REQUIRED_RECIPES, extract_draft
+from insulation_coordination.rules.importer.extract import (
+    _REQUIRED_RECIPES,
+    canonical_model_sha256,
+    extract_draft,
+)
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.review import review_curve_variant
 from tests.private.test_iec62477_dvc_tables import _review_all_c2_proposals
@@ -59,12 +63,15 @@ def test_reviewed_slice_c_round_trips_and_every_selector_evaluates(
     write_rule_package(archive, package)
     reloaded = load_rule_package(archive)
 
-    assert reloaded.curves == package.curves
+    assert tuple(map(canonical_model_sha256, reloaded.curves)) == tuple(
+        map(canonical_model_sha256, package.curves)
+    )
     curve = next(item for item in reloaded.curves if item.id == ids.DVC_FAULT_TIME_VOLTAGE)
     for variant in curve.variants:
         selection = select_curve_variant(curve, variant.selector)
         assert selection.status == "matched"
-        assert selection.variant == variant
+        assert selection.variant is not None
+        assert canonical_model_sha256(selection.variant) == canonical_model_sha256(variant)
         result = evaluate_piecewise_curve(curve, variant.selector, variant.points[0].x)
         assert result.status == "matched"
 

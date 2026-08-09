@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from insulation_coordination.rules.importer.approval import ApprovalError, approve_draft
+from insulation_coordination.rules.importer.approval import approval_blockers
 from insulation_coordination.rules.importer.extract import (
     _REQUIRED_RECIPES,
     canonical_model_sha256,
@@ -56,5 +56,7 @@ def test_unreviewed_curve_proposal_blocks_initial_approval(
     )
 
     assert proposal.state == "proposed"
-    with pytest.raises(ApprovalError):
-        approve_draft(draft, "Private fixture reviewer", "Unreviewed approval attempt")
+    assert any(
+        item.code == "CURVE_VARIANT_REVIEW_REQUIRED"
+        for item in approval_blockers(draft)
+    )

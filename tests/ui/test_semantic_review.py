@@ -217,6 +217,7 @@ def built_draft(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
             "formulas": (),
             "mappings": (),
             "clauses": (SPEC,),
+            "curves": (),
             "required_curves": (ids.DVC_FAULT_TIME_VOLTAGE,),
         }
     )
