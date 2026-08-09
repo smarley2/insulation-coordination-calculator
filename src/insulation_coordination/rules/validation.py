@@ -284,28 +284,36 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         and len(curve_ids) == len(set(curve_ids))
         and set(curve_ids).isdisjoint((*legacy_ids, *rule_ids))
     )
-    # A cross-standard pointer must name a real rule, never free text: an unresolved
-    # target would leave the reader to guess which rule was meant. It must resolve
-    # against rule_ids only (decisions, procedures, guidance) — those are the ids a
-    # previous check made globally unique. Resolving against every identifier in the
-    # package would let a reference name a table or mapping instead of a rule, and
-    # since legacy ids are only unique within their own kind, would let the gate
-    # report "resolved" for an id that denotes two different records.
-    rule_references = (
-        *(
-            procedure.applicability_rule_id
-            for procedure in package.procedures
-            if procedure.applicability_rule_id is not None
-        ),
-        *(
-            value.reference
-            for decision in package.decisions
-            for row in decision.rows
-            for value in row.values
-            if value.reference is not None
-        ),
+    procedure_references = tuple(
+        procedure.applicability_rule_id
+        for procedure in package.procedures
+        if procedure.applicability_rule_id is not None
     )
-    rule_references_valid = set(rule_references) <= set(rule_ids)
+    decision_references = tuple(
+        value.reference
+        for decision in package.decisions
+        for row in decision.rows
+        for value in row.values
+        if value.reference is not None
+    )
+    semantic_targets: dict[str, list[str]] = {}
+    for kind, rules in (
+        ("table", package.tables),
+        ("formula", package.formulas),
+        ("decision", package.decisions),
+        ("procedure", package.procedures),
+        ("guidance", package.guidance),
+        ("curve", package.curves),
+    ):
+        for rule in rules:
+            semantic_targets.setdefault(rule.id, []).append(kind)
+    semantic_references_resolve = all(
+        len(semantic_targets.get(reference, ())) == 1
+        for reference in decision_references
+    )
+    rule_references_valid = (
+        set(procedure_references) <= set(rule_ids) and semantic_references_resolve
+    )
     obsolete_markers = (
         "raw_sequence",
         "-f3",
@@ -493,6 +501,11 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
             "rule_references",
             rule_references_valid,
             "procedure and decision rule references resolve to a rule in the package",
+        ),
+        _result(
+            "SEMANTIC_REFERENCES_RESOLVE",
+            semantic_references_resolve,
+            "every decision reference resolves to exactly one final semantic rule",
         ),
         _result(
             "formula_tables",
