@@ -279,7 +279,111 @@ def project_impulse_procedure(
     return tuple(rules), tuple(proposals)
 
 
-VERIFICATION_TABLES: tuple[TableAuditSpec, ...] = (TABLE_26,)
+# Table 27's raw grid, shared by the AC and DC selection routes. Column 0 is the AC
+# system-voltage axis and column 1 the DC system-voltage axis: two parallel row axes over the
+# same physical rows, selected by supply kind, exactly as Table 7 carries them. The last data
+# row (physical index 9) is DC-only -- its column 0 cell holds a not-applicable marker rather
+# than a number -- so the AC route excludes it from its data rows instead of resolving a value
+# that does not apply to an AC supply. Rows 10 and 11 restate interpolation and carry a source
+# note; neither is a data row.
+_TABLE_27_PAGE = 125
+_TABLE_27_CLAUSE = "5.2.3.2"
+_TABLE_27_RAW_ROWS = 12
+_TABLE_27_RAW_COLUMNS = 6
+_TABLE_27_BBOX = (68.52, 167.88, 527.04, 456.36)
+_TABLE_27_HEADER_ROWS = (0, 1, 2)
+_TABLE_27_DATA_ROWS_DC = tuple(range(3, 10))
+_TABLE_27_DATA_ROWS_AC = _TABLE_27_DATA_ROWS_DC[:-1]
+_TABLE_27_NOTE_ROWS = (10, 11)
+#: Declared independently of the ``data_rows`` tuples above so the extraction-time row count
+#: check is not a tautology against its own input.
+_TABLE_27_EXPECTED_DATA_ROWS_AC = 6
+_TABLE_27_EXPECTED_DATA_ROWS_DC = 7
+#: The physical columns carrying the selected test voltages. Their source column numbers are
+#: the structural fact; what each selects is stated in wording this file does not copy, so the
+#: column axis stays positional.
+_TABLE_27_DATA_COLUMNS = (2, 3, 4, 5)
+
+
+def _table_27_pair() -> tuple[TableAuditSpec, TableAuditSpec]:
+    """One AC spec and one DC spec reading Table 27's two parallel row axes."""
+
+    specs: list[TableAuditSpec] = []
+    for supply, axis_source_column, data_rows, expected_data_rows in (
+        ("ac", 0, _TABLE_27_DATA_ROWS_AC, _TABLE_27_EXPECTED_DATA_ROWS_AC),
+        ("dc", 1, _TABLE_27_DATA_ROWS_DC, _TABLE_27_EXPECTED_DATA_ROWS_DC),
+    ):
+        axis_semantic_id = f"system_voltage_{supply}_v"
+        source_columns = (axis_source_column, *_TABLE_27_DATA_COLUMNS)
+        columns = (
+            TableColumnSpec(
+                semantic_id=axis_semantic_id,
+                heading=f"{supply} system voltage band upper bound",
+                source_column=axis_source_column,
+                role="axis",
+                unit="V",
+            ),
+            *(
+                TableColumnSpec(
+                    semantic_id=f"selected_test_voltage_col{source_column}_v",
+                    heading=f"selected test voltage, source column {source_column}",
+                    source_column=source_column,
+                    role="data",
+                    unit="V",
+                )
+                for source_column in _TABLE_27_DATA_COLUMNS
+            ),
+        )
+        specs.append(
+            TableAuditSpec(
+                semantic_id=f"{ids.TEST_IMPULSE_SELECTION}.{supply}",
+                source_table="27",
+                title_anchor="Table 27",
+                page_number=_TABLE_27_PAGE,
+                clause=_TABLE_27_CLAUSE,
+                target_unit="V",
+                interpolation="none",
+                page_search_radius=2,
+                expected_raw_rows=_TABLE_27_RAW_ROWS,
+                expected_raw_columns=len(source_columns),
+                expected_bbox=_TABLE_27_BBOX,
+                data_strategy="rectangle",
+                data_row_start=_TABLE_27_DATA_ROWS_DC[0],
+                data_column_start=0,
+                expected_data_rows=expected_data_rows,
+                #: The axis column counts here too: extraction gives every non-context
+                #: column a logical coordinate.
+                expected_data_columns=len(source_columns),
+                row_axis_id=axis_semantic_id,
+                row_axis_unit="V",
+                column_axis_id="impulse_selection_column",
+                column_axis_unit="1",
+                assertions=("strictly_increasing_axes", "raw_value_correspondence"),
+                segments=(
+                    TableSegmentSpec(
+                        id=f"table-27-{supply}",
+                        page_number=_TABLE_27_PAGE,
+                        title_anchor="Table 27",
+                        expected_raw_rows=_TABLE_27_RAW_ROWS,
+                        expected_raw_columns=_TABLE_27_RAW_COLUMNS,
+                        expected_bbox=_TABLE_27_BBOX,
+                        source_columns=source_columns,
+                        header_rows=_TABLE_27_HEADER_ROWS,
+                        data_rows=data_rows,
+                        note_rows=_TABLE_27_NOTE_ROWS,
+                        page_search_radius=2,
+                    ),
+                ),
+                columns=columns,
+            )
+        )
+    return specs[0], specs[1]
+
+
+TABLE_27_AC, TABLE_27_DC = _table_27_pair()
+
+
+VERIFICATION_TABLES: tuple[TableAuditSpec, ...] = (TABLE_26, TABLE_27_AC, TABLE_27_DC)
 GRID_PROJECTORS = {ids.TEST_IMPULSE_PROCEDURE: project_impulse_procedure}
 
 __all__ = [
@@ -287,6 +391,8 @@ __all__ = [
     "FIELD_ROWS",
     "GRID_PROJECTORS",
     "TABLE_26",
+    "TABLE_27_AC",
+    "TABLE_27_DC",
     "VARIANT_COLUMNS",
     "VERIFICATION_TABLES",
     "ProcedureStructureError",
