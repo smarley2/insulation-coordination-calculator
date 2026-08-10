@@ -752,20 +752,25 @@ def _require_compatibility_mapping(draft: DraftRulePackage) -> None:
 
 
 def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
-    from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
     from insulation_coordination.rules.importer.recipes import RECIPES
-    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
-        project_dvc_protection_matrix,
-        project_dvc_voltage_limits,
-    )
 
     table_specs = tuple(spec for recipe in RECIPES for spec in recipe.tables)
-    custom_table_ids = {ids.DVC_VOLTAGE_LIMITS, ids.DVC_PROTECTION_MATRIX}
+    # A spec yields a ``Table`` only when nothing else claims its grid: a spec with a
+    # registered projector yields rules of another kind, and a comparison-only spec yields
+    # evidence for a cross-standard check and no rule at all.
+    projected_ids = {
+        semantic_id for recipe in RECIPES for semantic_id in recipe.grid_projectors
+    }
     typed_table_specs = tuple(
-        spec for spec in table_specs if spec.semantic_id not in custom_table_ids
+        spec
+        for spec in table_specs
+        if spec.semantic_id not in projected_ids and not spec.comparison_only
     )
     formula_specs = tuple(spec for recipe in RECIPES for spec in recipe.formulas)
     mapping_specs = tuple(spec for recipe in RECIPES for spec in recipe.mappings)
+    proven_mapping_ids = {
+        check.id for recipe in RECIPES for check in recipe.cross_standard_checks
+    }
     tables = {table.id: table for table in draft.tables}
     formulas = {formula.id: formula for formula in draft.formulas}
     mappings = {mapping.id: mapping for mapping in draft.mappings}
@@ -773,7 +778,9 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
     if (
         set(tables) != {spec.semantic_id for spec in typed_table_specs}
         or set(formulas) != {spec.semantic_id for spec in formula_specs}
-        or set(mappings) != {spec.id for spec in mapping_specs}
+        # A proven cross-standard mapping is permitted beside the declared family, exactly as
+        # ``_require_compatibility_mapping`` permits it.
+        or set(mappings) - proven_mapping_ids != {spec.id for spec in mapping_specs}
         or set(grids) != {f"raw-{spec.semantic_id}" for spec in table_specs}
     ):
         raise ApprovalError("reviewed content sets do not match exact recipe semantics")
@@ -783,18 +790,31 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
         identity = identities_by_recipe[recipe_id]
         for spec in recipe.tables:
             grid = grids[f"raw-{spec.semantic_id}"]
-            if spec.semantic_id in custom_table_ids:
-                expected, _proposals = (
-                    project_dvc_voltage_limits(grid, identity)
-                    if spec.semantic_id == ids.DVC_VOLTAGE_LIMITS
-                    else project_dvc_protection_matrix(grid, identity)
+            if spec.comparison_only:
+                # Evidence for a cross-standard check. The grid must exist, which the set
+                # comparison above already required, and it becomes no rule to re-derive.
+                continue
+            projector = recipe.grid_projectors.get(spec.semantic_id)
+            if projector is not None:
+                # Re-project from the reviewed grid and require the draft to hold exactly
+                # that, so a rule cannot drift from the grid it claims to come from. The
+                # projector comes from the recipe, so this stays free of any one standard's
+                # identifiers.
+                expected, _proposals = projector(grid, identity)
+                expected_ids = {getattr(rule, "id") for rule in expected}  # noqa: B009
+                projected: tuple[object, ...] = (
+                    *draft.decisions,
+                    *draft.procedures,
+                    *draft.guidance,
                 )
                 actual = tuple(
-                    rule for rule in draft.decisions if rule.id in {item.id for item in expected}
+                    rule
+                    for rule in projected
+                    if getattr(rule, "id") in expected_ids  # noqa: B009
                 )
                 if actual != expected:
                     raise ApprovalError(
-                        "reviewed decision does not correspond to its raw recipe grid"
+                        "reviewed rule does not correspond to its raw recipe grid"
                     )
                 continue
             table = tables[spec.semantic_id]
