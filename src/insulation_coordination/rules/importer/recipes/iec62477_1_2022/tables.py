@@ -12,6 +12,9 @@ from insulation_coordination.rules.importer.identify import (
     TokenGrammarSpec,
 )
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
+from insulation_coordination.rules.importer.recipes.iec62477_1_2022.spacing import (
+    SPACING_TABLES,
+)
 
 ColumnRole = Literal["axis", "data", "context"]
 
@@ -444,6 +447,7 @@ TABLES: tuple[TableAuditSpec, ...] = (
         ),
         columns=_altitude_band_columns(),
     ),
+    *SPACING_TABLES,
 )
 
 FORMULAS: tuple[FormulaAuditSpec, ...] = (
