@@ -58,7 +58,6 @@ def _item(
 #: identifier that does not exist.
 DEFERRED_SEMANTIC_IDS: frozenset[str] = frozenset(
     {
-        ids.TEST_IMPULSE_PROCEDURE,
         ids.TEST_IMPULSE_SELECTION,
         ids.TEST_MAINS_DIELECTRIC_VALUES,
         ids.TEST_NON_MAINS_DIELECTRIC_VALUES,

@@ -1369,7 +1369,10 @@ def _extract_layout_table(
         # and are only ever read as the source printed them. Asking a maintainer to retype
         # them as numbers would prove nothing, and a cell the parser cannot turn into a
         # number could not be resolved at all.
+        # A text field table states a procedure, not quantities: there is no number to
+        # retype, and the rule projected from the grid carries the review instead.
         if not spec.comparison_only
+        and not spec.text_field_table
         and spec.token_grammar is None
         and cell.role == "data"
         and cell.reference_token is None

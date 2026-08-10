@@ -49,9 +49,14 @@ def test_every_deferred_identifier_is_a_required_inventory_item() -> None:
     assert DEFERRED_SEMANTIC_IDS <= {item.semantic_id for item in REQUIRED_SOURCE_ITEMS}
 
 
-def test_only_the_verification_procedures_are_still_deferred() -> None:
+def test_only_verification_content_is_still_deferred() -> None:
+    """The deferred set only ever shrinks, and only verification content is ever in it.
+
+    Each Slice E task removes the identifier it delivers, so this asserts the direction of
+    travel rather than a fixed count: nine remain, and the set is empty when Slice E closes.
+    """
     assert all(item.startswith("iec62477_2022.test.") for item in DEFERRED_SEMANTIC_IDS)
-    assert len(DEFERRED_SEMANTIC_IDS) == 10
+    assert len(DEFERRED_SEMANTIC_IDS) == 9
 
 
 def test_every_item_this_build_does_not_defer_has_a_recipe() -> None:

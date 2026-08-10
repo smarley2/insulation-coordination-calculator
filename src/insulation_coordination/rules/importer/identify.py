@@ -285,11 +285,20 @@ class TableAuditSpec(FrozenModel):
     #: table needs the numbers present to prove or refute equivalence, while the rule the
     #: calculator executes stays the one already approved from the other standard.
     comparison_only: bool = False
+    #: This grid's data cells are reviewed text, not quantities: the source states a
+    #: procedure as a table of subjects and conditions. Its cells are therefore not flagged
+    #: for numeric retyping -- there is no number to retype -- and the rule projected from
+    #: the grid is what a maintainer reviews, exactly as a clause fragment's projected rule
+    #: is. Only the projection understands which row means what, so a spec that sets this
+    #: must also register a grid projector.
+    text_field_table: bool = False
 
     @model_validator(mode="after")
     def _comparison_only_projects_nothing(self) -> TableAuditSpec:
         if self.comparison_only and self.decision_route_ids:
             raise ValueError("a comparison-only table cannot declare decision routes")
+        if self.comparison_only and self.text_field_table:
+            raise ValueError("a table is either comparison evidence or a text field table")
         return self
 
     @model_validator(mode="after")

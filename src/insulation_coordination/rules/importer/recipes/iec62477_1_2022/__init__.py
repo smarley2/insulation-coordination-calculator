@@ -11,6 +11,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
     spacing,
     supply,
     tables,
+    verification,
 )
 
 RECIPE = StandardRecipe(
@@ -35,6 +36,7 @@ RECIPE = StandardRecipe(
     grid_projectors={
         ids.DVC_VOLTAGE_LIMITS: projection.project_dvc_voltage_limits,
         ids.DVC_PROTECTION_MATRIX: projection.project_dvc_protection_matrix,
+        **verification.GRID_PROJECTORS,
     },
     clause_projectors={
         ids.DVC_FAULT_APPLICABILITY: clauses.project_dvc_fault_applicability,
