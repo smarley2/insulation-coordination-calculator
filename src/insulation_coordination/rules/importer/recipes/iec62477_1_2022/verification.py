@@ -7,9 +7,16 @@ neutral descriptions written here; no source subject, condition, or note text is
 
 from __future__ import annotations
 
+import textwrap
 from typing import Literal
 
 from insulation_coordination.domain.rules import (
+    DecisionInput,
+    DecisionOutput,
+    DecisionRow,
+    DecisionRule,
+    DecisionValue,
+    Matcher,
     ProcedureRule,
     ProcedureStep,
     SourceReference,
@@ -564,26 +571,300 @@ TABLE_29_SPECS = _dielectric_specs(
 DIELECTRIC_SPECS: tuple[TableAuditSpec, ...] = (*TABLE_28_SPECS, *TABLE_29_SPECS)
 
 
+# Table 30 is a field table like Table 26, but a flat one: every row states one subject in
+# column 0 and its condition in column 1, and no row continues the row above it. Row 12 is a
+# source note, not a subject.
+_TABLE_30_PAGE = 131
+_TABLE_30_CLAUSE = "5.2.3.5"
+_TABLE_30_RAW_ROWS = 13
+_TABLE_30_RAW_COLUMNS = 2
+_TABLE_30_BBOX = (70.92, 106.8, 524.43, 507.48)
+_TABLE_30_HEADER_ROWS = (0,)
+_TABLE_30_NOTE_ROWS = (12,)
+_TABLE_30_DATA_ROWS = tuple(range(1, _TABLE_30_NOTE_ROWS[0]))
+#: Declared apart from ``_TABLE_30_DATA_ROWS`` so the extraction-time count check is not a
+#: tautology against its own input.
+_TABLE_30_EXPECTED_DATA_ROWS = 11
+_PARTIAL_DISCHARGE_APPLICABILITY_ID = f"{ids.TEST_PARTIAL_DISCHARGE}.applicability"
+
+#: Which row feeds which typed field, positional first: the row index is the structural fact
+#: and the name is this author's neutral description of what the row is for. A data row absent
+#: from this map has no home in the typed rule, so projection blocks rather than dropping it.
+PARTIAL_DISCHARGE_FIELD_ROWS: tuple[tuple[int, str], ...] = (
+    (1, "test_reference"),
+    (2, "requirement_reference"),
+    (3, "preconditioning"),
+    (4, "initial_measurement"),
+    (5, "test_equipment"),
+    (6, "test_circuit"),
+    (7, "test_voltage"),
+    (8, "test_method"),
+    (9, "equipment_calibration"),
+    (10, "measurement"),
+    (11, "verification"),
+)
+#: The rows that state what is done to the sample, in source order.
+_PARTIAL_DISCHARGE_STEP_FIELDS = (
+    "test_circuit",
+    "test_voltage",
+    "test_method",
+    "measurement",
+    "verification",
+)
+#: The rows that state what must hold before the test runs, in source order.
+_PARTIAL_DISCHARGE_PREPARATION_FIELDS = (
+    "preconditioning",
+    "initial_measurement",
+    "test_equipment",
+    "equipment_calibration",
+)
+#: The row whose condition depends on a quantity nobody can read off the page: it is measured
+#: on the equipment under test. That is what makes the applicability a decision rather than a
+#: constant, and its row is the provenance for both decision rows.
+_PARTIAL_DISCHARGE_GATE_FIELD = "test_voltage"
+#: ``ProcedureStep.text`` is capped at this many characters by the domain model.
+_STEP_TEXT_LIMIT = 500
+
+TABLE_30 = TableAuditSpec(
+    semantic_id=ids.TEST_PARTIAL_DISCHARGE,
+    source_table="30",
+    title_anchor="Table 30",
+    page_number=_TABLE_30_PAGE,
+    clause=_TABLE_30_CLAUSE,
+    target_unit="1",
+    page_search_radius=2,
+    expected_raw_rows=_TABLE_30_RAW_ROWS,
+    expected_raw_columns=_TABLE_30_RAW_COLUMNS,
+    expected_bbox=_TABLE_30_BBOX,
+    data_strategy="rectangle",
+    data_row_start=_TABLE_30_DATA_ROWS[0],
+    data_column_start=0,
+    expected_data_rows=_TABLE_30_EXPECTED_DATA_ROWS,
+    expected_data_columns=1,
+    text_field_table=True,
+    row_axis_id="procedure_field",
+    row_axis_unit="1",
+    column_axis_id="procedure_condition",
+    column_axis_unit="1",
+    assertions=("raw_value_correspondence",),
+    segments=(
+        TableSegmentSpec(
+            id="table-30",
+            page_number=_TABLE_30_PAGE,
+            title_anchor="Table 30",
+            expected_raw_rows=_TABLE_30_RAW_ROWS,
+            expected_raw_columns=_TABLE_30_RAW_COLUMNS,
+            expected_bbox=_TABLE_30_BBOX,
+            source_columns=tuple(range(_TABLE_30_RAW_COLUMNS)),
+            header_rows=_TABLE_30_HEADER_ROWS,
+            data_rows=_TABLE_30_DATA_ROWS,
+            note_rows=_TABLE_30_NOTE_ROWS,
+            page_search_radius=2,
+        ),
+    ),
+    columns=(
+        TableColumnSpec(
+            semantic_id="procedure_subject",
+            heading="subject of this row",
+            source_column=0,
+            role="context",
+            unit="1",
+        ),
+        TableColumnSpec(
+            semantic_id="procedure_condition",
+            heading="test condition for this row",
+            source_column=1,
+            role="data",
+            unit="1",
+        ),
+    ),
+    decision_route_ids=(_PARTIAL_DISCHARGE_APPLICABILITY_ID,),
+)
+
+
+def _partial_discharge_applicability(
+    grid: RawGrid,
+    source: SourceReference,
+    gate_row: int,
+) -> DecisionRule:
+    """Whether the partial-discharge test applies, given the engineering input it needs.
+
+    The test voltage is a quantity measured on the equipment under test, so until it is
+    declared the answer is neither yes nor no: it is that an engineering input is missing.
+    Reporting that as "not required" would silently drop a required test. The rule is not
+    exhaustive on purpose -- the source states its exemptions in prose this table does not
+    tabulate, so a "not required" outcome is not derivable from this grid.
+    """
+
+    row_source = source.model_copy(update={"row": f"grid row {gate_row + 1}"})
+    note = _cell_text(grid, _TABLE_30_NOTE_ROWS[0], 0)
+    return DecisionRule(
+        id=_PARTIAL_DISCHARGE_APPLICABILITY_ID,
+        inputs=(
+            DecisionInput(name="partial_discharge_test_voltage_declared", kind="boolean"),
+        ),
+        outputs=(
+            DecisionOutput(
+                name="partial_discharge_test",
+                kind="categorical",
+                allowed_values=("required", "engineering_input_required"),
+            ),
+        ),
+        rows=(
+            DecisionRow(
+                matchers=(
+                    Matcher(
+                        input="partial_discharge_test_voltage_declared",
+                        op="equals",
+                        boolean=False,
+                    ),
+                ),
+                values=(
+                    DecisionValue(
+                        name="partial_discharge_test",
+                        categorical="engineering_input_required",
+                    ),
+                ),
+                source=row_source,
+            ),
+            DecisionRow(
+                matchers=(
+                    Matcher(
+                        input="partial_discharge_test_voltage_declared",
+                        op="equals",
+                        boolean=True,
+                    ),
+                ),
+                values=(
+                    DecisionValue(name="partial_discharge_test", categorical="required"),
+                ),
+                source=row_source,
+            ),
+        ),
+        exhaustive=False,
+        applicability=note[:2_000],
+        source=source,
+    )
+
+
+def project_partial_discharge(
+    grid: RawGrid,
+    identity: StandardIdentity,
+) -> tuple[tuple[ProcedureRule | DecisionRule, ...], tuple[SemanticProposal, ...]]:
+    """Project Table 30 into one reviewed procedure and its applicability decision."""
+
+    if grid.id != f"raw-{ids.TEST_PARTIAL_DISCHARGE}":
+        raise ValueError("partial discharge projection requires its own grid")
+    if grid.source.standard != identity.standard or grid.source.edition != identity.edition:
+        raise ValueError("partial discharge grid does not match its identified source")
+    if (grid.rows, grid.columns) != (_TABLE_30_RAW_ROWS, _TABLE_30_RAW_COLUMNS):
+        _fail("expected the declared grid shape")
+
+    declared = {row for row, _field in PARTIAL_DISCHARGE_FIELD_ROWS}
+    missing = set(_TABLE_30_DATA_ROWS) - declared
+    if missing:
+        _fail(f"rows {sorted(missing)} are not declared fields")
+
+    source = SourceReference(
+        document_id=identity.recipe_id,
+        standard=identity.standard,
+        edition=identity.edition,
+        page=_TABLE_30_PAGE,
+        clause=_TABLE_30_CLAUSE,
+        table="30",
+    )
+    rows_by_field = {field: row for row, field in PARTIAL_DISCHARGE_FIELD_ROWS}
+    conditions = {
+        field: _cell_text(grid, row, 1) for row, field in PARTIAL_DISCHARGE_FIELD_ROWS
+    }
+    empty = sorted(field for field, text in conditions.items() if not text)
+    if empty:
+        _fail(f"declared fields {empty} state no condition")
+
+    def _steps(fields: tuple[str, ...]) -> tuple[ProcedureStep, ...]:
+        """One step per declared field, or several when its condition is a long one.
+
+        A step's text is capped, and some conditions here run past the cap. Wrapping keeps
+        every word and numbers the pieces consecutively; truncating would drop reviewed
+        content from the rule a maintainer signs off.
+        """
+        numbered = [
+            (field, chunk)
+            for field in fields
+            for chunk in textwrap.wrap(conditions[field], _STEP_TEXT_LIMIT)
+        ]
+        return tuple(
+            ProcedureStep(
+                order=order,
+                text=chunk,
+                source=source.model_copy(
+                    update={"row": f"grid row {rows_by_field[field] + 1}"}
+                ),
+            )
+            for order, (field, chunk) in enumerate(numbered, start=1)
+        )
+
+    procedure = ProcedureRule(
+        id=ids.TEST_PARTIAL_DISCHARGE,
+        test_kind="partial_discharge",
+        # Which test classifications this carries is stated in the test matrix on the
+        # clause-5.2.2 pages, not in this table, so it is not asserted here.
+        preparation_steps=_steps(_PARTIAL_DISCHARGE_PREPARATION_FIELDS),
+        procedure_steps=_steps(_PARTIAL_DISCHARGE_STEP_FIELDS),
+        applicability_rule_id=_PARTIAL_DISCHARGE_APPLICABILITY_ID,
+        source=source,
+    )
+    decision = _partial_discharge_applicability(
+        grid,
+        source,
+        rows_by_field[_PARTIAL_DISCHARGE_GATE_FIELD],
+    )
+    rules: tuple[ProcedureRule | DecisionRule, ...] = (procedure, decision)
+    artifact_sha256 = canonical_model_sha256(grid)
+    kinds: tuple[tuple[ProcedureRule | DecisionRule, Literal["procedure", "decision"]], ...] = (
+        (procedure, "procedure"),
+        (decision, "decision"),
+    )
+    proposals = tuple(
+        SemanticProposal(
+            semantic_id=rule.id,
+            rule_kind=kind,
+            state="proposed",
+            rule_sha256=canonical_model_sha256(rule),
+            source_artifact_sha256=artifact_sha256,
+        )
+        for rule, kind in kinds
+    )
+    return rules, proposals
+
+
 VERIFICATION_TABLES: tuple[TableAuditSpec, ...] = (
     TABLE_26,
     TABLE_27_AC,
     TABLE_27_DC,
     *DIELECTRIC_SPECS,
+    TABLE_30,
 )
-GRID_PROJECTORS = {ids.TEST_IMPULSE_PROCEDURE: project_impulse_procedure}
+GRID_PROJECTORS = {
+    ids.TEST_IMPULSE_PROCEDURE: project_impulse_procedure,
+    ids.TEST_PARTIAL_DISCHARGE: project_partial_discharge,
+}
 
 __all__ = [
     "CONTINUATION_ROWS",
     "DIELECTRIC_SPECS",
     "FIELD_ROWS",
     "GRID_PROJECTORS",
+    "PARTIAL_DISCHARGE_FIELD_ROWS",
     "TABLE_26",
     "TABLE_27_AC",
     "TABLE_27_DC",
     "TABLE_28_SPECS",
     "TABLE_29_SPECS",
+    "TABLE_30",
     "VARIANT_COLUMNS",
     "VERIFICATION_TABLES",
     "ProcedureStructureError",
     "project_impulse_procedure",
+    "project_partial_discharge",
 ]
