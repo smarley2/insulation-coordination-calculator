@@ -347,7 +347,7 @@ def _cross_standard_artifacts(
     )
     if spec is None:
         return ()
-    compared = {spec.source_rule_id, spec.target_rule_id}
+    compared = {spec.source_grid_id, spec.target_grid_id}
     pairs = tuple(
         (grid.id, canonical_model_sha256(grid))
         for grid in draft.raw_grids
