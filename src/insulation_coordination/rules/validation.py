@@ -268,28 +268,21 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
     is_iec_import = package.manifest.importer_version.startswith("iec-pdf-")
     trusted_iec_package = is_iec_import and package.manifest.approved
     if trusted_iec_package:
+        # Imported inside the trusted-package branch: the importer package pulls in the
+        # recipes, which must not be imported while this module is still loading.
+        from insulation_coordination.rules.importer.expectations import package_expectations
         from insulation_coordination.rules.importer.recipes import RECIPES
 
-        # The derivation ``_require_resolved_recipe_semantics`` uses, kept in step with it: a
-        # spec with a registered grid projector yields a rule of another kind, and a
-        # comparison-only spec yields evidence for a cross-standard check, so neither spec
-        # contributes a table of its own.
-        projected_ids = {
-            semantic_id for recipe in RECIPES for semantic_id in recipe.grid_projectors
-        }
-        expected_table_ids = {
-            spec.semantic_id
-            for recipe in RECIPES
-            for spec in recipe.tables
-            if spec.semantic_id not in projected_ids and not spec.comparison_only
-        }
-        expected_formula_ids = {spec.semantic_id for recipe in RECIPES for spec in recipe.formulas}
-        expected_mapping_ids = {spec.id for recipe in RECIPES for spec in recipe.mappings}
-        # A mapping a cross-standard comparison proved is permitted beside the declared
-        # family rather than required, exactly as the approval gates permit it.
-        proven_mapping_ids = {
-            check.id for recipe in RECIPES for check in recipe.cross_standard_checks
-        }
+        # The one derivation the approval gates use, so a spec kind cannot mean one thing at
+        # approval and another here: a spec with a registered grid projector yields a rule of
+        # another kind, and a comparison-only spec yields evidence for a cross-standard
+        # check, so neither contributes a table of its own. A mapping a cross-standard
+        # comparison proved is permitted beside the declared family rather than required.
+        expectations = package_expectations(RECIPES)
+        expected_table_ids = set(expectations.table_rule_ids)
+        expected_formula_ids = set(expectations.formula_ids)
+        expected_mapping_ids = set(expectations.declared_mapping_ids)
+        proven_mapping_ids = set(expectations.proven_mapping_ids)
     else:
         expected_table_ids = set(table_ids)
         expected_formula_ids = set(formula_ids)

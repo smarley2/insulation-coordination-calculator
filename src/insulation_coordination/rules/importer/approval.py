@@ -735,6 +735,7 @@ def _require_compatibility_mapping(draft: DraftRulePackage) -> None:
     routes = tuple(mapping.source_rule_id for mapping in draft.mappings)
     if len(routes) != len(set(routes)):
         raise ApprovalError("compatibility mappings are ambiguous")
+    from insulation_coordination.rules.importer.expectations import package_expectations
     from insulation_coordination.rules.importer.recipes import RECIPES
 
     # Two kinds of mapping reach a package. A declared mapping states a route the recipe
@@ -742,46 +743,33 @@ def _require_compatibility_mapping(draft: DraftRulePackage) -> None:
     # exists only where a comparison proved two grids equal, so it is permitted rather than
     # required here: a divergent comparison already refuses during review, and the inventory
     # gate is what reports content a draft never carried.
-    required = {spec.semantic_route for recipe in RECIPES for spec in recipe.mappings}
-    proven = {
-        check.source_rule_id for recipe in RECIPES for check in recipe.cross_standard_checks
-    }
-    declared = set(routes) - proven
+    expectations = package_expectations(RECIPES)
+    required = expectations.declared_mapping_routes
+    declared = set(routes) - expectations.proven_mapping_routes
     if declared != required or len(declared) != len(required):
         raise ApprovalError("exact compatibility mapping family is incomplete")
 
 
 def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
+    from insulation_coordination.rules.importer.expectations import package_expectations
     from insulation_coordination.rules.importer.recipes import RECIPES
 
-    table_specs = tuple(spec for recipe in RECIPES for spec in recipe.tables)
     # A spec yields a ``Table`` only when nothing else claims its grid: a spec with a
     # registered projector yields rules of another kind, and a comparison-only spec yields
-    # evidence for a cross-standard check and no rule at all.
-    projected_ids = {
-        semantic_id for recipe in RECIPES for semantic_id in recipe.grid_projectors
-    }
-    typed_table_specs = tuple(
-        spec
-        for spec in table_specs
-        if spec.semantic_id not in projected_ids and not spec.comparison_only
-    )
-    formula_specs = tuple(spec for recipe in RECIPES for spec in recipe.formulas)
-    mapping_specs = tuple(spec for recipe in RECIPES for spec in recipe.mappings)
-    proven_mapping_ids = {
-        check.id for recipe in RECIPES for check in recipe.cross_standard_checks
-    }
+    # evidence for a cross-standard check and no rule at all. That classification lives in
+    # ``package_expectations``, which the inventory and validation gates read as well.
+    expectations = package_expectations(RECIPES)
     tables = {table.id: table for table in draft.tables}
     formulas = {formula.id: formula for formula in draft.formulas}
     mappings = {mapping.id: mapping for mapping in draft.mappings}
     grids = {grid.id: grid for grid in draft.raw_grids}
     if (
-        set(tables) != {spec.semantic_id for spec in typed_table_specs}
-        or set(formulas) != {spec.semantic_id for spec in formula_specs}
+        set(tables) != expectations.table_rule_ids
+        or set(formulas) != expectations.formula_ids
         # A proven cross-standard mapping is permitted beside the declared family, exactly as
         # ``_require_compatibility_mapping`` permits it.
-        or set(mappings) - proven_mapping_ids != {spec.id for spec in mapping_specs}
-        or set(grids) != {f"raw-{spec.semantic_id}" for spec in table_specs}
+        or set(mappings) - expectations.proven_mapping_ids != expectations.declared_mapping_ids
+        or set(grids) != expectations.raw_grid_ids
     ):
         raise ApprovalError("reviewed content sets do not match exact recipe semantics")
     recipes_by_id = {recipe.id: recipe for recipe in RECIPES}
