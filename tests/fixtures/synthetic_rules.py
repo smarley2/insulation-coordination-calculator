@@ -9,12 +9,17 @@ from insulation_coordination.domain.rules import (
     ApprovalRecord,
     Compare,
     CompatibilityMapping,
+    CurveAxis,
+    CurvePoint,
+    CurveSegment,
     DecisionInput,
     DecisionOutput,
     DecisionRow,
     DecisionRule,
     DecisionValue,
     Divide,
+    FaultTimeVoltageSelector,
+    FaultTimeVoltageVariant,
     Formula,
     GuidanceRule,
     LinearInterpolate,
@@ -27,6 +32,7 @@ from insulation_coordination.domain.rules import (
     Multiply,
     Parameter,
     ParameterSet,
+    PiecewiseCurveRule,
     ProcedureRule,
     ProcedureStep,
     Round,
@@ -44,6 +50,7 @@ from insulation_coordination.domain.rules import (
 
 def synthetic_rule_package() -> RulePackage:
     reference = SourceReference(
+        document_id="synthetic-source",
         standard="SYNTHETIC-1",
         edition="1",
         clause="4.2",
@@ -236,6 +243,57 @@ def synthetic_rule_package() -> RulePackage:
         warnings=("Synthetic warning.",),
         source=reference,
     )
+    curve = PiecewiseCurveRule(
+        id="synthetic-fault-time-voltage",
+        variants=(
+            FaultTimeVoltageVariant(
+                id="synthetic-dc-dvc",
+                selector=FaultTimeVoltageSelector(
+                    subject="accessible_circuit",
+                    voltage_basis="dc",
+                    dvc_context="synthetic-dvc",
+                    environment_context=None,
+                ),
+                x_axis=CurveAxis(
+                    quantity_kind="fault-time",
+                    unit="ms",
+                    scale="log10",
+                    minimum=Decimal(3),
+                    maximum=Decimal(243),
+                ),
+                y_axis=CurveAxis(
+                    quantity_kind="voltage-limit",
+                    unit="V",
+                    scale="log10",
+                    minimum=Decimal(89),
+                    maximum=Decimal(777),
+                ),
+                points=(
+                    CurvePoint(x=Decimal(3), y=Decimal(777)),
+                    CurvePoint(x=Decimal(27), y=Decimal(271)),
+                    CurvePoint(x=Decimal(243), y=Decimal(89)),
+                ),
+                segments=(
+                    CurveSegment(
+                        start=0,
+                        end=1,
+                        segment_type="continuous",
+                        interpolation="log_log",
+                    ),
+                    CurveSegment(
+                        start=1,
+                        end=2,
+                        segment_type="continuous",
+                        interpolation="log_log",
+                    ),
+                ),
+                applicability="Synthetic fixture only.",
+                source=reference,
+                reviewed_artifact_sha256="b" * 64,
+            ),
+        ),
+        source=reference,
+    )
     return RulePackage(
         manifest=Manifest(
             schema_version=RULE_SCHEMA_VERSION,
@@ -245,6 +303,7 @@ def synthetic_rule_package() -> RulePackage:
             created_at=datetime(2026, 1, 1, tzinfo=UTC),
             source_documents=(
                 SourceDocument(
+                    id="synthetic-source",
                     standard="SYNTHETIC-1",
                     edition="1",
                     sha256="a" * 64,
@@ -275,11 +334,13 @@ def synthetic_rule_package() -> RulePackage:
         decisions=(decision,),
         procedures=(procedure,),
         guidance=(guidance,),
+        curves=(curve,),
     )
 
 
 def synthetic_part1_rule_package() -> RulePackage:
     reference = SourceReference(
+        document_id="synthetic-part-1-source",
         standard="SYNTHETIC-PART-1",
         edition="1",
         clause="synthetic",
@@ -475,6 +536,7 @@ def synthetic_part1_rule_package() -> RulePackage:
             created_at=datetime(2026, 1, 1, tzinfo=UTC),
             source_documents=(
                 SourceDocument(
+                    id="synthetic-part-1-source",
                     standard="SYNTHETIC-PART-1",
                     edition="1",
                     sha256="b" * 64,
@@ -509,6 +571,7 @@ def synthetic_part1_rule_package() -> RulePackage:
 def synthetic_hf_rule_package() -> RulePackage:
     base = synthetic_part1_rule_package()
     reference = SourceReference(
+        document_id="synthetic-part-4-source",
         standard="SYNTHETIC-PART-4",
         edition="1",
         clause="synthetic",
@@ -894,6 +957,19 @@ def synthetic_hf_rule_package() -> RulePackage:
 
     return base.model_copy(
         update={
+            "manifest": base.manifest.model_copy(
+                update={
+                    "source_documents": (
+                        *base.manifest.source_documents,
+                        SourceDocument(
+                            id="synthetic-part-4-source",
+                            standard="SYNTHETIC-PART-4",
+                            edition="1",
+                            sha256="c" * 64,
+                        ),
+                    )
+                }
+            ),
             "tables": (*base.tables, *hf_tables),
             "formulas": (
                 *base.formulas,

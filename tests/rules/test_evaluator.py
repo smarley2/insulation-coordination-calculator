@@ -36,6 +36,7 @@ from insulation_coordination.rules.evaluator import EvaluationError, evaluate_fo
 
 def _source(*, row: str | None = None, column: str | None = None) -> SourceReference:
     return SourceReference(
+        document_id="synthetic-source",
         standard="SYNTHETIC-1",
         edition="1",
         clause="4.2",

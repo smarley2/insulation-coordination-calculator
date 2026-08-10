@@ -88,6 +88,7 @@ def test_archive_is_byte_deterministic_and_has_only_canonical_members(
             "decisions.json",
             "procedures.json",
             "guidance.json",
+            "curves.json",
             "checksums.json",
         ]
         assert {member.date_time for member in archive.infolist()} == {(1980, 1, 1, 0, 0, 0)}
@@ -100,7 +101,54 @@ def test_archive_is_byte_deterministic_and_has_only_canonical_members(
             "decisions.json",
             "procedures.json",
             "guidance.json",
+            "curves.json",
         }
+
+
+def test_curves_survive_round_trip_as_typed_final_rules(
+    synthetic_package: RulePackage, tmp_path: Path
+) -> None:
+    path = tmp_path / "curves.icrules"
+
+    write_rule_package(path, synthetic_package)
+    loaded = load_rule_package(path)
+
+    assert loaded.curves == synthetic_package.curves
+    with zipfile.ZipFile(path) as archive:
+        checksums = json.loads(archive.read("checksums.json"))
+        payload = json.loads(archive.read("curves.json"))
+    assert "curves.json" in checksums
+    assert set(payload[0]) == {"id", "source", "variants"}
+    assert set(payload[0]["variants"][0]) == {
+        "applicability",
+        "id",
+        "points",
+        "reviewed_artifact_sha256",
+        "segments",
+        "selector",
+        "source",
+        "x_axis",
+        "y_axis",
+    }
+    assert all(set(point) == {"x", "y"} for point in payload[0]["variants"][0]["points"])
+    assert "semantic_proposals" not in payload[0]
+    assert "raw_grids" not in payload[0]
+
+
+def test_load_rejects_curve_payload_changed_without_checksum_update(
+    synthetic_package: RulePackage, tmp_path: Path
+) -> None:
+    path = tmp_path / "tampered-curve.icrules"
+    write_rule_package(path, synthetic_package)
+    with zipfile.ZipFile(path) as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    curves = json.loads(members["curves.json"])
+    curves[0]["id"] = "tampered-curve"
+    members["curves.json"] = _canonical_json(curves)
+    _write_members(path, members)
+
+    with pytest.raises(RulePackageError, match="checksum mismatch for curves.json"):
+        load_rule_package(path)
 
 
 def test_load_rejects_changed_member_even_when_zip_is_readable(
@@ -191,8 +239,8 @@ def test_load_rejects_malformed_checksum_set_and_unsupported_schema(
 
 
 def test_current_rule_trust_versions_require_semantic_pcb_packages() -> None:
-    assert RULE_SCHEMA_VERSION == 3
-    assert IMPORTER_VERSION == "iec-pdf-3"
+    assert RULE_SCHEMA_VERSION == 4
+    assert IMPORTER_VERSION == "iec-pdf-4"
 
 
 def test_legacy_schema_tells_maintainer_to_regenerate_from_pdfs(
@@ -228,6 +276,7 @@ def test_migration_creates_new_unapproved_identity(
     assert migrated.manifest.compatible is False
     assert migrated.manifest.approval_records == ()
     assert all(mapping.approved is False for mapping in migrated.mappings)
+    assert migrated.curves == synthetic_package.curves
     assert migrated.package_sha256 is None
 
 
@@ -329,6 +378,7 @@ def test_high_compression_ratio_is_rejected_before_member_read(tmp_path: Path) -
             "decisions.json",
             "procedures.json",
             "guidance.json",
+            "curves.json",
             "checksums.json",
         ):
             archive.writestr(name, b"a" * 1_000_000)
@@ -395,9 +445,13 @@ def test_free_text_and_identifiers_are_bounded(
 
 def test_reference_identifiers_reject_whitespace_and_overlong_values() -> None:
     with pytest.raises(ValidationError):
-        SourceReference(standard=" ", edition="1")
+        SourceReference(document_id="synthetic-source", standard=" ", edition="1")
     with pytest.raises(ValidationError):
-        SourceReference(standard="x" * (MAX_IDENTIFIER_LENGTH + 1), edition="1")
+        SourceReference(
+            document_id="synthetic-source",
+            standard="x" * (MAX_IDENTIFIER_LENGTH + 1),
+            edition="1",
+        )
 
 
 def _canonical_json(value: object) -> bytes:
@@ -412,7 +466,7 @@ def _write_members(path: Path, members: dict[str, bytes]) -> None:
             archive.writestr(name, content)
 
 
-def test_schema_version_two_package_is_rejected_with_a_rebuild_message(
+def test_schema_version_three_package_is_rejected_with_a_rebuild_message(
     tmp_path: Path,
     synthetic_package: RulePackage,
 ) -> None:
@@ -421,7 +475,7 @@ def test_schema_version_two_package_is_rejected_with_a_rebuild_message(
     with zipfile.ZipFile(path) as archive:
         members = {name: archive.read(name) for name in archive.namelist()}
     manifest = json.loads(members["manifest.json"])
-    manifest["schema_version"] = 2
+    manifest["schema_version"] = 3
     members["manifest.json"] = (
         json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
     ).encode()

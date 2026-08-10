@@ -126,6 +126,14 @@ def _record_source_valid(source: SourceReference) -> bool:
     return bool(source.clause and (source.table or source.figure))
 
 
+def _clause_source_valid(source: SourceReference) -> bool:
+    return bool(source.clause)
+
+
+def _curve_source_valid(source: SourceReference) -> bool:
+    return bool(source.figure or _record_source_valid(source))
+
+
 def _cell_source_valid(source: SourceReference) -> bool:
     return bool(
         source.clause
@@ -185,6 +193,7 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
     decision_ids = [decision.id for decision in package.decisions]
     procedure_ids = [procedure.id for procedure in package.procedures]
     guidance_ids = [guidance.id for guidance in package.guidance]
+    curve_ids = [curve.id for curve in package.curves]
     try:
         expected_checksums = {
             name: hashlib.sha256(payload).hexdigest()
@@ -259,9 +268,19 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
     is_iec_import = package.manifest.importer_version.startswith("iec-pdf-")
     trusted_iec_package = is_iec_import and package.manifest.approved
     if trusted_iec_package:
+        from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
         from insulation_coordination.rules.importer.recipes import RECIPES
 
-        expected_table_ids = {spec.semantic_id for recipe in RECIPES for spec in recipe.tables}
+        decision_projected_tables = {
+            ids.DVC_VOLTAGE_LIMITS,
+            ids.DVC_PROTECTION_MATRIX,
+        }
+        expected_table_ids = {
+            spec.semantic_id
+            for recipe in RECIPES
+            for spec in recipe.tables
+            if spec.semantic_id not in decision_projected_tables
+        }
         expected_formula_ids = {spec.semantic_id for recipe in RECIPES for spec in recipe.formulas}
         expected_mapping_ids = {spec.id for recipe in RECIPES for spec in recipe.mappings}
     else:
@@ -270,7 +289,7 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         expected_mapping_ids = set(mapping_ids)
     legacy_ids = (*table_ids, *formula_ids, *mapping_ids)
     rule_ids = (*decision_ids, *procedure_ids, *guidance_ids)
-    identifiers = (*legacy_ids, *rule_ids)
+    identifiers = (*legacy_ids, *rule_ids, *curve_ids)
     # A decision, procedure or guidance id is what applicability_rule_id and a
     # reference output resolve against, so it must be unique against every other
     # id in the package, not merely within its own kind.
@@ -280,29 +299,39 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         and len(mapping_ids) == len(set(mapping_ids))
         and len(rule_ids) == len(set(rule_ids))
         and set(rule_ids).isdisjoint(legacy_ids)
+        and len(curve_ids) == len(set(curve_ids))
+        and set(curve_ids).isdisjoint((*legacy_ids, *rule_ids))
     )
-    # A cross-standard pointer must name a real rule, never free text: an unresolved
-    # target would leave the reader to guess which rule was meant. It must resolve
-    # against rule_ids only (decisions, procedures, guidance) — those are the ids a
-    # previous check made globally unique. Resolving against every identifier in the
-    # package would let a reference name a table or mapping instead of a rule, and
-    # since legacy ids are only unique within their own kind, would let the gate
-    # report "resolved" for an id that denotes two different records.
-    rule_references = (
-        *(
-            procedure.applicability_rule_id
-            for procedure in package.procedures
-            if procedure.applicability_rule_id is not None
-        ),
-        *(
-            value.reference
-            for decision in package.decisions
-            for row in decision.rows
-            for value in row.values
-            if value.reference is not None
-        ),
+    procedure_references = tuple(
+        procedure.applicability_rule_id
+        for procedure in package.procedures
+        if procedure.applicability_rule_id is not None
     )
-    rule_references_valid = set(rule_references) <= set(rule_ids)
+    decision_references = tuple(
+        value.reference
+        for decision in package.decisions
+        for row in decision.rows
+        for value in row.values
+        if value.reference is not None
+    )
+    semantic_targets: dict[str, list[str]] = {}
+    for kind, rules in (
+        ("table", package.tables),
+        ("formula", package.formulas),
+        ("decision", package.decisions),
+        ("procedure", package.procedures),
+        ("guidance", package.guidance),
+        ("curve", package.curves),
+    ):
+        for rule in rules:
+            semantic_targets.setdefault(rule.id, []).append(kind)
+    semantic_references_resolve = all(
+        len(semantic_targets.get(reference, ())) == 1
+        for reference in decision_references
+    )
+    rule_references_valid = (
+        set(procedure_references) <= set(rule_ids) and semantic_references_resolve
+    )
     obsolete_markers = (
         "raw_sequence",
         "-f3",
@@ -373,8 +402,8 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         )
         and all(_record_source_valid(mapping.source) for mapping in package.mappings)
         and all(
-            _record_source_valid(decision.source)
-            and all(_record_source_valid(row.source) for row in decision.rows)
+            _clause_source_valid(decision.source)
+            and all(_clause_source_valid(row.source) for row in decision.rows)
             for decision in package.decisions
         )
         and all(
@@ -390,6 +419,23 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
             for procedure in package.procedures
         )
         and all(_record_source_valid(guidance.source) for guidance in package.guidance)
+        and all(
+            _curve_source_valid(curve.source)
+            and all(_curve_source_valid(variant.source) for variant in curve.variants)
+            for curve in package.curves
+        )
+    )
+    from insulation_coordination.rules.audit import _source_references
+
+    source_document_links_valid = all(
+        len(matches := tuple(
+            document
+            for document in package.manifest.source_documents
+            if document.id == owned.reference.document_id
+        )) == 1
+        and matches[0].standard == owned.reference.standard
+        and matches[0].edition == owned.reference.edition
+        for owned in _source_references(package)
     )
     results = (
         _result(
@@ -439,7 +485,7 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         _result(
             "unique_ids",
             unique_ids,
-            "decision, procedure and guidance IDs are globally unique; "
+            "decision, procedure, guidance and curve IDs are globally unique; "
             "table, formula and mapping IDs are unique within their own kind",
         ),
         _result("table_cells", valid_table_cells, "table cells are unique and in bounds"),
@@ -475,6 +521,11 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
             "procedure and decision rule references resolve to a rule in the package",
         ),
         _result(
+            "SEMANTIC_REFERENCES_RESOLVE",
+            semantic_references_resolve,
+            "every decision reference resolves to exactly one final semantic rule",
+        ),
+        _result(
             "formula_tables",
             formula_tables_valid,
             "lookup and interpolation dimensions are unambiguous",
@@ -483,6 +534,11 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
             "source_references",
             sources_valid,
             "all package records have meaningful source locators",
+        ),
+        _result(
+            "SOURCE_DOCUMENT_LINKS_VALID",
+            source_document_links_valid,
+            "source references resolve to exactly one matching manifest document",
         ),
     )
     return ValidationReport(results=results)

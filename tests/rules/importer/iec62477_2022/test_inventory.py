@@ -2,6 +2,7 @@ from insulation_coordination.rules.importer.iec62477_2022.inventory import (
     REQUIRED_SOURCE_ITEMS,
 )
 from insulation_coordination.rules.importer.iec62477_2022.semantic_ids import (
+    DVC_FAULT_TIME_VOLTAGE,
     REQUIRED_SEMANTIC_IDS,
 )
 
@@ -31,3 +32,10 @@ def test_every_item_targets_the_supported_edition() -> None:
     for item in REQUIRED_SOURCE_ITEMS:
         assert item.standard == "IEC 62477-1"
         assert item.edition == "2022"
+
+
+def test_fault_time_voltage_is_a_curve() -> None:
+    item = next(
+        item for item in REQUIRED_SOURCE_ITEMS if item.semantic_id == DVC_FAULT_TIME_VOLTAGE
+    )
+    assert item.expected_output_kind == "curve"

@@ -111,3 +111,168 @@ def create_geometry_pdf(
     )
     with path.open("wb") as target:
         writer.write(target)
+
+
+def create_clause_pdf(path: Path) -> None:
+    """Three-page synthetic document with a two-bullet clause fragment on page 3.
+
+    Neutral content only: no IEC wording, values, or structure. Page 3 carries a
+    two-bullet list inside the clause bbox (one bullet wraps across two physical
+    lines) plus a decoy line outside the bbox.
+    """
+
+    writer = PdfWriter()
+    for page_index in range(3):
+        page = writer.add_blank_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
+        page[NameObject("/Resources")] = DictionaryObject(
+            {
+                NameObject("/Font"): DictionaryObject(
+                    {
+                        NameObject("/F1"): DictionaryObject(
+                            {
+                                NameObject("/Type"): NameObject("/Font"),
+                                NameObject("/Subtype"): NameObject("/Type1"),
+                                NameObject("/BaseFont"): NameObject("/Helvetica"),
+                            }
+                        )
+                    }
+                )
+            }
+        )
+        commands: list[bytes] = []
+        if page_index == 2:
+            # pdfplumber "top" coordinates: page height minus PDF y. Bbox top 300
+            # to bottom 700 -> PDF y 492 down to 92. Decoy at top 720 (y 72).
+            commands = [
+                _text_command(80, 480, "SYMBOL first neutral condition not exceeding 30 s"),
+                _text_command(80, 460, "SYMBOL second neutral condition with a wrapped"),
+                _text_command(96, 444, "line that continues here and references the curve slot"),
+                _text_command(80, 72, "SYMBOL outside decoy line not exceeding 99 s"),
+            ]
+        else:
+            commands = [_text_command(72, 700, f"synthetic filler page {page_index + 1}")]
+        stream = DecodedStreamObject()
+        stream.set_data(b"\n".join(commands))
+        page[NameObject("/Contents")] = writer._add_object(stream)
+    writer.add_metadata(
+        {
+            "/Title": "synthetic clause fixture",
+            "/ICC-Synthetic": "true",
+        }
+    )
+    with path.open("wb") as target:
+        writer.write(target)
+
+
+def create_paragraph_clause_pdf(path: Path) -> None:
+    """Three-page synthetic document with one wrapped paragraph and figure slots."""
+
+    writer = PdfWriter()
+    for page_index in range(3):
+        page = writer.add_blank_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
+        page[NameObject("/Resources")] = DictionaryObject(
+            {
+                NameObject("/Font"): DictionaryObject(
+                    {
+                        NameObject("/F1"): DictionaryObject(
+                            {
+                                NameObject("/Type"): NameObject("/Font"),
+                                NameObject("/Subtype"): NameObject("/Type1"),
+                                NameObject("/BaseFont"): NameObject("/Helvetica"),
+                            }
+                        )
+                    }
+                )
+            }
+        )
+        commands = (
+            [
+                _text_command(80, 480, "Neutral paragraph references Figure 5 and Figure 6."),
+                _text_command(80, 460, "Its wrapped continuation references Figure 7."),
+            ]
+            if page_index == 2
+            else [_text_command(72, 700, f"synthetic filler page {page_index + 1}")]
+        )
+        stream = DecodedStreamObject()
+        stream.set_data(b"\n".join(commands))
+        page[NameObject("/Contents")] = writer._add_object(stream)
+    writer.add_metadata({"/Title": "synthetic paragraph fixture", "/ICC-Synthetic": "true"})
+    with path.open("wb") as target:
+        writer.write(target)
+
+
+def create_curve_source_pdf(path: Path) -> None:
+    """Two-page synthetic curve-source fixture. No IEC content.
+
+    Page 1 (pdfplumber page): vector path commands plus one lossless image inside the
+    curve bbox (70, 200)-(400, 500). Page 2: one lossless image only. Coordinates are
+    pdfplumber "top" space; PDF y = 792 - top.
+    """
+
+    import zlib
+
+    from pypdf.generic import NumberObject
+
+    writer = PdfWriter()
+
+    def _image_ref(name: str) -> object:
+        from PIL import Image
+
+        raw = Image.new("L", (8, 8), color=64).tobytes()
+        xobj = DecodedStreamObject()
+        xobj.set_data(zlib.compress(raw))
+        xobj.update(
+            {
+                NameObject("/Type"): NameObject("/XObject"),
+                NameObject("/Subtype"): NameObject("/Image"),
+                NameObject("/Width"): NumberObject(8),
+                NameObject("/Height"): NumberObject(8),
+                NameObject("/ColorSpace"): NameObject("/DeviceGray"),
+                NameObject("/BitsPerComponent"): NumberObject(8),
+                NameObject("/Filter"): NameObject("/FlateDecode"),
+            }
+        )
+        return writer._add_object(xobj)
+
+    for page_index in range(2):
+        page = writer.add_blank_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
+        ref = _image_ref("Im1")
+        page[NameObject("/Resources")] = DictionaryObject(
+            {
+                NameObject("/XObject"): DictionaryObject({NameObject("/Im1"): ref}),
+                NameObject("/Font"): DictionaryObject(
+                    {
+                        NameObject("/F1"): DictionaryObject(
+                            {
+                                NameObject("/Type"): NameObject("/Font"),
+                                NameObject("/Subtype"): NameObject("/Type1"),
+                                NameObject("/BaseFont"): NameObject("/Helvetica"),
+                            }
+                        )
+                    }
+                ),
+            }
+        )
+        # Bbox (70,200)-(400,500) top-space -> PDF x 70..400, y 292..592.
+        image_cmd = b"q 40 0 0 40 100 350 cm /Im1 Do Q"
+        if page_index == 0:
+            commands = [
+                image_cmd,
+                b"1.5 w",
+                b"100 400 m 200 450 l 300 500 l S",
+                b"0.8 w",
+                b"120 380 m 220 420 l S",
+            ]
+        else:
+            commands = [image_cmd]
+        stream = DecodedStreamObject()
+        stream.set_data(b"\n".join(commands))
+        page[NameObject("/Contents")] = writer._add_object(stream)
+    writer.add_metadata(
+        {
+            "/Title": "synthetic curve source fixture",
+            "/ICC-Synthetic": "true",
+        }
+    )
+    with path.open("wb") as target:
+        writer.write(target)

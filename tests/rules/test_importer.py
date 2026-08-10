@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -10,12 +11,28 @@ from pypdf import PdfWriter
 
 from insulation_coordination.domain.rules import (
     CompatibilityMapping,
+    CurveAxis,
+    CurvePoint,
+    CurveSegment,
+    DecisionInput,
+    DecisionOutput,
+    DecisionRow,
+    DecisionRule,
+    DecisionValue,
     DraftRulePackage,
+    FaultTimeVoltageSelector,
+    FaultTimeVoltageVariant,
     Formula,
+    GuidanceRule,
     Literal,
+    Matcher,
     Parameter,
     ParameterSet,
+    PiecewiseCurveRule,
     Power,
+    ProcedureRule,
+    ProcedureStep,
+    SourceGeometryReference,
     SourceReference,
     Table,
     TableAxis,
@@ -35,7 +52,10 @@ from insulation_coordination.rules.importer.extract import (
     ExtractedEquation,
     ExtractionError,
     ImportedRuleDraft,
+    ImportReviewItem,
+    ImportReviewResolution,
     RawGridSegment,
+    _content_digest,
     extract_draft,
     parse_data_cell,
 )
@@ -65,6 +85,7 @@ from insulation_coordination.rules.importer.review import (
     accept_raw_grid,
     accept_raw_table,
     build_reviewed_draft,
+    mark_proposal_reviewed,
     missing_required_content,
     placeholder_formula_ids,
     placeholder_formula_values,
@@ -318,11 +339,12 @@ def supported_pdfs(tmp_path: Path) -> tuple[Path, Path, Path]:
 def _source_for(recipe: StandardRecipe) -> SourceReference:
     spec = recipe.tables[0]
     return SourceReference(
+        document_id=recipe.id,
         standard=recipe.standard,
         edition=recipe.edition,
         clause=spec.clause,
         table=spec.source_table,
-        note=f"PDF page {spec.page_number}",
+        page=spec.page_number,
     )
 
 
@@ -408,6 +430,18 @@ def _reviewed_content(
     return tuple(tables), tuple(formulas), tuple(mappings)
 
 
+def _mark_all_proposals(reviewed: ImportedRuleDraft) -> ImportedRuleDraft:
+    for proposal in reviewed.semantic_proposals:
+        if proposal.state == "proposed":
+            reviewed = mark_proposal_reviewed(
+                reviewed,
+                proposal.semantic_id,
+                actor="Synthetic Reviewer",
+                notes="Reviewed generated semantic rule.",
+            )
+    return reviewed
+
+
 def _review_all(
     draft: ImportedRuleDraft,
     recipes: tuple[StandardRecipe, ...],
@@ -417,13 +451,14 @@ def _review_all(
         update={"tables": tables, "formulas": formulas, "mappings": mappings}
     )
     resolved = {resolution.review_item_sha256 for resolution in draft.review_resolutions}
-    return record_correction(
+    projected = record_correction(
         draft,
         changed,
         actor="Synthetic Reviewer",
         notes="Reviewed generated geometry and semantic contracts.",
         resolve=tuple(item for item in draft.review_items if item.sha256 not in resolved),
     )
+    return _mark_all_proposals(projected)
 
 
 def test_identifies_supported_document_from_recipe_specific_evidence(
@@ -690,6 +725,7 @@ def test_correction_cannot_rewrite_extracted_equation_text_or_source(
         applicability="synthetic",
         parse_status="parsed",
         source=SourceReference(
+            document_id="synthetic-source",
             standard="SYNTHETIC",
             edition="1",
             clause="4.2",
@@ -1284,8 +1320,9 @@ def test_projected_table_source_names_the_page_the_table_was_actually_found_on(
 
     table = project_table(identity, shifted_spec, grid)
 
-    assert table.source.note == "PDF page 2"
-    assert all(cell.source.note == "PDF page 2" for cell in table.cells)
+    assert table.source.page == 2
+    assert table.source.note is None
+    assert all(cell.source.page == 2 and cell.source.note is None for cell in table.cells)
 
 
 def test_header_axis_value_column_fails_loudly_when_its_header_cell_is_not_numeric(
@@ -1430,7 +1467,10 @@ def test_build_reviewed_draft_resolves_every_item(
     assert {resolution.review_item_sha256 for resolution in reviewed.review_resolutions} == {
         item.sha256 for item in draft.review_items
     }
-    assert is_fully_resolved(reviewed)
+    assert reviewed.semantic_proposals
+    assert all(proposal.state == "proposed" for proposal in reviewed.semantic_proposals)
+    assert not is_fully_resolved(reviewed)
+    assert is_fully_resolved(_mark_all_proposals(reviewed))
     assert all(
         len(table.supported_ranges) == 1
         and table.supported_ranges[0].variable == table.row_axis.id
@@ -1465,7 +1505,8 @@ def test_staged_review_requires_tables_then_equations_and_mappings(
     assert unresolved_mapping_items(reviewed) == ()
     built = build_reviewed_draft(reviewed, actor="Maintainer", notes="Build typed rules")
 
-    assert is_fully_resolved(built)
+    assert all(proposal.state == "proposed" for proposal in built.semantic_proposals)
+    assert is_fully_resolved(_mark_all_proposals(built))
     assert all(table.row_axis.labels and table.column_axis.labels for table in built.tables)
     assert "raw_sequence" not in str(
         tuple(formula.expression.model_dump(mode="json") for formula in built.formulas)
@@ -1522,7 +1563,7 @@ def test_build_reviewed_draft_keeps_explicit_raw_resolution(tmp_path: Path) -> N
         notes="Build typed content",
     )
 
-    assert is_fully_resolved(reviewed)
+    assert is_fully_resolved(_mark_all_proposals(reviewed))
     assert all(item.present for item in required_content_report(reviewed))
     assert {resolution.review_item_sha256 for resolution in accepted.review_resolutions} <= {
         resolution.review_item_sha256 for resolution in reviewed.review_resolutions
@@ -1747,6 +1788,15 @@ def test_approval_requires_exact_recipe_content_sets_and_shapes(
                 )
             }
         )
+    if mutation in {"extra_table", "extra_mapping"}:
+        with pytest.raises(ApprovalError, match="review item inventory"):
+            record_correction(
+                corrected,
+                changed,
+                actor="Synthetic Reviewer",
+                notes=f"Logged invalid mutation {mutation}.",
+            )
+        return
     changed = record_correction(
         corrected,
         changed,
@@ -1811,6 +1861,187 @@ def test_approval_and_archive_are_independent_of_source_pdfs(
     assert loaded.manifest.approved is True
     assert loaded.manifest.compatible is True
     assert all(mapping.approved for mapping in loaded.mappings)
+
+
+def test_approval_constructs_every_final_collection_without_draft_proposals(
+    supported_pdfs: tuple[Path, Path, Path],
+    injected_recipes: tuple[StandardRecipe, ...],
+) -> None:
+    imported = extract_draft(supported_pdfs)
+    inventory_source = imported.review_items[0].source
+    semantic_artifacts = (
+        ("SYNTHETIC_EXTRA_DECISION", "synthetic-extra-decision", "a" * 64),
+        ("SYNTHETIC_EXTRA_PROCEDURE", "synthetic-extra-procedure", "b" * 64),
+        ("SYNTHETIC_EXTRA_GUIDANCE", "synthetic-extra-guidance", "c" * 64),
+        ("SYNTHETIC_EXTRA_CURVE", "synthetic-extra-curve", "d" * 64),
+    )
+    semantic_items = tuple(
+        ImportReviewItem(
+            code=code,
+            semantic_id=semantic_id,
+            kind="semantic",
+            source=inventory_source.model_copy(
+                update={
+                    "geometry": SourceGeometryReference(artifact_sha256=artifact_sha256)
+                }
+            ),
+            expected_contract=f"synthetic:{semantic_id}",
+        )
+        for code, semantic_id, artifact_sha256 in semantic_artifacts
+    )
+    semantic_resolutions = tuple(
+        ImportReviewResolution(
+            review_item_sha256=item.sha256,
+            actor="Synthetic Import Reviewer",
+            recorded_at=datetime(2026, 1, 3, tzinfo=UTC),
+            notes="Synthetic importer artifact reviewed.",
+        )
+        for item in semantic_items
+    )
+    imported = imported.model_copy(
+        update={
+            "review_items": (*imported.review_items, *semantic_items),
+            "review_resolutions": (*imported.review_resolutions, *semantic_resolutions),
+        }
+    )
+    genesis_digest = _content_digest(
+        imported.tables,
+        imported.formulas,
+        imported.mappings,
+        imported.review_items,
+        imported.raw_grids,
+        imported.raw_clause_fragments,
+        imported.manifest.source_documents,
+        imported.source_identities,
+        imported.review_resolutions,
+        imported.extracted_equations,
+        decisions=imported.decisions,
+        procedures=imported.procedures,
+        guidance=imported.guidance,
+        curves=imported.curves,
+    )
+    imported = imported.model_copy(
+        update={
+            "manifest": imported.manifest.model_copy(
+                update={
+                    "approval_records": tuple(
+                        record.model_copy(update={"notes": f"content:{genesis_digest}"})
+                        if record.action == "extraction"
+                        and record.notes.startswith("content:")
+                        else record
+                        for record in imported.manifest.approval_records
+                    )
+                }
+            )
+        }
+    )
+    reviewed = _review_all(imported, injected_recipes)
+    source = reviewed.tables[0].source
+    decision = DecisionRule(
+        id="synthetic-extra-decision",
+        inputs=(
+            DecisionInput(name="synthetic-choice", kind="categorical", allowed_values=("yes",)),
+        ),
+        outputs=(
+            DecisionOutput(name="synthetic-result", kind="boolean"),
+        ),
+        rows=(
+            DecisionRow(
+                matchers=(Matcher(input="synthetic-choice", op="equals", values=("yes",)),),
+                values=(DecisionValue(name="synthetic-result", boolean=True),),
+                source=source,
+            ),
+        ),
+        exhaustive=True,
+        source=source,
+    )
+    procedure = ProcedureRule(
+        id="synthetic-extra-procedure",
+        test_kind="synthetic-test",
+        procedure_steps=(ProcedureStep(order=1, text="Synthetic step.", source=source),),
+        source=source,
+    )
+    guidance = GuidanceRule(
+        id="synthetic-extra-guidance",
+        title="Synthetic guidance",
+        summary="Synthetic summary.",
+        source=source,
+    )
+    artifact_sha256 = "d" * 64
+    curve = PiecewiseCurveRule(
+        id="synthetic-extra-curve",
+        variants=(
+            FaultTimeVoltageVariant(
+                id="synthetic-extra-variant",
+                selector=FaultTimeVoltageSelector(
+                    subject="accessible_circuit",
+                    voltage_basis="dc",
+                    dvc_context=None,
+                    environment_context=None,
+                ),
+                x_axis=CurveAxis(
+                    quantity_kind="synthetic-time",
+                    unit="s",
+                    scale="linear",
+                    minimum=Decimal(1),
+                    maximum=Decimal(7),
+                ),
+                y_axis=CurveAxis(
+                    quantity_kind="synthetic-voltage",
+                    unit="V",
+                    scale="linear",
+                    minimum=Decimal(2),
+                    maximum=Decimal(8),
+                ),
+                points=(
+                    CurvePoint(x=Decimal(1), y=Decimal(8)),
+                    CurvePoint(x=Decimal(7), y=Decimal(2)),
+                ),
+                segments=(
+                    CurveSegment(
+                        start=0,
+                        end=1,
+                        segment_type="continuous",
+                        interpolation="linear",
+                    ),
+                ),
+                applicability="Synthetic only.",
+                source=source,
+                reviewed_artifact_sha256=artifact_sha256,
+            ),
+        ),
+        source=source,
+    )
+    changed = reviewed.model_copy(
+        update={
+            "decisions": (decision,),
+            "procedures": (procedure,),
+            "guidance": (guidance,),
+            "curves": (curve,),
+        }
+    )
+    reviewed = record_correction(
+        reviewed,
+        changed,
+        actor="Synthetic Reviewer",
+        notes="Add synthetic non-tabular rules.",
+    )
+    for proposal in reviewed.semantic_proposals:
+        if proposal.state == "proposed":
+            reviewed = mark_proposal_reviewed(
+                reviewed,
+                proposal.semantic_id,
+                actor="Synthetic Reviewer",
+                notes="Review synthetic non-tabular rule.",
+            )
+
+    package = approve_draft(reviewed, "Synthetic Reviewer", "All synthetic proposals reviewed.")
+
+    assert package.decisions == (decision,)
+    assert package.procedures == (procedure,)
+    assert package.guidance == (guidance,)
+    assert package.curves == (curve,)
+    assert "semantic_proposals" not in type(package).model_fields
 
 
 def test_malformed_pdf_is_normalized_to_stable_identification_error(

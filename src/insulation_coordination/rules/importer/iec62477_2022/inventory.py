@@ -9,13 +9,9 @@ than clause number, and a clause number that has not been verified against the d
 would be a guess. Their locator lands with their extraction recipe.
 """
 
-from typing import Literal
-
 from insulation_coordination.domain.project import FrozenModel
-from insulation_coordination.domain.rules import Identifier, ReferenceText
+from insulation_coordination.domain.rules import Identifier, ReferenceText, RuleKind
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
-
-RuleKind = Literal["table", "formula", "decision", "procedure", "guidance"]
 
 STANDARD = "IEC 62477-1"
 EDITION = "2022"
@@ -55,7 +51,8 @@ def _item(
 REQUIRED_SOURCE_ITEMS: tuple[RequiredSourceItem, ...] = (
     _item(ids.DVC_VOLTAGE_LIMITS, "decision", (35, 37), table="Table 2"),
     _item(ids.DVC_PROTECTION_MATRIX, "decision", (35, 37), table="Table 3"),
-    _item(ids.DVC_FAULT_TIME_VOLTAGE, "decision", (35, 37)),
+    _item(ids.DVC_FAULT_TIME_VOLTAGE, "curve", (35, 37)),
+    _item(ids.DVC_FAULT_APPLICABILITY, "decision", (35, 37)),
     _item(ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION, "decision", (36,)),
     _item(ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC, "table", (36,), table="Table 7"),
     _item(ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE, "table", (36, 37), table="Table 7"),

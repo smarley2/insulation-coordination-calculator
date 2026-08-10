@@ -28,13 +28,19 @@ from typing import Literal as TypingLiteral
 from pydantic import TypeAdapter, ValidationError
 
 from insulation_coordination.domain.project import FrozenModel
+from insulation_coordination.domain.quantities import DecimalValue
 from insulation_coordination.domain.rules import (
     Add,
     Compare,
+    CurveInterpolation,
+    CurvePoint,
+    CurveSegment,
     DecisionRule,
     DecisionValue,
     Divide,
     Expression,
+    FaultTimeVoltageSelector,
+    FaultTimeVoltageVariant,
     Formula,
     Identifier,
     LinearInterpolate,
@@ -44,6 +50,7 @@ from insulation_coordination.domain.rules import (
     Maximum,
     Minimum,
     Multiply,
+    PiecewiseCurveRule,
     Power,
     Round,
     Select,
@@ -86,6 +93,19 @@ _EXPRESSION_ADAPTER: TypeAdapter[Expression] = TypeAdapter(Expression)
 
 class EvaluationError(ValueError):
     """A typed declarative expression cannot be evaluated safely."""
+
+
+class CurveSelectionResult(FrozenModel):
+    status: TypingLiteral["matched", "no_match"]
+    variant: FaultTimeVoltageVariant | None = None
+
+
+class CurveEvaluationResult(FrozenModel):
+    status: TypingLiteral["matched", "no_match", "out_of_domain"]
+    value: DecimalValue | None = None
+    unit: Identifier | None = None
+    variant_id: Identifier | None = None
+    source: SourceReference | None = None
 
 
 @dataclass(frozen=True)
@@ -783,6 +803,8 @@ class DecisionResult(FrozenModel):
 def _matches(matcher: Matcher, value: Decimal | str | bool) -> bool:
     if matcher.op == "any":
         return True
+    if matcher.op == "equals" and matcher.boolean is not None:
+        return isinstance(value, bool) and value is matcher.boolean
     if matcher.op in ("equals", "in"):
         return value in matcher.values
     if not isinstance(value, Decimal):
@@ -829,6 +851,109 @@ def evaluate_decision(
     if rule.exhaustive:
         raise EvaluationError(f"exhaustive decision rule {rule.id!r} matched no row")
     return DecisionResult(rule_id=rule.id, status="no_match")
+
+
+def select_curve_variant(
+    rule: PiecewiseCurveRule,
+    selector: FaultTimeVoltageSelector,
+) -> CurveSelectionResult:
+    matches = tuple(variant for variant in rule.variants if variant.selector == selector)
+    if not matches:
+        return CurveSelectionResult(status="no_match")
+    if len(matches) > 1:
+        raise EvaluationError(f"curve rule {rule.id!r} has multiple variants for selector")
+    return CurveSelectionResult(status="matched", variant=matches[0])
+
+
+def evaluate_piecewise_curve(
+    rule: PiecewiseCurveRule,
+    selector: FaultTimeVoltageSelector,
+    x: DecimalValue,
+) -> CurveEvaluationResult:
+    _require_finite(x, "curve input")
+    selection = select_curve_variant(rule, selector)
+    if selection.variant is None:
+        return CurveEvaluationResult(status="no_match")
+    variant = selection.variant
+    if x < variant.points[0].x or x > variant.points[-1].x:
+        return CurveEvaluationResult(
+            status="out_of_domain",
+            unit=variant.y_axis.unit,
+            variant_id=variant.id,
+            source=variant.source,
+        )
+    for point in variant.points:
+        if x == point.x:
+            return _curve_evaluation_result(variant, point.y)
+    segment = next(
+        (
+            item
+            for item in variant.segments
+            if variant.points[item.start].x < x < variant.points[item.end].x
+        ),
+        None,
+    )
+    if segment is None:
+        raise EvaluationError(f"curve variant {variant.id!r} has incomplete segment coverage")
+    try:
+        context = Context(
+            prec=DEFAULT_DECIMAL_PRECISION,
+            rounding=ROUND_HALF_EVEN,
+            Emin=-999_999,
+            Emax=999_999,
+            capitals=1,
+            clamp=0,
+            flags=[],
+            traps=[InvalidOperation, DivisionByZero, Overflow, FloatOperation],
+        )
+        with localcontext(context):
+            value = _interpolate_curve_segment(
+                variant.points[segment.start],
+                variant.points[segment.end],
+                segment,
+                x,
+            )
+        return _curve_evaluation_result(variant, value)
+    except EvaluationError:
+        raise
+    except (DecimalException, OverflowError, TypeError, ValueError) as error:
+        raise EvaluationError(f"invalid Decimal curve operation: {error}") from error
+
+
+def _interpolate_curve_segment(
+    start: CurvePoint,
+    end: CurvePoint,
+    segment: CurveSegment,
+    x: Decimal,
+) -> Decimal:
+    interpolation: CurveInterpolation = segment.interpolation
+    if interpolation == "constant":
+        return start.y
+    if interpolation == "step_before":
+        return end.y
+    if interpolation == "step_after":
+        return start.y
+    if interpolation in ("log_x", "log_log"):
+        fraction = (x.ln() - start.x.ln()) / (end.x.ln() - start.x.ln())
+    else:
+        fraction = (x - start.x) / (end.x - start.x)
+    if interpolation in ("log_y", "log_log"):
+        return (start.y.ln() + fraction * (end.y.ln() - start.y.ln())).exp()
+    return start.y + fraction * (end.y - start.y)
+
+
+def _curve_evaluation_result(
+    variant: FaultTimeVoltageVariant,
+    value: Decimal,
+) -> CurveEvaluationResult:
+    _require_finite(value, "curve result")
+    return CurveEvaluationResult(
+        status="matched",
+        value=value,
+        unit=variant.y_axis.unit,
+        variant_id=variant.id,
+        source=variant.source,
+    )
 
 
 def _validated_formula(

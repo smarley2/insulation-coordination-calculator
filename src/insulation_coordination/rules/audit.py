@@ -23,6 +23,7 @@ from insulation_coordination.domain.rules import (
     Minimum,
     Multiply,
     ParameterSet,
+    PiecewiseCurveRule,
     Power,
     Round,
     RulePackage,
@@ -90,6 +91,7 @@ class AuditInventory(FrozenModel):
     source_documents: tuple[SourceDocument, ...]
     tables: tuple[Table, ...]
     formulas: tuple[Formula, ...]
+    curves: tuple[PiecewiseCurveRule, ...]
     table_cells: tuple[AuditedTableCell, ...]
     formula_nodes: tuple[AuditedFormulaNode, ...]
     mappings: tuple[CompatibilityMapping, ...]
@@ -114,6 +116,11 @@ class AuditInventory(FrozenModel):
     @property
     def mapping_count(self) -> int:
         return len(self.mappings)
+
+    @computed_field  # type: ignore[prop-decorator]  # Pydantic's supported property pattern.
+    @property
+    def curve_count(self) -> int:
+        return len(self.curves)
 
     @computed_field  # type: ignore[prop-decorator]  # Pydantic's supported property pattern.
     @property
@@ -299,6 +306,24 @@ def _source_references(package: RulePackage) -> tuple[OwnedSourceReference, ...]
         )
         for guidance in package.guidance
     )
+    for curve in package.curves:
+        references.append(
+            OwnedSourceReference(
+                owner_type="curve",
+                owner_id=curve.id,
+                path="source",
+                reference=curve.source,
+            )
+        )
+        references.extend(
+            OwnedSourceReference(
+                owner_type="curve",
+                owner_id=curve.id,
+                path=f"variants.{index}.source",
+                reference=variant.source,
+            )
+            for index, variant in enumerate(curve.variants)
+        )
     return tuple(references)
 
 
@@ -336,6 +361,7 @@ def build_audit_inventory(package: RulePackage) -> AuditInventory:
         source_documents=package.manifest.source_documents,
         tables=package.tables,
         formulas=package.formulas,
+        curves=package.curves,
         table_cells=cells,
         formula_nodes=nodes,
         mappings=package.mappings,

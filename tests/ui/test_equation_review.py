@@ -126,11 +126,12 @@ def test_unresolved_extracted_equation_cannot_be_accepted(qtbot, tables_accepted
         applicability="synthetic",
         parse_status="review_required",
         source=SourceReference(
+            document_id="iec60664-1-2020",
             standard="IEC 60664-1",
             edition="2020",
             clause="SYNTHETIC",
             table="S1",
-            note="PDF page 1",
+            page=1,
         ),
     )
     draft = tables_accepted.model_copy(update={"extracted_equations": (equation,)})

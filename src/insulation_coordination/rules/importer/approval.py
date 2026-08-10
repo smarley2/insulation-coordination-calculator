@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import Counter
 from datetime import UTC, datetime
-from decimal import Decimal
 
 from insulation_coordination.domain.rules import (
     ApprovalRecord,
     DraftRulePackage,
     Expression,
+    PiecewiseCurveRule,
     RulePackage,
     RulePackageError,
     SourceReference,
@@ -19,7 +20,9 @@ from insulation_coordination.rules.importer.extract import (
     ImportedRuleDraft,
     ImportReviewItem,
     ImportReviewResolution,
+    SemanticProposal,
     _content_digest,
+    canonical_model_sha256,
 )
 from insulation_coordination.rules.importer.identify import StandardRecipe
 from insulation_coordination.rules.validation import validate_rule_package
@@ -40,7 +43,7 @@ class ApprovalError(RulePackageError):
 def _source_matches(actual: SourceReference, expected: SourceReference) -> bool:
     return all(
         getattr(actual, field) == getattr(expected, field)
-        for field in ("standard", "edition", "clause", "table", "figure")
+        for field in ("document_id", "standard", "edition", "page", "clause", "table", "figure")
     )
 
 
@@ -64,13 +67,79 @@ def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft
         )
     if item.kind == "mapping":
         return any(spec.id == item.semantic_id for recipe in _recipes() for spec in recipe.mappings)
-    return any(
-        f"{grid.id}:{cell.row}:{cell.column}" == item.semantic_id
-        and _source_matches(cell.source, item.source)
-        and cell.value is not None
-        and cell.parse_status == "numeric"
+    if item.kind == "clause":
+        return any(
+            fragment.id == f"raw-{item.semantic_id}"
+            and _source_matches(fragment.source, item.source)
+            for fragment in changed.raw_clause_fragments
+        )
+    if item.kind == "curve":
+        return any(
+            figure.source.page == item.source.page
+            and figure.source.figure == item.source.figure
+            and result.proposed_rule is not None
+            and result.conservatism is not None
+            and result.conservatism.proven
+            for figure, result in zip(changed.raw_figures, changed.curve_digitizations)
+        )
+    if item.code in {"AMBIGUOUS_COMPOUND_CELL", "AMBIGUOUS_COMPONENT_FORMULA"}:
+        grid_id, row_text, column_text, source_index_text = item.semantic_id.rsplit(":", 3)
+        cell = next(
+            (
+                cell
+                for grid in changed.raw_grids
+                if grid.id == grid_id
+                for cell in grid.cells
+                if (cell.row, cell.column) == (int(row_text), int(column_text))
+                and _source_matches(cell.source, item.source)
+            ),
+            None,
+        )
+        if cell is None:
+            return False
+        source_index = int(source_index_text)
+        component = next(
+            (
+                component
+                for component in cell.components
+                if component.source_index == source_index
+            ),
+            None,
+        )
+        if component is None or component.component_id is None:
+            return False
+        if item.code == "AMBIGUOUS_COMPOUND_CELL":
+            return (
+                cell.parse_status == "compound"
+                and len(cell.components) == len(cell.compound_component_ids)
+                and {part.component_id for part in cell.components}
+                == set(cell.compound_component_ids)
+                and all(part.value is not None for part in cell.components)
+            )
+        candidates = tuple(
+            candidate
+            for candidate in cell.formula_candidates
+            if candidate.source_index == source_index
+        )
+        allowed = {
+            formula_id
+            for component_id, formula_id in cell.allowed_component_formula_ids
+            if component_id == component.component_id
+        }
+        return (
+            len(candidates) == 1
+            and candidates[0].component_id == component.component_id
+            and candidates[0].formula_id in allowed
+        )
+    cells = tuple(
+        cell
         for grid in changed.raw_grids
         for cell in grid.cells
+        if f"{grid.id}:{cell.row}:{cell.column}" == item.semantic_id
+        and _source_matches(cell.source, item.source)
+    )
+    return any(
+        cell.value is not None and cell.parse_status == "numeric" for cell in cells
     )
 
 
@@ -89,6 +158,10 @@ def _changed_tokens(
         ("table", original.tables, changed.tables),
         ("formula", original.formulas, changed.formulas),
         ("mapping", original.mappings, changed.mappings),
+        ("decision", original.decisions, changed.decisions),
+        ("procedure", original.procedures, changed.procedures),
+        ("guidance", original.guidance, changed.guidance),
+        ("curve", original.curves, changed.curves),
     ):
         before = {item.id: item for item in before_items}
         after = {item.id: item for item in after_items}
@@ -103,6 +176,13 @@ def _changed_tokens(
         f"raw-grid:{grid_id}"
         for grid_id in sorted(set(before_grids) | set(after_grids))
         if before_grids.get(grid_id) != after_grids.get(grid_id)
+    )
+    before_fragments = {item.id: item for item in original.raw_clause_fragments}
+    after_fragments = {item.id: item for item in changed.raw_clause_fragments}
+    tokens.extend(
+        f"raw-clause:{fragment_id}"
+        for fragment_id in sorted(set(before_fragments) | set(after_fragments))
+        if before_fragments.get(fragment_id) != after_fragments.get(fragment_id)
     )
     before_equations = {item.id: item for item in original.extracted_equations}
     after_equations = {item.id: item for item in changed.extracted_equations}
@@ -151,6 +231,76 @@ def _require_safe_raw_grid_correction(
             for key in before_cells
         ):
             raise ApprovalError("a correction cannot rewrite extracted raw text or source")
+        for key, before_cell in before_cells.items():
+            after_cell = after_cells[key]
+            if before_cell.compound_component_ids != after_cell.compound_component_ids:
+                raise ApprovalError("a correction cannot rewrite declared compound components")
+            if (
+                before_cell.allowed_component_formula_ids
+                != after_cell.allowed_component_formula_ids
+            ):
+                raise ApprovalError("a correction cannot rewrite component formula routes")
+            before_components = {
+                part.source_index: part for part in before_cell.components
+            }
+            after_components = {
+                part.source_index: part for part in after_cell.components
+            }
+            if (
+                len(before_components) != len(before_cell.components)
+                or len(after_components) != len(after_cell.components)
+                or set(before_components) != set(after_components)
+                or any(
+                    after_components[source_index].raw_text != part.raw_text
+                    or after_components[source_index].unit != part.unit
+                    or after_components[source_index].source != part.source
+                    for source_index, part in before_components.items()
+                )
+            ):
+                raise ApprovalError("a correction cannot rewrite compound component provenance")
+            if any(
+                candidate.source_index not in after_components
+                or candidate.source != after_components[candidate.source_index].source
+                for candidate in after_cell.formula_candidates
+            ):
+                raise ApprovalError("a correction cannot rewrite formula candidate provenance")
+            for source_index, component in after_components.items():
+                before_candidates = tuple(
+                    candidate
+                    for candidate in before_cell.formula_candidates
+                    if candidate.source_index == source_index
+                )
+                after_candidates = tuple(
+                    candidate
+                    for candidate in after_cell.formula_candidates
+                    if candidate.source_index == source_index
+                )
+                association_changed = (
+                    before_components[source_index].component_id != component.component_id
+                )
+                if before_candidates == after_candidates and not association_changed:
+                    continue
+                allowed = {
+                    formula_id
+                    for component_id, formula_id in (
+                        after_cell.allowed_component_formula_ids
+                    )
+                    if component_id == component.component_id
+                }
+                exact = (
+                    (
+                        len(after_candidates) == 1
+                        and component.component_id is not None
+                        and after_candidates[0].component_id == component.component_id
+                        and after_candidates[0].formula_id in allowed
+                    )
+                    if allowed
+                    else not after_candidates
+                )
+                if not exact:
+                    raise ApprovalError(
+                        "a correction must select one exact formula candidate"
+                    )
 
 
 def _require_safe_equation_correction(
@@ -215,6 +365,68 @@ def _validated_draft(draft: DraftRulePackage) -> ImportedRuleDraft:
         raise ApprovalError("draft is structurally invalid") from error
 
 
+def _sync_semantic_proposals(
+    original: ImportedRuleDraft,
+    changed: ImportedRuleDraft,
+) -> tuple[SemanticProposal, ...]:
+    from insulation_coordination.rules.importer.extract import (
+        canonical_model_sha256,
+    )
+    from insulation_coordination.rules.importer.review import (
+        _current_source_artifact_sha256,
+        _required_review_items,
+        _rule_entries,
+    )
+
+    before_rules = {(kind, rule.id): rule for kind, rule in _rule_entries(original)}
+    after_rules = {(kind, rule.id): rule for kind, rule in _rule_entries(changed)}
+    if len(before_rules) != len(_rule_entries(original)) or len(after_rules) != len(
+        _rule_entries(changed)
+    ):
+        raise ApprovalError("rule semantic IDs must be unique within each rule kind")
+    before = {(item.rule_kind, item.semantic_id): item for item in original.semantic_proposals}
+    supplied = {(item.rule_kind, item.semantic_id): item for item in changed.semantic_proposals}
+    if len(before) != len(original.semantic_proposals) or len(supplied) != len(
+        changed.semantic_proposals
+    ):
+        raise ApprovalError("semantic proposals must be unique by rule kind and ID")
+    if set(supplied) - set(after_rules) - set(before_rules):
+        raise ApprovalError("semantic proposal has no matching typed rule")
+
+    proposals: list[SemanticProposal] = []
+    for key, rule in after_rules.items():
+        kind, semantic_id = key
+        prior = before.get(key)
+        candidate = supplied.get(key)
+        if prior is not None and before_rules.get(key) == rule and candidate != prior:
+            raise ApprovalError("a correction cannot rewrite an unchanged semantic proposal")
+        probe = SemanticProposal(
+            semantic_id=semantic_id,
+            rule_kind=kind,
+            state="proposed",
+            rule_sha256=canonical_model_sha256(rule),
+            source_artifact_sha256="0" * 64,
+            review_item_sha256s=(),
+        )
+        review_hashes = tuple(
+            item.sha256 for item in _required_review_items(changed, probe)
+        )
+        probe = probe.model_copy(update={"review_item_sha256s": review_hashes})
+        source_sha256 = _current_source_artifact_sha256(changed, probe)
+        unchanged = (
+            prior is not None
+            and before_rules.get(key) == rule
+            and prior.source_artifact_sha256 == source_sha256
+            and prior.review_item_sha256s == review_hashes
+        )
+        if unchanged:
+            assert prior is not None
+            proposals.append(prior)
+        else:
+            proposals.append(probe.model_copy(update={"source_artifact_sha256": source_sha256}))
+    return tuple(proposals)
+
+
 def record_correction(
     draft: ImportedRuleDraft,
     corrected: ImportedRuleDraft,
@@ -239,36 +451,83 @@ def record_correction(
         raise ApprovalError("a correction cannot rewrite review resolutions")
     _require_safe_raw_grid_correction(original, changed)
     _require_safe_equation_correction(original, changed)
+    if changed.raw_figures != original.raw_figures:
+        raise ApprovalError("a correction cannot rewrite extracted raw figure evidence")
     content_changed = (
         changed.tables,
         changed.formulas,
         changed.mappings,
+        changed.decisions,
+        changed.procedures,
+        changed.guidance,
+        changed.curves,
         changed.extracted_equations,
     ) != (
         original.tables,
         original.formulas,
         original.mappings,
+        original.decisions,
+        original.procedures,
+        original.guidance,
+        original.curves,
         original.extracted_equations,
     )
-    raw_changed = changed.raw_grids != original.raw_grids
+    raw_changed = (
+        changed.raw_grids,
+        changed.raw_clause_fragments,
+        changed.raw_figures,
+        changed.curve_digitizations,
+        changed.curve_variant_reviews,
+        changed.curve_trace_associations,
+        changed.curve_variant_rejections,
+        changed.manual_curve_traces,
+    ) != (
+        original.raw_grids,
+        original.raw_clause_fragments,
+        original.raw_figures,
+        original.curve_digitizations,
+        original.curve_variant_reviews,
+        original.curve_trace_associations,
+        original.curve_variant_rejections,
+        original.manual_curve_traces,
+    )
+    if (
+        changed.curve_digitizations != original.curve_digitizations
+        and changed.curves == original.curves
+    ):
+        raise ApprovalError(
+            "curve proof evidence can change only with its re-proven semantic curve"
+        )
     if not content_changed and not raw_changed and not resolve:
         raise ApprovalError("a correction must change rule content")
-    _require_logged_content(original)
     original_reviews = original.review_items
     changed_reviews = changed.review_items
     corrected_mappings = tuple(
         mapping.model_copy(update={"approved": False}) for mapping in changed.mappings
     )
+    semantic_proposals = _sync_semantic_proposals(original, changed)
+    _require_logged_content(original)
     before = _content_digest(
         original.tables,
         original.formulas,
         original.mappings,
         original_reviews,
         original.raw_grids,
+        original.raw_clause_fragments,
         original.manifest.source_documents,
         original.source_identities,
         original.review_resolutions,
         original.extracted_equations,
+        decisions=original.decisions,
+        procedures=original.procedures,
+        guidance=original.guidance,
+        curves=original.curves,
+        raw_figures=original.raw_figures,
+        curve_digitizations=original.curve_digitizations,
+        curve_variant_reviews=original.curve_variant_reviews,
+        curve_trace_associations=original.curve_trace_associations,
+        curve_variant_rejections=original.curve_variant_rejections,
+        manual_curve_traces=original.manual_curve_traces,
     )
     recorded_at = datetime.now(UTC)
     resolutions = _require_valid_review_resolutions(
@@ -285,10 +544,21 @@ def record_correction(
         corrected_mappings,
         changed_reviews,
         changed.raw_grids,
+        changed.raw_clause_fragments,
         changed.manifest.source_documents,
         changed.source_identities,
         resolutions,
         changed.extracted_equations,
+        decisions=changed.decisions,
+        procedures=changed.procedures,
+        guidance=changed.guidance,
+        curves=changed.curves,
+        raw_figures=changed.raw_figures,
+        curve_digitizations=changed.curve_digitizations,
+        curve_variant_reviews=changed.curve_variant_reviews,
+        curve_trace_associations=changed.curve_trace_associations,
+        curve_variant_rejections=changed.curve_variant_rejections,
+        manual_curve_traces=changed.manual_curve_traces,
     )
     audit_records = tuple(
         ApprovalRecord(
@@ -319,10 +589,22 @@ def record_correction(
         tables=changed.tables,
         formulas=changed.formulas,
         mappings=corrected_mappings,
+        decisions=changed.decisions,
+        procedures=changed.procedures,
+        guidance=changed.guidance,
+        curves=changed.curves,
         review_items=changed.review_items,
         review_resolutions=resolutions,
         raw_grids=changed.raw_grids,
+        raw_clause_fragments=changed.raw_clause_fragments,
+        raw_figures=changed.raw_figures,
+        curve_digitizations=changed.curve_digitizations,
+        curve_variant_reviews=changed.curve_variant_reviews,
+        curve_trace_associations=changed.curve_trace_associations,
+        curve_variant_rejections=changed.curve_variant_rejections,
+        manual_curve_traces=changed.manual_curve_traces,
         extracted_equations=changed.extracted_equations,
+        semantic_proposals=semantic_proposals,
         source_identities=changed.source_identities,
     )
 
@@ -349,8 +631,15 @@ def _require_complete_audit(draft: DraftRulePackage) -> None:
     required.update(f"table:{table.id}" for table in draft.tables)
     required.update(f"formula:{formula.id}" for formula in draft.formulas)
     required.update(f"mapping:{mapping.id}" for mapping in draft.mappings)
+    required.update(f"decision:{rule.id}" for rule in draft.decisions)
+    required.update(f"procedure:{rule.id}" for rule in draft.procedures)
+    required.update(f"guidance:{rule.id}" for rule in draft.guidance)
+    required.update(f"curve:{rule.id}" for rule in draft.curves)
     if isinstance(draft, ImportedRuleDraft):
         required.update(f"equation:{equation.id}" for equation in draft.extracted_equations)
+        required.update(
+            f"raw-clause:{fragment.id}" for fragment in draft.raw_clause_fragments
+        )
     missing = required - audited
     if missing:
         raise ApprovalError("draft has incomplete extraction, table, formula, or mapping audits")
@@ -368,27 +657,54 @@ def _require_logged_content(draft: DraftRulePackage) -> None:
         raise ApprovalError("draft content has no unique extraction audit")
     expected = extraction_digests[0]
     for record in draft.manifest.approval_records:
-        if record.action != "correction" or not record.notes.startswith("content:"):
+        if record.action != "correction" or not re.match(
+            r"content:[0-9a-f]{64}->[0-9a-f]{64};", record.notes
+        ):
             continue
         match = re.match(
             r"content:([0-9a-f]{64})->([0-9a-f]{64});\s+\S",
             record.notes,
         )
-        if match is None or match.group(1) != expected:
+        assert match is not None
+        if match.group(1) != expected:
             raise ApprovalError("draft has a broken correction audit chain")
         expected = match.group(2)
     reviews = draft.review_items if isinstance(draft, ImportedRuleDraft) else ()
     raw_grids = draft.raw_grids if isinstance(draft, ImportedRuleDraft) else ()
+    fragments = (
+        draft.raw_clause_fragments if isinstance(draft, ImportedRuleDraft) else ()
+    )
     actual = _content_digest(
         draft.tables,
         draft.formulas,
         draft.mappings,
         reviews,
         raw_grids,
+        fragments,
         draft.manifest.source_documents,
         draft.source_identities if isinstance(draft, ImportedRuleDraft) else (),
         draft.review_resolutions if isinstance(draft, ImportedRuleDraft) else (),
         draft.extracted_equations if isinstance(draft, ImportedRuleDraft) else (),
+        decisions=draft.decisions,
+        procedures=draft.procedures,
+        guidance=draft.guidance,
+        curves=draft.curves,
+        raw_figures=(draft.raw_figures if isinstance(draft, ImportedRuleDraft) else ()),
+            curve_digitizations=(
+                draft.curve_digitizations if isinstance(draft, ImportedRuleDraft) else ()
+            ),
+            curve_variant_reviews=(
+                draft.curve_variant_reviews if isinstance(draft, ImportedRuleDraft) else ()
+            ),
+            curve_trace_associations=(
+                draft.curve_trace_associations if isinstance(draft, ImportedRuleDraft) else ()
+            ),
+            curve_variant_rejections=(
+                draft.curve_variant_rejections if isinstance(draft, ImportedRuleDraft) else ()
+            ),
+            manual_curve_traces=(
+                draft.manual_curve_traces if isinstance(draft, ImportedRuleDraft) else ()
+            ),
     )
     if actual != expected:
         raise ApprovalError("draft contains an unlogged content change")
@@ -406,9 +722,18 @@ def _require_compatibility_mapping(draft: DraftRulePackage) -> None:
 
 
 def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
+    from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
     from insulation_coordination.rules.importer.recipes import RECIPES
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
+        project_dvc_protection_matrix,
+        project_dvc_voltage_limits,
+    )
 
     table_specs = tuple(spec for recipe in RECIPES for spec in recipe.tables)
+    custom_table_ids = {ids.DVC_VOLTAGE_LIMITS, ids.DVC_PROTECTION_MATRIX}
+    typed_table_specs = tuple(
+        spec for spec in table_specs if spec.semantic_id not in custom_table_ids
+    )
     formula_specs = tuple(spec for recipe in RECIPES for spec in recipe.formulas)
     mapping_specs = tuple(spec for recipe in RECIPES for spec in recipe.mappings)
     tables = {table.id: table for table in draft.tables}
@@ -416,7 +741,7 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
     mappings = {mapping.id: mapping for mapping in draft.mappings}
     grids = {grid.id: grid for grid in draft.raw_grids}
     if (
-        set(tables) != {spec.semantic_id for spec in table_specs}
+        set(tables) != {spec.semantic_id for spec in typed_table_specs}
         or set(formulas) != {spec.semantic_id for spec in formula_specs}
         or set(mappings) != {spec.id for spec in mapping_specs}
         or set(grids) != {f"raw-{spec.semantic_id}" for spec in table_specs}
@@ -427,14 +752,29 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
     for recipe_id, recipe in recipes_by_id.items():
         identity = identities_by_recipe[recipe_id]
         for spec in recipe.tables:
-            table = tables[spec.semantic_id]
             grid = grids[f"raw-{spec.semantic_id}"]
+            if spec.semantic_id in custom_table_ids:
+                expected, _proposals = (
+                    project_dvc_voltage_limits(grid, identity)
+                    if spec.semantic_id == ids.DVC_VOLTAGE_LIMITS
+                    else project_dvc_protection_matrix(grid, identity)
+                )
+                actual = tuple(
+                    rule for rule in draft.decisions if rule.id in {item.id for item in expected}
+                )
+                if actual != expected:
+                    raise ApprovalError(
+                        "reviewed decision does not correspond to its raw recipe grid"
+                    )
+                continue
+            table = tables[spec.semantic_id]
             expected_source = SourceReference(
+                document_id=identity.recipe_id,
                 standard=identity.standard,
                 edition=identity.edition,
+                page=grid.segments[0].page_number,
                 clause=spec.clause,
                 table=spec.source_table,
-                note=f"PDF page {grid.segments[0].page_number}",
             )
             typed_column_count = (
                 sum(column.role == "data" for column in spec.columns)
@@ -467,12 +807,38 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
                 for logical_row in sorted({row for row, _ in logical}):
                     for column in data_columns:
                         raw = logical.get((logical_row, column.semantic_id))
-                        if raw is not None and raw.value is not None:
+                        selected = (
+                            next(
+                                (
+                                    component
+                                    for component in raw.components
+                                    if component.component_id == column.projected_component_id
+                                ),
+                                None,
+                            )
+                            if raw is not None and column.projected_component_id is not None
+                            else raw
+                        )
+                        if selected is not None and selected.value is not None:
                             previous[column.semantic_id] = raw
                         elif column.fill_down:
                             raw = previous.get(column.semantic_id)
-                        if raw is not None and raw.value is not None:
-                            raw_value_list.append(raw)
+                            selected = (
+                                next(
+                                    (
+                                        component
+                                        for component in raw.components
+                                        if component.component_id
+                                        == column.projected_component_id
+                                    ),
+                                    None,
+                                )
+                                if raw is not None
+                                and column.projected_component_id is not None
+                                else raw
+                            )
+                        if selected is not None and selected.value is not None:
+                            raw_value_list.append(selected)
                 raw_values = tuple(raw_value_list)
             elif spec.data_strategy == "rectangle":
                 if spec.data_row_start is None or spec.data_column_start is None:
@@ -501,12 +867,13 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
         for formula_spec in recipe.formulas:
             formula = formulas[formula_spec.semantic_id]
             expected_source = SourceReference(
+                document_id=identity.recipe_id,
                 standard=identity.standard,
                 edition=identity.edition,
+                page=formula_spec.page_number,
                 clause=formula_spec.clause,
                 table=formula_spec.table,
                 figure=formula_spec.figure,
-                note=f"PDF page {formula_spec.page_number}",
             )
             expected_shape = {
                 "critical_frequency_inverse_clearance": "divide(literal,variable:clearance_mm)",
@@ -531,12 +898,13 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
         for mapping_spec in recipe.mappings:
             mapping = mappings[mapping_spec.id]
             expected_source = SourceReference(
+                document_id=identity.recipe_id,
                 standard=identity.standard,
                 edition=identity.edition,
+                page=mapping_spec.page_number,
                 clause=mapping_spec.clause,
                 table=mapping_spec.table,
                 figure=mapping_spec.figure,
-                note=f"PDF page {mapping_spec.page_number}",
             )
             if (
                 mapping.source_rule_id != mapping_spec.semantic_route
@@ -613,31 +981,60 @@ def _require_consistent_shared_source_cells(draft: ImportedRuleDraft) -> None:
     from; two cells with an equal ``source`` are two copies of the same cell. A
     reviewer correcting one copy and not the other must not approve.
     """
-    first_seen: dict[SourceReference, tuple[str, Decimal]] = {}
+    first_seen: dict[tuple[object, ...], tuple[str, object]] = {}
     for grid in draft.raw_grids:
         for cell in grid.cells:
-            if cell.value is None:
+            values: object = (
+                (
+                    tuple(
+                        (component.component_id, component.value, component.unit)
+                        for component in cell.components
+                        if component.value is not None
+                    ),
+                    tuple(
+                        (candidate.component_id, candidate.formula_id)
+                        for candidate in cell.formula_candidates
+                    ),
+                )
+                if cell.components
+                else cell.value
+            )
+            if values is None or values == ((), ()):
                 continue
-            seen = first_seen.get(cell.source)
+            physical_source = tuple(
+                getattr(cell.source, field)
+                for field in (
+                    "document_id",
+                    "standard",
+                    "edition",
+                    "page",
+                    "clause",
+                    "table",
+                    "figure",
+                    "row",
+                    "column",
+                )
+            )
+            seen = first_seen.get(physical_source)
             if seen is None:
-                first_seen[cell.source] = (grid.id, cell.value)
+                first_seen[physical_source] = (grid.id, values)
                 continue
             other_grid_id, other_value = seen
-            if other_value != cell.value:
+            if other_value != values:
                 raise ApprovalError(
                     f"{other_grid_id} and {grid.id} disagree on the value of the shared "
-                    f"source cell at table {cell.source.table} page {cell.source.note} "
+                    f"source cell at table {cell.source.table} page {cell.source.page} "
                     f"row {cell.source.row} column {cell.source.column}"
                 )
 
 
 def _require_source_genesis(draft: ImportedRuleDraft) -> None:
     source_documents = tuple(
-        (source.standard, source.edition, source.sha256)
+        (source.id, source.standard, source.edition, source.sha256)
         for source in draft.manifest.source_documents
     )
     identities = tuple(
-        (identity.standard, identity.edition, identity.sha256)
+        (identity.recipe_id, identity.standard, identity.edition, identity.sha256)
         for identity in draft.source_identities
     )
     if source_documents != identities:
@@ -670,6 +1067,10 @@ def _require_draft_structure(draft: DraftRulePackage) -> None:
         tables=draft.tables,
         formulas=draft.formulas,
         mappings=draft.mappings,
+        decisions=draft.decisions,
+        procedures=draft.procedures,
+        guidance=draft.guidance,
+        curves=draft.curves,
         checksums=draft.checksums,
         package_sha256=draft.package_sha256,
     )
@@ -683,13 +1084,249 @@ def _require_draft_structure(draft: DraftRulePackage) -> None:
         raise ApprovalError(f"approval validation failed: {', '.join(failures)}")
 
 
-def is_fully_resolved(draft: ImportedRuleDraft) -> bool:
-    """True when every manual review item has an associated resolution."""
-    resolved = {resolution.review_item_sha256 for resolution in draft.review_resolutions}
-    inventory = {item.sha256 for item in draft.review_items}
-    return (
-        len(resolved) == len(draft.review_resolutions) == len(inventory) and resolved == inventory
+def _semantic_blocker(
+    draft: ImportedRuleDraft,
+    *,
+    code: str,
+    semantic_id: str,
+    message: str,
+) -> ImportReviewItem:
+    from insulation_coordination.rules.importer.review import _rule_entries
+
+    source = next(
+        (rule.source for _, rule in _rule_entries(draft) if rule.id == semantic_id),
+        None,
     )
+    if source is None:
+        documents = draft.manifest.source_documents
+        if documents:
+            document = documents[0]
+            source = SourceReference(
+                document_id=document.id,
+                standard=document.standard,
+                edition=document.edition,
+            )
+        else:
+            source = SourceReference(
+                document_id="importer",
+                standard="internal",
+                edition="internal",
+            )
+    return ImportReviewItem(
+        code=code,
+        semantic_id=semantic_id,
+        kind="semantic",
+        source=source,
+        expected_contract=message,
+    )
+
+
+def approval_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
+    """Return the one authoritative manual and semantic approval gate."""
+    from insulation_coordination.rules.importer.review import (
+        _require_current_proposal,
+        _rule_entries,
+    )
+
+    inventory_hashes = tuple(item.sha256 for item in draft.review_items)
+    resolution_hashes = tuple(
+        resolution.review_item_sha256 for resolution in draft.review_resolutions
+    )
+    resolved = set(resolution_hashes)
+    blockers: list[ImportReviewItem] = []
+    if (
+        len(inventory_hashes) != len(set(inventory_hashes))
+        or len(resolution_hashes) != len(resolved)
+        or not resolved <= set(inventory_hashes)
+    ):
+        semantic_id = draft.review_items[0].semantic_id if draft.review_items else draft.manifest.version
+        blockers.append(
+            _semantic_blocker(
+                draft,
+                code="REVIEW_RESOLUTION_INVALID",
+                semantic_id=semantic_id,
+                message="manual review resolution inventory is duplicate or stale",
+            )
+        )
+    blockers.extend(item for item in draft.review_items if item.sha256 not in resolved)
+    rules = _rule_entries(draft)
+    proposals = draft.semantic_proposals
+    for kind, rule in rules:
+        matches = tuple(
+            proposal
+            for proposal in proposals
+            if proposal.rule_kind == kind and proposal.semantic_id == rule.id
+        )
+        if not matches:
+            blockers.append(
+                _semantic_blocker(
+                    draft,
+                    code="SEMANTIC_PROPOSAL_MISSING",
+                    semantic_id=rule.id,
+                    message=f"missing required semantic proposal for {rule.id}",
+                )
+            )
+            continue
+        if len(matches) != 1:
+            blockers.append(
+                _semantic_blocker(
+                    draft,
+                    code="SEMANTIC_PROPOSAL_DUPLICATE",
+                    semantic_id=rule.id,
+                    message=f"duplicate semantic proposal for {rule.id}",
+                )
+            )
+            continue
+        proposal = matches[0]
+        if proposal.state != "reviewed":
+            blockers.append(
+                _semantic_blocker(
+                    draft,
+                    code="SEMANTIC_PROPOSAL_PROPOSED",
+                    semantic_id=rule.id,
+                    message=f"semantic proposal {rule.id} is still proposed",
+                )
+            )
+            continue
+        try:
+            _require_current_proposal(draft, proposal, require_resolved_members=True)
+        except ApprovalError as error:
+            blockers.append(
+                _semantic_blocker(
+                    draft,
+                    code="SEMANTIC_PROPOSAL_STALE",
+                    semantic_id=rule.id,
+                    message=str(error),
+                )
+            )
+    rule_keys = {(kind, rule.id) for kind, rule in rules}
+    for proposal in proposals:
+        if (proposal.rule_kind, proposal.semantic_id) not in rule_keys:
+            blockers.append(
+                _semantic_blocker(
+                    draft,
+                    code="SEMANTIC_PROPOSAL_STALE",
+                    semantic_id=proposal.semantic_id,
+                    message=f"stale semantic proposal {proposal.semantic_id} has no current rule",
+                )
+            )
+    for semantic_id in missing_required_curves(draft):
+        blockers.append(
+            _semantic_blocker(
+                draft,
+                code="CURVE_REQUIRED",
+                semantic_id=semantic_id,
+                message=(
+                    f"required curve {semantic_id} has no reviewed variants in the draft"
+                ),
+            )
+        )
+    for semantic_id in incomplete_required_curve_variants(draft):
+        blockers.append(
+            _semantic_blocker(
+                draft,
+                code="CURVE_VARIANT_INVENTORY_REQUIRED",
+                semantic_id=semantic_id,
+                message=(
+                    f"required curve {semantic_id} does not contain exactly the "
+                    "recipe-declared source figures and selectors"
+                ),
+            )
+        )
+    from insulation_coordination.rules.importer.recipes import RECIPES
+
+    required_curve_ids = {
+        semantic_id for recipe in RECIPES for semantic_id in recipe.required_curves
+    }
+    from insulation_coordination.rules.importer.review import (
+        validate_current_curve_evidence,
+    )
+
+    for curve in (curve for curve in draft.curves if curve.id in required_curve_ids):
+        for variant in curve.variants:
+            exact_reviews = tuple(
+                review
+                for review in draft.curve_variant_reviews
+                if review.variant_id == variant.id
+                and review.variant_sha256 == canonical_model_sha256(variant)
+                and review.source_artifact_sha256
+                == variant.reviewed_artifact_sha256
+            )
+            try:
+                validate_current_curve_evidence(draft, variant)
+                proof_current = True
+            except (ApprovalError, ValueError):
+                proof_current = False
+            if len(exact_reviews) != 1 or not proof_current:
+                blockers.append(
+                    _semantic_blocker(
+                        draft,
+                        code="CURVE_VARIANT_REVIEW_REQUIRED",
+                        semantic_id=variant.id,
+                        message=(
+                            f"curve variant {variant.id} lacks one exact review "
+                            "and current conservative proof"
+                        ),
+                    )
+                )
+    return tuple(blockers)
+
+
+def incomplete_required_curve_variants(draft: ImportedRuleDraft) -> tuple[str, ...]:
+    """Required curves whose current variants differ from the recipe inventory."""
+
+    incomplete: set[str] = set()
+    curves_by_id: dict[str, list[PiecewiseCurveRule]] = {}
+    for curve in draft.curves:
+        curves_by_id.setdefault(curve.id, []).append(curve)
+    for recipe in _recipes():
+        for semantic_id in recipe.required_curves:
+            specs = tuple(spec for spec in recipe.curves if spec.semantic_id == semantic_id)
+            if not specs or semantic_id not in curves_by_id:
+                continue
+            curves = curves_by_id[semantic_id]
+            expected = Counter(
+                (
+                    recipe.standard,
+                    recipe.edition,
+                    spec.figure,
+                    selector,
+                )
+                for spec in specs
+                for selector in spec.variant_slots
+            )
+            actual = Counter(
+                (
+                    variant.source.standard,
+                    variant.source.edition,
+                    variant.source.figure,
+                    variant.selector,
+                )
+                for curve in curves
+                for variant in curve.variants
+            )
+            if len(curves) != 1 or actual != expected:
+                incomplete.add(semantic_id)
+    return tuple(sorted(incomplete))
+
+
+def missing_required_curves(draft: ImportedRuleDraft) -> tuple[str, ...]:
+    """Recipe-declared curve semantics with no reviewed curve rule in the draft."""
+
+    from insulation_coordination.rules.importer.recipes import RECIPES
+
+    present = {curve.id for curve in draft.curves}
+    required = {
+        semantic_id for recipe in RECIPES for semantic_id in recipe.required_curves
+    }
+    return tuple(
+        semantic_id for semantic_id in sorted(required) if semantic_id not in present
+    )
+
+
+def is_fully_resolved(draft: ImportedRuleDraft) -> bool:
+    """True when the single manual and semantic approval gate is empty."""
+    return not approval_blockers(draft)
 
 
 def approve_draft(
@@ -706,14 +1343,15 @@ def approve_draft(
         record.action == "approval" for record in draft.manifest.approval_records
     ):
         raise ApprovalError("draft already contains an approval")
-    resolved = {resolution.review_item_sha256 for resolution in draft.review_resolutions}
-    inventory = {item.sha256 for item in draft.review_items}
-    if (
-        len(resolved) != len(draft.review_resolutions)
-        or not resolved <= inventory
-        or inventory - resolved
-    ):
-        raise ApprovalError("draft has unresolved manual review items")
+    blockers = approval_blockers(draft)
+    if blockers:
+        resolved = {item.review_item_sha256 for item in draft.review_resolutions}
+        manual = any(item.sha256 not in resolved for item in draft.review_items)
+        raise ApprovalError(
+            "draft approval blockers: "
+            + ("unresolved manual review items; " if manual else "")
+            + "; ".join(item.expected_contract for item in blockers)
+        )
     _require_source_genesis(draft)
     _require_complete_audit(draft)
     _require_compatibility_mapping(draft)
@@ -741,6 +1379,10 @@ def approve_draft(
         tables=draft.tables,
         formulas=draft.formulas,
         mappings=tuple(mapping.model_copy(update={"approved": True}) for mapping in draft.mappings),
+        decisions=draft.decisions,
+        procedures=draft.procedures,
+        guidance=draft.guidance,
+        curves=draft.curves,
     )
     try:
         content, checksums = _archive_bytes(candidate)

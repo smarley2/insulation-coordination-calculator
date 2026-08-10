@@ -13,7 +13,7 @@ from insulation_coordination.domain.rules import (
 )
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_decision
 
-SOURCE = SourceReference(standard="SYNTHETIC-1", edition="1", clause="4.2")
+SOURCE = SourceReference(document_id="synthetic-source", standard="SYNTHETIC-1", edition="1", clause="4.2")
 ROW_SOURCE = SOURCE.model_copy(update={"row": "synthetic row 1"})
 
 
@@ -175,6 +175,62 @@ def _range_rule(
         exhaustive=False,
         source=SOURCE,
     )
+
+
+def _boolean_rule(*, mixed: bool = False) -> DecisionRule:
+    inputs = (DecisionInput(name="enabled", kind="boolean"),)
+    combinations: tuple[tuple[bool, str | None, str], ...] = (
+        (True, None, "path-a"),
+        (False, None, "path-b"),
+    )
+    if mixed:
+        inputs += (DecisionInput(name="mode", kind="categorical", allowed_values=("x", "y")),)
+        combinations = (
+            (True, "x", "path-a"),
+            (False, "x", "path-b"),
+            (True, "y", "path-b"),
+            (False, "y", "path-a"),
+        )
+    return DecisionRule(
+        id="synthetic-boolean",
+        inputs=inputs,
+        outputs=(DecisionOutput(name="route", kind="categorical", allowed_values=("path-a", "path-b")),),
+        rows=tuple(
+            DecisionRow(
+                matchers=(Matcher(input="enabled", op="equals", boolean=enabled),)
+                + ((Matcher(input="mode", op="equals", values=(mode,)),) if mode else ()),
+                values=(DecisionValue(name="route", categorical=route),),
+                source=SOURCE,
+            )
+            for enabled, mode, route in combinations
+        ),
+        exhaustive=True,
+        source=SOURCE,
+    )
+
+
+@pytest.mark.parametrize(("enabled", "route"), ((True, "path-a"), (False, "path-b")))
+def test_boolean_equals_matcher_selects_the_matching_route(enabled: bool, route: str) -> None:
+    assert evaluate_decision(_boolean_rule(), {"enabled": enabled}).values[0].categorical == route
+
+
+def test_boolean_rule_requires_its_boolean_input() -> None:
+    assert evaluate_decision(_boolean_rule(), {}).status == "input_required"
+
+
+def test_mixed_boolean_and_categorical_rule_evaluates_every_combination() -> None:
+    rule = _boolean_rule(mixed=True)
+    assert {
+        evaluate_decision(rule, {"enabled": enabled, "mode": mode}).values[0].categorical
+        for enabled in (False, True)
+        for mode in ("x", "y")
+    } == {"path-a", "path-b"}
+
+
+@pytest.mark.parametrize("enabled", (0, 1))
+def test_integer_does_not_satisfy_boolean_equals_matcher(enabled: int) -> None:
+    with pytest.raises(EvaluationError, match="boolean"):
+        evaluate_decision(_boolean_rule(), {"enabled": enabled})
 
 
 @pytest.mark.parametrize(

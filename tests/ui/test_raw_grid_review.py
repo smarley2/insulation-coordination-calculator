@@ -8,8 +8,13 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog
 
 from insulation_coordination.rules.importer import recipes as recipe_registry
-from insulation_coordination.rules.importer.extract import RawGrid, RawGridCell, RawGridSegment
-from insulation_coordination.rules.importer.identify import TableColumnSpec
+from insulation_coordination.rules.importer.extract import (
+    RawGrid,
+    RawGridCell,
+    RawGridSegment,
+    parse_compound_data_cell,
+)
+from insulation_coordination.rules.importer.identify import CompoundQuantitySpec, TableColumnSpec
 from insulation_coordination.rules.importer.review import (
     unresolved_raw_review_items,
     unresolved_table_items,
@@ -234,6 +239,87 @@ def test_cell_outside_the_data_area_stays_read_only(qtbot, draft) -> None:
 
     assert dialog._value_edit.isEnabled() is False
     assert dialog._apply_button.isEnabled() is False
+
+
+def test_dialog_applies_association_and_formula_atomically(
+    qtbot,
+    draft,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "insulation_coordination.ui.raw_grid_review.QMessageBox.warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    grid = draft.raw_grids[0]
+    original = next(cell for cell in grid.cells if (cell.row, cell.column) == (2, 1))
+    parsed = parse_compound_data_cell(
+        text="11 ac / 17 ac",
+        spec=CompoundQuantitySpec(
+            component_ids=("ac", "dc"),
+            formula_candidates=(("ac", "synthetic-ac-formula"),),
+            allowed_formula_ids=(
+                ("ac", "synthetic-ac-formula"),
+                ("dc", "synthetic-dc-formula"),
+            ),
+        ),
+        source=original.source,
+    )
+    compound = original.model_copy(
+        update={
+            "raw_text": "11 ac / 17 ac",
+            "value": None,
+            "components": parsed.components,
+            "compound_component_ids": parsed.compound_component_ids,
+            "formula_candidates": parsed.formula_candidates,
+            "allowed_component_formula_ids": parsed.allowed_component_formula_ids,
+            "parse_status": parsed.parse_status,
+        }
+    )
+    changed_grid = grid.model_copy(
+        update={
+            "cells": tuple(
+                compound if cell is original else cell for cell in grid.cells
+            )
+        }
+    )
+    changed = draft.model_copy(
+        update={
+            "raw_grids": tuple(
+                changed_grid if item is grid else item for item in draft.raw_grids
+            )
+        }
+    )
+    dialog = RawGridReviewDialog(changed, actor="Maintainer")
+    qtbot.addWidget(dialog)
+
+    dialog._table.setCurrentCell(2, 1)
+
+    assert dialog._components_table.rowCount() == 2
+    assert dialog._components_table.item(0, 0).text() == "ac"
+    assert dialog._components_table.item(1, 0).text() == "ac"
+    assert dialog._components_table.item(0, 2).text() == "11"
+    assert dialog._components_table.item(1, 2).text() == "17"
+
+    dialog._components_table.setCurrentCell(1, 0)
+    dialog._association_selector.setCurrentIndex(
+        dialog._association_selector.findData("dc")
+    )
+    qtbot.mouseClick(dialog._apply_association_button, Qt.MouseButton.LeftButton)
+
+    assert warnings == ["Select an exact formula for the reviewed component route."]
+    assert dialog.pending_association_corrections == {}
+    assert dialog.pending_formula_corrections == {}
+
+    dialog._formula_selector.setCurrentIndex(
+        dialog._formula_selector.findData("synthetic-dc-formula")
+    )
+    qtbot.mouseClick(dialog._apply_association_button, Qt.MouseButton.LeftButton)
+
+    assert dialog.pending_association_corrections == {(2, 1, 1): "dc"}
+    assert dialog.pending_formula_corrections == {
+        (2, 1, 1): "synthetic-dc-formula"
+    }
 
 
 @pytest.mark.parametrize("value", ("", "not-a-number", "NaN"))

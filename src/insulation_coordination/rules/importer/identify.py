@@ -13,8 +13,12 @@ from pypdf.errors import PyPdfError
 
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import (
+    CurveInterpolation,
+    CurveSegmentType,
+    FaultTimeVoltageSelector,
     Identifier,
     ReferenceText,
+    RuleKind,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -87,6 +91,47 @@ class TableSegmentSpec(FrozenModel):
     page_search_radius: int = Field(default=0, ge=0, le=5)
 
 
+class CompoundQuantitySpec(FrozenModel):
+    component_ids: tuple[Identifier, ...] = Field(min_length=1)
+    formula_candidates: tuple[tuple[Identifier, Identifier | None], ...] = ()
+    allowed_formula_ids: tuple[tuple[Identifier, Identifier], ...] = ()
+
+    @model_validator(mode="after")
+    def _valid_component_contract(self) -> CompoundQuantitySpec:
+        if len(self.component_ids) != len(set(self.component_ids)):
+            raise ValueError("compound component IDs must be unique")
+        unknown = {
+            component_id
+            for component_id, _formula_id in (
+                *self.formula_candidates,
+                *self.allowed_formula_ids,
+            )
+            if component_id not in self.component_ids
+        }
+        if unknown:
+            raise ValueError("formula candidate refers to an undeclared compound component")
+        allowed = set(self.allowed_formula_ids) or {
+            (component_id, formula_id)
+            for component_id, formula_id in self.formula_candidates
+            if formula_id is not None
+        }
+        if any(
+            formula_id is not None and (component_id, formula_id) not in allowed
+            for component_id, formula_id in self.formula_candidates
+        ):
+            raise ValueError("formula candidate is outside its component route")
+        if any(
+            formula_id is None
+            and not any(
+                allowed_component_id == component_id
+                for allowed_component_id, _allowed_formula_id in allowed
+            )
+            for component_id, formula_id in self.formula_candidates
+        ):
+            raise ValueError("zero formula candidates need a component-local allowed formula")
+        return self
+
+
 class TableColumnSpec(FrozenModel):
     semantic_id: Identifier
     heading: ReferenceText
@@ -99,6 +144,88 @@ class TableColumnSpec(FrozenModel):
     #: from a licensed table's own header row rather than a value safe to hardcode.
     axis_value_source_row: int | None = Field(default=None, ge=0)
     fill_down: bool = False
+    compound_quantity: CompoundQuantitySpec | None = None
+    projected_component_id: Identifier | None = None
+
+    @model_validator(mode="after")
+    def _valid_projected_component(self) -> TableColumnSpec:
+        if self.projected_component_id is not None and (
+            self.compound_quantity is None
+            or self.projected_component_id not in self.compound_quantity.component_ids
+        ):
+            raise ValueError("projected component must belong to the compound quantity")
+        if self.compound_quantity is not None and self.role != "data":
+            raise ValueError("only data columns may declare compound quantities")
+        return self
+
+
+BlankCellSemantics = Literal[
+    "inherit",
+    "not_applicable",
+    "reference",
+    "structural",
+    "missing",
+]
+
+
+class MergedCellSpec(FrozenModel):
+    row: int = Field(ge=0)
+    column: int = Field(ge=0)
+    row_span: int = Field(default=1, ge=1)
+    column_span: int = Field(default=1, ge=1)
+    inherit: Literal["right", "down", "both", "none"]
+
+
+class BlankCellSpec(FrozenModel):
+    row: int = Field(ge=0)
+    column: int = Field(ge=0)
+    semantics: BlankCellSemantics
+
+
+class ReferenceSlotSpec(FrozenModel):
+    row: int = Field(ge=0)
+    column: int = Field(ge=0)
+    target_rule_id: Identifier
+    target_kind: RuleKind
+
+
+class TokenGrammarSpec(FrozenModel):
+    """A reviewed neutral-token grammar for non-numeric data cells.
+
+    Maps normalized token text extracted from a data cell onto a typed value.
+    Prefix matching supports source cells that append reviewed footnote markers
+    or qualifiers to a neutral category. Extraction never guesses an unknown
+    token; it checks that every data-cell token belongs to the grammar.
+    """
+
+    target: Literal["boolean", "categorical"]
+    tokens: tuple[tuple[Identifier, bool | Identifier], ...] = Field(min_length=2)
+    match: Literal["exact", "prefix"] = "exact"
+
+    @model_validator(mode="after")
+    def _unique_tokens(self) -> TokenGrammarSpec:
+        texts = tuple(text for text, _value in self.tokens)
+        if len(texts) != len(set(texts)):
+            raise ValueError("token grammar must not repeat a token")
+        if self.target == "boolean" and any(type(value) is not bool for _, value in self.tokens):
+            raise ValueError("boolean token grammar values must be booleans")
+        if self.target == "categorical" and any(
+            not isinstance(value, str) for _, value in self.tokens
+        ):
+            raise ValueError("categorical token grammar values must be identifiers")
+        return self
+
+    def resolve(self, raw_text: str) -> bool | Identifier | None:
+        """The typed value for one extracted token, or None when unknown."""
+
+        normalized = _normalized(raw_text)
+        for text, value in self.tokens:
+            candidate = _normalized(text)
+            if candidate == normalized or (
+                self.match == "prefix" and normalized.startswith(candidate)
+            ):
+                return value
+        return None
 
 
 class TableAuditSpec(FrozenModel):
@@ -135,6 +262,10 @@ class TableAuditSpec(FrozenModel):
     ]
     segments: tuple[TableSegmentSpec, ...] = ()
     columns: tuple[TableColumnSpec, ...] = ()
+    merged_cells: tuple[MergedCellSpec, ...] = ()
+    blank_cells: tuple[BlankCellSpec, ...] = ()
+    reference_slots: tuple[ReferenceSlotSpec, ...] = ()
+    token_grammar: TokenGrammarSpec | None = None
     page_search_radius: int = Field(default=0, ge=0, le=5)
     interpolation: Literal["none", "linear"] = "none"
 
@@ -157,6 +288,31 @@ class TableAuditSpec(FrozenModel):
                     f"{column.axis_value_source_row} is not declared in any segment's "
                     "header_rows"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _structural_coordinates_fit_the_raw_grid(self) -> TableAuditSpec:
+        blank_coordinates = tuple((item.row, item.column) for item in self.blank_cells)
+        reference_coordinates = tuple((item.row, item.column) for item in self.reference_slots)
+        merge_anchors = tuple((item.row, item.column) for item in self.merged_cells)
+        for label, coordinates in (
+            ("blank", blank_coordinates),
+            ("reference", reference_coordinates),
+            ("merged", merge_anchors),
+        ):
+            if len(coordinates) != len(set(coordinates)):
+                raise ValueError(f"table has duplicate {label} cell coordinates")
+            if any(
+                row >= self.expected_raw_rows or column >= self.expected_raw_columns
+                for row, column in coordinates
+            ):
+                raise ValueError(f"table {label} cell is outside the raw grid")
+        if any(
+            merge.row + merge.row_span > self.expected_raw_rows
+            or merge.column + merge.column_span > self.expected_raw_columns
+            for merge in self.merged_cells
+        ):
+            raise ValueError("table merged cell span is outside the raw grid")
         return self
 
 
@@ -189,6 +345,45 @@ class MappingAuditSpec(FrozenModel):
     figure: ReferenceText | None = None
 
 
+class ClauseAuditSpec(FrozenModel):
+    """Structural contract for one reviewed clause fragment.
+
+    Layout facts only: page, bbox, root shape, and output kind. The recipe never
+    stores clause wording; extracted text stays in private raw fragments.
+    """
+
+    semantic_id: Identifier
+    clause: ReferenceText
+    page_number: int = Field(ge=1)
+    expected_bbox: tuple[float, float, float, float]
+    expected_root_kind: Literal["paragraph", "bullets"]
+    output_kind: Literal["decision", "procedure"]
+
+
+class CurveAuditSpec(FrozenModel):
+    """Structural contract for one reviewed source figure.
+
+    Layout facts only: figure number, page, bbox, axis kinds/units/scales, and the
+    permitted variant/segment vocabulary. No curve coordinates or labels live here.
+    """
+
+    semantic_id: Identifier
+    figure: ReferenceText
+    page_number: int = Field(ge=1)
+    expected_bbox: tuple[float, float, float, float]
+    expected_pixel_size: tuple[int, int] | None = None
+    x_quantity_kind: Identifier
+    x_unit: Identifier
+    y_quantity_kind: Identifier
+    y_unit: Identifier
+    x_scale: Literal["log10"]
+    y_scale: Literal["log10"]
+    x_source_unit: Identifier | None = None
+    variant_slots: tuple[FaultTimeVoltageSelector, ...] = Field(min_length=1)
+    permitted_segment_types: tuple[CurveSegmentType, ...] = Field(min_length=1)
+    permitted_interpolations: tuple[CurveInterpolation, ...] = Field(min_length=1)
+
+
 class StandardRecipe(FrozenModel):
     id: Identifier
     standard: Identifier
@@ -203,6 +398,12 @@ class StandardRecipe(FrozenModel):
     tables: tuple[TableAuditSpec, ...]
     formulas: tuple[FormulaAuditSpec, ...]
     mappings: tuple[MappingAuditSpec, ...]
+    clauses: tuple[ClauseAuditSpec, ...] = ()
+    curves: tuple[CurveAuditSpec, ...] = ()
+    #: Curve semantics the recipe's standard requires. A draft missing a reviewed
+    #: curve rule for one of these cannot approve. Declared here so approval does
+    #: not hard-code any one standard's curve IDs.
+    required_curves: tuple[Identifier, ...] = ()
 
     def matches_text(self, text: str) -> bool:
         return all(_normalized(anchor) in text for anchor in self.identity_anchors)

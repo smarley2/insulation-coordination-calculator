@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
 import pdfplumber
@@ -19,21 +19,41 @@ from pypdf._text_extraction import mult
 from pypdf.errors import PyPdfError
 
 from insulation_coordination.domain.project import FrozenModel
+from insulation_coordination.domain.quantities import DecimalValue
 from insulation_coordination.domain.rules import (
     IEC_IMPORTER_VERSION,
     RULE_SCHEMA_VERSION,
     ApprovalRecord,
     CompatibilityMapping,
+    DecisionRule,
     DraftRulePackage,
     Formula,
+    GuidanceRule,
+    Identifier,
     Manifest,
     NotesText,
+    PiecewiseCurveRule,
+    ProcedureRule,
+    RuleKind,
     SourceDocument,
+    SourceGeometryReference,
     SourceReference,
     Table,
 )
 from insulation_coordination.rules.archive import _canonical_json
+
+if TYPE_CHECKING:
+    from insulation_coordination.rules.importer.clauses import RawClauseFragment
+    from insulation_coordination.rules.importer.curves import (
+        CurveDigitizationResult,
+        OcrEngine,
+        RawCurveTrace,
+        RawFigure,
+    )
+
 from insulation_coordination.rules.importer.identify import (
+    BlankCellSemantics,
+    CompoundQuantitySpec,
     EquationAuditSpec,
     FormulaAuditSpec,
     MappingAuditSpec,
@@ -57,20 +77,34 @@ def _missing_parts_message(loaded: set[str]) -> str:
     )
 
 __all__ = [
+    "ComponentFormulaCandidate",
+    "CurveTraceAssociation",
+    "CurveVariantRejection",
+    "CurveVariantReview",
     "EquationAuditSpec",
     "ExtractedEquation",
     "ExtractionError",
     "FormulaAuditSpec",
     "ImportReviewItem",
     "ImportedRuleDraft",
+    "ManualCurveTrace",
     "MappingAuditSpec",
+    "ProposalState",
     "RawGrid",
     "RawGridCell",
     "RawGridSegment",
+    "RawQuantityComponent",
+    "ReviewArtifactKind",
+    "SemanticProposal",
+    "SemanticReferenceToken",
     "StandardRecipe",
     "TableAuditSpec",
+    "apply_table_structure",
+    "canonical_model_sha256",
+    "compound_review_items",
     "extract_draft",
     "is_recipe_derived",
+    "parse_compound_data_cell",
     "parse_data_cell",
 ]
 
@@ -79,22 +113,87 @@ class ExtractionError(ValueError):
     """Recognized input could not be extracted without guessing."""
 
 
+ReviewArtifactKind = Literal[
+    "table",
+    "formula",
+    "mapping",
+    "raw_cell",
+    "semantic",
+    "clause",
+    "curve",
+]
+ProposalState = Literal["proposed", "reviewed"]
+
+
+def canonical_model_sha256(value: FrozenModel) -> str:
+    """Hash one typed model through the rule archive's canonical JSON encoding."""
+    return hashlib.sha256(
+        _canonical_json(value.model_dump(mode="json", warnings=False))
+    ).hexdigest()
+
+
 class ImportReviewItem(FrozenModel):
-    code: Literal[
-        "MANUAL_TABLE_DEFINITION_REQUIRED",
-        "MANUAL_RULE_DEFINITION_REQUIRED",
-        "MANUAL_MAPPING_REQUIRED",
-        "MANUAL_RAW_CELL_REVIEW_REQUIRED",
-    ]
-    semantic_id: str
-    kind: Literal["table", "formula", "mapping", "raw_cell"]
+    code: Identifier
+    semantic_id: Identifier
+    kind: ReviewArtifactKind
     source: SourceReference
     expected_contract: NotesText
 
     @property
     def sha256(self) -> str:
-        payload = self.model_dump(mode="json", warnings=False)
-        return hashlib.sha256(_canonical_json(payload)).hexdigest()
+        return canonical_model_sha256(self)
+
+
+class SemanticProposal(FrozenModel):
+    semantic_id: Identifier
+    rule_kind: RuleKind
+    state: ProposalState
+    rule_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    source_artifact_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    review_item_sha256s: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _valid_review_item_hashes(self) -> SemanticProposal:
+        if any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in self.review_item_sha256s):
+            raise ValueError("review item SHA-256 must be lowercase hexadecimal")
+        if len(self.review_item_sha256s) != len(set(self.review_item_sha256s)):
+            raise ValueError("proposal review item SHA-256 values must be unique")
+        return self
+
+
+class CurveVariantReview(FrozenModel):
+    """Exact draft-only review of one current curve variant and its source artifact."""
+
+    variant_id: Identifier
+    variant_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    source_artifact_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    actor: str = Field(min_length=1, max_length=200)
+    recorded_at: datetime
+    notes: NotesText
+
+
+class CurveTraceAssociation(FrozenModel):
+    variant_id: Identifier
+    figure_artifact_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    trace_id: Identifier
+
+
+class ManualCurveTrace(FrozenModel):
+    """Audited maintainer-supplied pixel trace; extracted figures remain immutable."""
+
+    figure_artifact_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    trace: RawCurveTrace
+    actor: str = Field(min_length=1, max_length=200)
+    recorded_at: datetime
+    notes: NotesText
+
+
+class CurveVariantRejection(FrozenModel):
+    variant_id: Identifier
+    variant_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    actor: str = Field(min_length=1, max_length=200)
+    recorded_at: datetime
+    notes: NotesText
 
 
 class ImportReviewResolution(FrozenModel):
@@ -104,15 +203,38 @@ class ImportReviewResolution(FrozenModel):
     notes: NotesText
 
 
+class RawQuantityComponent(FrozenModel):
+    source_index: int = Field(default=0, ge=0)
+    component_id: Identifier | None
+    raw_text: str = Field(max_length=2_000)
+    value: DecimalValue | None = None
+    unit: Identifier | None = None
+    source: SourceReference
+
+
+class ComponentFormulaCandidate(FrozenModel):
+    source_index: int = Field(default=0, ge=0)
+    component_id: Identifier
+    formula_id: Identifier | None
+    source: SourceReference
+
+
 class ParsedDataCell(FrozenModel):
     value: Decimal | None = None
     qualifier: str | None = Field(default=None, max_length=8)
     suffix: str | None = Field(default=None, max_length=32)
     footnotes: tuple[str, ...] = ()
+    components: tuple[RawQuantityComponent, ...] = ()
+    compound_component_ids: tuple[Identifier, ...] = ()
+    formula_candidates: tuple[ComponentFormulaCandidate, ...] = ()
+    allowed_component_formula_ids: tuple[tuple[Identifier, Identifier], ...] = ()
+    review_codes: tuple[Identifier, ...] = ()
     parse_status: Literal[
         "blank",
         "numeric",
         "ambiguous_numeric",
+        "compound",
+        "ambiguous_compound",
         "non_scalar",
         "range",
     ]
@@ -122,6 +244,12 @@ class RawGridSegment(FrozenModel):
     page_number: int = Field(ge=1)
     row_start: int = Field(ge=0)
     row_count: int = Field(ge=1)
+    source: SourceReference
+
+
+class SemanticReferenceToken(FrozenModel):
+    target_rule_id: Identifier
+    target_kind: RuleKind
     source: SourceReference
 
 
@@ -136,15 +264,49 @@ class RawGridCell(FrozenModel):
     qualifier: str | None = Field(default=None, max_length=8)
     suffix: str | None = Field(default=None, max_length=32)
     footnotes: tuple[str, ...] = ()
+    components: tuple[RawQuantityComponent, ...] = ()
+    compound_component_ids: tuple[Identifier, ...] = ()
+    formula_candidates: tuple[ComponentFormulaCandidate, ...] = ()
+    allowed_component_formula_ids: tuple[tuple[Identifier, Identifier], ...] = ()
     parse_status: Literal[
         "blank",
         "text",
         "numeric",
         "ambiguous_numeric",
+        "compound",
+        "ambiguous_compound",
         "non_scalar",
         "range",
     ]
+    blank_semantics: BlankCellSemantics | None = None
+    reference_token: SemanticReferenceToken | None = None
     source: SourceReference
+
+    @model_validator(mode="after")
+    def _valid_compound_occurrences(self) -> RawGridCell:
+        indexes = tuple(component.source_index for component in self.components)
+        if len(indexes) != len(set(indexes)):
+            raise ValueError("compound source occurrence indexes must be unique")
+        if any(
+            component.component_id is not None
+            and component.component_id not in self.compound_component_ids
+            for component in self.components
+        ):
+            raise ValueError("compound occurrence has an undeclared component association")
+        components = {component.source_index: component for component in self.components}
+        if any(
+            candidate.source_index not in components
+            or candidate.component_id
+            != components[candidate.source_index].component_id
+            for candidate in self.formula_candidates
+        ):
+            raise ValueError("formula candidate does not match its source occurrence")
+        if any(
+            component_id not in self.compound_component_ids
+            for component_id, _formula_id in self.allowed_component_formula_ids
+        ):
+            raise ValueError("formula route has an undeclared component")
+        return self
 
 
 class RawGrid(FrozenModel):
@@ -188,6 +350,152 @@ class RawGrid(FrozenModel):
         return self
 
 
+def apply_table_structure(grid: RawGrid, spec: TableAuditSpec) -> RawGrid:
+    """Apply only recipe-declared merges, blank meanings, and semantic references."""
+
+    if (grid.rows, grid.columns) != (spec.expected_raw_rows, spec.expected_raw_columns):
+        raise ExtractionError(f"raw grid dimensions differ for {spec.semantic_id}")
+    by_coordinate = {(cell.row, cell.column): cell for cell in grid.cells}
+    expected = {
+        (row, column)
+        for row in range(spec.expected_raw_rows)
+        for column in range(spec.expected_raw_columns)
+    }
+    missing = expected - set(by_coordinate)
+    if missing:
+        raise ExtractionError(f"table {spec.semantic_id} has a missing physical cell")
+
+    blanks = {(item.row, item.column): item.semantics for item in spec.blank_cells}
+    references = {(item.row, item.column): item for item in spec.reference_slots}
+    structural = bool(blanks or references or spec.merged_cells)
+    for coordinate in references:
+        cell = by_coordinate[coordinate]
+        if (
+            not cell.raw_text.strip()
+            or cell.value is not None
+            or cell.parse_status not in {"text", "non_scalar"}
+        ):
+            raise ExtractionError(
+                f"table {spec.semantic_id} has an unresolved reference slot at {coordinate}"
+            )
+    for coordinate, semantics in blanks.items():
+        cell = by_coordinate[coordinate]
+        expanded_inherit = semantics == "inherit" and cell.blank_semantics == "inherit"
+        explicit_not_applicable = (
+            semantics == "not_applicable"
+            and cell.value is None
+            and cell.parse_status in {"text", "non_scalar"}
+        )
+        if semantics == "missing":
+            raise ExtractionError(
+                f"table {spec.semantic_id} has unresolved missing semantics at {coordinate}"
+            )
+        if cell.raw_text.strip() and not (expanded_inherit or explicit_not_applicable):
+            raise ExtractionError(
+                f"table {spec.semantic_id} has content in declared blank at {coordinate}"
+            )
+    if spec.token_grammar is not None:
+        for cell in grid.cells:
+            if cell.role != "data":
+                continue
+            if (
+                cell.value is not None
+                or cell.components
+                or spec.token_grammar.resolve(cell.raw_text) is None
+            ):
+                raise ExtractionError(
+                    f"table {spec.semantic_id} has an unknown {spec.token_grammar.target} token at "
+                    f"{(cell.row, cell.column)}"
+                )
+    if structural:
+        undeclared = tuple(
+            coordinate
+            for coordinate, cell in by_coordinate.items()
+            if not cell.raw_text.strip() and coordinate not in blanks
+        )
+        if undeclared:
+            raise ExtractionError(
+                f"table {spec.semantic_id} has an undeclared blank at {undeclared[0]}"
+            )
+    for coordinate, cell in tuple(by_coordinate.items()):
+        slot = references.get(coordinate)
+        by_coordinate[coordinate] = cell.model_copy(
+            update={
+                "blank_semantics": blanks.get(coordinate),
+                "reference_token": (
+                    SemanticReferenceToken(
+                        target_rule_id=slot.target_rule_id,
+                        target_kind=slot.target_kind,
+                        source=cell.source,
+                    )
+                    if slot is not None and cell.raw_text.strip()
+                    else (
+                        cell.reference_token
+                        if blanks.get(coordinate) == "inherit"
+                        else None
+                    )
+                ),
+            }
+        )
+
+    for merge in spec.merged_cells:
+        anchor_coordinate = (merge.row, merge.column)
+        anchor = by_coordinate[anchor_coordinate]
+        if not anchor.raw_text.strip():
+            raise ExtractionError(f"table {spec.semantic_id} has an unresolved merged anchor")
+        covered = {
+            (row, column)
+            for row in range(merge.row, merge.row + merge.row_span)
+            for column in range(merge.column, merge.column + merge.column_span)
+            if (merge.inherit in {"down", "both"} or row == merge.row)
+            and (merge.inherit in {"right", "both"} or column == merge.column)
+        }
+        for coordinate in covered - {anchor_coordinate}:
+            cell = by_coordinate[coordinate]
+            unexpanded = (
+                cell.role not in {"blank", "data"}
+                or cell.parse_status != "blank"
+                or cell.blank_semantics != "inherit"
+            )
+            already_expanded = (
+                cell.blank_semantics == "inherit"
+                and cell.raw_text == anchor.raw_text
+                and cell.value == anchor.value
+                and cell.parse_status == anchor.parse_status
+                and cell.reference_token == anchor.reference_token
+                and cell.source == anchor.source
+            )
+            if unexpanded and not already_expanded:
+                raise ExtractionError(
+                    f"table {spec.semantic_id} has an unresolved merged cell at {coordinate}"
+                )
+            by_coordinate[coordinate] = cell.model_copy(
+                update={
+                    "raw_text": anchor.raw_text,
+                    "value": anchor.value,
+                    "qualifier": anchor.qualifier,
+                    "suffix": anchor.suffix,
+                    "footnotes": anchor.footnotes,
+                    "components": anchor.components,
+                    "compound_component_ids": anchor.compound_component_ids,
+                    "formula_candidates": anchor.formula_candidates,
+                    "allowed_component_formula_ids": anchor.allowed_component_formula_ids,
+                    "parse_status": anchor.parse_status,
+                    "reference_token": anchor.reference_token,
+                    "source": anchor.source,
+                }
+            )
+    return grid.model_copy(
+        update={
+            "cells": tuple(
+                by_coordinate[(row, column)]
+                for row in range(spec.expected_raw_rows)
+                for column in range(spec.expected_raw_columns)
+            )
+        }
+    )
+
+
 class ExtractedEquation(FrozenModel):
     id: str
     raw_text: str = Field(max_length=4_000)
@@ -204,7 +512,15 @@ class ImportedRuleDraft(DraftRulePackage):
     review_items: tuple[ImportReviewItem, ...] = ()
     review_resolutions: tuple[ImportReviewResolution, ...] = ()
     raw_grids: tuple[RawGrid, ...] = ()
+    raw_clause_fragments: tuple[RawClauseFragment, ...] = ()
+    raw_figures: tuple[RawFigure, ...] = ()
+    curve_digitizations: tuple[CurveDigitizationResult, ...] = ()
+    curve_variant_reviews: tuple[CurveVariantReview, ...] = ()
+    curve_trace_associations: tuple[CurveTraceAssociation, ...] = ()
+    curve_variant_rejections: tuple[CurveVariantRejection, ...] = ()
+    manual_curve_traces: tuple[ManualCurveTrace, ...] = ()
     extracted_equations: tuple[ExtractedEquation, ...] = ()
+    semantic_proposals: tuple[SemanticProposal, ...] = ()
     source_identities: tuple[StandardIdentity, ...]
 
 
@@ -214,10 +530,21 @@ def _content_digest(
     mappings: tuple[CompatibilityMapping, ...],
     review_items: tuple[ImportReviewItem, ...] = (),
     raw_grids: tuple[RawGrid, ...] = (),
+    raw_clause_fragments: tuple[RawClauseFragment, ...] = (),
     source_documents: tuple[SourceDocument, ...] = (),
     source_identities: tuple[StandardIdentity, ...] = (),
     review_resolutions: tuple[ImportReviewResolution, ...] = (),
     extracted_equations: tuple[ExtractedEquation, ...] = (),
+    decisions: tuple[DecisionRule, ...] = (),
+    procedures: tuple[ProcedureRule, ...] = (),
+    guidance: tuple[GuidanceRule, ...] = (),
+    curves: tuple[PiecewiseCurveRule, ...] = (),
+    raw_figures: tuple[RawFigure, ...] = (),
+    curve_digitizations: tuple[CurveDigitizationResult, ...] = (),
+    curve_variant_reviews: tuple[CurveVariantReview, ...] = (),
+    curve_trace_associations: tuple[CurveTraceAssociation, ...] = (),
+    curve_variant_rejections: tuple[CurveVariantRejection, ...] = (),
+    manual_curve_traces: tuple[ManualCurveTrace, ...] = (),
 ) -> str:
     payload = {
         "tables": [item.model_dump(mode="json") for item in tables],
@@ -226,9 +553,30 @@ def _content_digest(
         "review_items": [item.model_dump(mode="json") for item in review_items],
         "review_resolutions": [item.model_dump(mode="json") for item in review_resolutions],
         "raw_grids": [item.model_dump(mode="json") for item in raw_grids],
+        "raw_clause_fragments": [item.model_dump(mode="json") for item in raw_clause_fragments],
         "extracted_equations": [item.model_dump(mode="json") for item in extracted_equations],
         "source_documents": [item.model_dump(mode="json") for item in source_documents],
         "source_identities": [item.model_dump(mode="json") for item in source_identities],
+        "decisions": [item.model_dump(mode="json") for item in decisions],
+        "procedures": [item.model_dump(mode="json") for item in procedures],
+        "guidance": [item.model_dump(mode="json") for item in guidance],
+        "curves": [item.model_dump(mode="json") for item in curves],
+        "raw_figures": [item.model_dump(mode="json") for item in raw_figures],
+        "curve_digitizations": [
+            item.model_dump(mode="json") for item in curve_digitizations
+        ],
+        "curve_variant_reviews": [
+            item.model_dump(mode="json") for item in curve_variant_reviews
+        ],
+        "curve_trace_associations": [
+            item.model_dump(mode="json") for item in curve_trace_associations
+        ],
+        "curve_variant_rejections": [
+            item.model_dump(mode="json") for item in curve_variant_rejections
+        ],
+        "manual_curve_traces": [
+            item.model_dump(mode="json") for item in manual_curve_traces
+        ],
     }
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
 
@@ -264,7 +612,23 @@ def _recipe(identity: StandardIdentity) -> StandardRecipe:
         mapping.model_copy(update={"page_number": mapping.page_number + offset})
         for mapping in recipe.mappings
     )
-    return recipe.model_copy(update={"tables": tables, "formulas": formulas, "mappings": mappings})
+    clauses = tuple(
+        clause.model_copy(update={"page_number": clause.page_number + offset})
+        for clause in recipe.clauses
+    )
+    curves = tuple(
+        curve.model_copy(update={"page_number": curve.page_number + offset})
+        for curve in recipe.curves
+    )
+    return recipe.model_copy(
+        update={
+            "tables": tables,
+            "formulas": formulas,
+            "mappings": mappings,
+            "clauses": clauses,
+            "curves": curves,
+        }
+    )
 
 
 _NUMBER_TOKEN = r"(?:[0-9]{1,3}(?:[ \u00a0][0-9]{3})+|[0-9]+)(?:[.,][0-9]+)?"
@@ -355,6 +719,177 @@ def parse_data_cell(
     )
 
 
+def parse_compound_data_cell(
+    text: str,
+    spec: CompoundQuantitySpec,
+    source: SourceReference,
+) -> ParsedDataCell:
+    """Parse only explicitly labelled components, preserving their source order."""
+    if len(text) > 2_000:
+        raise ExtractionError("raw table cell exceeds the fidelity size limit")
+    components: list[RawQuantityComponent] = []
+    ambiguous = False
+    for source_index, raw_part in enumerate(re.split(r"\s*(?:/|\n)\s*", text)):
+        part = raw_part.strip()
+        if not part:
+            ambiguous = True
+            continue
+        token = _numeric_token(part)
+        if token is None:
+            components.append(
+                RawQuantityComponent(
+                    source_index=source_index,
+                    component_id=None,
+                    raw_text=part,
+                    source=source,
+                )
+            )
+            ambiguous = True
+            continue
+        value, qualifier, suffix = token
+        label = (suffix or "").strip()
+        matches = tuple(
+            component_id
+            for component_id in spec.component_ids
+            if label.casefold() == component_id.casefold()
+        )
+        component_id = matches[0] if qualifier is None and len(matches) == 1 else None
+        ambiguous = ambiguous or component_id is None
+        components.append(
+            RawQuantityComponent(
+                source_index=source_index,
+                component_id=component_id,
+                raw_text=part,
+                value=value,
+                source=source,
+            )
+        )
+    component_ids = tuple(
+        component.component_id
+        for component in components
+        if component.component_id is not None
+    )
+    if (
+        len(component_ids) != len(set(component_ids))
+        or set(component_ids) != set(spec.component_ids)
+    ):
+        ambiguous = True
+    allowed_formula_ids = spec.allowed_formula_ids or tuple(
+        (component_id, formula_id)
+        for component_id, formula_id in spec.formula_candidates
+        if formula_id is not None
+    )
+    candidates = tuple(
+        ComponentFormulaCandidate(
+            source_index=component.source_index,
+            component_id=component.component_id,
+            formula_id=formula_id,
+            source=source,
+        )
+        for component in components
+        if component.component_id is not None
+        for candidate_component_id, formula_id in spec.formula_candidates
+        if candidate_component_id == component.component_id
+    )
+    formula_source_indexes = {
+        component.source_index
+        for component in components
+        if component.component_id is not None
+        and any(
+            allowed_component_id == component.component_id
+            for allowed_component_id, _formula_id in allowed_formula_ids
+        )
+    }
+    ambiguous_formula = any(
+        len(group) != 1 or group[0].formula_id is None
+        for source_index in formula_source_indexes
+        for group in (
+            tuple(
+                candidate
+                for candidate in candidates
+                if candidate.source_index == source_index
+            ),
+        )
+    )
+    review_codes = (
+        *(("AMBIGUOUS_COMPOUND_CELL",) if ambiguous else ()),
+        *(("AMBIGUOUS_COMPONENT_FORMULA",) if ambiguous_formula else ()),
+    )
+    return ParsedDataCell(
+        components=tuple(components),
+        compound_component_ids=spec.component_ids,
+        formula_candidates=candidates,
+        allowed_component_formula_ids=allowed_formula_ids,
+        review_codes=review_codes,
+        parse_status="ambiguous_compound" if ambiguous else "compound",
+    )
+
+
+def compound_review_items(grid: RawGrid) -> tuple[ImportReviewItem, ...]:
+    """Blocking review items for compound labels and formula associations."""
+    items: list[ImportReviewItem] = []
+    for cell in grid.cells:
+        counts = {
+            component_id: sum(
+                component.component_id == component_id for component in cell.components
+            )
+            for component_id in cell.compound_component_ids
+        }
+        for component in cell.components:
+            semantic_id = (
+                f"{grid.id}:{cell.row}:{cell.column}:{component.source_index}"
+            )
+            ambiguous_association = (
+                component.component_id is None
+                or counts.get(component.component_id, 0) != 1
+            )
+            if ambiguous_association:
+                items.append(
+                    ImportReviewItem(
+                        code="AMBIGUOUS_COMPOUND_CELL",
+                        semantic_id=semantic_id,
+                        kind="raw_cell",
+                        source=component.source,
+                        expected_contract=(
+                            "compound association requires one exact component at source "
+                            f"occurrence:{component.source_index}"
+                        ),
+                    )
+                )
+            candidates = tuple(
+                candidate
+                for candidate in cell.formula_candidates
+                if candidate.source_index == component.source_index
+            )
+            allowed = {
+                formula_id
+                for component_id, formula_id in cell.allowed_component_formula_ids
+                if component_id == component.component_id
+            }
+            formula_required = bool(allowed) or (
+                ambiguous_association and bool(cell.allowed_component_formula_ids)
+            )
+            if not formula_required or (
+                len(candidates) == 1
+                and candidates[0].formula_id is not None
+                and candidates[0].formula_id in allowed
+            ):
+                continue
+            items.append(
+                ImportReviewItem(
+                    code="AMBIGUOUS_COMPONENT_FORMULA",
+                    semantic_id=semantic_id,
+                    kind="raw_cell",
+                    source=component.source,
+                    expected_contract=(
+                        "compound formula requires one exact route-local candidate at source "
+                        f"occurrence:{component.source_index}"
+                    ),
+                )
+            )
+    return tuple(items)
+
+
 def _source(
     identity: StandardIdentity,
     *,
@@ -364,16 +899,19 @@ def _source(
     figure: str | None = None,
     row: str | None = None,
     column: str | None = None,
+    note: str | None = None,
 ) -> SourceReference:
     return SourceReference(
+        document_id=identity.recipe_id,
         standard=identity.standard,
         edition=identity.edition,
+        page=page_number,
         clause=clause,
         table=table,
         figure=figure,
         row=row,
         column=column,
-        note=f"PDF page {page_number}",
+        note=note,
     )
 
 
@@ -696,10 +1234,25 @@ def _extract_layout_table(
                         )
                         if raw_text.strip():
                             role = "data"
-                            parsed = parse_data_cell(
-                                raw_text,
-                                allowed_footnotes=spec.allowed_suffixes,
-                                allowed_qualifiers=spec.allowed_qualifiers,
+                            parsed = (
+                                parse_compound_data_cell(
+                                    raw_text,
+                                    column_spec.compound_quantity,
+                                    _source(
+                                        identity,
+                                        page_number=resolved_page,
+                                        clause=spec.clause,
+                                        table=spec.source_table,
+                                        row=f"grid row {physical_row + 1}",
+                                        column=f"grid column {source_column + 1}",
+                                    ),
+                                )
+                                if column_spec.compound_quantity is not None
+                                else parse_data_cell(
+                                    raw_text,
+                                    allowed_footnotes=spec.allowed_suffixes,
+                                    allowed_qualifiers=spec.allowed_qualifiers,
+                                )
                             )
                         else:
                             role = "blank"
@@ -736,6 +1289,18 @@ def _extract_layout_table(
                         qualifier=None if parsed is None else parsed.qualifier,
                         suffix=None if parsed is None else parsed.suffix,
                         footnotes=() if parsed is None else parsed.footnotes,
+                        components=() if parsed is None else parsed.components,
+                        compound_component_ids=(
+                            () if parsed is None else parsed.compound_component_ids
+                        ),
+                        formula_candidates=(
+                            () if parsed is None else parsed.formula_candidates
+                        ),
+                        allowed_component_formula_ids=(
+                            ()
+                            if parsed is None
+                            else parsed.allowed_component_formula_ids
+                        ),
                         parse_status=parse_status,
                         source=_source(
                             identity,
@@ -744,6 +1309,11 @@ def _extract_layout_table(
                             table=spec.source_table,
                             row=f"grid row {physical_row + 1}",
                             column=f"grid column {source_column + 1}",
+                            note=(
+                                f"segment:{segment.id}"
+                                if identity.recipe_id == "iec62477-1-2022"
+                                else None
+                            ),
                         ),
                     )
                 )
@@ -764,16 +1334,23 @@ def _extract_layout_table(
             or len(logical_columns) != spec.expected_data_columns
         ):
             raise ExtractionError(f"semantic data dimensions differ for {spec.semantic_id}")
-    grid = RawGrid(
-        id=f"raw-{spec.semantic_id}",
-        rows=row_start,
-        columns=grid_columns,
-        target_unit=spec.target_unit,
-        segments=tuple(segments),
-        cells=tuple(cells),
-        source=table_source,
+    grid = apply_table_structure(
+        RawGrid(
+            id=f"raw-{spec.semantic_id}",
+            rows=row_start,
+            columns=grid_columns,
+            target_unit=spec.target_unit,
+            segments=tuple(segments),
+            cells=tuple(cells),
+            source=table_source,
+        ),
+        spec,
     )
-    reviews = tuple(
+    cells = list(grid.cells)
+    compound_reviews = compound_review_items(grid)
+    reviews = (
+        *compound_reviews,
+        *tuple(
         ImportReviewItem(
             code="MANUAL_RAW_CELL_REVIEW_REQUIRED",
             semantic_id=f"{grid.id}:{cell.row}:{cell.column}",
@@ -782,7 +1359,12 @@ def _extract_layout_table(
             expected_contract=f"raw-cell:{spec.semantic_id}:numeric",
         )
         for cell in cells
-        if cell.role == "data" and cell.parse_status != "numeric"
+        if spec.token_grammar is None
+        and cell.role == "data"
+        and cell.reference_token is None
+        and cell.blank_semantics != "not_applicable"
+        and cell.parse_status not in {"numeric", "compound", "ambiguous_compound"}
+        ),
     )
     return grid, reviews
 
@@ -868,14 +1450,33 @@ def _manual_review_items(
         )
         for spec in recipe.mappings
     )
-    return (*table_items, *formula_items, *mapping_items)
+    clause_items = tuple(
+        ImportReviewItem(
+            code="MANUAL_CLAUSE_DEFINITION_REQUIRED",
+            semantic_id=spec.semantic_id,
+            kind="clause",
+            source=_source(
+                identity,
+                page_number=spec.page_number,
+                clause=spec.clause,
+            ),
+            expected_contract=(
+                f"clause:{spec.semantic_id}:"
+                f"{hashlib.sha256(_canonical_json(spec.model_dump(mode='json'))).hexdigest()}"
+            ),
+        )
+        for spec in recipe.clauses
+    )
+    return (*table_items, *formula_items, *mapping_items, *clause_items)
 
 
 def _extract_real_layout(
     path: Path,
     identity: StandardIdentity,
     recipe: StandardRecipe,
-) -> tuple[tuple[RawGrid, ...], tuple[ImportReviewItem, ...]]:
+) -> tuple[tuple[RawGrid, ...], tuple[RawClauseFragment, ...], tuple[ImportReviewItem, ...]]:
+    from insulation_coordination.rules.importer.clauses import extract_clause_fragment
+
     try:
         anchor_reader = PdfReader(path)
         with pdfplumber.open(path) as pdf:
@@ -887,6 +1488,10 @@ def _extract_real_layout(
                     spec,
                 )
                 for spec in recipe.tables
+            )
+            fragments = tuple(
+                extract_clause_fragment(pdf.pages[spec.page_number - 1], spec, identity)
+                for spec in recipe.clauses
             )
     except ExtractionError:
         raise
@@ -903,7 +1508,7 @@ def _extract_real_layout(
         raise ExtractionError("recognized PDF layout could not be extracted") from error
     grids = tuple(grid for grid, _ in extracted)
     raw_reviews = tuple(item for _, reviews in extracted for item in reviews)
-    return grids, (*_manual_review_items(identity, recipe), *raw_reviews)
+    return grids, fragments, (*_manual_review_items(identity, recipe), *raw_reviews)
 
 
 def _decimal_literal(value: str) -> Decimal:
@@ -999,20 +1604,145 @@ def _extract_equations(
     return tuple(equations)
 
 
+def _extract_curve_artifacts(
+    path: Path,
+    identity: StandardIdentity,
+    recipe: StandardRecipe,
+    ocr: OcrEngine,
+    *,
+    password: str | None = None,
+) -> tuple[
+    tuple[RawFigure, ...],
+    tuple[CurveDigitizationResult, ...],
+    tuple[PiecewiseCurveRule, ...],
+    tuple[SemanticProposal, ...],
+    tuple[ImportReviewItem, ...],
+]:
+    """Extract, digitize, and semantically associate every recipe curve figure."""
+
+    if not recipe.curves:
+        return (), (), (), (), ()
+    from insulation_coordination.rules.importer.curves import (
+        digitize_curve_figure,
+        extract_raw_figure,
+    )
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
+        project_fault_time_voltage,
+    )
+
+    reader = PdfReader(path)
+    if reader.is_encrypted and reader.decrypt(password or "") == 0:
+        raise ExtractionError("recognized curve PDF password was rejected")
+    figures: list[RawFigure] = []
+    digitizations: list[CurveDigitizationResult] = []
+    with pdfplumber.open(path, password=password or "") as pdf:
+        for spec in recipe.curves:
+            try:
+                reader_page = reader.pages[spec.page_number - 1]
+                plumber_page = pdf.pages[spec.page_number - 1]
+            except IndexError as error:
+                raise ExtractionError(
+                    f"CURVE_SOURCE_MISSING: page {spec.page_number} for Figure {spec.figure}"
+                ) from error
+            figure = extract_raw_figure(reader_page, plumber_page, spec, ocr, identity)
+            figures.append(figure)
+            digitizations.append(digitize_curve_figure(figure, spec, ocr, identity))
+
+    blocking_items = tuple(
+        item for result in digitizations for item in result.blocking_review_items
+    )
+    variant_review_items = tuple(
+        ImportReviewItem(
+            code="CURVE_VARIANT_REVIEW_REQUIRED",
+            semantic_id=semantic_id,
+            kind="curve",
+            source=figure.source.model_copy(
+                update={
+                    "geometry": SourceGeometryReference(
+                        artifact_sha256=figure.artifact_sha256,
+                        bbox=figure.source_bbox,
+                    )
+                }
+            ),
+            expected_contract="verify the reconstructed curve against the local source figure",
+        )
+        for spec, figure in zip(recipe.curves, figures, strict=True)
+        for slot_index, _selector in enumerate(spec.variant_slots, start=1)
+        for semantic_id in (
+            f"{spec.semantic_id}.{spec.figure}.{slot_index}"
+            if len(spec.variant_slots) > 1
+            else f"{spec.semantic_id}.{spec.figure}",
+        )
+    )
+    if blocking_items:
+        return (
+            tuple(figures),
+            tuple(digitizations),
+            (),
+            (),
+            (*variant_review_items, *blocking_items),
+        )
+    if identity.recipe_id != "iec62477-1-2022" or len(digitizations) != 3:
+        raise ExtractionError("no semantic projection is registered for extracted curves")
+    proposed_rules = tuple(result.proposed_rule for result in digitizations)
+    if any(rule is None for rule in proposed_rules):
+        raise ExtractionError("curve digitization completed without a proposed rule")
+    variants = tuple(rule.variants for rule in proposed_rules if rule is not None)
+    rule, proposals = project_fault_time_voltage(
+        tuple(figures), variants[0], variants[1], variants[2], identity
+    )
+    review_items = variant_review_items
+    review_hashes = tuple(
+        item.sha256
+        for item in sorted(
+            review_items, key=lambda item: f"{item.semantic_id}:{item.code}"
+        )
+    )
+    proposals = tuple(
+        proposal.model_copy(update={"review_item_sha256s": review_hashes})
+        for proposal in proposals
+    )
+    return tuple(figures), tuple(digitizations), (rule,), proposals, review_items
+
+
 def _extract_one(
-    path: Path, identity: StandardIdentity
+    path: Path,
+    identity: StandardIdentity,
+    ocr: OcrEngine,
+    *,
+    password: str | None = None,
 ) -> tuple[
     tuple[Table, ...],
     tuple[Formula, ...],
     tuple[CompatibilityMapping, ...],
     tuple[ImportReviewItem, ...],
     tuple[RawGrid, ...],
+    tuple[RawClauseFragment, ...],
     tuple[ExtractedEquation, ...],
+    tuple[RawFigure, ...],
+    tuple[CurveDigitizationResult, ...],
+    tuple[PiecewiseCurveRule, ...],
+    tuple[SemanticProposal, ...],
 ]:
     recipe = _recipe(identity)
-    grids, review_items = _extract_real_layout(path, identity, recipe)
+    grids, fragments, review_items = _extract_real_layout(path, identity, recipe)
     equations = _extract_equations(path, identity, recipe)
-    return (), (), (), review_items, grids, equations
+    figures, digitizations, curves, proposals, curve_reviews = _extract_curve_artifacts(
+        path, identity, recipe, ocr, password=password
+    )
+    return (
+        (),
+        (),
+        (),
+        review_items + curve_reviews,
+        grids,
+        fragments,
+        equations,
+        figures,
+        digitizations,
+        curves,
+        proposals,
+    )
 
 
 def _require_unique_ids(
@@ -1032,6 +1762,8 @@ def _require_unique_ids(
 def extract_draft(
     paths: tuple[Path, ...],
     passwords: Mapping[Path, str] | None = None,
+    *,
+    ocr_engine: OcrEngine | None = None,
 ) -> ImportedRuleDraft:
     """Extract recognized sources into a deliberately unusable immutable draft."""
 
@@ -1052,7 +1784,16 @@ def extract_draft(
     mappings: tuple[CompatibilityMapping, ...] = ()
     review_items: tuple[ImportReviewItem, ...] = ()
     raw_grids: tuple[RawGrid, ...] = ()
+    raw_clause_fragments: tuple[RawClauseFragment, ...] = ()
     extracted_equations: tuple[ExtractedEquation, ...] = ()
+    raw_figures: tuple[RawFigure, ...] = ()
+    curve_digitizations: tuple[CurveDigitizationResult, ...] = ()
+    curves: tuple[PiecewiseCurveRule, ...] = ()
+    semantic_proposals: tuple[SemanticProposal, ...] = ()
+    if ocr_engine is None:
+        from insulation_coordination.rules.importer.curves import TesseractOcrEngine
+
+        ocr_engine = TesseractOcrEngine()
     for path, identity in sorted(identified, key=lambda pair: pair[1].recipe_id):
         (
             extracted_tables,
@@ -1060,15 +1801,42 @@ def extract_draft(
             extracted_mappings,
             extracted_reviews,
             extracted_grids,
+            extracted_fragments,
             extracted_source_equations,
-        ) = _extract_one(path, identity)
+            extracted_figures,
+            extracted_digitizations,
+            extracted_curves,
+            extracted_proposals,
+        ) = _extract_one(
+            path,
+            identity,
+            ocr_engine,
+            password=(passwords or {}).get(path),
+        )
         tables += extracted_tables
         formulas += extracted_formulas
         mappings += extracted_mappings
         review_items += extracted_reviews
         raw_grids += extracted_grids
+        raw_clause_fragments += extracted_fragments
         extracted_equations += extracted_source_equations
+        raw_figures += extracted_figures
+        curve_digitizations += extracted_digitizations
+        curves += extracted_curves
+        semantic_proposals += extracted_proposals
     _require_unique_ids(tables, formulas, mappings)
+    curve_trace_associations = tuple(
+        CurveTraceAssociation(
+            variant_id=variant.id,
+            figure_artifact_sha256=figure.artifact_sha256,
+            trace_id=trace.id,
+        )
+        for figure, result in zip(raw_figures, curve_digitizations, strict=True)
+        if result.proposed_rule is not None
+        for variant, trace in zip(
+            result.proposed_rule.variants, figure.traces, strict=True
+        )
+    )
 
     recorded_at = datetime.now(UTC)
     review_resolutions = tuple(
@@ -1101,9 +1869,12 @@ def extract_draft(
             *(f"formula:{formula.id}" for formula in formulas),
             *(f"mapping:{mapping.id}" for mapping in mappings),
             *(f"raw-grid:{grid.id}" for grid in raw_grids),
+            *(f"raw-clause:{fragment.id}" for fragment in raw_clause_fragments),
             *(f"equation:{equation.id}" for equation in extracted_equations),
+            *(f"curve:{curve.id}" for curve in curves),
+            *(f"raw-figure:{figure.source.figure}" for figure in raw_figures),
             *(f"review:{item.code}:{item.semantic_id}" for item in review_items),
-            f"content:{_content_digest(tables, formulas, mappings, review_items, raw_grids, extracted_equations=extracted_equations)}",
+            f"content:{_content_digest(tables, formulas, mappings, review_items, raw_grids, raw_clause_fragments=raw_clause_fragments, extracted_equations=extracted_equations, curves=curves, raw_figures=raw_figures, curve_digitizations=curve_digitizations, curve_trace_associations=curve_trace_associations)}",
         )
     )
     ordered_identities = tuple(
@@ -1111,6 +1882,7 @@ def extract_draft(
     )
     sources = tuple(
         SourceDocument(
+            id=identity.recipe_id,
             standard=identity.standard,
             edition=identity.edition,
             sha256=identity.sha256,
@@ -1123,10 +1895,15 @@ def extract_draft(
         mappings,
         review_items,
         raw_grids,
+        raw_clause_fragments,
         sources,
         ordered_identities,
         review_resolutions,
         extracted_equations=extracted_equations,
+        curves=curves,
+        raw_figures=raw_figures,
+        curve_digitizations=curve_digitizations,
+        curve_trace_associations=curve_trace_associations,
     )
     records = tuple(
         record.model_copy(update={"notes": f"content:{content_digest}"})
@@ -1153,6 +1930,34 @@ def extract_draft(
         review_items=review_items,
         review_resolutions=review_resolutions,
         raw_grids=raw_grids,
+        raw_clause_fragments=raw_clause_fragments,
         extracted_equations=extracted_equations,
+        curves=curves,
+        raw_figures=raw_figures,
+        curve_digitizations=curve_digitizations,
+        curve_trace_associations=curve_trace_associations,
+        semantic_proposals=semantic_proposals,
         source_identities=ordered_identities,
     )
+
+
+def _rebuild_draft_model() -> None:
+    from insulation_coordination.rules.importer.clauses import RawClauseFragment
+    from insulation_coordination.rules.importer.curves import (
+        CurveDigitizationResult,
+        RawCurveTrace,
+        RawFigure,
+    )
+
+    ImportedRuleDraft.model_rebuild(
+        _types_namespace={
+            "RawClauseFragment": RawClauseFragment,
+            "RawFigure": RawFigure,
+            "CurveDigitizationResult": CurveDigitizationResult,
+            "RawCurveTrace": RawCurveTrace,
+        }
+    )
+    ManualCurveTrace.model_rebuild(_types_namespace={"RawCurveTrace": RawCurveTrace})
+
+
+_rebuild_draft_model()

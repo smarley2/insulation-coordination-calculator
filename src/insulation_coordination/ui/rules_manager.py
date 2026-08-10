@@ -41,6 +41,7 @@ from insulation_coordination.rules.audit import (
 from insulation_coordination.rules.importer.approval import is_fully_resolved
 from insulation_coordination.rules.importer.extract import _REQUIRED_RECIPES, ImportedRuleDraft
 from insulation_coordination.rules.installation import install_rule_package
+from insulation_coordination.ui.curve_review import CurveReviewDialog
 from insulation_coordination.ui.equation_review import EquationReviewDialog
 from insulation_coordination.ui.raw_grid_review import RawGridReviewDialog, source_pdf_paths
 
@@ -54,6 +55,7 @@ _SECTIONS = (
     "Decisions",
     "Procedures",
     "Guidance",
+    "Curves",
 )
 
 
@@ -141,6 +143,10 @@ class RulesManagerWindow(QWidget):
         self._review_equations_button.setEnabled(False)
         self._review_equations_button.clicked.connect(self._on_review_equations_clicked)
         review_actions.addWidget(self._review_equations_button)
+        self._review_curves_button = QPushButton("Review reconstructed curves…")
+        self._review_curves_button.setEnabled(False)
+        self._review_curves_button.clicked.connect(self._on_review_curves_clicked)
+        review_actions.addWidget(self._review_curves_button)
         review_layout.addLayout(review_actions)
 
         self._review_approve_button = QPushButton("Approve draft and build package…")
@@ -194,6 +200,10 @@ class RulesManagerWindow(QWidget):
     @property
     def audit_formula_count(self) -> int:
         return self._inventory.formula_node_count if self._inventory is not None else 0
+
+    @property
+    def audit_curve_count(self) -> int:
+        return self._inventory.curve_count if self._inventory is not None else 0
 
     @property
     def total_cell_count(self) -> int:
@@ -256,6 +266,10 @@ class RulesManagerWindow(QWidget):
         return self._review_equations_button.isEnabled()
 
     @property
+    def curve_review_enabled(self) -> bool:
+        return self._review_curves_button.isEnabled()
+
+    @property
     def review_approve_enabled(self) -> bool:
         return self._review_approve_button.isEnabled()
 
@@ -271,6 +285,11 @@ class RulesManagerWindow(QWidget):
         return self._draft is not None and is_fully_resolved(self._draft)
 
     @property
+    def draft(self) -> ImportedRuleDraft | None:
+        """The currently selected draft, for review surfaces backed by this window."""
+        return self._draft
+
+    @property
     def can_approve(self) -> bool:
         return self._draft is not None and self.is_fully_resolved
 
@@ -284,6 +303,7 @@ class RulesManagerWindow(QWidget):
             self._review_approve_button.setEnabled(False)
             self._review_tables_button.setEnabled(False)
             self._review_equations_button.setEnabled(False)
+            self._review_curves_button.setEnabled(False)
             return
         from insulation_coordination.rules.importer.review import (
             recipe_derived_items,
@@ -301,6 +321,9 @@ class RulesManagerWindow(QWidget):
         self._review_tables_button.setEnabled(not tables_done)
         self._review_equations_button.setEnabled(
             tables_done and bool(equation_pending or mapping_pending)
+        )
+        self._review_curves_button.setEnabled(
+            bool(self._draft.curves or self._draft.curve_digitizations)
         )
         for item in table_pending:
             flagged = sum(
@@ -352,6 +375,18 @@ class RulesManagerWindow(QWidget):
         if self._draft is None:
             return
         dialog = EquationReviewDialog(self._draft, actor="maintainer")
+        dialog.draft_changed.connect(self.set_draft)
+        dialog.exec()
+
+    def _on_review_curves_clicked(self) -> None:
+        if self._draft is None:
+            return
+        dialog = CurveReviewDialog(
+            self._draft,
+            actor="maintainer",
+            pdf_paths=self._draft_pdfs,
+            pdf_passwords=self._draft_passwords,
+        )
         dialog.draft_changed.connect(self.set_draft)
         dialog.exec()
 
@@ -599,6 +634,7 @@ class RulesManagerWindow(QWidget):
         self._add_decisions_items()
         self._add_procedures_items()
         self._add_guidance_items()
+        self._add_curves_items()
         self._tree.expandToDepth(0)
 
     def _add_manifest_items(self, manifest: Manifest) -> None:
@@ -758,6 +794,15 @@ class RulesManagerWindow(QWidget):
         for guidance in self._package.guidance:
             top.addChild(
                 QTreeWidgetItem((f"{guidance.id} — {_format_reference(guidance.source)}",))
+            )
+
+    def _add_curves_items(self) -> None:
+        top = self._tree.topLevelItem(9)
+        if top is None or self._inventory is None:
+            return
+        for curve in self._inventory.curves:
+            top.addChild(
+                QTreeWidgetItem((f"{curve.id} — {_format_reference(curve.source)}",))
             )
 
     def _require_inventory(self) -> AuditInventory:

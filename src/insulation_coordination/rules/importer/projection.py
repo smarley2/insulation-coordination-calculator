@@ -31,7 +31,36 @@ from insulation_coordination.rules.importer.extract import (
     ExtractedEquation,
     RawGrid,
     RawGridCell,
+    RawQuantityComponent,
 )
+
+
+def _projected_component(
+    cell: RawGridCell | None,
+    column: TableColumnSpec,
+) -> RawQuantityComponent | None:
+    if cell is None or column.projected_component_id is None:
+        return None
+    matches = tuple(
+        component
+        for component in cell.components
+        if component.component_id == column.projected_component_id
+    )
+    if len(matches) != 1 or matches[0].value is None:
+        return None
+    return matches[0]
+
+
+def _projected_value(
+    cell: RawGridCell | None,
+    column: TableColumnSpec,
+) -> Decimal | None:
+    if cell is None:
+        return None
+    if column.projected_component_id is None:
+        return cell.value
+    component = _projected_component(cell, column)
+    return None if component is None else component.value
 from insulation_coordination.rules.importer.identify import (
     FormulaAuditSpec,
     MappingAuditSpec,
@@ -50,12 +79,13 @@ def _source(
     figure: str | None = None,
 ) -> SourceReference:
     return SourceReference(
+        document_id=identity.recipe_id,
         standard=identity.standard,
         edition=identity.edition,
+        page=page_number,
         clause=clause,
         table=table,
         figure=figure,
-        note=f"PDF page {page_number}",
     )
 
 
@@ -145,19 +175,22 @@ def project_table(
     for row_index, logical_row in enumerate(logical_rows):
         for column_index, column in enumerate(data_columns):
             raw = logical.get((logical_row, column.semantic_id))
-            if raw is not None and raw.value is not None:
+            if _projected_value(raw, column) is not None:
+                assert raw is not None
                 previous_by_column[column.semantic_id] = raw
             elif column.fill_down:
                 raw = previous_by_column.get(column.semantic_id)
-            if raw is None or raw.value is None:
+            value = _projected_value(raw, column)
+            if raw is None or value is None:
                 continue
+            component = _projected_component(raw, column)
             cells.append(
                 TableCell(
                     row=row_index,
                     column=column_index,
-                    value=raw.value,
+                    value=value,
                     unit=spec.target_unit,
-                    source=raw.source,
+                    source=raw.source if component is None else component.source,
                 )
             )
     if not cells:

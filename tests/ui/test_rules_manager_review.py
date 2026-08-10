@@ -8,12 +8,14 @@ from PySide6.QtCore import Qt
 from insulation_coordination.rules.importer import extract
 from insulation_coordination.rules.importer import recipes as recipe_registry
 from insulation_coordination.rules.importer.approval import (
+    approval_blockers,
     approve_draft,
     is_fully_resolved,
 )
 from insulation_coordination.rules.importer.extract import extract_draft
 from insulation_coordination.rules.importer.review import (
     accept_raw_table,
+    mark_proposal_reviewed,
     recipe_derived_items,
     unresolved_equation_items,
     unresolved_mapping_items,
@@ -106,7 +108,9 @@ def test_loading_a_package_clears_the_draft_review_panel(
     rules_manager, supported_pdfs, tmp_path: Path
 ) -> None:
     """Review actions must not stay live once a draft is replaced by a package."""
-    rules_manager.set_draft(_accept_all_source_artifacts(extract_draft(supported_pdfs)))
+    rules_manager.set_draft(
+        build_reviewed(extract_draft(supported_pdfs), recipe_registry.RECIPES)
+    )
     assert rules_manager.review_approve_enabled is True
 
     rules_manager.approve_reviewed_draft("Maintainer", "Approved for use")
@@ -217,7 +221,7 @@ def test_equation_review_waits_for_table_review(
     assert rules_manager.can_approve is True
 
 
-def test_build_reviewed_content_unlocks_approval(
+def test_build_reviewed_content_requires_semantic_review_before_approval(
     qtbot, rules_manager, supported_pdfs, injected_recipes
 ) -> None:
     draft = extract_draft(supported_pdfs)
@@ -229,11 +233,21 @@ def test_build_reviewed_content_unlocks_approval(
     accepted = _accept_all_source_artifacts(draft)
     reviewed = build_reviewed_draft(accepted, actor="Maintainer", notes="Build rules")
     rules_manager.set_draft(reviewed)
-    assert rules_manager.is_fully_resolved is True
+    assert rules_manager.is_fully_resolved is False
+    assert rules_manager.can_approve is False
+
+    for proposal in reviewed.semantic_proposals:
+        reviewed = mark_proposal_reviewed(
+            reviewed,
+            proposal.semantic_id,
+            actor="Maintainer",
+            notes="Review projected rule.",
+        )
+    rules_manager.set_draft(reviewed)
     assert rules_manager.can_approve is True
 
 
-def test_approve_projects_typed_rules_without_a_separate_build_step(
+def test_approve_projects_typed_rules_but_still_requires_semantic_review(
     qtbot, rules_manager, supported_pdfs, injected_recipes, monkeypatch
 ) -> None:
     draft = _accept_all_source_artifacts(extract_draft(supported_pdfs))
@@ -249,14 +263,15 @@ def test_approve_projects_typed_rules_without_a_separate_build_step(
     assert rules_manager._draft is not None
     assert rules_manager._draft.tables == ()
 
-    rules_manager._on_review_approve_clicked()
+    with pytest.raises(ValueError, match="proposed"):
+        rules_manager.approve_reviewed_draft("Maintainer", "Project accepted source artifacts")
 
-    package = rules_manager.active_package
-    assert package is not None
-    assert package.manifest.approved is True
-    assert package.tables
-    assert package.formulas
-    assert package.mappings
+    assert rules_manager.active_package is None
+    assert rules_manager._draft is not None
+    assert rules_manager._draft.tables
+    assert all(
+        proposal.state == "proposed" for proposal in rules_manager._draft.semantic_proposals
+    )
 
 
 def test_approve_requires_notes(qtbot, rules_manager, supported_pdfs, monkeypatch) -> None:
@@ -316,6 +331,35 @@ def test_domain_is_fully_resolved_accepts_full_review(supported_pdfs, injected_r
     assert approved.manifest.approved is True
 
 
+def test_ui_and_approval_share_the_semantic_proposal_blocker_gate(
+    rules_manager,
+    supported_pdfs,
+    injected_recipes,
+) -> None:
+    reviewed = build_reviewed(extract_draft(supported_pdfs), recipe_registry.RECIPES)
+    first = reviewed.semantic_proposals[0]
+    proposed = first.model_copy(update={"state": "proposed"})
+    blocked = reviewed.model_copy(
+        update={"semantic_proposals": (proposed, *reviewed.semantic_proposals[1:])}
+    )
+
+    rules_manager.set_draft(blocked)
+
+    assert rules_manager.can_approve is False
+    assert approval_blockers(blocked)[0].code == "SEMANTIC_PROPOSAL_PROPOSED"
+    with pytest.raises(ValueError, match="proposed"):
+        approve_draft(blocked, "Maintainer", "Cannot bypass semantic review")
+
+    unblocked = mark_proposal_reviewed(
+        blocked,
+        first.semantic_id,
+        actor="Maintainer",
+        notes="Reviewed exact synthetic rule.",
+    )
+    rules_manager.set_draft(unblocked)
+    assert rules_manager.can_approve is True
+
+
 def test_draft_audit_tree_shows_review_state(
     rules_manager, supported_pdfs, injected_recipes
 ) -> None:
@@ -323,3 +367,27 @@ def test_draft_audit_tree_shows_review_state(
 
     assert rules_manager._tree.topLevelItemCount() > 0
     assert rules_manager._tree.topLevelItem(0).text(0) == "Draft review"
+
+
+def test_semantic_review_panel_backed_by_rules_manager_draft(
+    rules_manager, supported_pdfs, injected_recipes
+) -> None:
+    """The semantic review model reads the draft the Rules Manager selected."""
+    from insulation_coordination.ui.semantic_review import SemanticReviewModel
+
+    draft = build_reviewed(
+        _accept_all_source_artifacts(extract_draft(supported_pdfs)),
+        recipe_registry.RECIPES,
+    )
+    rules_manager.set_draft(draft)
+    model = SemanticReviewModel.for_window(rules_manager)
+    assert model is not None
+    assert model.draft is rules_manager.draft
+    assert model.proposals
+    assert {item.rule_kind for item in model.proposals} >= {"table", "formula", "mapping"}
+
+
+def test_semantic_review_panel_none_without_draft(rules_manager) -> None:
+    from insulation_coordination.ui.semantic_review import SemanticReviewModel
+
+    assert SemanticReviewModel.for_window(rules_manager) is None

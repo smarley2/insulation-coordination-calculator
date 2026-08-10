@@ -135,7 +135,22 @@ def test_audit_tree_lists_the_new_rule_sections(
         rules_manager._tree.topLevelItem(index).text(0)
         for index in range(rules_manager._tree.topLevelItemCount())
     }
-    assert {"Decisions", "Procedures", "Guidance"} <= labels
+    assert {"Decisions", "Procedures", "Guidance", "Curves"} <= labels
+
+
+def test_audit_tree_counts_and_lists_curves(
+    qtbot, rules_manager, synthetic_rule_package: RulePackage
+) -> None:
+    rules_manager.set_package(synthetic_rule_package)
+    sections = {
+        rules_manager._tree.topLevelItem(index).text(0):
+        rules_manager._tree.topLevelItem(index)
+        for index in range(rules_manager._tree.topLevelItemCount())
+    }
+
+    assert rules_manager.audit_curve_count == 1
+    assert sections["Curves"].childCount() == 1
+    assert synthetic_rule_package.curves[0].id in sections["Curves"].child(0).text(0)
 
 
 def test_audit_tree_decision_procedure_guidance_children_show_id_and_source(

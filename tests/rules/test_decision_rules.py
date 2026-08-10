@@ -13,7 +13,7 @@ from insulation_coordination.domain.rules import (
     SourceReference,
 )
 
-SOURCE = SourceReference(standard="SYNTHETIC-1", edition="1", clause="4.2", table="T-1")
+SOURCE = SourceReference(document_id="synthetic-source", standard="SYNTHETIC-1", edition="1", clause="4.2", table="T-1")
 
 
 def _rule(
@@ -178,32 +178,74 @@ def test_duplicate_input_or_output_names_are_rejected() -> None:
         )
 
 
-def _boolean_input_rule(*, exhaustive: bool) -> DecisionRule:
-    row = DecisionRow(
-        matchers=(Matcher(input="engaged", op="any"),),
-        values=(DecisionValue(name="protection", categorical="basic"),),
-        source=SOURCE,
+def _boolean_rule(*, include_false: bool = True, mixed: bool = False) -> DecisionRule:
+    inputs = (DecisionInput(name="enabled", kind="boolean"),)
+    combinations: tuple[tuple[bool, str | None, str], ...] = (
+        ((True, None, "path-a"),) + (((False, None, "path-b"),) if include_false else ())
     )
+    if mixed:
+        inputs += (DecisionInput(name="mode", kind="categorical", allowed_values=("x", "y")),)
+        combinations = (
+            (True, "x", "path-a"),
+            (False, "x", "path-b"),
+            (True, "y", "path-b"),
+            (False, "y", "path-a"),
+        )
     return DecisionRule(
-        id="synthetic-boolean-decision",
-        inputs=(DecisionInput(name="engaged", kind="boolean"),),
+        id="synthetic-boolean",
+        inputs=inputs,
         outputs=(
-            DecisionOutput(name="protection", kind="categorical", allowed_values=("basic", "none")),
+            DecisionOutput(name="route", kind="categorical", allowed_values=("path-a", "path-b")),
         ),
-        rows=(row,),
-        exhaustive=exhaustive,
+        rows=tuple(
+            DecisionRow(
+                matchers=(Matcher(input="enabled", op="equals", boolean=enabled),)
+                + ((Matcher(input="mode", op="equals", values=(mode,)),) if mode else ()),
+                values=(DecisionValue(name="route", categorical=route),),
+                source=SOURCE,
+            )
+            for enabled, mode, route in combinations
+        ),
+        exhaustive=True,
         source=SOURCE,
     )
 
 
-def test_exhaustive_rule_with_boolean_input_is_rejected() -> None:
-    with pytest.raises(ValidationError, match="boolean exhaustiveness is not supported"):
-        _boolean_input_rule(exhaustive=True)
+def test_exhaustive_rule_with_boolean_input_covers_true_and_false() -> None:
+    assert len(_boolean_rule().rows) == 2
 
 
-def test_non_exhaustive_rule_with_boolean_input_is_accepted() -> None:
-    rule = _boolean_input_rule(exhaustive=False)
-    assert rule.exhaustive is False
+def test_exhaustive_rule_with_boolean_input_rejects_uncovered_false() -> None:
+    with pytest.raises(ValidationError, match="does not cover"):
+        _boolean_rule(include_false=False)
+
+
+def test_exhaustive_rule_covers_boolean_and_categorical_cartesian_product() -> None:
+    assert len(_boolean_rule(mixed=True).rows) == 4
+
+
+def test_boolean_input_rejects_string_equals_matcher() -> None:
+    with pytest.raises(ValidationError, match="boolean"):
+        DecisionRule(
+            id="synthetic-string-boolean",
+            inputs=(DecisionInput(name="enabled", kind="boolean"),),
+            outputs=(DecisionOutput(name="route", kind="categorical", allowed_values=("path-a",)),),
+            rows=(
+                DecisionRow(
+                    matchers=(Matcher(input="enabled", op="equals", values=("true",)),),
+                    values=(DecisionValue(name="route", categorical="path-a"),),
+                    source=SOURCE,
+                ),
+            ),
+            exhaustive=False,
+            source=SOURCE,
+        )
+
+
+@pytest.mark.parametrize("boolean", (0, 1))
+def test_boolean_equals_matcher_rejects_integer_declarations(boolean: int) -> None:
+    with pytest.raises(ValidationError):
+        Matcher(input="enabled", op="equals", boolean=boolean)
 
 
 def test_decision_value_kind_mismatch_is_rejected() -> None:

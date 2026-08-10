@@ -18,6 +18,14 @@ def test_rules_provenance_counts_decisions_procedures_and_guidance(
     # Distinct counts, so a count read from the wrong collection cannot pass.
     enriched = rules.model_copy(
         update={
+            "manifest": rules.manifest.model_copy(
+                update={
+                    "source_documents": (
+                        *rules.manifest.source_documents,
+                        *source.manifest.source_documents,
+                    )
+                }
+            ),
             "decisions": (decision,),
             "procedures": (
                 procedure,
@@ -27,6 +35,7 @@ def test_rules_provenance_counts_decisions_procedures_and_guidance(
                 guidance.model_copy(update={"id": f"synthetic-guidance-{index}"})
                 for index in range(3)
             ),
+            "curves": source.curves,
             "package_sha256": None,
         }
     )
@@ -53,3 +62,4 @@ def test_rules_provenance_counts_decisions_procedures_and_guidance(
     assert model.rules.decision_count == 1
     assert model.rules.procedure_count == 2
     assert model.rules.guidance_count == 3
+    assert model.rules.curve_count == 1

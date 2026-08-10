@@ -3,18 +3,18 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 from itertools import pairwise, product
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, Self, cast
 from typing import Literal as TypingLiteral
 from uuid import UUID
 
-from pydantic import Field, ValidationError, field_validator, model_validator
+from pydantic import Field, StrictBool, ValidationError, field_validator, model_validator
 from pydantic.config import ExtraValues
 
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.quantities import DecimalValue
 
-RULE_SCHEMA_VERSION = 3
-IEC_IMPORTER_VERSION = "iec-pdf-3"
+RULE_SCHEMA_VERSION = 4
+IEC_IMPORTER_VERSION = "iec-pdf-4"
 MAX_IDENTIFIER_LENGTH = 160
 MAX_REFERENCE_TEXT_LENGTH = 500
 MAX_NOTES_LENGTH = 2_000
@@ -33,24 +33,57 @@ ReferenceText = Annotated[
 NotesText = Annotated[str, Field(max_length=MAX_NOTES_LENGTH)]
 LatexText = Annotated[str, Field(max_length=MAX_LATEX_LENGTH)]
 ApplicabilityText = Annotated[str, Field(max_length=MAX_APPLICABILITY_LENGTH)]
+RuleKind = TypingLiteral[
+    "table",
+    "formula",
+    "mapping",
+    "decision",
+    "procedure",
+    "guidance",
+    "curve",
+]
 
 
 class RulePackageError(ValueError):
     """A rules package is malformed, unsafe, or unusable."""
 
 
+class SourceGeometryReference(FrozenModel):
+    artifact_sha256: str
+    bbox: tuple[DecimalValue, DecimalValue, DecimalValue, DecimalValue] | None = None
+
+    @field_validator("artifact_sha256")
+    @classmethod
+    def _valid_sha256(cls, value: str) -> str:
+        if SHA256_PATTERN.fullmatch(value) is None:
+            raise ValueError("SHA-256 must be 64 lowercase hexadecimal characters")
+        return value
+
+    @model_validator(mode="after")
+    def _ordered_bbox(self) -> Self:
+        if self.bbox is not None:
+            left, bottom, right, top = self.bbox
+            if left >= right or bottom >= top:
+                raise ValueError("bounding box coordinates must be ordered")
+        return self
+
+
 class SourceReference(FrozenModel):
+    document_id: Identifier
     standard: Identifier
     edition: Identifier
+    page: int | None = Field(default=None, ge=1, strict=True)
     clause: ReferenceText | None = None
     table: ReferenceText | None = None
     figure: ReferenceText | None = None
     row: ReferenceText | None = None
     column: ReferenceText | None = None
+    geometry: SourceGeometryReference | None = None
     note: ReferenceText | None = None
 
 
 class SourceDocument(FrozenModel):
+    id: Identifier
     standard: Identifier
     edition: Identifier
     sha256: str
@@ -341,11 +374,145 @@ class CompatibilityMapping(FrozenModel):
     notes: NotesText = ""
 
 
+CurveAxisScale = TypingLiteral["linear", "log10"]
+CurveSegmentType = TypingLiteral["continuous", "plateau", "step"]
+CurveInterpolation = TypingLiteral[
+    "linear",
+    "log_x",
+    "log_y",
+    "log_log",
+    "constant",
+    "step_before",
+    "step_after",
+]
+
+
+class CurveAxis(FrozenModel):
+    quantity_kind: Identifier
+    unit: Identifier
+    scale: CurveAxisScale
+    minimum: DecimalValue
+    maximum: DecimalValue
+
+    @model_validator(mode="after")
+    def _valid_bounds(self) -> Self:
+        if not self.minimum.is_finite() or not self.maximum.is_finite():
+            raise ValueError("Curve axis bounds must be finite")
+        if self.minimum >= self.maximum:
+            raise ValueError("Curve axis maximum must exceed minimum")
+        if self.scale == "log10" and self.minimum <= 0:
+            raise ValueError("Logarithmic curve axis bounds must be positive")
+        return self
+
+
+class CurvePoint(FrozenModel):
+    x: DecimalValue
+    y: DecimalValue
+
+
+class CurveSegment(FrozenModel):
+    start: int = Field(ge=0, strict=True)
+    end: int = Field(ge=0, strict=True)
+    segment_type: CurveSegmentType
+    interpolation: CurveInterpolation
+
+
+class FaultTimeVoltageSelector(FrozenModel):
+    subject: TypingLiteral["accessible_circuit", "conductive_accessible_part"]
+    voltage_basis: TypingLiteral["ac_rms", "ac_peak", "dc"]
+    dvc_context: Identifier | None
+    environment_context: Identifier | None
+
+
+class FaultTimeVoltageVariant(FrozenModel):
+    id: Identifier
+    selector: FaultTimeVoltageSelector
+    x_axis: CurveAxis
+    y_axis: CurveAxis
+    points: tuple[CurvePoint, ...]
+    segments: tuple[CurveSegment, ...]
+    applicability: ApplicabilityText
+    source: SourceReference
+    reviewed_artifact_sha256: str
+
+    @field_validator("reviewed_artifact_sha256")
+    @classmethod
+    def _valid_reviewed_artifact_sha256(cls, value: str) -> str:
+        if SHA256_PATTERN.fullmatch(value) is None:
+            raise ValueError("SHA-256 must be 64 lowercase hexadecimal characters")
+        return value
+
+    @model_validator(mode="after")
+    def _valid_piecewise_curve(self) -> Self:
+        if len(self.points) < 2:
+            raise ValueError("A curve variant needs at least two points")
+        if any(not point.x.is_finite() or not point.y.is_finite() for point in self.points):
+            raise ValueError("Curve points must be finite")
+        if any(left.x >= right.x for left, right in pairwise(self.points)):
+            raise ValueError("Curve point x coordinates must be strictly increasing")
+        if self.x_axis.scale == "log10" and any(point.x <= 0 for point in self.points):
+            raise ValueError("Curve points on a logarithmic x axis must be positive")
+        if self.y_axis.scale == "log10" and any(point.y <= 0 for point in self.points):
+            raise ValueError("Curve points on a logarithmic y axis must be positive")
+        if any(
+            not self.x_axis.minimum <= point.x <= self.x_axis.maximum
+            or not self.y_axis.minimum <= point.y <= self.y_axis.maximum
+            for point in self.points
+        ):
+            raise ValueError("Curve points must be inside their axis range")
+        expected_segments = tuple((index, index + 1) for index in range(len(self.points) - 1))
+        if tuple((segment.start, segment.end) for segment in self.segments) != expected_segments:
+            raise ValueError("Curve segments must cover every adjacent point interval")
+        continuous_interpolations = {"linear", "log_x", "log_y", "log_log"}
+        for segment in self.segments:
+            if (
+                segment.segment_type == "continuous"
+                and segment.interpolation not in continuous_interpolations
+            ):
+                raise ValueError("A continuous segment needs linear or logarithmic interpolation")
+            if segment.segment_type == "plateau" and segment.interpolation != "constant":
+                raise ValueError("A plateau segment needs constant interpolation")
+            if segment.segment_type == "step" and segment.interpolation not in {
+                "step_before",
+                "step_after",
+            }:
+                raise ValueError("A step segment needs step interpolation")
+            endpoints = (self.points[segment.start], self.points[segment.end])
+            if segment.interpolation in {"log_x", "log_log"} and any(
+                point.x <= 0 for point in endpoints
+            ):
+                raise ValueError("Logarithmic x interpolation needs positive coordinates")
+            if segment.interpolation in {"log_y", "log_log"} and any(
+                point.y <= 0 for point in endpoints
+            ):
+                raise ValueError("Logarithmic y interpolation needs positive coordinates")
+            if (
+                segment.segment_type == "plateau"
+                and endpoints[0].y != endpoints[1].y
+            ):
+                raise ValueError("A plateau segment needs equal endpoint voltage")
+        return self
+
+
+class PiecewiseCurveRule(FrozenModel):
+    id: Identifier
+    variants: tuple[FaultTimeVoltageVariant, ...]
+    source: SourceReference
+
+    @model_validator(mode="after")
+    def _unique_variants(self) -> Self:
+        if not self.variants:
+            raise ValueError("A piecewise curve rule needs at least one variant")
+        selectors = tuple(variant.selector for variant in self.variants)
+        if len(selectors) != len(set(selectors)):
+            raise ValueError("Curve variant selector keys must be unique")
+        variant_ids = tuple(variant.id for variant in self.variants)
+        if len(variant_ids) != len(set(variant_ids)):
+            raise ValueError("Curve variant IDs must be unique")
+        return self
+
+
 DecisionValueKind = TypingLiteral["categorical", "numeric", "boolean"]
-# ponytail: a boolean input currently cannot influence row selection — `range` is
-# refused, `equals`/`in` are refused, `any` ignores it, and `exhaustive=True` with a
-# boolean input is refused — so all a boolean input can do is force `input_required`.
-# Narrowing DecisionValueKind to drop "boolean" is a separate maintainer decision.
 
 
 class DecisionInput(FrozenModel):
@@ -388,6 +555,7 @@ class Matcher(FrozenModel):
     input: Identifier
     op: TypingLiteral["any", "equals", "in", "range"]
     values: tuple[Identifier, ...] = ()
+    boolean: StrictBool | None = None
     minimum: DecimalValue | None = None
     maximum: DecimalValue | None = None
     minimum_inclusive: bool = True
@@ -395,9 +563,14 @@ class Matcher(FrozenModel):
 
     @model_validator(mode="after")
     def _operands_match_operator(self) -> Self:
-        if self.op in ("equals", "in") and not self.values:
+        if self.op == "equals" and self.boolean is not None:
+            if self.values or self.minimum is not None or self.maximum is not None:
+                raise ValueError("A boolean equals matcher uses only boolean")
+        elif self.boolean is not None:
+            raise ValueError("Only equals may declare boolean")
+        if self.op in ("equals", "in") and not self.values and self.boolean is None:
             raise ValueError(f"A {self.op} matcher must declare values")
-        if self.op == "equals" and len(self.values) != 1:
+        if self.op == "equals" and self.boolean is None and len(self.values) != 1:
             raise ValueError("An equals matcher must declare exactly one value")
         if self.op in ("any", "range") and self.values:
             raise ValueError(f"A {self.op} matcher must not declare values")
@@ -493,9 +666,18 @@ class DecisionRule(FrozenModel):
                     raise ValueError(f"Matcher targets undeclared input {matcher.input!r}")
                 if matcher.op == "range" and declared.kind != "numeric":
                     raise ValueError(f"A range matcher needs a numeric input, got {declared.kind}")
-                if matcher.op in ("equals", "in") and declared.kind != "categorical":
+                if matcher.op == "in" and declared.kind == "boolean":
+                    raise ValueError("An in matcher cannot target a boolean input")
+                if matcher.op == "equals" and declared.kind == "boolean":
+                    if matcher.boolean is None:
+                        raise ValueError("An equals matcher needs a boolean value for a boolean input")
+                elif matcher.op in ("equals", "in") and declared.kind != "categorical":
                     raise ValueError(
                         f"A {matcher.op} matcher needs a categorical input, got {declared.kind}"
+                    )
+                if matcher.boolean is not None and declared.kind != "boolean":
+                    raise ValueError(
+                        f"A boolean matcher needs a boolean input, got {declared.kind}"
                     )
                 if declared.kind == "categorical" and any(
                     value not in declared.allowed_values for value in matcher.values
@@ -524,29 +706,38 @@ class DecisionRule(FrozenModel):
         return self
 
     def _require_full_coverage(self, inputs: dict[str, DecisionInput]) -> None:
-        for item in inputs.values():
-            if item.kind == "boolean":
-                raise ValueError(
-                    f"Input {item.name!r} is boolean; an exhaustive rule cannot be claimed "
-                    "over a boolean input because boolean exhaustiveness is not supported"
-                )
-        categorical = tuple(item for item in inputs.values() if item.kind == "categorical")
-        if not categorical:
+        decision_inputs = tuple(
+            item for item in inputs.values() if item.kind in ("categorical", "boolean")
+        )
+        if not decision_inputs:
             return
-        for combination in product(*(item.allowed_values for item in categorical)):
-            assignment = dict(zip((item.name for item in categorical), combination, strict=True))
+        domains = tuple(
+            item.allowed_values if item.kind == "categorical" else (False, True)
+            for item in decision_inputs
+        )
+        for combination in product(*domains):
+            assignment = dict[str, str | bool](
+                zip(
+                    (item.name for item in decision_inputs),
+                    cast(tuple[str | bool, ...], combination),
+                    strict=True,
+                )
+            )
             if not any(_row_admits(row, assignment) for row in self.rows):
                 raise ValueError(f"An exhaustive rule does not cover {assignment}")
 
 
-def _row_admits(row: DecisionRow, assignment: dict[str, str]) -> bool:
+def _row_admits(row: DecisionRow, assignment: dict[str, str | bool]) -> bool:
     for matcher in row.matchers:
         value = assignment.get(matcher.input)
         if value is None:
             continue
         if matcher.op == "any":
             continue
-        if matcher.op in ("equals", "in") and value not in matcher.values:
+        if matcher.op == "equals" and matcher.boolean is not None:
+            if not isinstance(value, bool) or value is not matcher.boolean:
+                return False
+        elif matcher.op in ("equals", "in") and value not in matcher.values:
             return False
     return True
 
@@ -605,6 +796,7 @@ class RulePackage(FrozenModel):
     decisions: tuple[DecisionRule, ...] = ()
     procedures: tuple[ProcedureRule, ...] = ()
     guidance: tuple[GuidanceRule, ...] = ()
+    curves: tuple[PiecewiseCurveRule, ...] = ()
     checksums: dict[str, str] = Field(default_factory=dict)
     package_sha256: str | None = Field(default=None, exclude=True)
 

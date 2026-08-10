@@ -1,14 +1,76 @@
 from typing import Literal
 
 from insulation_coordination.rules.importer.identify import (
+    BlankCellSpec,
+    CompoundQuantitySpec,
     FormulaAuditSpec,
+    MergedCellSpec,
+    ReferenceSlotSpec,
     TableAuditSpec,
     TableColumnSpec,
     TableSegmentSpec,
+    TokenGrammarSpec,
 )
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 
 ColumnRole = Literal["axis", "data", "context"]
+
+TABLE_2 = TableAuditSpec(
+    semantic_id=ids.DVC_VOLTAGE_LIMITS,
+    source_table="2",
+    title_anchor="Table 2",
+    page_number=44,
+    clause="4.4.2",
+    target_unit="V",
+    expected_raw_rows=8,
+    expected_raw_columns=6,
+    expected_bbox=(70.9, 314.5, 524.4, 663.2),
+    data_strategy="rectangle",
+    data_row_start=3,
+    data_column_start=1,
+    expected_data_rows=4,
+    expected_data_columns=5,
+    row_axis_id="dvc_row",
+    row_axis_unit="1",
+    column_axis_id="voltage_quantity",
+    column_axis_unit="1",
+    assertions=("raw_value_correspondence",),
+    page_search_radius=2,
+    merged_cells=(
+        MergedCellSpec(row=0, column=0, row_span=3, inherit="down"),
+        MergedCellSpec(row=0, column=1, column_span=5, inherit="right"),
+        MergedCellSpec(row=1, column=1, column_span=4, inherit="right"),
+        MergedCellSpec(row=3, column=4, row_span=2, inherit="down"),
+        MergedCellSpec(row=3, column=5, row_span=3, inherit="down"),
+        MergedCellSpec(row=5, column=4, row_span=2, inherit="down"),
+    ),
+    blank_cells=(
+        BlankCellSpec(row=1, column=0, semantics="inherit"),
+        BlankCellSpec(row=2, column=0, semantics="inherit"),
+        *(BlankCellSpec(row=0, column=column, semantics="inherit") for column in range(2, 6)),
+        *(BlankCellSpec(row=1, column=column, semantics="inherit") for column in range(2, 5)),
+        BlankCellSpec(row=4, column=4, semantics="inherit"),
+        BlankCellSpec(row=4, column=5, semantics="inherit"),
+        BlankCellSpec(row=5, column=5, semantics="inherit"),
+        BlankCellSpec(row=6, column=4, semantics="inherit"),
+        BlankCellSpec(row=6, column=5, semantics="not_applicable"),
+        *(BlankCellSpec(row=7, column=column, semantics="structural") for column in range(1, 6)),
+    ),
+    reference_slots=(
+        ReferenceSlotSpec(
+            row=3,
+            column=5,
+            target_rule_id=ids.DVC_FAULT_TIME_VOLTAGE,
+            target_kind="curve",
+        ),
+        ReferenceSlotSpec(
+            row=5,
+            column=4,
+            target_rule_id=ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC,
+            target_kind="table",
+        ),
+    ),
+)
 
 # Table 7's raw grid, shared by the four AC/DC impulse and TOV specs below. Column 0 is
 # the AC system voltage axis, column 1 is the DC system voltage axis: two parallel row
@@ -68,6 +130,7 @@ def _table_7_ac_dc_pair(
     data_items: tuple[tuple[str, str, int, ColumnRole, str], ...],
     expected_data_columns: int,
     interpolation: Literal["none", "linear"],
+    compound_component_ids: tuple[str, ...] = (),
 ) -> tuple[TableAuditSpec, TableAuditSpec]:
     """One AC spec and one DC spec reading Table 7's two parallel row axes.
 
@@ -83,6 +146,38 @@ def _table_7_ac_dc_pair(
     ):
         axis_semantic_id = f"system_voltage_{supply}_v"
         source_columns = (axis_source_column, *(item[2] for item in data_items))
+        columns = _columns(
+            (
+                axis_semantic_id,
+                f"{supply} system voltage band upper bound",
+                axis_source_column,
+                "axis",
+                "V",
+            ),
+            *data_items,
+        )
+        if compound_component_ids:
+            compound = CompoundQuantitySpec(
+                component_ids=compound_component_ids,
+                formula_candidates=tuple(
+                    (
+                        component_id,
+                        f"{impulse_or_tov_id}.{component_id}.lookup",
+                    )
+                    for component_id in compound_component_ids
+                ),
+            )
+            columns = tuple(
+                column.model_copy(
+                    update={
+                        "compound_quantity": compound,
+                        "projected_component_id": supply,
+                    }
+                )
+                if column.role == "data"
+                else column
+                for column in columns
+            )
         specs.append(
             TableAuditSpec(
                 semantic_id=f"{impulse_or_tov_id}.{supply}",
@@ -122,11 +217,7 @@ def _table_7_ac_dc_pair(
                         page_search_radius=2,
                     ),
                 ),
-                columns=_columns(
-                    (axis_semantic_id, f"{supply} system voltage band upper bound",
-                     axis_source_column, "axis", "V"),
-                    *data_items,
-                ),
+                columns=columns,
             )
         )
     return specs[0], specs[1]
@@ -147,6 +238,7 @@ _TOV_AC, _TOV_DC = _table_7_ac_dc_pair(
     data_items=_TOV_DATA_COLUMNS,
     expected_data_columns=2,
     interpolation="linear",
+    compound_component_ids=("ac", "dc"),
 )
 
 #: Table E.2's four altitude-band data columns are physically ordered descending by
@@ -187,7 +279,79 @@ def _altitude_band_columns() -> tuple[TableColumnSpec, ...]:
     )
 
 
+#: Table 3 has three semantic DVC rows and six protection-context columns inside
+#: a physical 9x7 grid. Physical rows 5 and 7 retain wrapped source continuations;
+#: row 8 retains source notes. Public identifiers are positional and neutral.
+TABLE_3 = TableAuditSpec(
+    semantic_id=ids.DVC_PROTECTION_MATRIX,
+    source_table="3",
+    title_anchor="Table 3",
+    page_number=45,
+    clause="4.4.3",
+    target_unit="1",
+    expected_raw_rows=9,
+    expected_raw_columns=7,
+    expected_bbox=(71.0, 265.3, 524.3, 744.2),
+    data_strategy="rectangle",
+    data_row_start=None,
+    data_column_start=None,
+    expected_data_rows=3,
+    expected_data_columns=6,
+    row_axis_id="dvc",
+    row_axis_unit="1",
+    column_axis_id="protection_context",
+    column_axis_unit="1",
+    assertions=("complete_grid", "raw_value_correspondence"),
+    page_search_radius=2,
+    segments=(
+        TableSegmentSpec(
+            id="table-3",
+            page_number=45,
+            title_anchor="Table 3",
+            expected_raw_rows=9,
+            expected_raw_columns=7,
+            expected_bbox=(71.0, 265.3, 524.3, 744.2),
+            source_columns=tuple(range(7)),
+            header_rows=(0, 1, 2),
+            data_rows=(3, 4, 6),
+            note_rows=(5, 7),
+            footnote_rows=(8,),
+            page_search_radius=2,
+        ),
+    ),
+    columns=(
+        TableColumnSpec(
+            semantic_id="dvc_source",
+            heading="dvc source row",
+            source_column=0,
+            role="context",
+            unit="1",
+        ),
+        *(
+            TableColumnSpec(
+                semantic_id=f"protection-context-{column}",
+                heading=f"protection context {column}",
+                source_column=column,
+                role="data",
+                unit="1",
+            )
+            for column in range(1, 7)
+        ),
+    ),
+    token_grammar=TokenGrammarSpec(
+        target="categorical",
+        tokens=(
+            ("none", "none"),
+            ("basic", "basic_protection"),
+            ("enhanced", "enhanced_protection"),
+        ),
+        match="prefix",
+    ),
+)
+
 TABLES: tuple[TableAuditSpec, ...] = (
+    TABLE_2,
+    TABLE_3,
     _IMPULSE_AC,
     _IMPULSE_DC,
     _TOV_AC,

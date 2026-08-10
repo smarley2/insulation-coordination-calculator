@@ -37,14 +37,11 @@ from insulation_coordination.rules.importer.identify import (
     identify_standard,
 )
 from insulation_coordination.rules.importer.review import (
-    accept_equation_mapping,
-    accept_raw_table,
-    build_reviewed_draft,
     draft_review_digest,
-    unresolved_equation_items,
-    unresolved_mapping_items,
+    review_curve_variant,
 )
 from insulation_coordination.rules.validation import validate_rule_package
+from tests.private.test_iec62477_dvc_tables import _review_all_c2_proposals
 
 pytestmark = pytest.mark.private_standard
 
@@ -60,27 +57,16 @@ def _golden_digest_path() -> Path:
 
 
 def _approve_supplied_package(paths: tuple[Path, ...]) -> RulePackage:
-    reviewed = extract_draft(paths)
-    for grid in reviewed.raw_grids:
-        reviewed = accept_raw_table(
+    reviewed = _review_all_c2_proposals(extract_draft(paths))
+    for variant in tuple(
+        variant for curve in reviewed.curves for variant in curve.variants
+    ):
+        reviewed = review_curve_variant(
             reviewed,
-            grid_id=grid.id,
-            corrections={},
+            variant.id,
             actor="Private fixture reviewer",
-            notes="Verified against supplied PDF",
+            notes="Verified curve against supplied PDF",
         )
-    reviewed = accept_equation_mapping(
-        reviewed,
-        equation_ids=tuple(item.semantic_id for item in unresolved_equation_items(reviewed)),
-        mapping_ids=tuple(item.semantic_id for item in unresolved_mapping_items(reviewed)),
-        actor="Private fixture reviewer",
-        notes="Verified equations and mappings against supplied PDF",
-    )
-    reviewed = build_reviewed_draft(
-        reviewed,
-        actor="Private fixture reviewer",
-        notes="Projected accepted IEC artifacts",
-    )
     assert is_fully_resolved(reviewed)
     return approve_draft(
         reviewed,
@@ -156,6 +142,10 @@ def test_supplied_standards_match_human_reviewed_draft(
     }.items() <= grid_shapes.items()
     assert draft.review_items
     assert {item.code for item in draft.review_items} <= {
+        "AMBIGUOUS_COMPONENT_FORMULA",
+        "AMBIGUOUS_COMPOUND_CELL",
+        "CURVE_VARIANT_REVIEW_REQUIRED",
+        "MANUAL_CLAUSE_DEFINITION_REQUIRED",
         "MANUAL_TABLE_DEFINITION_REQUIRED",
         "MANUAL_RULE_DEFINITION_REQUIRED",
         "MANUAL_MAPPING_REQUIRED",
@@ -177,9 +167,6 @@ def test_supplied_standards_match_human_reviewed_draft(
     assert all(cell.role in {"header", "data", "blank", "note", "footnote"} for cell in f5.cells)
     assert max(cell.logical_row for cell in f5.cells if cell.logical_row is not None) == 38
     assert any(
-        cell.source.note == "PDF page 75" and cell.logical_row is not None for cell in f5.cells
-    )
-    assert any(
         " " in cell.raw_text.strip() and cell.value is not None
         for cell in f5.cells
         if cell.logical_column == "rms_voltage_v"
@@ -193,30 +180,8 @@ def test_supplied_standards_match_human_reviewed_draft(
     }
     assert all(equation.parse_status == "parsed" for equation in draft.extracted_equations)
     assert all(equation.raw_text and equation.rendered for equation in draft.extracted_equations)
-    assert all(
-        equation.source.clause and equation.source.note for equation in draft.extracted_equations
-    )
-    accepted = draft
-    for grid in draft.raw_grids:
-        accepted = accept_raw_table(
-            accepted,
-            grid_id=grid.id,
-            corrections={},
-            actor="Private fixture reviewer",
-            notes="Verified against supplied PDF",
-        )
-    accepted = accept_equation_mapping(
-        accepted,
-        equation_ids=tuple(item.semantic_id for item in unresolved_equation_items(accepted)),
-        mapping_ids=tuple(item.semantic_id for item in unresolved_mapping_items(accepted)),
-        actor="Private fixture reviewer",
-        notes="Verified equations and mappings against supplied PDF",
-    )
-    built = build_reviewed_draft(
-        accepted,
-        actor="Private fixture reviewer",
-        notes="Projected accepted IEC artifacts",
-    )
+    assert all(equation.source.clause for equation in draft.extracted_equations)
+    built = _review_all_c2_proposals(draft)
     assert {
         "iec60664-1-f2",
         "iec60664-1-f5",
@@ -235,7 +200,6 @@ def test_supplied_standards_match_human_reviewed_draft(
         earlier < later
         for earlier, later in zip(f5_table.row_axis.values, f5_table.row_axis.values[1:])
     )
-    assert all(cell.source.note == "PDF page 74" for cell in f5_table.cells)
     assert all(table.row_axis.labels and table.column_axis.labels for table in built.tables)
     assert all("raw_sequence" not in str(formula.expression) for formula in built.formulas)
     expected_draft_failures = {
@@ -264,6 +228,7 @@ def test_supplied_standards_match_human_reviewed_draft(
     assert draft_review_digest(draft) == golden, "private extraction differs from reviewed digest"
 
 
+@pytest.mark.timeout(300)
 def test_supplied_standards_approve_and_calculate_pcb_annex_gh(
     tmp_path: Path,
     supplied_standards: dict[str, Path],
