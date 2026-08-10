@@ -70,6 +70,12 @@ TABLE_2 = TableAuditSpec(
             target_kind="table",
         ),
     ),
+    decision_route_ids=(
+        ids.DVC_VOLTAGE_LIMITS,
+        f"{ids.DVC_VOLTAGE_LIMITS}.fault_time_reference",
+        f"{ids.DVC_VOLTAGE_LIMITS}.impulse_reference",
+        f"{ids.DVC_VOLTAGE_LIMITS}.not_applicable",
+    ),
 )
 
 # Table 7's raw grid, shared by the four AC/DC impulse and TOV specs below. Column 0 is
@@ -347,6 +353,7 @@ TABLE_3 = TableAuditSpec(
         ),
         match="prefix",
     ),
+    decision_route_ids=(ids.DVC_PROTECTION_MATRIX,),
 )
 
 TABLES: tuple[TableAuditSpec, ...] = (

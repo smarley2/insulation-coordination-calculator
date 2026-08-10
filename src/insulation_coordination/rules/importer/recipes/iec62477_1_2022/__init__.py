@@ -6,6 +6,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
     clauses,
     curves,
     identity,
+    projection,
     tables,
 )
 
@@ -24,6 +25,13 @@ RECIPE = StandardRecipe(
     clauses=clauses.CLAUSES,
     curves=curves.CURVES,
     required_curves=(ids.DVC_FAULT_TIME_VOLTAGE,),
+    grid_projectors={
+        ids.DVC_VOLTAGE_LIMITS: projection.project_dvc_voltage_limits,
+        ids.DVC_PROTECTION_MATRIX: projection.project_dvc_protection_matrix,
+    },
+    clause_projectors={
+        ids.DVC_FAULT_APPLICABILITY: clauses.project_dvc_fault_applicability,
+    },
 )
 
 __all__ = ["RECIPE"]

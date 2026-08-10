@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from collections.abc import Callable, Mapping
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, model_validator
 from pypdf import PdfReader
@@ -268,6 +269,10 @@ class TableAuditSpec(FrozenModel):
     token_grammar: TokenGrammarSpec | None = None
     page_search_radius: int = Field(default=0, ge=0, le=5)
     interpolation: Literal["none", "linear"] = "none"
+    #: Decision rule IDs this table projects to instead of a ``Table``. Declared on the
+    #: spec so completeness reporting reads the routes from the recipe rather than from a
+    #: table of standard-specific identifiers inside generic review code.
+    decision_route_ids: tuple[Identifier, ...] = ()
 
     @model_validator(mode="after")
     def _axis_value_source_row_is_a_declared_header_row(self) -> TableAuditSpec:
@@ -384,6 +389,15 @@ class CurveAuditSpec(FrozenModel):
     permitted_interpolations: tuple[CurveInterpolation, ...] = Field(min_length=1)
 
 
+#: A recipe-declared projection from one reviewed raw artifact to typed rules, returning
+#: the projected rules and their semantic proposals. The artifact and rule types stay
+#: unannotated here on purpose: ``extract.py`` and ``clauses.py`` both import this module,
+#: so naming their models would close an import cycle. The recipe modules that register a
+#: projector carry the precise signatures.
+type GridProjector = Callable[[Any, StandardIdentity], tuple[tuple[Any, ...], tuple[Any, ...]]]
+type ClauseProjector = GridProjector
+
+
 class StandardRecipe(FrozenModel):
     id: Identifier
     standard: Identifier
@@ -404,6 +418,26 @@ class StandardRecipe(FrozenModel):
     #: curve rule for one of these cannot approve. Declared here so approval does
     #: not hard-code any one standard's curve IDs.
     required_curves: tuple[Identifier, ...] = ()
+    #: Projections keyed by the semantic ID of the spec they consume. Declared here so
+    #: generic review code dispatches by lookup instead of branching on one standard's
+    #: identifiers. A table without an entry projects through ``project_table``.
+    grid_projectors: Mapping[Identifier, GridProjector] = {}
+    clause_projectors: Mapping[Identifier, ClauseProjector] = {}
+
+    @model_validator(mode="after")
+    def _projectors_match_declared_specs(self) -> StandardRecipe:
+        table_ids = {spec.semantic_id for spec in self.tables}
+        clause_ids = {spec.semantic_id for spec in self.clauses}
+        if set(self.grid_projectors) - table_ids:
+            raise ValueError("grid projector refers to an undeclared table spec")
+        if set(self.clause_projectors) != clause_ids:
+            raise ValueError("every clause spec needs exactly one projector")
+        if any(
+            spec.decision_route_ids and spec.semantic_id not in self.grid_projectors
+            for spec in self.tables
+        ):
+            raise ValueError("a table projecting decisions needs a grid projector")
+        return self
 
     def matches_text(self, text: str) -> bool:
         return all(_normalized(anchor) in text for anchor in self.identity_anchors)
@@ -484,7 +518,11 @@ def _read_pdf(
         )
     except StandardIdentificationError:
         raise
-    except (OSError, EOFError, PyPdfError, TypeError, ValueError) as error:
+    # A malformed font, page tree, or object reference surfaces from the PDF layer as a
+    # missing key or index rather than a PyPdfError. Identification is the gate in front
+    # of a file the maintainer picked, so it refuses the document instead of letting the
+    # PDF layer's own error escape.
+    except (OSError, EOFError, PyPdfError, TypeError, ValueError, LookupError) as error:
         raise UnsupportedStandardError("standard PDF could not be read") from error
 
 

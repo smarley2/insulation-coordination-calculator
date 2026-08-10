@@ -1111,15 +1111,7 @@ def build_reviewed_draft(
     notes: str,
 ) -> ImportedRuleDraft:
     """Project typed content only after every source artifact is accepted."""
-    from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
     from insulation_coordination.rules.importer.recipes import RECIPES
-    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.clauses import (
-        project_dvc_fault_applicability,
-    )
-    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
-        project_dvc_protection_matrix,
-        project_dvc_voltage_limits,
-    )
 
     if unresolved_table_items(draft) or unresolved_raw_review_items(draft):
         raise ValueError("Review extracted tables first")
@@ -1142,14 +1134,12 @@ def build_reviewed_draft(
         identity = identities[recipe.id]
         for table_spec in recipe.tables:
             grid = grids[f"raw-{table_spec.semantic_id}"]
-            if table_spec.semantic_id == ids.DVC_VOLTAGE_LIMITS:
-                projected, _proposals = project_dvc_voltage_limits(grid, identity)
-                decisions.update((rule.id, rule) for rule in projected)
-            elif table_spec.semantic_id == ids.DVC_PROTECTION_MATRIX:
-                projected, _proposals = project_dvc_protection_matrix(grid, identity)
-                decisions.update((rule.id, rule) for rule in projected)
-            else:
+            grid_projector = recipe.grid_projectors.get(table_spec.semantic_id)
+            if grid_projector is None:
                 tables[table_spec.semantic_id] = project_table(identity, table_spec, grid)
+                continue
+            projected, _proposals = grid_projector(grid, identity)
+            decisions.update((rule.id, rule) for rule in projected)
         for formula_spec in recipe.formulas:
             formulas[formula_spec.semantic_id] = project_formula(identity, formula_spec, equations)
         for mapping_spec in recipe.mappings:
@@ -1160,13 +1150,10 @@ def build_reviewed_draft(
                 # A draft extracted before this clause recipe existed has no
                 # fragment; approval gating reports the missing required content.
                 continue
-            if clause_spec.semantic_id == ids.DVC_FAULT_APPLICABILITY:
-                projected, _proposals = project_dvc_fault_applicability(fragment, identity)
-                decisions.update((rule.id, rule) for rule in projected)
-            else:
-                raise ValueError(
-                    f"no clause projection for {clause_spec.semantic_id}"
-                )
+            projected, _proposals = recipe.clause_projectors[clause_spec.semantic_id](
+                fragment, identity
+            )
+            decisions.update((rule.id, rule) for rule in projected)
 
     changed = draft.model_copy(
         update={
@@ -1217,7 +1204,6 @@ def _matches(source: SourceReference, expected: SourceReference) -> bool:
 
 def required_content_report(draft: ImportedRuleDraft) -> tuple[RequiredContentStatus, ...]:
     """Required tables/formulas/mappings and whether typed content is present."""
-    from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
     from insulation_coordination.rules.importer.recipes import RECIPES
 
     table_ids = {table.id: table for table in draft.tables}
@@ -1237,19 +1223,11 @@ def required_content_report(draft: ImportedRuleDraft) -> tuple[RequiredContentSt
                 clause=table_spec.clause,
                 table=table_spec.source_table,
             )
-            decision_routes = {
-                ids.DVC_VOLTAGE_LIMITS: {
-                    ids.DVC_VOLTAGE_LIMITS,
-                    f"{ids.DVC_VOLTAGE_LIMITS}.fault_time_reference",
-                    f"{ids.DVC_VOLTAGE_LIMITS}.impulse_reference",
-                    f"{ids.DVC_VOLTAGE_LIMITS}.not_applicable",
-                },
-                ids.DVC_PROTECTION_MATRIX: {ids.DVC_PROTECTION_MATRIX},
-            }.get(table_spec.semantic_id)
+            decision_routes = set(table_spec.decision_route_ids)
             table = table_ids.get(table_spec.semantic_id)
             present = (
                 decision_routes <= decision_ids
-                if decision_routes is not None
+                if decision_routes
                 else table is not None and _matches(table.source, expected)
             )
             statuses.append(
