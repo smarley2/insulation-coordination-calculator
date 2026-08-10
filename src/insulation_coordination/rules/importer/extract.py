@@ -987,7 +987,12 @@ def _extract_segment(
     if not anchors:
         raise ExtractionError(f"layout anchor is missing for {semantic_id}; extraction refused")
     matching = []
-    for found in page.find_tables():
+    settings = (
+        {"horizontal_strategy": "text", "vertical_strategy": "lines"}
+        if segment.row_strategy == "text"
+        else {}
+    )
+    for found in page.find_tables(table_settings=settings):
         raw = found.extract()
         shape = (len(raw), max((len(row) for row in raw), default=0))
         bbox_matches = all(

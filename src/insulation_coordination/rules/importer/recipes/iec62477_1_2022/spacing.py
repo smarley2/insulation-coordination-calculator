@@ -6,6 +6,8 @@ pollution-degree and material-group axis values belong to the source tables and 
 from their own header rows at import time.
 """
 
+from typing import Literal
+
 from insulation_coordination.rules.importer.identify import (
     BlankCellSpec,
     MergedCellSpec,
@@ -154,6 +156,163 @@ TABLE_8 = TableAuditSpec(
     blank_cells=_TABLE_8_BLANK_CELLS,
 )
 
-SPACING_TABLES: tuple[TableAuditSpec, ...] = (TABLE_8,)
+_TABLE_9_PAGE = 71
+_TABLE_9_CLAUSE = "4.4.7.5"
+#: Table 9 rules one box around several working-voltage lines, so the ruling lines cannot
+#: separate its logical rows: with the default strategy every cell arrives holding three or
+#: six stacked values. Read with one row per text line instead, which gives one grid row per
+#: working voltage at the cost of a taller grid whose blank spacer lines carry nothing.
+_TABLE_9_ROW_STRATEGY: Literal["lines", "text"] = "text"
+_TABLE_9_RAW_ROWS = 96
+_TABLE_9_RAW_COLUMNS = 12
+_TABLE_9_BBOX = (71.3, 112.6, 524.3, 775.9)
+_TABLE_9_HEADER_ROWS = (0, 2, 3, 4, 5, 6, 7, 8, 9, 11)
+#: One grid row per printed working voltage.
+_TABLE_9_DATA_ROWS = (
+    13, 15, 17, 19, 21, 23, 25, 27, 29, 32, 34, 38, 40, 42, 43, 45, 49, 51, 54, 57, 59,
+    61, 63, 65, 67, 69, 71, 73, 75, 77,
+)
+#: The printed-wiring columns carry values only over the lower part of the axis. Above
+#: that, one row holds a footnote marker in place of a value and the remaining rows are
+#: empty, so the printed-wiring spec stops where its data stops rather than classifying
+#: nine rows of absent values. The footnote that states the limit stays in the raw grid.
+_TABLE_9_PRINTED_WIRING_DATA_ROWS = _TABLE_9_DATA_ROWS[:21]
+_TABLE_9_EXPECTED_DATA_ROWS = 30
+_TABLE_9_EXPECTED_PRINTED_WIRING_DATA_ROWS = 21
+#: Columns 7 and 11 hold no data on any row: they are artifacts of the merged header spans,
+#: so no spec reads them.
+_TABLE_9_PRINTED_WIRING_COLUMNS = (0, 1, 2)
+_TABLE_9_OTHER_COLUMNS = (0, 3, 4, 5, 6, 8, 9, 10)
+_TABLE_9_FOOTNOTE_ROWS = tuple(
+    row
+    for row in range(_TABLE_9_RAW_ROWS)
+    if row not in (*_TABLE_9_HEADER_ROWS, *_TABLE_9_DATA_ROWS)
+)
+_TABLE_9_SUFFIXES = ("b", "c", "d", "e")
+_WORKING_VOLTAGE_AXIS = "working_voltage_v"
 
-__all__ = ["SPACING_TABLES", "TABLE_8"]
+
+def _table_9_spec(
+    *,
+    semantic_id: str,
+    segment_id: str,
+    source_columns: tuple[int, ...],
+    data_rows: tuple[int, ...],
+    expected_data_rows: int,
+    data_items: tuple[tuple[str, str, int], ...],
+    column_axis_id: str,
+) -> TableAuditSpec:
+    """One creepage lookup over Table 9's shared grid.
+
+    Table 9 answers a four-way question -- insulator construction, pollution degree,
+    insulating material group, and working voltage -- which does not fit one table's two
+    axes. Each spec therefore fixes the construction and reads the material groups of one
+    pollution degree as its column axis, the same way the Table 7 pair fixes AC or DC.
+    """
+    columns = (
+        TableColumnSpec(
+            semantic_id=_WORKING_VOLTAGE_AXIS,
+            heading="working voltage entering this table",
+            source_column=0,
+            role="axis",
+            unit="V",
+        ),
+        *(
+            TableColumnSpec(
+                semantic_id=column_semantic_id,
+                heading=heading,
+                source_column=source_column,
+                role="data",
+                unit="mm",
+            )
+            for column_semantic_id, heading, source_column in data_items
+        ),
+    )
+    return TableAuditSpec(
+        semantic_id=semantic_id,
+        source_table="9",
+        title_anchor="Table 9",
+        page_number=_TABLE_9_PAGE,
+        clause=_TABLE_9_CLAUSE,
+        target_unit="mm",
+        #: Table 9 permits interpolation, unlike Tables 7 and 8.
+        interpolation="linear",
+        page_search_radius=2,
+        expected_raw_rows=_TABLE_9_RAW_ROWS,
+        expected_raw_columns=len(source_columns),
+        expected_bbox=_TABLE_9_BBOX,
+        data_strategy="rectangle",
+        data_row_start=_TABLE_9_DATA_ROWS[0],
+        data_column_start=0,
+        expected_data_rows=expected_data_rows,
+        expected_data_columns=len(data_items) + 1,
+        row_axis_id=_WORKING_VOLTAGE_AXIS,
+        row_axis_unit="V",
+        column_axis_id=column_axis_id,
+        column_axis_unit="1",
+        allowed_suffixes=_TABLE_9_SUFFIXES,
+        allowed_qualifiers=("up_to",),
+        assertions=("strictly_increasing_axes", "raw_value_correspondence"),
+        segments=(
+            TableSegmentSpec(
+                id=segment_id,
+                page_number=_TABLE_9_PAGE,
+                title_anchor="Table 9",
+                expected_raw_rows=_TABLE_9_RAW_ROWS,
+                expected_raw_columns=_TABLE_9_RAW_COLUMNS,
+                expected_bbox=_TABLE_9_BBOX,
+                source_columns=source_columns,
+                header_rows=_TABLE_9_HEADER_ROWS,
+                data_rows=data_rows,
+                footnote_rows=_TABLE_9_FOOTNOTE_ROWS,
+                page_search_radius=2,
+                row_strategy=_TABLE_9_ROW_STRATEGY,
+            ),
+        ),
+        columns=columns,
+    )
+
+
+TABLE_9_PRINTED_WIRING = _table_9_spec(
+    semantic_id=f"{ids.CREEPAGE_REQUIREMENTS}.printed_wiring",
+    segment_id="table-9-printed-wiring",
+    source_columns=_TABLE_9_PRINTED_WIRING_COLUMNS,
+    data_rows=_TABLE_9_PRINTED_WIRING_DATA_ROWS,
+    expected_data_rows=_TABLE_9_EXPECTED_PRINTED_WIRING_DATA_ROWS,
+    data_items=(
+        ("printed_wiring_pollution_1_mm", "printed wiring pollution degree 1", 1),
+        ("printed_wiring_pollution_2_mm", "printed wiring pollution degree 2", 2),
+    ),
+    column_axis_id="printed_wiring_pollution_branch",
+)
+
+TABLE_9_OTHER_INSULATORS = _table_9_spec(
+    semantic_id=f"{ids.CREEPAGE_REQUIREMENTS}.other_insulators",
+    segment_id="table-9-other-insulators",
+    source_columns=_TABLE_9_OTHER_COLUMNS,
+    data_rows=_TABLE_9_DATA_ROWS,
+    expected_data_rows=_TABLE_9_EXPECTED_DATA_ROWS,
+    data_items=(
+        ("other_pollution_1_all_groups_mm", "other insulators pollution degree 1", 3),
+        ("other_pollution_2_group_1_mm", "other insulators pollution degree 2 group 1", 4),
+        ("other_pollution_2_group_2_mm", "other insulators pollution degree 2 group 2", 5),
+        ("other_pollution_2_group_3_mm", "other insulators pollution degree 2 group 3", 6),
+        ("other_pollution_3_group_1_mm", "other insulators pollution degree 3 group 1", 8),
+        ("other_pollution_3_group_2_mm", "other insulators pollution degree 3 group 2", 9),
+        ("other_pollution_3_group_3_mm", "other insulators pollution degree 3 group 3", 10),
+    ),
+    column_axis_id="other_insulator_pollution_material_branch",
+)
+
+SPACING_TABLES: tuple[TableAuditSpec, ...] = (
+    TABLE_8,
+    TABLE_9_PRINTED_WIRING,
+    TABLE_9_OTHER_INSULATORS,
+)
+
+__all__ = [
+    "SPACING_TABLES",
+    "TABLE_8",
+    "TABLE_9_OTHER_INSULATORS",
+    "TABLE_9_PRINTED_WIRING",
+]

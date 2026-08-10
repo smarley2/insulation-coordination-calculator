@@ -1129,6 +1129,24 @@ def build_reviewed_draft(
     formulas: dict[str, Formula] = {}
     mappings: dict[str, CompatibilityMapping] = {}
     decisions: dict[str, DecisionRule] = {rule.id: rule for rule in draft.decisions}
+    guidance: dict[str, GuidanceRule] = {rule.id: rule for rule in draft.guidance}
+
+    def collect(projected: tuple[object, ...]) -> None:
+        """Route each projected rule to the draft field its type belongs in.
+
+        A projection may return guidance alongside decisions -- a source NOTE becomes
+        guidance, never an executable branch -- and ``model_copy`` does not validate, so a
+        guidance rule appended to ``decisions`` would sit there undetected.
+        """
+        for rule in projected:
+            if isinstance(rule, DecisionRule):
+                decisions[rule.id] = rule
+            elif isinstance(rule, GuidanceRule):
+                guidance[rule.id] = rule
+            else:
+                raise TypeError(
+                    f"projection produced an unsupported rule type: {type(rule).__name__}"
+                )
 
     for recipe in RECIPES:
         identity = identities[recipe.id]
@@ -1139,7 +1157,7 @@ def build_reviewed_draft(
                 tables[table_spec.semantic_id] = project_table(identity, table_spec, grid)
                 continue
             projected, _proposals = grid_projector(grid, identity)
-            decisions.update((rule.id, rule) for rule in projected)
+            collect(projected)
         for formula_spec in recipe.formulas:
             formulas[formula_spec.semantic_id] = project_formula(identity, formula_spec, equations)
         for mapping_spec in recipe.mappings:
@@ -1153,7 +1171,7 @@ def build_reviewed_draft(
             projected, _proposals = recipe.clause_projectors[clause_spec.semantic_id](
                 fragment, identity
             )
-            decisions.update((rule.id, rule) for rule in projected)
+            collect(projected)
 
     changed = draft.model_copy(
         update={
@@ -1161,6 +1179,7 @@ def build_reviewed_draft(
             "formulas": tuple(formulas.values()),
             "mappings": tuple(mappings.values()),
             "decisions": tuple(decisions.values()),
+            "guidance": tuple(guidance.values()),
         }
     )
     return record_correction(

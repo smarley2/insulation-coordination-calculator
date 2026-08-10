@@ -92,6 +92,11 @@ class TableSegmentSpec(FrozenModel):
     footnote_rows: tuple[int, ...] = ()
     context_cells: tuple[tuple[int, int], ...] = ()
     page_search_radius: int = Field(default=0, ge=0, le=5)
+    #: How row boundaries are found. ``"lines"`` uses the ruling lines the page draws,
+    #: which is right for tables whose every logical row has its own rule. ``"text"``
+    #: takes one row per text line, which is what a table needs when several logical rows
+    #: share one ruled cell; without it those rows would arrive stacked inside one cell.
+    row_strategy: Literal["lines", "text"] = "lines"
 
 
 class CompoundQuantitySpec(FrozenModel):
