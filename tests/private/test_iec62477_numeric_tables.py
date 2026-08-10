@@ -7,7 +7,7 @@ from insulation_coordination.rules.importer.approval import (
     ApprovalError,
     _require_consistent_shared_source_cells,
 )
-from insulation_coordination.rules.importer.extract import _REQUIRED_RECIPES, extract_draft
+from insulation_coordination.rules.importer.extract import extract_draft
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.review import (
     accept_raw_table,
@@ -16,9 +16,11 @@ from insulation_coordination.rules.importer.review import (
 pytestmark = pytest.mark.private_standard
 
 
-@pytest.fixture(scope="module")
-def draft(supplied_standards: dict[str, Path]):
-    return extract_draft(tuple(supplied_standards[recipe] for recipe in sorted(_REQUIRED_RECIPES)))
+@pytest.fixture
+def draft(extracted_draft):
+    """The shared import from ``conftest``; every review step returns a new draft."""
+
+    return extracted_draft
 
 
 def test_manifest_lists_three_distinct_source_documents(draft) -> None:
@@ -70,10 +72,10 @@ def test_the_two_table_seven_grids_hold_different_data(draft) -> None:
     assert impulse_data != tov_data
 
 
-def test_extraction_is_reproducible(supplied_standards: dict[str, Path], draft) -> None:
-    repeated = extract_draft(
-        tuple(supplied_standards[recipe] for recipe in sorted(_REQUIRED_RECIPES))
-    )
+def test_extraction_is_reproducible(supplied_paths: tuple[Path, ...], draft) -> None:
+    """A second, independent import: comparing two runs is the assertion here."""
+
+    repeated = extract_draft(supplied_paths)
     assert repeated.checksums == draft.checksums
 
 

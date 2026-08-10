@@ -56,8 +56,9 @@ def _golden_digest_path() -> Path:
     return private_rules / "supplied-standards-draft.sha256"
 
 
-def _approve_supplied_package(paths: tuple[Path, ...]) -> RulePackage:
-    reviewed = _review_all_c2_proposals(extract_draft(paths))
+def _approve_supplied_package(reviewed) -> RulePackage:
+    """Approve an already-reviewed draft: the review pass is shared by fixture."""
+
     for variant in tuple(
         variant for curve in reviewed.curves for variant in curve.variants
     ):
@@ -234,9 +235,9 @@ def test_supplied_standards_match_human_reviewed_draft(
 @pytest.mark.timeout(300)
 def test_supplied_standards_approve_and_calculate_pcb_annex_gh(
     tmp_path: Path,
-    supplied_standards: dict[str, Path],
+    reviewed_draft,
 ) -> None:
-    approved = _approve_supplied_package(_paths(supplied_standards))
+    approved = _approve_supplied_package(reviewed_draft)
     archive = tmp_path / "reviewed.icrules"
     write_rule_package(archive, approved)
     rules = load_rule_package(archive)

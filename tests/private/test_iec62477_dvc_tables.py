@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from insulation_coordination.rules.importer.approval import ApprovalError, approve_draft
-from insulation_coordination.rules.importer.extract import _REQUIRED_RECIPES, extract_draft
+from insulation_coordination.rules.importer.extract import extract_draft
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.review import (
     accept_clause_fragment,
@@ -30,11 +30,11 @@ from insulation_coordination.rules.importer.review import (
 pytestmark = pytest.mark.private_standard
 
 
-@pytest.fixture(scope="module")
-def draft(supplied_standards: dict[str, Path]):
-    return extract_draft(
-        tuple(supplied_standards[recipe] for recipe in sorted(_REQUIRED_RECIPES))
-    )
+@pytest.fixture
+def draft(extracted_draft):
+    """The shared import from ``conftest``; every review step returns a new draft."""
+
+    return extracted_draft
 
 
 def test_dvc_grid_shapes_are_structural(draft) -> None:
@@ -136,10 +136,17 @@ def _review_all_c2_proposals(draft):
 #: reviewing every extracted artifact. That is the work this test exists to do, so it gets
 #: room for it rather than a faster but weaker assertion.
 @pytest.mark.timeout(600)
-def test_deterministic_c2_proposal_hashes(supplied_standards: dict[str, Path]) -> None:
-    paths = tuple(supplied_standards[recipe] for recipe in sorted(_REQUIRED_RECIPES))
-    first = _review_all_c2_proposals(extract_draft(paths))
-    second = _review_all_c2_proposals(extract_draft(paths))
+def test_deterministic_c2_proposal_hashes(
+    reviewed_draft,
+    supplied_paths: tuple[Path, ...],
+) -> None:
+    """Two independent imports must review to identical proposals.
+
+    The shared review pass is one of the two; the second is imported and reviewed fresh
+    here, because comparing two separate runs end to end is the assertion.
+    """
+    first = reviewed_draft
+    second = _review_all_c2_proposals(extract_draft(supplied_paths))
     assert [
         (item.semantic_id, item.rule_sha256, item.source_artifact_sha256)
         for item in first.semantic_proposals
@@ -149,11 +156,7 @@ def test_deterministic_c2_proposal_hashes(supplied_standards: dict[str, Path]) -
     ]
 
 
-@pytest.mark.timeout(600)
-def test_c2_review_completeness_still_blocks_on_missing_curve(
-    supplied_standards: dict[str, Path],
-) -> None:
-    paths = tuple(supplied_standards[recipe] for recipe in sorted(_REQUIRED_RECIPES))
-    reviewed = _review_all_c2_proposals(extract_draft(paths))
+def test_c2_review_completeness_still_blocks_on_missing_curve(reviewed_draft) -> None:
+    reviewed = reviewed_draft
     with pytest.raises(ApprovalError, match="fault_time_voltage"):
         approve_draft(reviewed, "Maintainer", "Approve C2 content.")

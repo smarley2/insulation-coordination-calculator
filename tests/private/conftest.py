@@ -7,7 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from insulation_coordination.rules.importer.extract import _REQUIRED_RECIPES
+from insulation_coordination.rules.importer.extract import (
+    _REQUIRED_RECIPES,
+    ImportedRuleDraft,
+    extract_draft,
+)
 from insulation_coordination.rules.importer.identify import (
     StandardIdentificationError,
     identify_standard,
@@ -34,3 +38,39 @@ def supplied_standards() -> dict[str, Path]:
     if missing:
         pytest.skip(f"no licensed document found for {', '.join(missing)}")
     return {recipe: paths[0] for recipe, paths in found.items()}
+
+
+@pytest.fixture(scope="session")
+def supplied_paths(supplied_standards: dict[str, Path]) -> tuple[Path, ...]:
+    """The licensed documents in the order extraction expects them."""
+
+    return tuple(supplied_standards[recipe] for recipe in sorted(_REQUIRED_RECIPES))
+
+
+@pytest.fixture(scope="session")
+def extracted_draft(supplied_paths: tuple[Path, ...]) -> ImportedRuleDraft:
+    """One import of all three licensed documents, shared by every test that reads it.
+
+    Importing costs about twenty seconds, most of it rasterizing the source figures, and
+    the private tests used to repeat it a dozen times. A draft is a frozen model and every
+    review step returns a new one, so sharing this base draft cannot leak state between
+    tests. A test that needs a second, independent import -- the determinism ones -- calls
+    ``extract_draft`` itself, because extracting twice is the assertion there.
+    """
+    return extract_draft(supplied_paths)
+
+
+@pytest.fixture(scope="session")
+def reviewed_draft(extracted_draft: ImportedRuleDraft) -> ImportedRuleDraft:
+    """One full review pass over the shared import, shared by every test that needs it.
+
+    Reviewing resolves every extracted review item one at a time, which costs about as much
+    as the import itself, and most tests want the state after review rather than the review
+    process. A test that asserts the review process runs its own pass.
+
+    The helper is imported here rather than at module scope because it lives beside the
+    tests that assert the review lifecycle, and conftest is imported before them.
+    """
+    from tests.private.test_iec62477_dvc_tables import _review_all_c2_proposals
+
+    return _review_all_c2_proposals(extracted_draft)

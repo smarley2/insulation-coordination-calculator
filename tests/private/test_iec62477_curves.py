@@ -33,11 +33,13 @@ def _curve_artifact_hashes(draft) -> tuple[tuple[str, ...], tuple[str, ...]]:
 
 
 def test_figures_5_to_7_digitize_deterministically(
-    supplied_standards: dict[str, Path],
+    extracted_draft,
+    supplied_paths: tuple[Path, ...],
 ) -> None:
-    paths = _paths(supplied_standards)
-    first = extract_draft(paths)
-    second = extract_draft(paths)
+    """The shared import against a second, independent one: that comparison is the point."""
+
+    first = extracted_draft
+    second = extract_draft(supplied_paths)
 
     assert {figure.source.figure for figure in first.raw_figures} == {"5", "6", "7"}
     assert len(first.curve_digitizations) == 3
@@ -45,10 +47,8 @@ def test_figures_5_to_7_digitize_deterministically(
     assert _curve_artifact_hashes(first) == _curve_artifact_hashes(second)
 
 
-def test_unreviewed_curve_proposal_blocks_initial_approval(
-    supplied_standards: dict[str, Path],
-) -> None:
-    draft = extract_draft(_paths(supplied_standards))
+def test_unreviewed_curve_proposal_blocks_initial_approval(extracted_draft) -> None:
+    draft = extracted_draft
     proposal = next(
         item
         for item in draft.semantic_proposals

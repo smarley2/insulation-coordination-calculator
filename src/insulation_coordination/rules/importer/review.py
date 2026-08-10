@@ -1440,16 +1440,35 @@ def inventory_report(draft: ImportedRuleDraft) -> tuple[InventoryStatus, ...]:
     )
     from insulation_coordination.rules.importer.recipes import RECIPES
 
-    declared: set[str] = set()
+    # What each declared spec is expected to contribute. A spec's kind decides both whether
+    # a raw artifact must exist for it and what counts as its typed result, so they cannot
+    # share one set: a formula has no raw grid, and a comparison-only grid never becomes a
+    # typed rule at all.
+    needs_raw: set[str] = set()
     routes: dict[str, set[str]] = {}
+    evidence_only: set[str] = set()
+    typed_expected: dict[str, set[str]] = {}
     for recipe in RECIPES:
         for table_spec in recipe.tables:
-            declared.add(table_spec.semantic_id)
-            if table_spec.decision_route_ids:
+            needs_raw.add(table_spec.semantic_id)
+            if table_spec.comparison_only:
+                evidence_only.add(table_spec.semantic_id)
+            elif table_spec.decision_route_ids:
                 routes[table_spec.semantic_id] = set(table_spec.decision_route_ids)
-        declared.update(spec.semantic_id for spec in recipe.clauses)
-        declared.update(spec.semantic_id for spec in recipe.curves)
-        declared.update(spec.semantic_id for spec in recipe.formulas)
+                typed_expected[table_spec.semantic_id] = set(table_spec.decision_route_ids)
+            else:
+                typed_expected[table_spec.semantic_id] = {table_spec.semantic_id}
+        for clause_spec in recipe.clauses:
+            needs_raw.add(clause_spec.semantic_id)
+            typed_expected[clause_spec.semantic_id] = {clause_spec.semantic_id}
+        for curve_spec in recipe.curves:
+            needs_raw.add(curve_spec.semantic_id)
+            typed_expected[curve_spec.semantic_id] = {curve_spec.semantic_id}
+        for formula_spec in recipe.formulas:
+            # Projected from its recipe and the reviewed grids, with no raw artifact of its
+            # own, so it is only ever a typed expectation.
+            typed_expected[formula_spec.semantic_id] = {formula_spec.semantic_id}
+    declared = needs_raw | set(typed_expected)
 
     raw_ids = {grid.id for grid in draft.raw_grids}
     raw_ids.update(fragment.id for fragment in draft.raw_clause_fragments)
@@ -1459,6 +1478,7 @@ def inventory_report(draft: ImportedRuleDraft) -> tuple[InventoryStatus, ...]:
     typed_ids.update(rule.id for rule in draft.procedures)
     typed_ids.update(rule.id for rule in draft.guidance)
     typed_ids.update(rule.id for rule in draft.curves)
+    typed_ids.update(rule.id for rule in draft.formulas)
     unresolved = {
         item.semantic_id
         for kind in ("table", "formula", "mapping", "clause", "semantic", "curve")
@@ -1471,12 +1491,15 @@ def inventory_report(draft: ImportedRuleDraft) -> tuple[InventoryStatus, ...]:
         matching = {candidate for candidate in declared if _covers(candidate, semantic_id)}
         located = bool(matching)
         extracted = located and all(
-            f"raw-{candidate}" in raw_ids or candidate in raw_ids for candidate in matching
+            f"raw-{candidate}" in raw_ids or candidate in raw_ids
+            for candidate in matching & needs_raw
         )
+        # A comparison-only grid contributes evidence, not a rule, so it satisfies this item
+        # by being extracted. Everything else must produce the typed result its kind implies.
         required_typed = {
             route
-            for candidate in matching
-            for route in (routes.get(candidate) or {candidate})
+            for candidate in matching - evidence_only
+            for route in typed_expected.get(candidate, {candidate})
         }
         typed = located and required_typed <= typed_ids
         blocked = any(
