@@ -88,10 +88,21 @@ class TopologyCompletion(FrozenModel):
 
 
 def circuit_nets(project: Project) -> tuple[NetClass, ...]:
+    """The nets a DVC and a galvanic domain can apply to, in project order.
+
+    Only a circuit carries the IEC 62477-1 circuit attributes; a PE-bonded part, an
+    accessible conductive part and an accessible insulating surface hold none of them.
+    """
     return tuple(net for net in project.net_classes if net.net_type is NetClassType.CIRCUIT)
 
 
 def domain_for_net(project: Project, net_id: UUID) -> GalvanicDomain | None:
+    """The domain a net belongs to, or ``None`` while it belongs to none.
+
+    ``None`` also answers an unknown net id and a domain reference that resolves to
+    nothing. Neither can survive project validation, so a caller holding a valid
+    ``Project`` reads ``None`` as "not classified yet".
+    """
     net = next((candidate for candidate in project.net_classes if candidate.id == net_id), None)
     if net is None or net.galvanic_domain_id is None:
         return None
@@ -102,6 +113,11 @@ def domain_for_net(project: Project, net_id: UUID) -> GalvanicDomain | None:
 
 
 def barrier_between(project: Project, a: UUID, b: UUID) -> GalvanicBarrier | None:
+    """The barrier recorded between two domains, whichever order they are given in.
+
+    ``None`` means nobody has recorded anything about this domain pair — which is not the
+    same claim as a recorded ``NO_GALVANIC_ISOLATION``.
+    """
     key = _unordered_domain_key(a, b)
     return next(
         (barrier for barrier in project.galvanic_barriers if barrier.domain_key == key), None
@@ -109,6 +125,11 @@ def barrier_between(project: Project, a: UUID, b: UUID) -> GalvanicBarrier | Non
 
 
 def topology_completion(project: Project) -> TopologyCompletion:
+    """Everything still unresolved about ``project``'s topology, deterministically ordered.
+
+    Domain pairs are reported in ``galvanic_domains`` order rather than by the sorted key
+    ``barrier_between`` matches on, so a report lists them the way the editor shows them.
+    """
     circuits = circuit_nets(project)
     domain_ids = tuple(domain.id for domain in project.galvanic_domains)
     return TopologyCompletion(
