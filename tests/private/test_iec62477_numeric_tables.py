@@ -7,8 +7,12 @@ from insulation_coordination.rules.importer.approval import (
     ApprovalError,
     _require_consistent_shared_source_cells,
 )
+from insulation_coordination.rules.importer.crosscheck import compare_across_standards
 from insulation_coordination.rules.importer.extract import _REQUIRED_RECIPES, extract_draft
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
+from insulation_coordination.rules.importer.recipes.iec62477_1_2022.spacing import (
+    CROSS_STANDARD_CHECKS,
+)
 from insulation_coordination.rules.importer.review import (
     accept_raw_table,
 )
@@ -75,6 +79,34 @@ def test_extraction_is_reproducible(supplied_standards: dict[str, Path], draft) 
         tuple(supplied_standards[recipe] for recipe in sorted(_REQUIRED_RECIPES))
     )
     assert repeated.checksums == draft.checksums
+
+
+def test_tables_eight_and_nine_agree_with_the_part_one_grids(draft) -> None:
+    """The clearance and creepage reproductions hold, over what they claim to cover.
+
+    Rows pair by the voltage they state, not by position, so this asserts the two
+    documents against each other rather than asserting an assumed row order. What the
+    claim leaves out -- pollution degree 4, and the working voltages the IEC 60664-1
+    printed-wiring table does not carry -- must be named on the mapping, so a package
+    reader sees the scope of the equivalence and not only its existence.
+    """
+    grids = {grid.id: grid for grid in draft.raw_grids}
+    checks = tuple(
+        check
+        for check in CROSS_STANDARD_CHECKS
+        if check.target_rule_id.startswith("raw-iec60664-1-")
+    )
+    assert len(checks) == 2
+    for check in checks:
+        mapping, items = compare_across_standards(grids, check)
+        assert items == (), [(item.code, item.expected_contract) for item in items]
+        assert mapping is not None
+        assert mapping.approved is False
+        assert check.axis_match is not None
+        for column, _reason in check.axis_match.uncompared_source_columns:
+            assert f"source column {column}" in mapping.notes
+        for row, _reason in check.axis_match.uncompared_source_rows:
+            assert f"source row {row}" in mapping.notes
 
 
 def test_correcting_one_table_seven_grid_without_its_pair_is_refused(draft) -> None:

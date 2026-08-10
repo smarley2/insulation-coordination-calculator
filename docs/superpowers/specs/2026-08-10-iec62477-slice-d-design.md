@@ -347,14 +347,29 @@ compared rather than dropped.
 review item and its source artifact is the pair of grids it compared, so a maintainer signs
 the equivalence off and a change to either grid resets that review.
 
-**Tables 8 and 9 against IEC 60664-1 are not yet compared.** The two documents' clearance
-tables do not align cell for cell: IEC 60664-1 Table F.2 lists 26 impulse rows against
-case A and case B for three pollution degrees, where Table 8 lists ten rows against four
-pollution degrees, and pollution degree 4 has no counterpart there at all. An index-based
-cell map would therefore assert correspondences the documents do not support. Comparing
-them needs matching by axis value plus a way to declare a column with no counterpart, which
-is left as follow-up work rather than approximated here. The Annex F comparisons, whose
-grids do align, are implemented.
+**Tables 8 and 9 against IEC 60664-1 pair by axis value, not by row index.** The two
+documents' grids do not align cell for cell: IEC 60664-1 Table F.2 lists 26 impulse rows
+against case A and case B for three pollution degrees, where Table 8 lists ten rows
+against four pollution degrees, and the row axes are stated in different units. A check
+therefore declares its source and target axis columns, the scale between their units, and
+the column pairs; rows correspond when they state the same axis value. An unmatched row
+still blocks, so a subset can never pass as a whole-table equivalence.
+
+What the target standard has no counterpart for is declared, with a reason, and named on
+the mapping the check produces, so a package reader sees the scope of an equivalence and
+not only its existence. Pollution degree 4 is declared that way for Table 8; three working
+voltages are for Table 9's printed-wiring lookup. A declared exclusion the target turns
+out to carry and agree on blocks too — understating an agreement misleads as much as
+claiming one that is not there.
+
+Against the licensed documents both checks prove out. Table 8's ten rows all find a row of
+Table F.2, and pollution degrees 1 to 3 agree cell for cell with its first three clearance
+columns; the other three columns of Table F.2 agree with nothing here. Table 9's
+printed-wiring lookup agrees on every working voltage the IEC 60664-1 printed-wiring
+columns also carry a requirement for. Table 9's other-insulator half is not checked at
+all: the reviewed IEC 60664-1 recipe reads those columns as context, so their cells hold no
+logical coordinates to compare, and pairing them would mean changing an approved table's
+shape.
 
 ## Risks
 

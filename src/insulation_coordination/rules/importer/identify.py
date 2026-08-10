@@ -368,12 +368,71 @@ class MappingAuditSpec(FrozenModel):
     figure: ReferenceText | None = None
 
 
+class CrossStandardAxisMatchSpec(FrozenModel):
+    """Pair two grids by what their rows are about, not by where their rows sit.
+
+    Two standards may state the same requirement over the same quantity while printing
+    different subsets of it: IEC 62477-1 Table 8 lists ten impulse levels in volts where
+    IEC 60664-1 Table F.2 lists twenty-six in kilovolts. Row position is then not a
+    correspondence, and a position-based map would assert pairings the documents do not
+    support. A row's axis value is the correspondence, read in the target's axis unit
+    through ``axis_value_scale``.
+
+    What is left out is declared rather than inferred. A source column the target
+    standard does not carry -- pollution degree 4 has no counterpart in IEC 60664-1 -- and
+    a source row whose axis the target does not reach are each named with a reason, are
+    excluded from the equivalence claim, and are recorded in the mapping's notes. An
+    undeclared unmatched row or column still blocks, so an omission cannot pass as a
+    proven equivalence.
+    """
+
+    source_axis_column: Identifier
+    target_axis_column: Identifier
+    #: Multiply a source axis value by this to read it in the target's axis unit -- volts
+    #: against kilovolts is ``Decimal("0.001")``. Equal numbers in different units would
+    #: not prove equal requirements, so the conversion is declared, never guessed.
+    axis_value_scale: Decimal = Decimal(1)
+    #: ``(source column, target column)`` logical column pairs to compare on every
+    #: matched row.
+    column_pairs: tuple[tuple[Identifier, Identifier], ...] = Field(min_length=1)
+    #: ``(source column, reason)`` for each source data column the target standard has no
+    #: counterpart for. Excluded from the claim, kept in the mapping's notes.
+    uncompared_source_columns: tuple[tuple[Identifier, NotesText], ...] = ()
+    #: ``(source logical row, reason)`` for each source row the target standard's axis does
+    #: not reach. The row index is structural; the axis value it carries belongs to the
+    #: source document and is never written here.
+    uncompared_source_rows: tuple[tuple[int, NotesText], ...] = ()
+
+    @model_validator(mode="after")
+    def _every_declaration_is_made_once(self) -> CrossStandardAxisMatchSpec:
+        if self.axis_value_scale <= 0:
+            raise ValueError("cross-standard axis value scale must be positive")
+        columns = (
+            *(source for source, _target in self.column_pairs),
+            *(source for source, _reason in self.uncompared_source_columns),
+        )
+        if len(columns) != len(set(columns)):
+            raise ValueError("cross-standard axis match must declare each source column once")
+        if self.source_axis_column in columns:
+            raise ValueError("cross-standard axis match must not compare its own axis column")
+        rows = tuple(row for row, _reason in self.uncompared_source_rows)
+        if len(rows) != len(set(rows)):
+            raise ValueError("cross-standard axis match must declare each source row once")
+        if any(row < 0 for row in rows):
+            raise ValueError("cross-standard uncompared source row must be a grid row index")
+        return self
+
+
 class CrossStandardCheckSpec(FrozenModel):
     """One declared equivalence claim between two grids, and the cells that prove it.
 
     IEC 62477-1 reproduces spacing requirements the approved IEC 60664 rules already
     carry. A check names the cells whose agreement would justify a compatibility mapping;
     ``rules.importer.crosscheck`` performs the comparison.
+
+    A check pairs cells one of two ways: ``cell_map`` where both grids lay the same rows
+    out in the same order, or ``axis_match`` where they state overlapping subsets of one
+    quantity. Exactly one of the two is declared.
     """
 
     id: Identifier
@@ -382,11 +441,13 @@ class CrossStandardCheckSpec(FrozenModel):
     family: Identifier
     #: ``(source cell id, target cell id)`` pairs, where a cell id is
     #: ``"<logical_row>/<logical_column>"`` as the raw grid records data cells.
-    cell_map: tuple[tuple[Identifier, Identifier], ...]
+    cell_map: tuple[tuple[Identifier, Identifier], ...] = ()
     #: Every data cell the source grid contains. Declared apart from ``cell_map`` so a
     #: partial map cannot compare a subset of a table and still claim the whole table is
     #: equivalent.
-    source_data_cell_ids: tuple[Identifier, ...]
+    source_data_cell_ids: tuple[Identifier, ...] = ()
+    #: Row-by-axis-value pairing, for two grids whose rows do not align by position.
+    axis_match: CrossStandardAxisMatchSpec | None = None
     #: Cell texts that mean "this cell carries no requirement". Two printings of the same
     #: requirement may mark an inapplicable cell differently -- one leaves it empty, the
     #: other prints a marker -- and that is a notation difference, not a difference in
@@ -399,6 +460,15 @@ class CrossStandardCheckSpec(FrozenModel):
 
     @model_validator(mode="after")
     def _map_covers_every_source_data_cell(self) -> CrossStandardCheckSpec:
+        if (self.axis_match is not None) == bool(self.cell_map or self.source_data_cell_ids):
+            raise ValueError(
+                "a cross-standard check declares either an explicit cell map or an axis match"
+            )
+        if self.axis_match is not None:
+            # An axis match cannot enumerate its cells here: which rows correspond is only
+            # known once both grids are extracted. Its coverage is checked at comparison
+            # time instead, against the columns and rows the grids actually carry.
+            return self
         mapped = tuple(source_id for source_id, _target_id in self.cell_map)
         if len(mapped) != len(set(mapped)):
             raise ValueError("cross-standard cell map must not repeat a source cell")
