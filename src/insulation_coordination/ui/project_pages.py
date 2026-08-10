@@ -41,6 +41,7 @@ from insulation_coordination.project.persistence import (
     load_project,
     save_project_atomic,
 )
+from insulation_coordination.ui.galvanic_barriers import GalvanicBarriersPanel
 from insulation_coordination.ui.galvanic_domains import GalvanicDomainsPanel
 from insulation_coordination.ui.help_indicator import HelpIndicator, labelled
 from insulation_coordination.ui.net_class_classification import NetClassClassificationPanel
@@ -189,6 +190,10 @@ class ProjectPage(QWidget):
         self._domains_panel.project_changed.connect(self._on_domains_changed)
         layout.addWidget(self._domains_panel)
 
+        self._barriers_panel = GalvanicBarriersPanel()
+        self._barriers_panel.project_changed.connect(self._on_barriers_changed)
+        layout.addWidget(self._barriers_panel)
+
         self._net_list.currentRowChanged.connect(self._on_net_selection_changed)
 
     @property
@@ -281,6 +286,7 @@ class ProjectPage(QWidget):
         else:
             self._rules_label.setText(f"{rules.package_id} v{rules.version} ({rules.sha256[:12]}…)")
         self._domains_panel.set_project(project)
+        self._barriers_panel.set_project(project)
         self._refresh_net_list()
 
     def open_project(self, path: Path) -> None:
@@ -377,14 +383,23 @@ class ProjectPage(QWidget):
         """
         self._apply_project(project)
 
+    def _on_barriers_changed(self, project: Project) -> None:
+        """Receive the galvanic-barriers panel's own complete replacement project.
+
+        Same reasoning as ``_on_domains_changed``: the panel already produced the full
+        replacement, so it is installed directly.
+        """
+        self._apply_project(project)
+
     def _apply_project(self, project: Project) -> None:
         self._project = project
         self._dirty = True
         self._refresh_net_list()
-        # Every project change flows through here, not just domain edits, so the domains
-        # panel's own idea of the project - and thus what a later domain edit computes
-        # against - never drifts from what the rest of the page holds.
+        # Every project change flows through here, not just a domain or barrier edit, so
+        # neither panel's own idea of the project - and thus what a later edit on either
+        # one computes against - ever drifts from what the rest of the page holds.
         self._domains_panel.set_project(project)
+        self._barriers_panel.set_project(project)
         self.project_changed.emit(self._project)
 
     def _refresh_net_list(self) -> None:

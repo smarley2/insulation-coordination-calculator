@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insulation_coordination.domain.enums import BarrierVerificationStatus
 from insulation_coordination.domain.project import NetClass, Project
 from insulation_coordination.domain.topology import GalvanicBarrier, GalvanicDomain
 
@@ -443,7 +444,9 @@ class GalvanicDomainsPanel(QWidget):
             QMessageBox.warning(self, "Delete Domain", str(error))
             return
 
-        reply = QMessageBox.question(self, "Confirm Domain Deletion", _describe_preview(preview))
+        reply = QMessageBox.question(
+            self, "Confirm Domain Deletion", _describe_preview(preview, self._project)
+        )
         if reply != QMessageBox.StandardButton.Yes:
             return
         try:
@@ -452,7 +455,15 @@ class GalvanicDomainsPanel(QWidget):
             QMessageBox.warning(self, "Delete Domain", str(error))
 
 
-def _describe_preview(preview: DomainDeletionPreview) -> str:
+def _describe_preview(preview: DomainDeletionPreview, project: Project) -> str:
+    """Explain what a remap-and-delete will do, naming every barrier it drops.
+
+    A dropped barrier is not moved anywhere - its verification record, if any, is gone.
+    That is worth stating for every dropped barrier, not just their count, and worth
+    calling out specifically when the lost record was a verified isolation: that is the
+    one status this application treats as evidence, and losing it silently would be the
+    kind of thing a reviewer needs to have been told about, not discover later.
+    """
     lines = [f"Delete '{preview.domain.name}'?"]
     if preview.replacement is not None:
         lines.append(f"{len(preview.nets)} net(s) will move to '{preview.replacement.name}'.")
@@ -460,5 +471,19 @@ def _describe_preview(preview: DomainDeletionPreview) -> str:
     else:
         lines.append(f"{len(preview.nets)} net(s) will be left without a domain.")
     if preview.dropped_barriers:
-        lines.append(f"{len(preview.dropped_barriers)} barrier(s) will be dropped as redundant.")
+        names_by_id = {domain.id: domain.name for domain in project.galvanic_domains}
+        lines.append(f"{len(preview.dropped_barriers)} barrier(s) will be dropped, not moved:")
+        for barrier in preview.dropped_barriers:
+            other_id = (
+                barrier.domain_b_id
+                if barrier.domain_a_id == preview.domain.id
+                else barrier.domain_a_id
+            )
+            other_name = names_by_id.get(other_id, "?")
+            if barrier.status is BarrierVerificationStatus.VERIFIED_GALVANIC_ISOLATION:
+                lines.append(
+                    f"  - vs '{other_name}': verified galvanic isolation record will be lost"
+                )
+            else:
+                lines.append(f"  - vs '{other_name}'")
     return "\n".join(lines)

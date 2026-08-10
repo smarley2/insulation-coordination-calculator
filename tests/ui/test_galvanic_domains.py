@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from insulation_coordination.domain.enums import BarrierVerificationStatus
+from insulation_coordination.domain.enums import BarrierVerificationStatus, VerificationMethod
 from insulation_coordination.domain.project import (
     NetClass,
     Project,
@@ -21,6 +21,7 @@ from insulation_coordination.domain.topology import GalvanicBarrier, GalvanicDom
 from insulation_coordination.ui.galvanic_domains import (
     DomainDeletionPreview,
     GalvanicDomainsPanel,
+    _describe_preview,
     add_domain,
     preview_domain_deletion,
     referencing_barriers,
@@ -298,6 +299,55 @@ def test_preview_remaps_a_barrier_that_does_not_collide() -> None:
 
     assert preview.remapped_barriers == (barrier,)
     assert preview.dropped_barriers == ()
+
+
+# --- _describe_preview ---------------------------------------------------------------------
+
+
+def test_describe_preview_names_each_dropped_barrier_by_the_other_domain() -> None:
+    domain = _domain(id=UUID(int=1), name="A", is_direct_source_domain=True)
+    replacement = _domain(id=UUID(int=2), name="B")
+    third = _domain(id=UUID(int=3), name="C")
+    stale = _barrier(domain_a_id=domain.id, domain_b_id=third.id)
+    kept = _barrier(domain_a_id=replacement.id, domain_b_id=third.id)
+    project = _project(
+        galvanic_domains=(domain, replacement, third), galvanic_barriers=(stale, kept)
+    )
+    preview = preview_domain_deletion(project, domain.id, replacement.id)
+
+    description = _describe_preview(preview, project)
+
+    assert "vs 'C'" in description
+    assert "verified" not in description.casefold()
+
+
+def test_describe_preview_flags_a_dropped_verified_isolation_record() -> None:
+    domain = _domain(id=UUID(int=1), name="A", is_direct_source_domain=True)
+    replacement = _domain(id=UUID(int=2), name="B")
+    third = _domain(id=UUID(int=3), name="C")
+    # The replacement (B) already has a barrier recorded against C, so the verified
+    # barrier between the deleted domain (A) and C collides and is dropped rather than
+    # remapped - this is the case that must not silently drop a verified record.
+    stale_verified = _barrier(
+        domain_a_id=domain.id,
+        domain_b_id=third.id,
+        status=BarrierVerificationStatus.VERIFIED_GALVANIC_ISOLATION,
+        verification_method=VerificationMethod.TEST,
+        evidence_reference="TR-001",
+    )
+    kept = _barrier(domain_a_id=replacement.id, domain_b_id=third.id)
+    project = _project(
+        galvanic_domains=(domain, replacement, third),
+        galvanic_barriers=(stale_verified, kept),
+    )
+    preview = preview_domain_deletion(project, domain.id, replacement.id)
+    assert preview.dropped_barriers == (stale_verified,)
+
+    description = _describe_preview(preview, project)
+
+    assert "vs 'C'" in description
+    assert "verified galvanic isolation" in description.casefold()
+    assert "lost" in description.casefold()
 
 
 # --- remap_and_delete_domain -------------------------------------------------------------
