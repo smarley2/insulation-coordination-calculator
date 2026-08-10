@@ -53,10 +53,10 @@ def test_only_verification_content_is_still_deferred() -> None:
     """The deferred set only ever shrinks, and only verification content is ever in it.
 
     Each Slice E task removes the identifier it delivers, so this asserts the direction of
-    travel rather than a fixed count: eight remain, and the set is empty when Slice E closes.
+    travel rather than a fixed count: six remain, and the set is empty when Slice E closes.
     """
     assert all(item.startswith("iec62477_2022.test.") for item in DEFERRED_SEMANTIC_IDS)
-    assert len(DEFERRED_SEMANTIC_IDS) == 8
+    assert len(DEFERRED_SEMANTIC_IDS) == 6
 
 
 def test_every_item_this_build_does_not_defer_has_a_recipe() -> None:

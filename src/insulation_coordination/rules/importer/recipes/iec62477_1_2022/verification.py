@@ -7,6 +7,8 @@ neutral descriptions written here; no source subject, condition, or note text is
 
 from __future__ import annotations
 
+from typing import Literal
+
 from insulation_coordination.domain.rules import (
     ProcedureRule,
     ProcedureStep,
@@ -383,16 +385,203 @@ def _table_27_pair() -> tuple[TableAuditSpec, TableAuditSpec]:
 TABLE_27_AC, TABLE_27_DC = _table_27_pair()
 
 
-VERIFICATION_TABLES: tuple[TableAuditSpec, ...] = (TABLE_26, TABLE_27_AC, TABLE_27_DC)
+# Tables 28 and 29 share one column layout: a row axis in column 0, then two test purposes
+# side by side, each stating an AC RMS value and a DC value. A purpose is what its source
+# column group selects on; these identifiers name that selection without reproducing the
+# group's wording. Splitting by purpose and by supply kind keeps four quantities in four
+# rules instead of one grid that mixes them.
+_DIELECTRIC_CLAUSE = "5.2.3.4.2"
+_DIELECTRIC_PURPOSES: tuple[tuple[str, int, int], ...] = (
+    ("routine_and_basic_type", 1, 2),
+    ("enhanced_type", 3, 4),
+)
+_DIELECTRIC_RAW_COLUMNS = 5
+_DIELECTRIC_HEADER_ROWS = (0, 1, 2)
+#: The source states that interpolation is permitted for both tables, so a value between two
+#: tabulated rows is resolved rather than refused.
+_DIELECTRIC_INTERPOLATION: Literal["none", "linear"] = "linear"
+
+_TABLE_28_PAGE = 127
+_TABLE_28_BBOX = (71.04, 118.32, 524.28, 388.32)
+_TABLE_28_RAW_ROWS = 10
+_TABLE_28_DATA_ROWS = tuple(range(3, 9))
+_TABLE_28_NOTE_ROWS = (9,)
+#: Declared independently of ``_TABLE_28_DATA_ROWS`` so the extraction-time row count check
+#: is not a tautology against its own input.
+_TABLE_28_EXPECTED_DATA_ROWS = 6
+
+# Table 29 runs over a page break. Both segments carry the same three header rows and the
+# same five columns; the second segment continues the first segment's row axis, so its
+# logical rows are offset by the first segment's data row count.
+#: The continuation prints no caption of its own -- measured from the document, the only text
+#: above the second segment's grid is the page's running header -- so that header's copyright
+#: identity is the anchor that binds it. Shape and bounding box still have to match exactly,
+#: and a second page in the search window matching both refuses the extraction, so a generic
+#: anchor does not weaken the locator.
+_TABLE_29_CONTINUATION_ANCHOR = "IEC 2022"
+_TABLE_29_FIRST_PAGE = 127
+_TABLE_29_FIRST_BBOX = (71.04, 484.08, 524.28, 797.52)
+_TABLE_29_FIRST_RAW_ROWS = 16
+_TABLE_29_FIRST_DATA_ROWS = tuple(range(3, 16))
+_TABLE_29_SECOND_PAGE = 128
+_TABLE_29_SECOND_BBOX = (71.04, 85.32, 524.28, 346.8)
+_TABLE_29_SECOND_RAW_ROWS = 9
+_TABLE_29_SECOND_DATA_ROWS = tuple(range(3, 8))
+_TABLE_29_SECOND_NOTE_ROWS = (8,)
+_TABLE_29_EXPECTED_DATA_ROWS = 18
+
+
+def _dielectric_specs(
+    *,
+    semantic_id: str,
+    source_table: str,
+    axis_semantic_id: str,
+    axis_heading: str,
+    raw_rows: int,
+    expected_data_rows: int,
+    segments: tuple[TableSegmentSpec, ...],
+) -> tuple[TableAuditSpec, ...]:
+    """One spec per test purpose per supply kind, all reading the same row axis."""
+
+    specs: list[TableAuditSpec] = []
+    for purpose, ac_column, dc_column in _DIELECTRIC_PURPOSES:
+        for supply, source_column in (("ac", ac_column), ("dc", dc_column)):
+            source_columns = (0, source_column)
+            specs.append(
+                TableAuditSpec(
+                    semantic_id=f"{semantic_id}.{purpose}.{supply}",
+                    source_table=source_table,
+                    title_anchor=f"Table {source_table}",
+                    page_number=segments[0].page_number,
+                    clause=_DIELECTRIC_CLAUSE,
+                    target_unit="V",
+                    interpolation=_DIELECTRIC_INTERPOLATION,
+                    page_search_radius=2,
+                    expected_raw_rows=raw_rows,
+                    expected_raw_columns=len(source_columns),
+                    expected_bbox=segments[0].expected_bbox,
+                    data_strategy="rectangle",
+                    data_row_start=segments[0].data_rows[0],
+                    data_column_start=0,
+                    expected_data_rows=expected_data_rows,
+                    #: The axis column counts here too: extraction gives every non-context
+                    #: column a logical coordinate.
+                    expected_data_columns=len(source_columns),
+                    row_axis_id=axis_semantic_id,
+                    row_axis_unit="V",
+                    column_axis_id="dielectric_test_column",
+                    column_axis_unit="1",
+                    assertions=("strictly_increasing_axes", "raw_value_correspondence"),
+                    segments=tuple(
+                        segment.model_copy(
+                            update={
+                                "id": f"{segment.id}-{purpose}-{supply}",
+                                "source_columns": source_columns,
+                            }
+                        )
+                        for segment in segments
+                    ),
+                    columns=(
+                        TableColumnSpec(
+                            semantic_id=axis_semantic_id,
+                            heading=axis_heading,
+                            source_column=0,
+                            role="axis",
+                            unit="V",
+                        ),
+                        TableColumnSpec(
+                            semantic_id=f"test_voltage_{purpose}_{supply}_v",
+                            heading=(
+                                f"{supply} test voltage for the "
+                                f"{purpose.replace('_', ' ')} case"
+                            ),
+                            source_column=source_column,
+                            role="data",
+                            unit="V",
+                        ),
+                    ),
+                )
+            )
+    return tuple(specs)
+
+
+TABLE_28_SPECS = _dielectric_specs(
+    semantic_id=ids.TEST_MAINS_DIELECTRIC_VALUES,
+    source_table="28",
+    axis_semantic_id="system_voltage_v",
+    axis_heading="system voltage band upper bound",
+    raw_rows=_TABLE_28_RAW_ROWS,
+    expected_data_rows=_TABLE_28_EXPECTED_DATA_ROWS,
+    segments=(
+        TableSegmentSpec(
+            id="table-28",
+            page_number=_TABLE_28_PAGE,
+            title_anchor="Table 28",
+            expected_raw_rows=_TABLE_28_RAW_ROWS,
+            expected_raw_columns=_DIELECTRIC_RAW_COLUMNS,
+            expected_bbox=_TABLE_28_BBOX,
+            header_rows=_DIELECTRIC_HEADER_ROWS,
+            data_rows=_TABLE_28_DATA_ROWS,
+            note_rows=_TABLE_28_NOTE_ROWS,
+            page_search_radius=2,
+        ),
+    ),
+)
+TABLE_29_SPECS = _dielectric_specs(
+    semantic_id=ids.TEST_NON_MAINS_DIELECTRIC_VALUES,
+    source_table="29",
+    axis_semantic_id="working_voltage_recurring_peak_v",
+    axis_heading="working voltage band upper bound, recurring peak",
+    raw_rows=_TABLE_29_FIRST_RAW_ROWS + _TABLE_29_SECOND_RAW_ROWS,
+    expected_data_rows=_TABLE_29_EXPECTED_DATA_ROWS,
+    segments=(
+        TableSegmentSpec(
+            id="table-29-page-1",
+            page_number=_TABLE_29_FIRST_PAGE,
+            title_anchor="Table 29",
+            expected_raw_rows=_TABLE_29_FIRST_RAW_ROWS,
+            expected_raw_columns=_DIELECTRIC_RAW_COLUMNS,
+            expected_bbox=_TABLE_29_FIRST_BBOX,
+            header_rows=_DIELECTRIC_HEADER_ROWS,
+            data_rows=_TABLE_29_FIRST_DATA_ROWS,
+            page_search_radius=2,
+        ),
+        TableSegmentSpec(
+            id="table-29-page-2",
+            page_number=_TABLE_29_SECOND_PAGE,
+            title_anchor=_TABLE_29_CONTINUATION_ANCHOR,
+            expected_raw_rows=_TABLE_29_SECOND_RAW_ROWS,
+            expected_raw_columns=_DIELECTRIC_RAW_COLUMNS,
+            expected_bbox=_TABLE_29_SECOND_BBOX,
+            logical_row_offset=len(_TABLE_29_FIRST_DATA_ROWS),
+            header_rows=_DIELECTRIC_HEADER_ROWS,
+            data_rows=_TABLE_29_SECOND_DATA_ROWS,
+            note_rows=_TABLE_29_SECOND_NOTE_ROWS,
+            page_search_radius=2,
+        ),
+    ),
+)
+DIELECTRIC_SPECS: tuple[TableAuditSpec, ...] = (*TABLE_28_SPECS, *TABLE_29_SPECS)
+
+
+VERIFICATION_TABLES: tuple[TableAuditSpec, ...] = (
+    TABLE_26,
+    TABLE_27_AC,
+    TABLE_27_DC,
+    *DIELECTRIC_SPECS,
+)
 GRID_PROJECTORS = {ids.TEST_IMPULSE_PROCEDURE: project_impulse_procedure}
 
 __all__ = [
     "CONTINUATION_ROWS",
+    "DIELECTRIC_SPECS",
     "FIELD_ROWS",
     "GRID_PROJECTORS",
     "TABLE_26",
     "TABLE_27_AC",
     "TABLE_27_DC",
+    "TABLE_28_SPECS",
+    "TABLE_29_SPECS",
     "VARIANT_COLUMNS",
     "VERIFICATION_TABLES",
     "ProcedureStructureError",
