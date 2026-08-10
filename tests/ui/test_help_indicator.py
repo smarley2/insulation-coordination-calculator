@@ -6,7 +6,11 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QLineEdit, QToolTip
 
-from insulation_coordination.ui.help_indicator import GuidanceDialog, HelpIndicator
+from insulation_coordination.ui.help_indicator import (
+    FieldStateBadge,
+    GuidanceDialog,
+    HelpIndicator,
+)
 from insulation_coordination.ui.voltage_guidance import (
     VoltageGuidanceId,
     accessible_help_name,
@@ -130,6 +134,49 @@ def test_indicator_passes_its_context_to_the_dialog(indicator, qtbot) -> None:
     dialog = indicator.open_details()
     qtbot.addWidget(dialog)
     assert "Derived from the project supply" in dialog.body_text()
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        (VoltageGuidanceId.MANUAL_VALUE, "Manual"),
+        (VoltageGuidanceId.INHERITED_DEFAULT, "Project default"),
+        (VoltageGuidanceId.DERIVED_VALUE, "Derived"),
+        (VoltageGuidanceId.VERIFIED_OVERRIDE, "Verified override"),
+        (VoltageGuidanceId.NOT_APPLICABLE, "N/A"),
+    ],
+)
+def test_badge_spells_out_the_state(qtbot, state, expected) -> None:
+    badge = FieldStateBadge(state)
+    qtbot.addWidget(badge)
+    assert badge.text() == expected
+    assert badge.isEnabled()
+    assert badge.guidance_id is state
+
+
+def test_badge_explains_its_own_state(qtbot) -> None:
+    badge = FieldStateBadge(VoltageGuidanceId.NOT_APPLICABLE)
+    qtbot.addWidget(badge)
+    with qtbot.waitSignal(badge.details_requested) as blocker:
+        badge.click()
+    assert blocker.args == [VoltageGuidanceId.NOT_APPLICABLE.value]
+
+
+def test_badge_stays_quiet_until_a_state_exists(qtbot) -> None:
+    badge = FieldStateBadge()
+    qtbot.addWidget(badge)
+    assert badge.text() == "—"
+    assert not badge.isEnabled()
+
+
+def test_badge_width_does_not_move_when_the_state_changes(qtbot) -> None:
+    """A state change must not shove the field it belongs to sideways."""
+    badge = FieldStateBadge(VoltageGuidanceId.NOT_APPLICABLE)
+    qtbot.addWidget(badge)
+    narrow = badge.minimumWidth()
+    badge.set_state(VoltageGuidanceId.VERIFIED_OVERRIDE)
+    assert badge.minimumWidth() == narrow
+    assert narrow >= badge.fontMetrics().horizontalAdvance("Verified override")
 
 
 def test_the_dialog_title_names_the_field(qtbot) -> None:

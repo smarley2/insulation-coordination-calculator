@@ -23,8 +23,10 @@ from PySide6.QtWidgets import (
 )
 
 from insulation_coordination.ui.voltage_guidance import (
+    FIELD_STATE_IDS,
     VoltageGuidanceId,
     accessible_help_name,
+    field_state_label,
     guidance_for,
 )
 
@@ -106,12 +108,8 @@ class HelpIndicator(QToolButton):
         super().__init__(parent)
         self._guidance_id = guidance_id
         self._context = ""
-        guidance = guidance_for(guidance_id)
-
         self.setText(_HELP_GLYPH)
-        self.setToolTip(guidance.short_text)
-        self.setAccessibleName(accessible_help_name(guidance_id))
-        self.setAccessibleDescription(guidance.short_text)
+        self.set_guidance(guidance_id)
         self.setAutoRaise(True)
         # Tab-reachable: hover-only help is help that a keyboard user cannot get to.
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -124,6 +122,14 @@ class HelpIndicator(QToolButton):
     @property
     def guidance_id(self) -> VoltageGuidanceId:
         return self._guidance_id
+
+    def set_guidance(self, guidance_id: VoltageGuidanceId) -> None:
+        """Point the control at another explanation, as a changing state does."""
+        self._guidance_id = guidance_id
+        guidance = guidance_for(guidance_id)
+        self.setToolTip(guidance.short_text)
+        self.setAccessibleName(accessible_help_name(guidance_id))
+        self.setAccessibleDescription(guidance.short_text)
 
     def set_context(self, context: str) -> None:
         """Attach field-specific detail — an N/A justification, a value's provenance."""
@@ -157,3 +163,37 @@ class HelpIndicator(QToolButton):
     def _on_activated(self) -> None:
         self.details_requested.emit(self._guidance_id.value)
         self.open_details()
+
+
+#: Shown where no state has been decided, so the badge column never collapses.
+_NO_STATE_TEXT = "—"
+
+
+class FieldStateBadge(HelpIndicator):
+    """Says in words where a value came from, and explains that state on demand.
+
+    Colour is never the only signal: the state is spelled out, and activating the
+    badge opens the same guidance the ⓘ beside the label would.
+    """
+
+    def __init__(self, state: VoltageGuidanceId | None = None, parent: QWidget | None = None):
+        super().__init__(VoltageGuidanceId.INHERITED_DEFAULT, parent)
+        # Wide enough for the longest state from the start: a value that turns out
+        # to be derived must not shove the field it belongs to sideways.
+        widest = max(field_state_label(state_id) for state_id in FIELD_STATE_IDS)
+        self.setMinimumWidth(self.fontMetrics().horizontalAdvance(widest) + 12)
+        self.set_state(state)
+
+    def set_state(self, state: VoltageGuidanceId | None) -> None:
+        """Show ``state``; ``None`` means nobody has answered this field yet."""
+        if state is None:
+            self.setText(_NO_STATE_TEXT)
+            self.setToolTip("")
+            self.setAccessibleName("No value entered")
+            # Nothing to explain about an unanswered field, so it is not a stop
+            # on the keyboard path either.
+            self.setEnabled(False)
+            return
+        self.setEnabled(True)
+        self.set_guidance(state)
+        self.setText(field_state_label(state))
