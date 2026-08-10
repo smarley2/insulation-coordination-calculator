@@ -18,8 +18,10 @@ from insulation_coordination.domain.rules import (
     CurveSegmentType,
     FaultTimeVoltageSelector,
     Identifier,
+    NotesText,
     ReferenceText,
     RuleKind,
+    SourceReference,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -350,6 +352,40 @@ class MappingAuditSpec(FrozenModel):
     figure: ReferenceText | None = None
 
 
+class CrossStandardCheckSpec(FrozenModel):
+    """One declared equivalence claim between two grids, and the cells that prove it.
+
+    IEC 62477-1 reproduces spacing requirements the approved IEC 60664 rules already
+    carry. A check names the cells whose agreement would justify a compatibility mapping;
+    ``rules.importer.crosscheck`` performs the comparison.
+    """
+
+    id: Identifier
+    source_rule_id: Identifier
+    target_rule_id: Identifier
+    family: Identifier
+    #: ``(source cell id, target cell id)`` pairs, where a cell id is
+    #: ``"<logical_row>/<logical_column>"`` as the raw grid records data cells.
+    cell_map: tuple[tuple[Identifier, Identifier], ...]
+    #: Every data cell the source grid contains. Declared apart from ``cell_map`` so a
+    #: partial map cannot compare a subset of a table and still claim the whole table is
+    #: equivalent.
+    source_data_cell_ids: tuple[Identifier, ...]
+    source: SourceReference
+    notes: NotesText = ""
+
+    @model_validator(mode="after")
+    def _map_covers_every_source_data_cell(self) -> CrossStandardCheckSpec:
+        mapped = tuple(source_id for source_id, _target_id in self.cell_map)
+        if len(mapped) != len(set(mapped)):
+            raise ValueError("cross-standard cell map must not repeat a source cell")
+        if set(mapped) != set(self.source_data_cell_ids):
+            raise ValueError("cross-standard cell map must cover every source data cell")
+        if len(self.source_data_cell_ids) != len(set(self.source_data_cell_ids)):
+            raise ValueError("cross-standard source data cell IDs must be unique")
+        return self
+
+
 class ClauseAuditSpec(FrozenModel):
     """Structural contract for one reviewed clause fragment.
 
@@ -423,6 +459,9 @@ class StandardRecipe(FrozenModel):
     #: identifiers. A table without an entry projects through ``project_table``.
     grid_projectors: Mapping[Identifier, GridProjector] = {}
     clause_projectors: Mapping[Identifier, ClauseProjector] = {}
+    #: Equivalence claims against rules from another standard in the same package. A claim
+    #: either proves out and yields a compatibility mapping or blocks approval.
+    cross_standard_checks: tuple[CrossStandardCheckSpec, ...] = ()
 
     @model_validator(mode="after")
     def _projectors_match_declared_specs(self) -> StandardRecipe:
