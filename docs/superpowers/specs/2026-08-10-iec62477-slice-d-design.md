@@ -319,5 +319,6 @@ item. That is the intended failure mode, but it means the private fixture must b
 at the end of the slice.
 
 The cross-standard comparison can only prove equivalence for the cells it maps. A partial cell
-map that quietly compares a subset would be worse than no mapping, so the comparison requires
-every data cell of the 62477 grid to appear in the map, and rejects a spec that omits one.
+map that quietly compares a subset would be worse than no mapping, so `CrossStandardCheckSpec`
+declares the source grid's data cells separately from the map and rejects, at construction, any
+map that does not cover every one of them.
