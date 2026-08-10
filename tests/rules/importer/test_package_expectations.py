@@ -132,6 +132,46 @@ def test_every_mapping_resolves_to_a_formula_the_package_carries() -> None:
     assert targets <= EXPECTATIONS.formula_ids
 
 
+def test_a_check_identifier_is_not_a_route_of_the_rule_it_compares() -> None:
+    """A check supports a rule; it is not one of that rule's routes.
+
+    ``inventory_report`` reads ``"<semantic id>.<route>"`` as a route of the item, so while a
+    check identifier is a suffix of the semantic ID it compares, an unresolved check blocks
+    the very rule it exists to support.
+    """
+    rule_ids = (
+        EXPECTATIONS.table_rule_ids
+        | EXPECTATIONS.projected_rule_ids
+        | EXPECTATIONS.clause_rule_ids
+        | EXPECTATIONS.curve_rule_ids
+        | EXPECTATIONS.formula_ids
+    )
+
+    for check_id in EXPECTATIONS.proven_mapping_ids:
+        for rule_id in rule_ids:
+            assert not check_id.startswith(f"{rule_id}."), check_id
+
+
+def test_a_text_field_table_must_declare_its_projector_at_construction() -> None:
+    """The recipe author is stopped when the recipe is built, not when a gate reads it.
+
+    The projector registry lives on ``StandardRecipe``, not on ``TableAuditSpec``, so a spec
+    cannot see whether anything covers it and this validator can only live here.
+    """
+    recipe = next(
+        candidate for candidate in RECIPES if any(spec.text_field_table for spec in candidate.tables)
+    )
+    text_field = next(spec for spec in recipe.tables if spec.text_field_table)
+    projectors = {
+        semantic_id: projector
+        for semantic_id, projector in recipe.grid_projectors.items()
+        if semantic_id != text_field.semantic_id
+    }
+
+    with pytest.raises(ValueError, match="text field table"):
+        StandardRecipe(**{**dict(recipe), "grid_projectors": projectors})
+
+
 def test_a_text_field_table_without_a_projector_is_refused() -> None:
     recipe = _recipe_with_a_projector()
     assert any(spec.text_field_table for spec in recipe.tables)

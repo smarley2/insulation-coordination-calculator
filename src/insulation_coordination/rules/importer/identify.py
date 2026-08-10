@@ -517,11 +517,17 @@ class StandardRecipe(FrozenModel):
             raise ValueError("grid projector refers to an undeclared table spec")
         if set(self.clause_projectors) != clause_ids:
             raise ValueError("every clause spec needs exactly one projector")
-        if any(
-            spec.decision_route_ids and spec.semantic_id not in self.grid_projectors
-            for spec in self.tables
-        ):
-            raise ValueError("a table projecting decisions needs a grid projector")
+        for spec in self.tables:
+            if spec.semantic_id in self.grid_projectors:
+                continue
+            # Only a projection understands which reviewed text cell means what, so a text
+            # field table without one yields nothing. The registry lives here rather than on
+            # the spec, so the spec cannot check this itself -- but the recipe author is
+            # still stopped when the recipe is constructed instead of when a gate reads it.
+            if spec.text_field_table:
+                raise ValueError("a text field table needs a grid projector to read its cells")
+            if spec.decision_route_ids:
+                raise ValueError("a table projecting decisions needs a grid projector")
         return self
 
     def matches_text(self, text: str) -> bool:
