@@ -15,6 +15,7 @@ projection derives its selectors from the maintained curve recipes.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import NoReturn
 
 from insulation_coordination.domain.rules import (
@@ -68,12 +69,30 @@ SUPPLY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
         expected_root_kind="paragraph",
         output_kind="decision",
     ),
+    ClauseAuditSpec(
+        semantic_id=ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS,
+        clause="4.4.7.2.2",
+        page_number=65,
+        expected_bbox=(65.0, 110.0, 535.0, 258.0),
+        expected_root_kind="paragraph",
+        output_kind="decision",
+    ),
+    ClauseAuditSpec(
+        semantic_id=ids.SUPPLY_HF_TRANSFORMER_ATTENUATION,
+        clause="4.4.7.2.6",
+        page_number=67,
+        expected_bbox=(65.0, 185.0, 535.0, 350.0),
+        expected_root_kind="paragraph",
+        output_kind="decision",
+    ),
 )
 
 #: Reviewed structural contract per projection: (node kind, node count).
 _SYSTEM_VOLTAGE_SHAPE = ("bullet", 3)
 _PROPAGATION_SHAPE = ("bullet", 4)
 _BARRIER_SHAPE = ("paragraph", 1)
+_SPD_SHAPE = ("paragraph", 1)
+_HF_TRANSFORMER_SHAPE = ("paragraph", 1)
 
 
 def _fail(message: str) -> NoReturn:
@@ -470,16 +489,280 @@ def project_verified_barrier_transfer(
     return (rule,), (_proposal(rule, "decision", fragment),)
 
 
+# --- transient limiter (SPD) reduction requirements --------------------------------
+
+_DEVICE_PLACEMENTS = ("internal_to_pecs", "external_to_pecs")
+_INSULATION_CLASSES = ("functional", "basic", "supplementary", "double", "reinforced")
+#: Classes the source forbids reducing below the unreduced basic requirement.
+_FLOORED_INSULATION_CLASSES = ("double", "reinforced")
+_REDUCIBLE_INSULATION_CLASSES = ("functional", "basic", "supplementary")
+_REDUCED_CATEGORIES = ("one_level_lower", "not_reduced")
+_VERIFICATION_REFERENCES = ("inspection_and_dielectric_verification", "not_required")
+
+
+def project_spd_reduction_requirements(
+    fragment: RawClauseFragment,
+    identity: StandardIdentity,
+) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
+    """Project the transient-limiter monitoring and reduction clause into a decision."""
+
+    label = "supply SPD reduction requirements"
+    _require_own_fragment(fragment, identity, ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS, label)
+    _require_shape(fragment, _SPD_SHAPE, label)
+
+    def _row(
+        *,
+        part_of_reduction: bool,
+        classes: tuple[str, ...] | None,
+        degradable: bool | None,
+        permitted: bool,
+        reduced: str,
+        monitoring: bool,
+        indication: bool,
+        verification: str,
+        floor: bool,
+    ) -> DecisionRow:
+        matchers = [
+            Matcher(
+                input="part_of_category_reduction", op="equals", boolean=part_of_reduction
+            ),
+            # The source requires monitoring for an internal and a qualifying external
+            # device alike, so placement is declared but does not discriminate.
+            Matcher(input="device_placement", op="any"),
+            _matcher("insulation_class", classes),
+        ]
+        matchers.append(
+            Matcher(input="device_degradable", op="any")
+            if degradable is None
+            else Matcher(input="device_degradable", op="equals", boolean=degradable)
+        )
+        return DecisionRow(
+            matchers=tuple(matchers),
+            values=(
+                DecisionValue(name="reduction_permitted", boolean=permitted),
+                DecisionValue(name="reduced_category", categorical=reduced),
+                DecisionValue(name="monitoring_required", boolean=monitoring),
+                DecisionValue(name="status_indication_required", boolean=indication),
+                DecisionValue(name="verification_reference", categorical=verification),
+                DecisionValue(name="reinforced_floor_applies", boolean=floor),
+            ),
+            source=fragment.nodes[0].source,
+        )
+
+    rule = DecisionRule(
+        id=ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS,
+        inputs=(
+            DecisionInput(
+                name="device_placement", kind="categorical", allowed_values=_DEVICE_PLACEMENTS
+            ),
+            DecisionInput(
+                name="insulation_class",
+                kind="categorical",
+                allowed_values=_INSULATION_CLASSES,
+            ),
+            DecisionInput(name="device_degradable", kind="boolean"),
+            DecisionInput(name="part_of_category_reduction", kind="boolean"),
+        ),
+        outputs=(
+            DecisionOutput(name="reduction_permitted", kind="boolean"),
+            DecisionOutput(
+                name="reduced_category",
+                kind="categorical",
+                allowed_values=_REDUCED_CATEGORIES,
+            ),
+            DecisionOutput(name="monitoring_required", kind="boolean"),
+            DecisionOutput(name="status_indication_required", kind="boolean"),
+            DecisionOutput(
+                name="verification_reference",
+                kind="categorical",
+                allowed_values=_VERIFICATION_REFERENCES,
+            ),
+            DecisionOutput(name="reinforced_floor_applies", kind="boolean"),
+        ),
+        # Row order mirrors the source: the exemption for a device outside a category
+        # reduction first, then the double/reinforced floor, then the reducible classes.
+        rows=(
+            _row(
+                part_of_reduction=False,
+                classes=None,
+                degradable=None,
+                permitted=False,
+                reduced="not_reduced",
+                monitoring=False,
+                indication=False,
+                verification="not_required",
+                floor=False,
+            ),
+            _row(
+                part_of_reduction=True,
+                classes=_FLOORED_INSULATION_CLASSES,
+                degradable=True,
+                permitted=False,
+                reduced="not_reduced",
+                monitoring=True,
+                indication=True,
+                verification="inspection_and_dielectric_verification",
+                floor=True,
+            ),
+            _row(
+                part_of_reduction=True,
+                classes=_FLOORED_INSULATION_CLASSES,
+                degradable=False,
+                permitted=False,
+                reduced="not_reduced",
+                monitoring=False,
+                indication=False,
+                verification="inspection_and_dielectric_verification",
+                floor=True,
+            ),
+            _row(
+                part_of_reduction=True,
+                classes=_REDUCIBLE_INSULATION_CLASSES,
+                degradable=True,
+                permitted=True,
+                reduced="one_level_lower",
+                monitoring=True,
+                indication=True,
+                verification="inspection_and_dielectric_verification",
+                floor=False,
+            ),
+            _row(
+                part_of_reduction=True,
+                classes=_REDUCIBLE_INSULATION_CLASSES,
+                degradable=False,
+                permitted=True,
+                reduced="one_level_lower",
+                monitoring=False,
+                indication=False,
+                verification="inspection_and_dielectric_verification",
+                floor=False,
+            ),
+        ),
+        exhaustive=False,
+        source=fragment.source,
+    )
+    return (rule,), (_proposal(rule, "decision", fragment),)
+
+
+# --- high-frequency isolating transformer ------------------------------------------
+
+#: DVC designations. Designations only; no source value or wording.
+_DVC_DESIGNATIONS = ("dvc_a", "dvc_as", "dvc_b", "dvc_c", "dvc_d")
+#: The clause's own DVC gate.
+_HF_TRANSFORMER_DVC_GATE = ("dvc_as", "dvc_b")
+_ATTENUATION_EVIDENCE_KINDS = ("none", "test", "simulation", "calculation")
+_REQUIRED_EVIDENCE_KINDS = ("test_or_simulation_or_calculation", "already_provided")
+#: Multipliers from a reviewed frequency unit token to hertz. Names the units the
+#: generic tokenizer emits; the threshold itself is read from the document.
+_FREQUENCY_UNIT_SCALES = {"Hz": 1, "kHz": 1_000, "MHz": 1_000_000}
+
+
+def _frequency_threshold_hz(fragment: RawClauseFragment, label: str) -> Decimal:
+    """Read the clause's single frequency threshold from its reviewed tokens."""
+
+    pairs = [
+        (token, fragment.tokens[index + 1])
+        for index, token in enumerate(fragment.tokens)
+        if token.kind == "quantity"
+        and index + 1 < len(fragment.tokens)
+        and fragment.tokens[index + 1].kind == "unit"
+        and str(fragment.tokens[index + 1].normalized) in _FREQUENCY_UNIT_SCALES
+    ]
+    if len(pairs) != 1:
+        _fail(f"{label} expected exactly one reviewed frequency quantity and unit pair")
+    quantity, unit = pairs[0]
+    return Decimal(quantity.normalized) * _FREQUENCY_UNIT_SCALES[str(unit.normalized)]
+
+
+def project_hf_transformer_attenuation(
+    fragment: RawClauseFragment,
+    identity: StandardIdentity,
+) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
+    """Project the isolating-transformer attenuation clause into a decision."""
+
+    label = "supply high-frequency transformer attenuation"
+    _require_own_fragment(fragment, identity, ids.SUPPLY_HF_TRANSFORMER_ATTENUATION, label)
+    _require_shape(fragment, _HF_TRANSFORMER_SHAPE, label)
+    threshold_hz = _frequency_threshold_hz(fragment, label)
+
+    def _row(
+        *,
+        evidence: tuple[str, ...],
+        permitted: bool,
+        required: str,
+    ) -> DecisionRow:
+        return DecisionRow(
+            matchers=(
+                _matcher("circuit_dvc", _HF_TRANSFORMER_DVC_GATE),
+                Matcher(
+                    input="transformer_frequency_hz", op="range", minimum=threshold_hz
+                ),
+                Matcher(input="isolation_provided", op="equals", boolean=True),
+                _matcher("attenuation_evidence_kind", evidence),
+            ),
+            values=(
+                DecisionValue(name="working_voltage_basis_permitted", boolean=permitted),
+                DecisionValue(name="required_evidence_kinds", categorical=required),
+            ),
+            source=fragment.nodes[0].source,
+        )
+
+    rule = DecisionRule(
+        id=ids.SUPPLY_HF_TRANSFORMER_ATTENUATION,
+        inputs=(
+            DecisionInput(
+                name="circuit_dvc", kind="categorical", allowed_values=_DVC_DESIGNATIONS
+            ),
+            DecisionInput(name="transformer_frequency_hz", kind="numeric", unit="Hz"),
+            DecisionInput(name="isolation_provided", kind="boolean"),
+            DecisionInput(
+                name="attenuation_evidence_kind",
+                kind="categorical",
+                allowed_values=_ATTENUATION_EVIDENCE_KINDS,
+            ),
+        ),
+        outputs=(
+            DecisionOutput(name="working_voltage_basis_permitted", kind="boolean"),
+            DecisionOutput(
+                name="required_evidence_kinds",
+                kind="categorical",
+                allowed_values=_REQUIRED_EVIDENCE_KINDS,
+            ),
+        ),
+        # Missing evidence first: the route is an engineering-input requirement until
+        # the attenuation is shown, never a permission.
+        rows=(
+            _row(
+                evidence=("none",),
+                permitted=False,
+                required="test_or_simulation_or_calculation",
+            ),
+            _row(
+                evidence=("test", "simulation", "calculation"),
+                permitted=True,
+                required="already_provided",
+            ),
+        ),
+        exhaustive=False,
+        source=fragment.source,
+    )
+    return (rule,), (_proposal(rule, "decision", fragment),)
+
+
 CLAUSE_PROJECTORS = {
     ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: project_system_voltage_resolution,
     ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION: project_multiple_source_propagation,
     ids.SUPPLY_VERIFIED_BARRIER_TRANSFER: project_verified_barrier_transfer,
+    ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS: project_spd_reduction_requirements,
+    ids.SUPPLY_HF_TRANSFORMER_ATTENUATION: project_hf_transformer_attenuation,
 }
 
 __all__ = [
     "CLAUSE_PROJECTORS",
     "SUPPLY_CLAUSES",
+    "project_hf_transformer_attenuation",
     "project_multiple_source_propagation",
+    "project_spd_reduction_requirements",
     "project_system_voltage_resolution",
     "project_verified_barrier_transfer",
 ]

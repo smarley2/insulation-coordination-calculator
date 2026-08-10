@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -28,7 +30,9 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.clauses impo
 )
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
     SUPPLY_CLAUSES,
+    project_hf_transformer_attenuation,
     project_multiple_source_propagation,
+    project_spd_reduction_requirements,
     project_system_voltage_resolution,
     project_verified_barrier_transfer,
 )
@@ -298,6 +302,157 @@ def test_a_barrier_fragment_with_extra_nodes_blocks() -> None:
         )
 
 
+# --- Task 7: transient limiter and high-frequency transformer ----------------------
+
+
+def _spd_inputs(**overrides: str | bool) -> dict[str, str | bool]:
+    inputs: dict[str, str | bool] = {
+        "device_placement": "internal_to_pecs",
+        "insulation_class": "basic",
+        "device_degradable": False,
+        "part_of_category_reduction": True,
+    }
+    inputs.update(overrides)
+    return inputs
+
+
+def _project_spd(fragment: RawClauseFragment) -> DecisionRule:
+    rules, _proposals = project_spd_reduction_requirements(fragment, IDENTITY)
+    return _decision(rules, ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS)
+
+
+def _frequency_tokens(
+    *pairs: tuple[str, str],
+) -> tuple[ClauseToken, ...]:
+    """Invented quantity/unit token pairs; the real threshold is never in this repo."""
+
+    tokens: list[ClauseToken] = []
+    for quantity, unit in pairs:
+        tokens.append(
+            ClauseToken(
+                kind="quantity",
+                raw_text=quantity,
+                normalized=Decimal(quantity),
+                source=SOURCE,
+            )
+        )
+        tokens.append(
+            ClauseToken(kind="unit", raw_text=unit, normalized=unit, source=SOURCE)
+        )
+    return tuple(tokens)
+
+
+def _hf_fragment(*pairs: tuple[str, str]) -> RawClauseFragment:
+    return _paragraph_fragment(
+        ids.SUPPLY_HF_TRANSFORMER_ATTENUATION,
+        tokens=_frequency_tokens(*pairs) if pairs else (),
+    )
+
+
+def _project_hf_transformer(fragment: RawClauseFragment) -> DecisionRule:
+    rules, _proposals = project_hf_transformer_attenuation(fragment, IDENTITY)
+    return _decision(rules, ids.SUPPLY_HF_TRANSFORMER_ATTENUATION)
+
+
+def _hf_inputs(**overrides: Decimal | str | bool) -> dict[str, Decimal | str | bool]:
+    inputs: dict[str, Decimal | str | bool] = {
+        "circuit_dvc": "dvc_b",
+        "transformer_frequency_hz": Decimal(500000),
+        "isolation_provided": True,
+        "attenuation_evidence_kind": "test",
+    }
+    inputs.update(overrides)
+    return inputs
+
+
+def test_double_and_reinforced_insulation_keep_the_unreduced_floor() -> None:
+    rule = _project_spd(_paragraph_fragment(ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS))
+    row = _lookup(rule, **_spd_inputs(insulation_class="reinforced"))
+    assert row is not None
+    assert _value(row, "reinforced_floor_applies") is True
+    assert _value(row, "reduction_permitted") is False
+    assert _value(row, "reduced_category") == "not_reduced"
+
+
+def test_a_degradable_device_requires_monitoring_and_indication() -> None:
+    rule = _project_spd(_paragraph_fragment(ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS))
+    row = _lookup(rule, **_spd_inputs(device_degradable=True))
+    assert row is not None
+    assert _value(row, "monitoring_required") is True
+    assert _value(row, "status_indication_required") is True
+    assert _value(row, "reduction_permitted") is True
+
+
+def test_a_device_outside_a_category_reduction_is_exempt() -> None:
+    rule = _project_spd(_paragraph_fragment(ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS))
+    row = _lookup(
+        rule, **_spd_inputs(device_degradable=True, part_of_category_reduction=False)
+    )
+    assert row is not None
+    assert _value(row, "monitoring_required") is False
+    assert _value(row, "reduction_permitted") is False
+    assert _value(row, "verification_reference") == "not_required"
+
+
+def test_the_transformer_route_needs_evidence_before_it_permits_anything() -> None:
+    rule = _project_hf_transformer(_hf_fragment(("42", "kHz")))
+    without = _lookup(rule, **_hf_inputs(attenuation_evidence_kind="none"))
+    assert without is not None
+    assert _value(without, "working_voltage_basis_permitted") is False
+    assert set(str(_value(without, "required_evidence_kinds")).split("_or_")) == {
+        "test",
+        "simulation",
+        "calculation",
+    }
+
+
+def test_the_transformer_threshold_is_read_from_the_fragment_not_declared() -> None:
+    bounds = {}
+    for quantity, unit, expected in (("42", "kHz", "42000"), ("3", "MHz", "3000000")):
+        rule = _project_hf_transformer(_hf_fragment((quantity, unit)))
+        matcher = next(
+            matcher
+            for row in rule.rows
+            for matcher in row.matchers
+            if matcher.input == "transformer_frequency_hz"
+        )
+        bounds[expected] = matcher.minimum
+        assert matcher.minimum == Decimal(expected)
+    assert len(set(bounds.values())) == 2
+
+
+def test_a_frequency_below_the_extracted_threshold_is_not_covered() -> None:
+    rule = _project_hf_transformer(_hf_fragment(("42", "kHz")))
+    assert _lookup(rule, **_hf_inputs(transformer_frequency_hz=Decimal(100))) is None
+
+
+def test_a_transformer_fragment_without_a_frequency_pair_blocks() -> None:
+    with pytest.raises(ClauseStructureError, match="AMBIGUOUS_CLAUSE_STRUCTURE"):
+        project_hf_transformer_attenuation(_hf_fragment(), IDENTITY)
+
+
+def test_a_transformer_fragment_with_two_frequency_pairs_blocks() -> None:
+    with pytest.raises(ClauseStructureError, match="AMBIGUOUS_CLAUSE_STRUCTURE"):
+        project_hf_transformer_attenuation(
+            _hf_fragment(("42", "kHz"), ("7", "MHz")), IDENTITY
+        )
+
+
+def test_no_supply_recipe_file_declares_a_frequency_threshold() -> None:
+    """The licensed thresholds are extracted at import time, never committed.
+
+    Unit names may appear (the projection has to recognise them); a number written
+    next to one would be a declared threshold, which is what this guard forbids.
+    """
+
+    directory = Path("src/insulation_coordination/rules/importer/recipes/iec62477_1_2022")
+    paths = sorted(directory.glob("*.py"))
+    assert paths
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        assert re.search(r"[0-9][^\S\n]*[\"']?[^\S\n]*(?:k|M)?Hz", text) is None, path
+
+
 def test_the_recipe_declares_and_registers_every_supply_clause() -> None:
     declared = {spec.semantic_id for spec in SUPPLY_CLAUSES}
     assert declared <= {spec.semantic_id for spec in IEC_RECIPE.clauses}
@@ -306,6 +461,8 @@ def test_the_recipe_declares_and_registers_every_supply_clause() -> None:
         ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,
         ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION,
         ids.SUPPLY_VERIFIED_BARRIER_TRANSFER,
+        ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS,
+        ids.SUPPLY_HF_TRANSFORMER_ATTENUATION,
     } <= declared
     assert all(spec.output_kind == "decision" for spec in SUPPLY_CLAUSES)
     assert all(65.0 <= spec.expected_bbox[0] for spec in SUPPLY_CLAUSES)
