@@ -7,7 +7,6 @@ neutral descriptions written here; no source subject, condition, or note text is
 
 from __future__ import annotations
 
-import textwrap
 from typing import Literal
 
 from insulation_coordination.domain.rules import (
@@ -630,8 +629,6 @@ _PARTIAL_DISCHARGE_PREPARATION_FIELDS = (
 #: on the equipment under test. That is what makes the applicability a decision rather than a
 #: constant, and its row is the provenance for both decision rows.
 _PARTIAL_DISCHARGE_GATE_FIELD = "test_voltage"
-#: ``ProcedureStep.text`` is capped at this many characters by the domain model.
-_STEP_TEXT_LIMIT = 500
 
 TABLE_30 = TableAuditSpec(
     semantic_id=ids.TEST_PARTIAL_DISCHARGE,
@@ -790,26 +787,21 @@ def project_partial_discharge(
         _fail(f"declared fields {empty} state no condition")
 
     def _steps(fields: tuple[str, ...]) -> tuple[ProcedureStep, ...]:
-        """One step per declared field, or several when its condition is a long one.
+        """Exactly one step per declared field: one source condition is one action.
 
-        A step's text is capped, and some conditions here run past the cap. Wrapping keeps
-        every word and numbers the pieces consecutively; truncating would drop reviewed
-        content from the rule a maintainer signs off.
+        The longest condition here runs past ``MAX_REFERENCE_TEXT_LENGTH``, which is why
+        ``ProcedureStep.text`` carries its own larger cap. Splitting a condition across steps
+        would invite a consumer to read one action as several.
         """
-        numbered = [
-            (field, chunk)
-            for field in fields
-            for chunk in textwrap.wrap(conditions[field], _STEP_TEXT_LIMIT)
-        ]
         return tuple(
             ProcedureStep(
                 order=order,
-                text=chunk,
+                text=conditions[field],
                 source=source.model_copy(
                     update={"row": f"grid row {rows_by_field[field] + 1}"}
                 ),
             )
-            for order, (field, chunk) in enumerate(numbered, start=1)
+            for order, field in enumerate(fields, start=1)
         )
 
     procedure = ProcedureRule(

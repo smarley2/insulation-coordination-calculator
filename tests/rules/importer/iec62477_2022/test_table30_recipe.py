@@ -8,7 +8,13 @@ from __future__ import annotations
 
 import pytest
 
-from insulation_coordination.domain.rules import DecisionRule, ProcedureRule, SourceReference
+from insulation_coordination.domain.rules import (
+    MAX_PROCEDURE_STEP_LENGTH,
+    MAX_REFERENCE_TEXT_LENGTH,
+    DecisionRule,
+    ProcedureRule,
+    SourceReference,
+)
 from insulation_coordination.rules.importer.extract import (
     RawGrid,
     RawGridCell,
@@ -39,7 +45,7 @@ IDENTITY = StandardIdentity(
 )
 
 
-def _synthetic_grid(*, undeclared_row: bool = False) -> RawGrid:
+def _synthetic_grid(*, undeclared_row: bool = False, condition_length: int = 0) -> RawGrid:
     segment = TABLE_30.segments[0]
     cells: list[RawGridCell] = []
     for row in range(TABLE_30.expected_raw_rows):
@@ -52,7 +58,10 @@ def _synthetic_grid(*, undeclared_row: bool = False) -> RawGrid:
             elif column == 0:
                 text, role = f"synthetic subject {row}", "note"
             else:
-                text, role = f"synthetic condition {row}", "note"
+                text = f"synthetic condition {row}"
+                if condition_length:
+                    text = " ".join([text] * condition_length)[:condition_length]
+                role = "note"
             cells.append(
                 RawGridCell(
                     row=row,
@@ -139,6 +148,35 @@ def test_the_procedure_carries_every_declared_row() -> None:
     for step in (*procedure.procedure_steps, *procedure.preparation_steps):
         assert step.source.row is not None
         assert step.source.table == "30"
+
+
+def test_one_declared_condition_yields_exactly_one_step() -> None:
+    """One source condition is one action, so no row may spread over several steps."""
+
+    rules, _proposals = project_partial_discharge(_synthetic_grid(), IDENTITY)
+    procedure = next(rule for rule in rules if isinstance(rule, ProcedureRule))
+    steps = (*procedure.preparation_steps, *procedure.procedure_steps)
+    rows = [step.source.row for step in steps]
+    assert len(rows) == len(set(rows))
+    assert len(rows) == len(PARTIAL_DISCHARGE_FIELD_ROWS) - 2
+
+
+def test_a_condition_longer_than_the_reference_cap_is_still_one_step() -> None:
+    """The longest source condition runs past ``MAX_REFERENCE_TEXT_LENGTH``.
+
+    ``ProcedureStep.text`` therefore carries its own larger cap. Were it back on the
+    reference cap, this projection would have to split or truncate the condition.
+    """
+
+    long_enough = MAX_REFERENCE_TEXT_LENGTH + 100
+    rules, _proposals = project_partial_discharge(
+        _synthetic_grid(condition_length=long_enough), IDENTITY
+    )
+    procedure = next(rule for rule in rules if isinstance(rule, ProcedureRule))
+    steps = (*procedure.preparation_steps, *procedure.procedure_steps)
+    assert len(steps) == len(PARTIAL_DISCHARGE_FIELD_ROWS) - 2
+    assert all(len(step.text) > MAX_REFERENCE_TEXT_LENGTH for step in steps)
+    assert MAX_PROCEDURE_STEP_LENGTH > MAX_REFERENCE_TEXT_LENGTH
 
 
 def test_the_procedure_points_at_its_applicability_rule() -> None:

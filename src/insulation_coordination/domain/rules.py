@@ -18,6 +18,10 @@ IEC_IMPORTER_VERSION = "iec-pdf-4"
 MAX_IDENTIFIER_LENGTH = 160
 MAX_REFERENCE_TEXT_LENGTH = 500
 MAX_NOTES_LENGTH = 2_000
+#: A procedure step carries one reviewed source condition, which runs longer than the short
+#: references ``ReferenceText`` sizes. Its own cap keeps one condition one step instead of
+#: splitting it across steps a consumer would read as separate actions.
+MAX_PROCEDURE_STEP_LENGTH = 2_000
 MAX_LATEX_LENGTH = 4_000
 MAX_APPLICABILITY_LENGTH = 1_000
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -31,6 +35,10 @@ ReferenceText = Annotated[
     Field(min_length=1, max_length=MAX_REFERENCE_TEXT_LENGTH, pattern=r"\S"),
 ]
 NotesText = Annotated[str, Field(max_length=MAX_NOTES_LENGTH)]
+ProcedureStepText = Annotated[
+    str,
+    Field(min_length=1, max_length=MAX_PROCEDURE_STEP_LENGTH, pattern=r"\S"),
+]
 LatexText = Annotated[str, Field(max_length=MAX_LATEX_LENGTH)]
 ApplicabilityText = Annotated[str, Field(max_length=MAX_APPLICABILITY_LENGTH)]
 RuleKind = TypingLiteral[
@@ -744,7 +752,7 @@ def _row_admits(row: DecisionRow, assignment: dict[str, str | bool]) -> bool:
 
 class ProcedureStep(FrozenModel):
     order: int = Field(ge=1, strict=True)
-    text: ReferenceText
+    text: ProcedureStepText
     source: SourceReference
 
 
