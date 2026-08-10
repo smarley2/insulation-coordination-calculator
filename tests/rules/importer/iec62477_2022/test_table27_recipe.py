@@ -17,9 +17,11 @@ from insulation_coordination.rules.importer.extract import (
 from insulation_coordination.rules.importer.identify import StandardIdentity, TableAuditSpec
 from insulation_coordination.rules.importer.projection import project_table
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.verification import (
-    TABLE_27_AC,
-    TABLE_27_DC,
+    TABLE_27_SPECS,
 )
+
+AC_SPECS = tuple(spec for spec in TABLE_27_SPECS if spec.semantic_id.endswith(".ac"))
+DC_SPECS = tuple(spec for spec in TABLE_27_SPECS if spec.semantic_id.endswith(".dc"))
 
 SOURCE = SourceReference(
     document_id="synthetic-table-27",
@@ -98,7 +100,7 @@ def _synthetic_grid(spec: TableAuditSpec) -> RawGrid:
 
 
 def test_the_spec_declares_the_measured_shape() -> None:
-    for spec in (TABLE_27_AC, TABLE_27_DC):
+    for spec in TABLE_27_SPECS:
         segment = spec.segments[0]
         assert (segment.expected_raw_rows, segment.expected_raw_columns) == (12, 6)
         assert segment.header_rows == (0, 1, 2)
@@ -108,46 +110,73 @@ def test_the_spec_declares_the_measured_shape() -> None:
 
 
 def test_the_ac_and_dc_routes_read_their_own_axis_column() -> None:
-    assert TABLE_27_AC.row_axis_id != TABLE_27_DC.row_axis_id
-    ac_axis = next(c for c in TABLE_27_AC.columns if c.role == "axis")
-    dc_axis = next(c for c in TABLE_27_DC.columns if c.role == "axis")
-    assert (ac_axis.source_column, dc_axis.source_column) == (0, 1)
+    assert len(AC_SPECS) == len(DC_SPECS) == 2
+    for ac, dc in zip(AC_SPECS, DC_SPECS, strict=True):
+        assert ac.row_axis_id != dc.row_axis_id
+        ac_axis = next(c for c in ac.columns if c.role == "axis")
+        dc_axis = next(c for c in dc.columns if c.role == "axis")
+        assert (ac_axis.source_column, dc_axis.source_column) == (0, 1)
 
 
 def test_the_ac_route_drops_the_dc_only_row() -> None:
     """The last data row states no AC system voltage, so the AC route never reads it."""
 
-    ac_rows = TABLE_27_AC.segments[0].data_rows
-    dc_rows = TABLE_27_DC.segments[0].data_rows
-    assert dc_rows == (*ac_rows, dc_rows[-1])
-    assert (TABLE_27_AC.expected_data_rows, TABLE_27_DC.expected_data_rows) == (6, 7)
+    for ac, dc in zip(AC_SPECS, DC_SPECS, strict=True):
+        ac_rows = ac.segments[0].data_rows
+        dc_rows = dc.segments[0].data_rows
+        assert dc_rows == (*ac_rows, dc_rows[-1])
+        assert (ac.expected_data_rows, dc.expected_data_rows) == (6, 7)
 
 
-def test_the_selection_does_not_interpolate() -> None:
-    assert {TABLE_27_AC.interpolation, TABLE_27_DC.interpolation} == {"none"}
+def test_each_spec_covers_one_column_pair() -> None:
+    """Four routes: two column pairs of two data columns each, times two supply kinds."""
+
+    assert len(TABLE_27_SPECS) == 4
+    pairs = {
+        tuple(c.source_column for c in spec.columns if c.role == "data")
+        for spec in TABLE_27_SPECS
+    }
+    assert pairs == {(2, 3), (4, 5)}
+    for spec in TABLE_27_SPECS:
+        assert spec.expected_data_columns == len(spec.columns) == 3
+
+
+def test_the_two_column_pairs_do_not_share_one_interpolation_setting() -> None:
+    """The source permits interpolation for one pair and refuses it for the other.
+
+    One ``interpolation`` flag per spec cannot state both, so a single shared setting means
+    the recipe is no longer saying what the source says.
+    """
+
+    by_pair = {
+        tuple(c.source_column for c in spec.columns if c.role == "data"): spec.interpolation
+        for spec in TABLE_27_SPECS
+    }
+    assert len(set(by_pair.values())) == 2
+    assert by_pair == {(2, 3): "linear", (4, 5): "none"}
 
 
 def test_the_routes_are_suffixed_off_the_inventory_identifier() -> None:
-    assert TABLE_27_AC.semantic_id.endswith(".ac")
-    assert TABLE_27_DC.semantic_id.endswith(".dc")
-    assert TABLE_27_AC.semantic_id.removesuffix(".ac") == TABLE_27_DC.semantic_id.removesuffix(
-        ".dc"
-    )
+    assert {spec.semantic_id.rsplit(".", 1)[1] for spec in TABLE_27_SPECS} == {"ac", "dc"}
+    for ac, dc in zip(AC_SPECS, DC_SPECS, strict=True):
+        assert ac.semantic_id.removesuffix(".ac") == dc.semantic_id.removesuffix(".dc")
+    roots = {spec.semantic_id.rsplit(".", 2)[0] for spec in TABLE_27_SPECS}
+    assert roots == {"iec62477_2022.test.impulse_selection"}
 
 
 def test_column_headings_are_author_written_descriptions() -> None:
-    for spec in (TABLE_27_AC, TABLE_27_DC):
+    for spec in TABLE_27_SPECS:
         for column in spec.columns:
             assert column.heading == column.heading.lower()
             assert column.unit == "V"
 
 
 def test_both_routes_project_a_complete_rectangle() -> None:
-    for spec in (TABLE_27_AC, TABLE_27_DC):
+    for spec in TABLE_27_SPECS:
         table = project_table(IDENTITY, spec, _synthetic_grid(spec))
         data_columns = len([c for c in spec.columns if c.role == "data"])
         # Extraction gives the axis column a logical coordinate too, so the spec's
         # ``expected_data_columns`` is one greater than the projected column count.
-        assert (data_columns, spec.expected_data_columns) == (4, 5)
+        assert (data_columns, spec.expected_data_columns) == (2, 3)
         assert len(table.cells) == spec.expected_data_rows * data_columns
         assert list(table.row_axis.values) == sorted(table.row_axis.values)
