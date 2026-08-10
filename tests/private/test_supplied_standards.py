@@ -144,6 +144,9 @@ def test_supplied_standards_match_human_reviewed_draft(
     assert {item.code for item in draft.review_items} <= {
         "AMBIGUOUS_COMPONENT_FORMULA",
         "AMBIGUOUS_COMPOUND_CELL",
+        # A proven cross-standard equivalence still needs a maintainer's sign-off before it
+        # becomes an approved mapping.
+        "CROSS_STANDARD_EQUIVALENCE_REVIEW_REQUIRED",
         "CURVE_VARIANT_REVIEW_REQUIRED",
         "MANUAL_CLAUSE_DEFINITION_REQUIRED",
         "MANUAL_TABLE_DEFINITION_REQUIRED",

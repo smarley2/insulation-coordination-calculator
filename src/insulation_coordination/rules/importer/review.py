@@ -1179,19 +1179,23 @@ def build_reviewed_draft(
     mappings: dict[str, CompatibilityMapping] = {}
     decisions: dict[str, DecisionRule] = {rule.id: rule for rule in draft.decisions}
     guidance: dict[str, GuidanceRule] = {rule.id: rule for rule in draft.guidance}
+    procedures: dict[str, ProcedureRule] = {rule.id: rule for rule in draft.procedures}
 
     def collect(projected: tuple[object, ...]) -> None:
         """Route each projected rule to the draft field its type belongs in.
 
-        A projection may return guidance alongside decisions -- a source NOTE becomes
-        guidance, never an executable branch -- and ``model_copy`` does not validate, so a
-        guidance rule appended to ``decisions`` would sit there undetected.
+        One source artifact may project several kinds: a clause yields a decision plus the
+        guidance its NOTE carries, and a procedure table yields one procedure per variant.
+        ``model_copy`` does not validate, so a rule appended to the wrong field would sit
+        there undetected -- hence the explicit refusal of a kind this does not know.
         """
         for rule in projected:
             if isinstance(rule, DecisionRule):
                 decisions[rule.id] = rule
             elif isinstance(rule, GuidanceRule):
                 guidance[rule.id] = rule
+            elif isinstance(rule, ProcedureRule):
+                procedures[rule.id] = rule
             else:
                 raise TypeError(
                     f"projection produced an unsupported rule type: {type(rule).__name__}"
@@ -1247,6 +1251,7 @@ def build_reviewed_draft(
             "mappings": tuple(mappings.values()),
             "decisions": tuple(decisions.values()),
             "guidance": tuple(guidance.values()),
+            "procedures": tuple(procedures.values()),
         }
     )
     return record_correction(
