@@ -31,6 +31,7 @@ RECIPE = StandardRecipe(
         *clauses.CLAUSES,
         *supply.SUPPLY_CLAUSES,
         *high_frequency.HIGH_FREQUENCY_CLAUSES,
+        *procedures.PROCEDURE_CLAUSES,
     ),
     curves=curves.CURVES,
     required_curves=(ids.DVC_FAULT_TIME_VOLTAGE,),
@@ -43,6 +44,7 @@ RECIPE = StandardRecipe(
         ids.DVC_FAULT_APPLICABILITY: clauses.project_dvc_fault_applicability,
         **supply.CLAUSE_PROJECTORS,
         **high_frequency.CLAUSE_PROJECTORS,
+        **procedures.CLAUSE_PROJECTORS,
     },
     cross_standard_checks=spacing.CROSS_STANDARD_CHECKS,
 )

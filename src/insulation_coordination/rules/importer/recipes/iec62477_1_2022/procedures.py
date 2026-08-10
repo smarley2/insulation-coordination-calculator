@@ -14,14 +14,27 @@ the calculator executes.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import NoReturn
 
-from insulation_coordination.domain.rules import ProcedureRule
-from insulation_coordination.rules.importer.extract import RawGrid
+from insulation_coordination.domain.rules import (
+    ProcedureRule,
+    ProcedureStep,
+)
+from insulation_coordination.rules.importer.clauses import RawClauseFragment
+from insulation_coordination.rules.importer.extract import (
+    ImportedRuleDraft,
+    RawGrid,
+    SemanticProposal,
+    canonical_model_sha256,
+)
 from insulation_coordination.rules.importer.identify import (
+    ClauseAuditSpec,
+    StandardIdentity,
     TableAuditSpec,
     TableColumnSpec,
     TableSegmentSpec,
 )
+from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.verification import (
     ProcedureStructureError,
 )
@@ -223,13 +236,183 @@ def validate_classifications(grid: RawGrid, procedure: ProcedureRule) -> None:
         )
 
 
+# --- the procedure clauses ----------------------------------------------------------
+#
+# Measured with pdfplumber against the licensed document; the x range excludes the licence
+# watermark columns at either margin, the same range ``supply.py`` established. Each bbox was
+# confirmed by running ``extract_clause_fragment`` against the real page and checking the node
+# kind and count before it was written here.
+
+_WORKING_VOLTAGE_CLAUSE = "5.2.3.14"
+_INTERNAL_SPD_CLAUSE = "5.2.3.15"
+
+PROCEDURE_CLAUSES: tuple[ClauseAuditSpec, ...] = (
+    ClauseAuditSpec(
+        semantic_id=ids.TEST_WORKING_VOLTAGE_DETERMINATION,
+        clause=_WORKING_VOLTAGE_CLAUSE,
+        page_number=142,
+        #: The bullets only. The sentence above them states the requirement that refers this
+        #: test, and the line below them points at an annex for waveform guidance; neither is
+        #: a measurement condition, and including either would merge into a bullet's text.
+        expected_bbox=(65.0, 575.0, 535.0, 632.0),
+        expected_root_kind="bullets",
+        output_kind="procedure",
+    ),
+    ClauseAuditSpec(
+        semantic_id=ids.TEST_INTERNAL_SPD_MONITORING,
+        clause=_INTERNAL_SPD_CLAUSE,
+        page_number=142,
+        expected_bbox=(65.0, 680.0, 535.0, 730.0),
+        expected_root_kind="paragraph",
+        output_kind="procedure",
+    ),
+)
+
+#: Reviewed structural contract per projection: (node kind, node count).
+_WORKING_VOLTAGE_SHAPE = ("bullet", 3)
+_INTERNAL_SPD_SHAPE = ("paragraph", 1)
+
+
+def _block(message: str) -> NoReturn:
+    raise ProcedureStructureError(f"AMBIGUOUS_PROCEDURE_STRUCTURE: {message}")
+
+
+def _require_own_fragment(
+    fragment: RawClauseFragment,
+    identity: StandardIdentity,
+    semantic_id: str,
+    label: str,
+) -> None:
+    if fragment.id != f"raw-{semantic_id}":
+        raise ValueError(f"{label} projection requires its own fragment")
+    if (
+        fragment.source.standard != identity.standard
+        or fragment.source.edition != identity.edition
+    ):
+        raise ValueError(f"{label} fragment does not match its identified source")
+
+
+def _require_shape(
+    fragment: RawClauseFragment,
+    shape: tuple[str, int],
+    label: str,
+) -> None:
+    kind, count = shape
+    if len(fragment.nodes) != count or any(node.kind != kind for node in fragment.nodes):
+        _block(f"{label} expected {count} reviewed {kind} node(s)")
+
+
+def _proposal(
+    rule: ProcedureRule,
+    fragment: RawClauseFragment,
+) -> SemanticProposal:
+    return SemanticProposal(
+        semantic_id=rule.id,
+        rule_kind="procedure",
+        state="proposed",
+        rule_sha256=canonical_model_sha256(rule),
+        source_artifact_sha256=canonical_model_sha256(fragment),
+    )
+
+
+def matrix_grid(draft: ImportedRuleDraft, label: str) -> RawGrid:
+    """The reviewed classification matrix a procedure's classification is checked against.
+
+    A projection that cannot see the matrix cannot check what it declares, so it blocks
+    rather than letting an unchecked classification through.
+    """
+    grid = next(
+        (item for item in draft.raw_grids if item.id == f"raw-{CLASSIFICATION_MATRIX_ID}"),
+        None,
+    )
+    if grid is None:
+        _fail(f"{label} cannot check its classification: the matrix grid is absent")
+        raise AssertionError  # pragma: no cover - _fail always raises
+    return grid
+
+
+def _steps(fragment: RawClauseFragment) -> tuple[ProcedureStep, ...]:
+    """One reviewed node, one step. One source condition is one action."""
+
+    return tuple(
+        ProcedureStep(order=order, text=node.raw_text, source=node.source)
+        for order, node in enumerate(fragment.nodes, start=1)
+    )
+
+
+def project_working_voltage_determination(
+    fragment: RawClauseFragment,
+    identity: StandardIdentity,
+    draft: ImportedRuleDraft,
+) -> tuple[tuple[ProcedureRule, ...], tuple[SemanticProposal, ...]]:
+    """Project the working-voltage determination clause into a reviewed procedure.
+
+    The clause names the measurement conditions the working voltage is determined against.
+    It states no arithmetic, so none is projected: each reviewed bullet becomes one step
+    naming one measurement, and a consumer that needs a value performs the measurement.
+    """
+
+    label = "working voltage determination"
+    _require_own_fragment(fragment, identity, ids.TEST_WORKING_VOLTAGE_DETERMINATION, label)
+    _require_shape(fragment, _WORKING_VOLTAGE_SHAPE, label)
+
+    procedure = ProcedureRule(
+        id=ids.TEST_WORKING_VOLTAGE_DETERMINATION,
+        test_kind="working_voltage_determination",
+        classifications=("type_test",),
+        procedure_steps=_steps(fragment),
+        source=fragment.source,
+    )
+    validate_classifications(matrix_grid(draft, label), procedure)
+    return (procedure,), (_proposal(procedure, fragment),)
+
+
+def project_internal_spd_monitoring(
+    fragment: RawClauseFragment,
+    identity: StandardIdentity,
+    draft: ImportedRuleDraft,
+) -> tuple[tuple[ProcedureRule, ...], tuple[SemanticProposal, ...]]:
+    """Project the internal transient-limiter monitoring test into a reviewed procedure.
+
+    The source gates this test on the monitoring circuit the supply-side clause already
+    describes, and Slice D extracted that clause as its own decision. This procedure
+    references it by identifier instead of restating its conditions, so one source
+    requirement stays one rule and the two cannot drift apart.
+    """
+
+    label = "internal SPD monitoring"
+    _require_own_fragment(fragment, identity, ids.TEST_INTERNAL_SPD_MONITORING, label)
+    _require_shape(fragment, _INTERNAL_SPD_SHAPE, label)
+
+    procedure = ProcedureRule(
+        id=ids.TEST_INTERNAL_SPD_MONITORING,
+        test_kind="internal_spd_monitoring",
+        classifications=("type_test",),
+        procedure_steps=_steps(fragment),
+        applicability_rule_id=ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS,
+        source=fragment.source,
+    )
+    validate_classifications(matrix_grid(draft, label), procedure)
+    return (procedure,), (_proposal(procedure, fragment),)
+
+
+CLAUSE_PROJECTORS = {
+    ids.TEST_WORKING_VOLTAGE_DETERMINATION: project_working_voltage_determination,
+    ids.TEST_INTERNAL_SPD_MONITORING: project_internal_spd_monitoring,
+}
+
 __all__ = [
     "CLASSIFICATION_COLUMNS",
     "CLASSIFICATION_MATRIX",
     "CLASSIFICATION_MATRIX_ID",
     "CLASSIFICATION_MATRIX_SPECS",
+    "CLAUSE_PROJECTORS",
+    "PROCEDURE_CLAUSES",
     "REQUIREMENT_CLAUSE_COLUMN",
     "TEST_CLAUSE_COLUMN",
     "matrix_classifications",
+    "matrix_grid",
+    "project_internal_spd_monitoring",
+    "project_working_voltage_determination",
     "validate_classifications",
 ]

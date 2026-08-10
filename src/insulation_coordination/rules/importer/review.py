@@ -1240,7 +1240,7 @@ def build_reviewed_draft(
                 # fragment; approval gating reports the missing required content.
                 continue
             projected, _proposals = recipe.clause_projectors[clause_spec.semantic_id](
-                fragment, identity
+                fragment, identity, draft
             )
             collect(projected)
 

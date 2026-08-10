@@ -477,7 +477,15 @@ class CurveAuditSpec(FrozenModel):
 #: so naming their models would close an import cycle. The recipe modules that register a
 #: projector carry the precise signatures.
 type GridProjector = Callable[[Any, StandardIdentity], tuple[tuple[Any, ...], tuple[Any, ...]]]
-type ClauseProjector = GridProjector
+#: A clause projection additionally receives the reviewed draft the fragment came from. A
+#: source that states one requirement in several places -- a procedure whose classification
+#: only the test cross-reference matrix carries, a preconditioning requirement stated in two
+#: clauses and a table row -- cannot be projected from one fragment alone, and reading the
+#: sibling artifacts from the draft keeps that cross-reading inside the projection instead of
+#: spreading a second mechanism across review.
+type ClauseProjector = Callable[
+    [Any, StandardIdentity, Any], tuple[tuple[Any, ...], tuple[Any, ...]]
+]
 
 
 class StandardRecipe(FrozenModel):

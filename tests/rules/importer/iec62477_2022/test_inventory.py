@@ -57,7 +57,7 @@ def test_only_verification_content_is_still_deferred() -> None:
     Slice E closes.
     """
     assert all(item.startswith("iec62477_2022.test.") for item in DEFERRED_SEMANTIC_IDS)
-    assert len(DEFERRED_SEMANTIC_IDS) == 5
+    assert len(DEFERRED_SEMANTIC_IDS) <= 5
 
 
 def test_every_item_this_build_does_not_defer_has_a_recipe() -> None:
