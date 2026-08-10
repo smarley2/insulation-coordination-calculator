@@ -5,12 +5,36 @@ import os
 import tempfile
 from copy import deepcopy
 from pathlib import Path
+from uuid import uuid4
 
 from pydantic import ValidationError
 
+from insulation_coordination.domain.enums import (
+    CircuitSourceRelationship,
+    ConnectionExposure,
+    DecisiveVoltageClass,
+    NetClassType,
+    ReviewState,
+)
 from insulation_coordination.domain.project import Project
 
-PROJECT_SCHEMA_VERSION = 2
+PROJECT_SCHEMA_VERSION = 3
+
+# Net-level keys the version 2 -> 3 migration adds. A version-2 document must not carry any of
+# these yet - their presence means the document was already migrated (or hand-edited), and the
+# migration must refuse it rather than silently overwrite a real classification.
+NET_TOPOLOGY_KEYS = frozenset(
+    {
+        "net_type",
+        "source_relationship",
+        "connection_exposure",
+        "decisive_voltage_class",
+        "galvanic_domain_id",
+        "classification_review_state",
+    }
+)
+
+_DIRECT_DOMAIN_NAME = "Direct / source-side domain"
 
 
 class ProjectSaveError(OSError):
@@ -30,14 +54,46 @@ def migrate_project_document(raw: dict[str, object]) -> dict[str, object]:
     if not isinstance(version, int) or isinstance(version, bool):
         raise ProjectVersionError("Project schema_version must be an integer")
     if version > PROJECT_SCHEMA_VERSION:
-        raise ProjectVersionError(f"Project schema {version} is newer than supported version 2")
+        raise ProjectVersionError(
+            f"Project schema {version} is newer than supported version {PROJECT_SCHEMA_VERSION}"
+        )
     document = deepcopy(raw)
     if version == 1:
         if "group_splits" in document:
             raise ProjectVersionError("Project schema 1 must not contain group_splits")
         document["schema_version"] = 2
         document["group_splits"] = []
-    elif version != PROJECT_SCHEMA_VERSION:
+        version = 2
+    if version == 2:
+        if "galvanic_domains" in document:
+            raise ProjectVersionError("Project schema 2 must not contain galvanic_domains")
+        if "galvanic_barriers" in document:
+            raise ProjectVersionError("Project schema 2 must not contain galvanic_barriers")
+        nets_field = document.get("net_classes", [])
+        nets: list[dict[str, object]] = nets_field if isinstance(nets_field, list) else []
+        if any(NET_TOPOLOGY_KEYS & net.keys() for net in nets):
+            raise ProjectVersionError("Project schema 2 net classes must not contain topology keys")
+        domain_id = str(uuid4())
+        document["schema_version"] = 3
+        document["galvanic_domains"] = [
+            {
+                "id": domain_id,
+                "name": _DIRECT_DOMAIN_NAME,
+                "description": "",
+                "is_direct_source_domain": True,
+                "review_state": ReviewState.NEEDS_REVIEW.value,
+            }
+        ]
+        document["galvanic_barriers"] = []
+        for net in nets:
+            net["net_type"] = NetClassType.CIRCUIT.value
+            net["source_relationship"] = CircuitSourceRelationship.INTERNALLY_GENERATED.value
+            net["connection_exposure"] = ConnectionExposure.INTERNAL_ONLY.value
+            net["decisive_voltage_class"] = DecisiveVoltageClass.NOT_EVALUATED.value
+            net["galvanic_domain_id"] = domain_id
+            net["classification_review_state"] = ReviewState.NEEDS_REVIEW.value
+        version = 3
+    if version != PROJECT_SCHEMA_VERSION:
         raise ProjectVersionError(f"Project schema {version} is unsupported")
     return document
 
