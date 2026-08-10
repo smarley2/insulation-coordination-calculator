@@ -8,6 +8,7 @@ import re
 from decimal import Decimal
 from enum import StrEnum
 from typing import Literal
+from uuid import UUID
 
 from pydantic import ValidationError, field_validator
 
@@ -23,6 +24,7 @@ from insulation_coordination.calculation.engine import (
 )
 from insulation_coordination.calculation.grouping import CalculationGroup, calculation_signature
 from insulation_coordination.calculation.high_frequency import FieldIteration
+from insulation_coordination.domain.enums import ReviewState
 from insulation_coordination.domain.project import (
     EffectiveCase,
     EffectiveValue,
@@ -39,6 +41,12 @@ from insulation_coordination.domain.rules import (
     RulePackage,
     SourceDocument,
     SourceReference,
+)
+from insulation_coordination.domain.topology import (
+    GalvanicBarrier,
+    GalvanicDomain,
+    TopologyCompletion,
+    topology_completion,
 )
 from insulation_coordination.domain.trace import Quantity, TraceStep
 from insulation_coordination.project.resolver import resolve_effective_case
@@ -191,6 +199,14 @@ class ReportModel(FrozenModel):
     calculation_engine_version: str
     defaults: ProjectDefaults
     net_classes: tuple[NetClass, ...]
+    galvanic_domains: tuple[GalvanicDomain, ...] = ()
+    galvanic_barriers: tuple[GalvanicBarrier, ...] = ()
+    topology: TopologyCompletion
+    # `topology_completion` never reads `GalvanicDomain.review_state` (only
+    # `NetClass.classification_review_state`; see domain/topology.py). This report is the
+    # first consumer that discloses a domain still awaiting review, so it is read directly
+    # from the domain models here rather than reshaping that helper's contract.
+    domains_needing_review: tuple[UUID, ...] = ()
     matrix_rows: tuple[MatrixRow, ...]
     excluded_pairs: tuple[ExcludedPair, ...] = ()
     groups: tuple[ReportGroup, ...]
@@ -313,6 +329,18 @@ def build_report_model(
         calculation_engine_version=CALCULATION_ENGINE_VERSION,
         defaults=project.defaults.model_copy(deep=True),
         net_classes=tuple(net.model_copy(deep=True) for net in project.net_classes),
+        galvanic_domains=tuple(
+            domain.model_copy(deep=True) for domain in project.galvanic_domains
+        ),
+        galvanic_barriers=tuple(
+            barrier.model_copy(deep=True) for barrier in project.galvanic_barriers
+        ),
+        topology=topology_completion(project),
+        domains_needing_review=tuple(
+            domain.id
+            for domain in project.galvanic_domains
+            if domain.review_state is ReviewState.NEEDS_REVIEW
+        ),
         matrix_rows=matrix_rows,
         excluded_pairs=excluded_pairs,
         groups=report_groups,

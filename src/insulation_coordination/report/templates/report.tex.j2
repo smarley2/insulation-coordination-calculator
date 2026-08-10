@@ -89,6 +89,97 @@ Name & Description & Notes \\
 \bottomrule
 \end{longtable}
 
+\section{Project Topology}
+This section discloses the net classification, galvanic domain grouping, and barrier
+verification recorded for this project. No calculation in this report uses this content;
+a recorded barrier states only what the responsible engineer entered, never a
+protection or attenuation claim.
+
+\subsection{Net Classification}
+\begin{longtable}{@{}p{20mm}p{16mm}p{22mm}p{24mm}p{12mm}p{28mm}p{18mm}@{}}
+\toprule
+Net & Type & Source relationship & Connection exposure & DVC & Galvanic domain & Review state \\
+\midrule
+\endfirsthead
+\toprule
+Net & Type & Source relationship & Connection exposure & DVC & Galvanic domain & Review state \\
+\midrule
+\endhead
+{% for net in human.net_classifications %}
+{{ net.name|tex }} & {{ net.net_type|tex }} & {{ net.source_relationship|tex }} & {{ net.connection_exposure|tex }} & {{ net.decisive_voltage_class|tex }} & {{ net.galvanic_domain|tex }} & {{ net.review_state|tex }} \\
+{% endfor %}
+\bottomrule
+\end{longtable}
+
+\subsection{Galvanic Domains}
+{% if human.galvanic_domains %}
+\begin{longtable}{@{}p{28mm}p{68mm}p{22mm}p{22mm}@{}}
+\toprule
+Domain & Description & Direct source & Review state \\
+\midrule
+\endfirsthead
+\toprule
+Domain & Description & Direct source & Review state \\
+\midrule
+\endhead
+{% for domain in human.galvanic_domains %}
+{{ domain.name|tex }} & {{ domain.description|tex }} & {{ domain.is_direct_source_domain|yesno }} & {{ domain.review_state|tex }} \\
+{% endfor %}
+\bottomrule
+\end{longtable}
+{% else %}
+No galvanic domains are recorded for this project.
+{% endif %}
+
+\subsection{Galvanic Barriers}
+{% if human.galvanic_barriers %}
+\begin{longtable}{@{}p{22mm}p{22mm}p{28mm}p{24mm}p{28mm}p{26mm}@{}}
+\toprule
+Domain A & Domain B & Status & Verification method & Evidence / reference & Notes \\
+\midrule
+\endfirsthead
+\toprule
+Domain A & Domain B & Status & Verification method & Evidence / reference & Notes \\
+\midrule
+\endhead
+{% for barrier in human.galvanic_barriers %}
+{{ barrier.domain_a|tex }} & {{ barrier.domain_b|tex }} & {{ barrier.status|tex }} & {{ barrier.verification_method|tex }} & {{ barrier.evidence_reference|tex }} & {{ barrier.notes|tex }} \\
+{% endfor %}
+\bottomrule
+\end{longtable}
+{% else %}
+No galvanic barriers are recorded for this project.
+{% endif %}
+
+\subsection{Topology Completion}
+{% if human.topology_status.fully_resolved %}
+Every net has been reviewed and classified, every circuit net carries a decisive voltage
+class and a galvanic domain, every domain pair has a recorded barrier, and every galvanic
+domain has been reviewed.
+{% else %}
+The following remain unresolved:
+\begin{itemize}
+{% if human.topology_status.nets_needing_review %}
+\item Nets awaiting classification review: {% for name in human.topology_status.nets_needing_review %}{{ name|tex }}{% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
+{% if human.topology_status.circuit_nets_without_domain %}
+\item Circuit nets not yet assigned to a galvanic domain: {% for name in human.topology_status.circuit_nets_without_domain %}{{ name|tex }}{% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
+{% if human.topology_status.circuit_nets_with_unevaluated_dvc %}
+\item Circuit nets with an unevaluated decisive voltage class: {% for name in human.topology_status.circuit_nets_with_unevaluated_dvc %}{{ name|tex }}{% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
+{% if human.topology_status.domain_pairs_without_barrier %}
+\item Domain pairs without a recorded barrier: {% for name in human.topology_status.domain_pairs_without_barrier %}{{ name|tex }}{% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
+{% if human.topology_status.unevaluated_barriers %}
+\item Barriers not yet evaluated: {% for name in human.topology_status.unevaluated_barriers %}{{ name|tex }}{% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
+{% if human.topology_status.domains_needing_review %}
+\item Galvanic domains awaiting review: {% for name in human.topology_status.domains_needing_review %}{{ name|tex }}{% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
+\end{itemize}
+{% endif %}
+
 {% if model.excluded_pairs %}
 \section{Pairs Excluded from the Analysis}
 Every voltage stress of the pairs below is recorded as not applicable, so no
