@@ -441,6 +441,7 @@ class RulesManagerWindow(QWidget):
     def _populate_draft_tree(self) -> None:
         """Show draft provenance and review state before an approved package exists."""
         from insulation_coordination.rules.importer.review import (
+            inventory_report,
             missing_required_content,
             required_content_report,
             unresolved_equation_items,
@@ -474,6 +475,25 @@ class RulesManagerWindow(QWidget):
                 )
             )
         )
+        inventory = inventory_report(draft)
+        approved_items = tuple(status for status in inventory if status.approved)
+        deferred_items = tuple(status for status in inventory if status.deferred)
+        review.addChild(
+            QTreeWidgetItem(
+                (
+                    (
+                        f"required source items: {len(approved_items)} of {len(inventory)} "
+                        f"approved, {len(deferred_items)} deferred"
+                    ),
+                )
+            )
+        )
+        for issue in sorted({issue for status in inventory for issue in status.consumer_issue_ids}):
+            consumed = tuple(status for status in inventory if issue in status.consumer_issue_ids)
+            ready = tuple(status for status in consumed if status.approved)
+            review.addChild(
+                QTreeWidgetItem((f"  issue #{issue}: {len(ready)} of {len(consumed)} approved",))
+            )
 
         sources = QTreeWidgetItem(("Source documents",))
         self._tree.addTopLevelItem(sources)

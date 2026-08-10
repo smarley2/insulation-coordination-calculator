@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import (
     ApprovalRecord,
     CompatibilityMapping,
@@ -28,6 +29,7 @@ from insulation_coordination.domain.rules import (
     FaultTimeVoltageVariant,
     Formula,
     GuidanceRule,
+    Identifier,
     LinearInterpolate,
     Literal,
     Lookup,
@@ -1324,6 +1326,115 @@ def required_content_report(draft: ImportedRuleDraft) -> tuple[RequiredContentSt
 def missing_required_content(draft: ImportedRuleDraft) -> tuple[RequiredContentStatus, ...]:
     """Required content that is not yet present as typed rule content."""
     return tuple(item for item in required_content_report(draft) if not item.present)
+
+
+class InventoryStatus(FrozenModel):
+    """How far one required source item has travelled through the pipeline."""
+
+    semantic_id: Identifier
+    consumer_issue_ids: tuple[int, ...]
+    located: bool
+    extracted: bool
+    typed: bool
+    approved: bool
+    deferred: bool
+
+
+def _covers(candidate: str, semantic_id: str) -> bool:
+    """Whether ``candidate`` is the required item or one of its declared routes.
+
+    A required item is often extracted as several specs -- Table 7 splits into an AC and a
+    DC route, Table 9 into one construction each -- so a route is named
+    ``"<semantic id>.<route>"``.
+    """
+    return candidate == semantic_id or candidate.startswith(f"{semantic_id}.")
+
+
+def inventory_report(draft: ImportedRuleDraft) -> tuple[InventoryStatus, ...]:
+    """Package completeness computed from the required source inventory.
+
+    Completeness is never a count of extracted tables: it is this checklist, in the order
+    the inventory declares, so a package cannot look complete while a required item is
+    absent.
+    """
+    from insulation_coordination.rules.importer.iec62477_2022.inventory import (
+        DEFERRED_SEMANTIC_IDS,
+        REQUIRED_SOURCE_ITEMS,
+    )
+    from insulation_coordination.rules.importer.recipes import RECIPES
+
+    declared: set[str] = set()
+    routes: dict[str, set[str]] = {}
+    for recipe in RECIPES:
+        for table_spec in recipe.tables:
+            declared.add(table_spec.semantic_id)
+            if table_spec.decision_route_ids:
+                routes[table_spec.semantic_id] = set(table_spec.decision_route_ids)
+        declared.update(spec.semantic_id for spec in recipe.clauses)
+        declared.update(spec.semantic_id for spec in recipe.curves)
+        declared.update(spec.semantic_id for spec in recipe.formulas)
+
+    raw_ids = {grid.id for grid in draft.raw_grids}
+    raw_ids.update(fragment.id for fragment in draft.raw_clause_fragments)
+    raw_ids.update(f"raw-{curve.id}" for curve in draft.curves)
+    typed_ids = {rule.id for rule in draft.tables}
+    typed_ids.update(rule.id for rule in draft.decisions)
+    typed_ids.update(rule.id for rule in draft.procedures)
+    typed_ids.update(rule.id for rule in draft.guidance)
+    typed_ids.update(rule.id for rule in draft.curves)
+    unresolved = {
+        item.semantic_id
+        for kind in ("table", "formula", "mapping", "clause", "semantic", "curve")
+        for item in _unresolved_items(draft, kind)
+    }
+
+    statuses: list[InventoryStatus] = []
+    for item in REQUIRED_SOURCE_ITEMS:
+        semantic_id = item.semantic_id
+        matching = {candidate for candidate in declared if _covers(candidate, semantic_id)}
+        located = bool(matching)
+        extracted = located and all(
+            f"raw-{candidate}" in raw_ids or candidate in raw_ids for candidate in matching
+        )
+        required_typed = {
+            route
+            for candidate in matching
+            for route in (routes.get(candidate) or {candidate})
+        }
+        typed = located and required_typed <= typed_ids
+        blocked = any(
+            _covers(pending, semantic_id) or pending.startswith(f"raw-{semantic_id}")
+            for pending in unresolved
+        )
+        statuses.append(
+            InventoryStatus(
+                semantic_id=semantic_id,
+                consumer_issue_ids=item.consumer_issue_ids,
+                located=located,
+                extracted=extracted,
+                typed=typed,
+                approved=typed and not blocked,
+                deferred=semantic_id in DEFERRED_SEMANTIC_IDS,
+            )
+        )
+    return tuple(statuses)
+
+
+def missing_inventory_items(draft: ImportedRuleDraft) -> tuple[InventoryStatus, ...]:
+    """Required inventory items this build can extract but this draft has not approved.
+
+    An item no recipe declares is not reported here: that is either Slice E content, which
+    the deferred set records, or a build running an injected recipe registry. Either way
+    the gap is in the build rather than in the draft, and
+    ``test_inventory.py`` asserts against the real registry that every non-deferred item
+    has a recipe. What this gate refuses is a draft that skipped content the build knows
+    how to extract.
+    """
+    return tuple(
+        status
+        for status in inventory_report(draft)
+        if status.located and not (status.approved or status.deferred)
+    )
 
 
 def placeholder_formula_ids() -> set[str]:
