@@ -131,6 +131,11 @@ def _review_all_c2_proposals(draft):
     return built
 
 
+#: Importing all three licensed documents takes about twenty seconds, most of it
+#: rasterizing the source figures, and proving determinism means doing it twice and then
+#: reviewing every extracted artifact. That is the work this test exists to do, so it gets
+#: room for it rather than a faster but weaker assertion.
+@pytest.mark.timeout(600)
 def test_deterministic_c2_proposal_hashes(supplied_standards: dict[str, Path]) -> None:
     paths = tuple(supplied_standards[recipe] for recipe in sorted(_REQUIRED_RECIPES))
     first = _review_all_c2_proposals(extract_draft(paths))
@@ -144,6 +149,7 @@ def test_deterministic_c2_proposal_hashes(supplied_standards: dict[str, Path]) -
     ]
 
 
+@pytest.mark.timeout(600)
 def test_c2_review_completeness_still_blocks_on_missing_curve(
     supplied_standards: dict[str, Path],
 ) -> None:
