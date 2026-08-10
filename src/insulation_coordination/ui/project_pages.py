@@ -42,6 +42,7 @@ from insulation_coordination.project.persistence import (
     save_project_atomic,
 )
 from insulation_coordination.ui.help_indicator import HelpIndicator
+from insulation_coordination.ui.net_class_classification import NetClassClassificationPanel
 from insulation_coordination.ui.value_options import (
     IMPULSE_OPTIONS,
     MATERIAL_OPTIONS,
@@ -108,9 +109,7 @@ class ProjectPage(QWidget):
         self._freq_edit = QLineEdit()
         self._freq_edit.editingFinished.connect(self._on_freq_changed)
         self._freq_help = HelpIndicator(VoltageGuidanceId.FREQUENCY)
-        defaults_layout.addRow(
-            _labelled("Frequency (Hz):", self._freq_help), self._freq_edit
-        )
+        defaults_layout.addRow(_labelled("Frequency (Hz):", self._freq_help), self._freq_edit)
         self._impulse_combo = QComboBox()
         populate_combo(self._impulse_combo, IMPULSE_OPTIONS)
         self._impulse_combo.currentIndexChanged.connect(
@@ -136,7 +135,9 @@ class ProjectPage(QWidget):
         self._pollution_combo = QComboBox()
         populate_combo(self._pollution_combo, POLLUTION_OPTIONS)
         self._pollution_combo.currentIndexChanged.connect(
-            lambda index: self._update_combo_default("pollution_degree", self._pollution_combo, index)
+            lambda index: self._update_combo_default(
+                "pollution_degree", self._pollution_combo, index
+            )
         )
         defaults_layout.addRow("Pollution degree:", self._pollution_combo)
         self._construction_combo = QComboBox()
@@ -189,6 +190,9 @@ class ProjectPage(QWidget):
         net_controls.addWidget(self._delete_button)
         net_controls.addStretch(1)
         net_layout.addLayout(net_controls)
+        self._classification_panel = NetClassClassificationPanel()
+        self._classification_panel.net_class_changed.connect(self._on_classification_changed)
+        net_layout.addWidget(self._classification_panel, 1)
         layout.addWidget(net_group)
 
         self._net_list.currentRowChanged.connect(self._on_net_selection_changed)
@@ -237,9 +241,7 @@ class ProjectPage(QWidget):
             self._impulse_combo,
             IMPULSE_OPTIONS,
             defaults.impulse_v,
-            None
-            if defaults.impulse_v is None
-            else impulse_display(defaults.impulse_v),
+            None if defaults.impulse_v is None else impulse_display(defaults.impulse_v),
         )
         select_combo_value(
             self._pollution_combo,
@@ -309,7 +311,16 @@ class ProjectPage(QWidget):
         existing_names = self._project.net_class_names
         if name in existing_names:
             raise ValueError(f"Net-class name '{name}' already exists")
-        net_class = NetClass(id=uuid4(), name=name, description=description or None)
+        direct_domain = next(
+            (domain for domain in self._project.galvanic_domains if domain.is_direct_source_domain),
+            None,
+        )
+        net_class = NetClass(
+            id=uuid4(),
+            name=name,
+            description=description or None,
+            galvanic_domain_id=None if direct_domain is None else direct_domain.id,
+        )
         net_classes = (*self._project.net_classes, net_class)
         pairs = reconcile_pairs(net_classes, self._project.pairs)
         self._update_project(net_classes=net_classes, pairs=pairs)
@@ -380,11 +391,26 @@ class ProjectPage(QWidget):
             self._description_edit.blockSignals(True)
             self._description_edit.clear()
             self._description_edit.blockSignals(False)
+            self._classification_panel.set_net_class(None)
             return
         net = self._project.net_classes[row]
         self._description_edit.blockSignals(True)
         self._description_edit.setText(net.description or "")
         self._description_edit.blockSignals(False)
+        self._classification_panel.set_net_class(net, self._project.galvanic_domains)
+
+    def _on_classification_changed(self, net_class: NetClass) -> None:
+        if self._project is None:
+            return
+        index = next(
+            (i for i, nc in enumerate(self._project.net_classes) if nc.id == net_class.id),
+            None,
+        )
+        if index is None:
+            return
+        net_classes = list(self._project.net_classes)
+        net_classes[index] = net_class
+        self._update_project(net_classes=tuple(net_classes))
 
     def _on_description_changed(self) -> None:
         if self._project is None:

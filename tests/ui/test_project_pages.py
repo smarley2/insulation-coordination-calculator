@@ -52,6 +52,62 @@ def test_adding_three_net_classes_creates_three_pairs(qtbot, qtbot_project):
     assert len(page.project.pairs) == 3
 
 
+def test_add_net_class_leaves_the_domain_unset_without_a_direct_source_domain(qtbot, qtbot_project):
+    page = qtbot_project
+    page.add_net_class("HV")
+    assert page.project.net_classes[0].galvanic_domain_id is None
+
+
+def test_add_net_class_assigns_the_projects_direct_source_domain(qtbot, qtbot_project):
+    from insulation_coordination.domain.topology import GalvanicDomain
+
+    page = qtbot_project
+    direct_domain = GalvanicDomain(
+        id=UUID(int=2), name="Primary side", is_direct_source_domain=True
+    )
+    other_domain = GalvanicDomain(id=UUID(int=3), name="Secondary side")
+    page.load_project(
+        page.project.model_copy(update={"galvanic_domains": (direct_domain, other_domain)})
+    )
+
+    page.add_net_class("HV")
+
+    assert page.project.net_classes[0].galvanic_domain_id == direct_domain.id
+
+
+def test_selecting_a_net_populates_the_classification_panel(qtbot, qtbot_project):
+    page = qtbot_project
+    page.add_net_class("HV")
+    page._net_list.setCurrentRow(0)
+    panel = page._classification_panel
+    assert panel._type_combo.isEnabled()
+    assert panel._source_combo.currentText() == "Internally generated"
+
+
+def test_a_classification_edit_emits_one_project_changed_and_leaves_pairs_untouched(
+    qtbot, qtbot_project
+):
+    from insulation_coordination.domain.enums import CircuitSourceRelationship
+
+    page = qtbot_project
+    page.add_net_class("HV")
+    page.add_net_class("LV")
+    page._net_list.setCurrentRow(0)
+    pairs_before = page.project.pairs
+
+    received: list[object] = []
+    page.project_changed.connect(received.append)
+    combo = page._classification_panel._source_combo
+    index = combo.findData(CircuitSourceRelationship.MAINS_CONNECTED)
+    combo.setCurrentIndex(index)
+
+    assert len(received) == 1
+    assert page.project.net_classes[0].source_relationship is (
+        CircuitSourceRelationship.MAINS_CONNECTED
+    )
+    assert page.project.pairs == pairs_before
+
+
 def test_project_default_dropdown_choices(qtbot, qtbot_project):
     page = qtbot_project
     assert [page._impulse_combo.itemText(i) for i in range(page._impulse_combo.count())] == [

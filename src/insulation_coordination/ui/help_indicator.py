@@ -9,6 +9,8 @@ read-only or disabled.
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFocusEvent, QKeyEvent
 from PySide6.QtWidgets import (
@@ -48,7 +50,7 @@ class GuidanceDialog(QDialog):
 
     def __init__(
         self,
-        guidance_id: VoltageGuidanceId,
+        guidance_id: StrEnum,
         context: str = "",
         parent: QWidget | None = None,
     ) -> None:
@@ -83,7 +85,7 @@ class GuidanceDialog(QDialog):
         return self._body.text()
 
 
-def _body_text(guidance_id: VoltageGuidanceId, context: str) -> str:
+def _body_text(guidance_id: StrEnum, context: str) -> str:
     guidance = guidance_for(guidance_id)
     sections = [guidance.detailed_text]
     if guidance.examples:
@@ -104,7 +106,7 @@ class HelpIndicator(QToolButton):
 
     details_requested = Signal(str)
 
-    def __init__(self, guidance_id: VoltageGuidanceId, parent: QWidget | None = None) -> None:
+    def __init__(self, guidance_id: StrEnum, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._guidance_id = guidance_id
         self._context = ""
@@ -120,10 +122,10 @@ class HelpIndicator(QToolButton):
         self.clicked.connect(self._on_activated)
 
     @property
-    def guidance_id(self) -> VoltageGuidanceId:
+    def guidance_id(self) -> StrEnum:
         return self._guidance_id
 
-    def set_guidance(self, guidance_id: VoltageGuidanceId) -> None:
+    def set_guidance(self, guidance_id: StrEnum) -> None:
         """Point the control at another explanation, as a changing state does."""
         self._guidance_id = guidance_id
         guidance = guidance_for(guidance_id)

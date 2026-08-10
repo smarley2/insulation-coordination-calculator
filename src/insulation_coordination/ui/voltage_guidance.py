@@ -39,9 +39,15 @@ class VoltageGuidanceId(StrEnum):
 
 
 class VoltageGuidance(FrozenModel):
-    """One field's explanation: a tooltip line plus the long form behind it."""
+    """One field's explanation: a tooltip line plus the long form behind it.
 
-    id: VoltageGuidanceId
+    ``id`` accepts any ``StrEnum`` member, not only :class:`VoltageGuidanceId`. Other
+    modules (topology classification, and whatever grows in the tasks after it) register
+    their own id enums into this same registry through :func:`register_guidance`, so every
+    ⓘ in the application shares one lookup and one dialog implementation.
+    """
+
+    id: StrEnum
     #: Names the field in running text, for accessible names and dialog titles.
     title: str
     short_text: str
@@ -50,7 +56,7 @@ class VoltageGuidance(FrozenModel):
     common_mistakes: tuple[str, ...] = ()
 
 
-_GUIDANCE: Mapping[VoltageGuidanceId, VoltageGuidance] = {
+_GUIDANCE: dict[StrEnum, VoltageGuidance] = {
     guidance.id: guidance
     for guidance in (
         VoltageGuidance(
@@ -158,9 +164,7 @@ _GUIDANCE: Mapping[VoltageGuidanceId, VoltageGuidance] = {
                 "Because it lasts, it stresses insulation more like a working voltage "
                 "than like an impulse."
             ),
-            examples=(
-                "A lost neutral raising a line-to-earth voltage for the whole fault.",
-            ),
+            examples=("A lost neutral raising a line-to-earth voltage for the whole fault.",),
             common_mistakes=(
                 "Entering an impulse level here because both are called overvoltages.",
                 "Leaving the field blank when the answer is a considered 'none' plus a reason.",
@@ -269,11 +273,25 @@ _FIELD_STATE_LABELS: Mapping[VoltageGuidanceId, str] = {
 }
 
 
-def guidance_for(guidance_id: VoltageGuidanceId) -> VoltageGuidance:
+def guidance_for(guidance_id: StrEnum) -> VoltageGuidance:
     return _GUIDANCE[guidance_id]
 
 
-def accessible_help_name(guidance_id: VoltageGuidanceId) -> str:
+def register_guidance(*entries: VoltageGuidance) -> None:
+    """Let another module contribute its own entries to this shared registry.
+
+    Every id across every registered enum must be unique: two different id enums that
+    happened to share a string value would silently collide as dict keys (a ``StrEnum``
+    compares and hashes as its string), so a repeat is rejected rather than overwriting
+    whatever was registered first.
+    """
+    for entry in entries:
+        if entry.id in _GUIDANCE:
+            raise ValueError(f"Guidance id {entry.id!r} is already registered")
+        _GUIDANCE[entry.id] = entry
+
+
+def accessible_help_name(guidance_id: StrEnum) -> str:
     """What a screen reader announces for the help control beside a field."""
     return f"Help for {guidance_for(guidance_id).title}"
 
