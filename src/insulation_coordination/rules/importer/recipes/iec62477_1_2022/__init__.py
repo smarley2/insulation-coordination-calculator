@@ -7,6 +7,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
     curves,
     high_frequency,
     identity,
+    procedures,
     projection,
     spacing,
     supply,
@@ -23,7 +24,7 @@ RECIPE = StandardRecipe(
     metadata_identity_fields=identity.METADATA_IDENTITY_FIELDS,
     metadata_identity_anchors=identity.METADATA_IDENTITY_ANCHORS,
     identity_anchors=identity.IDENTITY_ANCHORS,
-    tables=tables.TABLES,
+    tables=(*tables.TABLES, *procedures.CLASSIFICATION_MATRIX_SPECS),
     formulas=tables.FORMULAS,
     mappings=(),
     clauses=(
