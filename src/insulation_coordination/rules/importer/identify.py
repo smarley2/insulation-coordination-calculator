@@ -386,8 +386,17 @@ class CrossStandardCheckSpec(FrozenModel):
     """
 
     id: Identifier
+    #: The rules the resulting mapping links. Both must exist in the approved package, so
+    #: they are rule identifiers, not the raw grids compared to prove the claim. The source
+    #: is the already-approved rule of the other standard, which is unique per check; the
+    #: target is the rule of this standard that defers to it, and several checks may share
+    #: one target.
     source_rule_id: Identifier
     target_rule_id: Identifier
+    #: The raw grids whose cells prove the claim. They live in the draft as evidence and
+    #: never enter the approved package.
+    source_grid_id: Identifier
+    target_grid_id: Identifier
     family: Identifier
     #: ``(source cell id, target cell id)`` pairs, where a cell id is
     #: ``"<logical_row>/<logical_column>"`` as the raw grid records data cells.

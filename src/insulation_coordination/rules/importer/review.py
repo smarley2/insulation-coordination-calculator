@@ -1220,7 +1220,7 @@ def build_reviewed_draft(
         for mapping_spec in recipe.mappings:
             mappings[mapping_spec.id] = project_mapping(identity, mapping_spec)
         for check_spec in recipe.cross_standard_checks:
-            if not {check_spec.source_rule_id, check_spec.target_rule_id} <= set(grids):
+            if not {check_spec.source_grid_id, check_spec.target_grid_id} <= set(grids):
                 # Neither grid can be compared before both are extracted. A draft that
                 # should hold them and does not is caught by the completeness gate at
                 # approval, which reports the absent content by name.

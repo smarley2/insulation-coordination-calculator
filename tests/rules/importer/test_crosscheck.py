@@ -57,8 +57,10 @@ def _spec(cell_map: tuple[tuple[str, str], ...] = ()) -> CrossStandardCheckSpec:
     pairs = cell_map or tuple((identifier, identifier) for identifier in CELL_IDS)
     return CrossStandardCheckSpec(
         id="synthetic-check",
-        source_rule_id="raw-source",
-        target_rule_id="raw-target",
+        source_rule_id="synthetic-target-standard-rule",
+        target_rule_id="synthetic-this-standard-rule",
+        source_grid_id="raw-source",
+        target_grid_id="raw-target",
         family="synthetic",
         cell_map=pairs,
         source_data_cell_ids=tuple(source_id for source_id, _target in pairs),
@@ -78,7 +80,11 @@ def test_equal_grids_yield_one_unapproved_mapping_and_no_review_item() -> None:
     assert items == ()
     assert mapping is not None
     assert mapping.approved is False
-    assert (mapping.source_rule_id, mapping.target_rule_id) == ("raw-source", "raw-target")
+    # The mapping links rules the package holds; the grids it compared stay evidence.
+    assert (mapping.source_rule_id, mapping.target_rule_id) == (
+        "synthetic-target-standard-rule",
+        "synthetic-this-standard-rule",
+    )
 
 
 def test_a_difference_in_printed_form_alone_is_not_a_divergence() -> None:
@@ -141,8 +147,10 @@ def test_a_cell_map_that_omits_a_source_data_cell_is_rejected() -> None:
     with pytest.raises(ValueError, match="cover every source data cell"):
         CrossStandardCheckSpec(
             id="partial",
-            source_rule_id="raw-source",
-            target_rule_id="raw-target",
+            source_rule_id="synthetic-target-standard-rule",
+            target_rule_id="synthetic-this-standard-rule",
+            source_grid_id="raw-source",
+            target_grid_id="raw-target",
             family="synthetic",
             cell_map=(("0/first", "0/first"),),
             source_data_cell_ids=CELL_IDS,
@@ -154,8 +162,10 @@ def test_a_cell_map_that_repeats_a_source_cell_is_rejected() -> None:
     with pytest.raises(ValueError, match="must not repeat a source cell"):
         CrossStandardCheckSpec(
             id="repeated",
-            source_rule_id="raw-source",
-            target_rule_id="raw-target",
+            source_rule_id="synthetic-target-standard-rule",
+            target_rule_id="synthetic-this-standard-rule",
+            source_grid_id="raw-source",
+            target_grid_id="raw-target",
             family="synthetic",
             cell_map=(("0/first", "0/first"), ("0/first", "1/first")),
             source_data_cell_ids=("0/first",),
