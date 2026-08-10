@@ -57,8 +57,8 @@ def _spec(cell_map: tuple[tuple[str, str], ...] = ()) -> CrossStandardCheckSpec:
     pairs = cell_map or tuple((identifier, identifier) for identifier in CELL_IDS)
     return CrossStandardCheckSpec(
         id="synthetic-check",
-        source_rule_id="synthetic-target-standard-rule",
-        target_rule_id="synthetic-this-standard-rule",
+        source_rule_id="synthetic-this-standard-route",
+        target_rule_id="synthetic-target-standard-formula",
         source_grid_id="raw-source",
         target_grid_id="raw-target",
         family="synthetic",
@@ -80,10 +80,11 @@ def test_equal_grids_yield_one_unapproved_mapping_and_no_review_item() -> None:
     assert items == ()
     assert mapping is not None
     assert mapping.approved is False
-    # The mapping links rules the package holds; the grids it compared stay evidence.
+    # The mapping routes this standard's semantic route to the other standard's approved
+    # formula; the grids it compared stay evidence.
     assert (mapping.source_rule_id, mapping.target_rule_id) == (
-        "synthetic-target-standard-rule",
-        "synthetic-this-standard-rule",
+        "synthetic-this-standard-route",
+        "synthetic-target-standard-formula",
     )
 
 

@@ -363,16 +363,16 @@ _ANNEX_F3_CELL_MAP, _ANNEX_F3_SOURCE_CELLS = _aligned_cell_map(
 #: and the package already carries that standard's reviewed clearance and creepage rules.
 #: These checks prove the reproduction agrees cell for cell before a mapping is recorded;
 #: any divergence blocks approval and leaves both rules standing for a maintainer to judge.
+#: Each mapping routes an IEC 62477-1 semantic route to the approved IEC 60664-4 formula
+#: that satisfies it -- the same shape every declared mapping has, route in, formula out --
+#: and the two compared grids are the evidence, which stays in the draft.
 #: Table F.2 has no counterpart among the approved IEC 60664-4 rules, so it is declared no
 #: check at all rather than being paired with an approximate target.
 CROSS_STANDARD_CHECKS: tuple[CrossStandardCheckSpec, ...] = (
     CrossStandardCheckSpec(
         id=f"{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f1_matches_part4_clearance",
-        #: The mapping links rules the approved package contains: the IEC 60664-4 clearance
-        #: rule this annex reproduces, and the high-frequency applicability rule that defers
-        #: to it. The grids below are the evidence and stay in the draft.
-        source_rule_id="iec60664-4:hf-clearance-table",
-        target_rule_id=ids.HIGH_FREQUENCY_APPLICABILITY,
+        source_rule_id="iec62477-1:high_frequency:clearance:annex=f1",
+        target_rule_id="iec60664-4:hf-clearance-table",
         source_grid_id=f"raw-{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f1",
         target_grid_id="raw-iec60664-4-table-1",
         family="high-frequency-clearance",
@@ -389,8 +389,8 @@ CROSS_STANDARD_CHECKS: tuple[CrossStandardCheckSpec, ...] = (
     ),
     CrossStandardCheckSpec(
         id=f"{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f3_matches_part4_creepage",
-        source_rule_id="iec60664-4:hf-creepage-table",
-        target_rule_id=ids.HIGH_FREQUENCY_APPLICABILITY,
+        source_rule_id="iec62477-1:high_frequency:creepage:annex=f3",
+        target_rule_id="iec60664-4:hf-creepage-table",
         source_grid_id=f"raw-{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f3",
         target_grid_id="raw-iec60664-4-table-2",
         family="high-frequency-creepage",

@@ -268,25 +268,33 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
     is_iec_import = package.manifest.importer_version.startswith("iec-pdf-")
     trusted_iec_package = is_iec_import and package.manifest.approved
     if trusted_iec_package:
-        from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
         from insulation_coordination.rules.importer.recipes import RECIPES
 
-        decision_projected_tables = {
-            ids.DVC_VOLTAGE_LIMITS,
-            ids.DVC_PROTECTION_MATRIX,
+        # The derivation ``_require_resolved_recipe_semantics`` uses, kept in step with it: a
+        # spec with a registered grid projector yields a rule of another kind, and a
+        # comparison-only spec yields evidence for a cross-standard check, so neither spec
+        # contributes a table of its own.
+        projected_ids = {
+            semantic_id for recipe in RECIPES for semantic_id in recipe.grid_projectors
         }
         expected_table_ids = {
             spec.semantic_id
             for recipe in RECIPES
             for spec in recipe.tables
-            if spec.semantic_id not in decision_projected_tables
+            if spec.semantic_id not in projected_ids and not spec.comparison_only
         }
         expected_formula_ids = {spec.semantic_id for recipe in RECIPES for spec in recipe.formulas}
         expected_mapping_ids = {spec.id for recipe in RECIPES for spec in recipe.mappings}
+        # A mapping a cross-standard comparison proved is permitted beside the declared
+        # family rather than required, exactly as the approval gates permit it.
+        proven_mapping_ids = {
+            check.id for recipe in RECIPES for check in recipe.cross_standard_checks
+        }
     else:
         expected_table_ids = set(table_ids)
         expected_formula_ids = set(formula_ids)
         expected_mapping_ids = set(mapping_ids)
+        proven_mapping_ids = set()
     legacy_ids = (*table_ids, *formula_ids, *mapping_ids)
     rule_ids = (*decision_ids, *procedure_ids, *guidance_ids)
     identifiers = (*legacy_ids, *rule_ids, *curve_ids)
@@ -418,7 +426,10 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
             )
             for procedure in package.procedures
         )
-        and all(_record_source_valid(guidance.source) for guidance in package.guidance)
+        # Guidance carries a clause's notes across, so it locates like a clause-derived
+        # decision: a clause is required and a table or figure is not, because the prose it
+        # preserves need not sit in either.
+        and all(_clause_source_valid(guidance.source) for guidance in package.guidance)
         and all(
             _curve_source_valid(curve.source)
             and all(_curve_source_valid(variant.source) for variant in curve.variants)
@@ -454,7 +465,7 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
             or (
                 set(table_ids) == expected_table_ids
                 and set(formula_ids) == expected_formula_ids
-                and set(mapping_ids) == expected_mapping_ids
+                and set(mapping_ids) - proven_mapping_ids == expected_mapping_ids
             ),
             "IEC package contains the complete PCB Annex G/H source inventory",
         ),

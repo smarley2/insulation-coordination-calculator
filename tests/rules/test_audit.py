@@ -696,6 +696,18 @@ def test_clause_derived_decision_accepts_a_clause_only_locator(
     assert _result(validate_rule_package(package), "source_references").passed is True
 
 
+def test_clause_derived_guidance_accepts_a_clause_only_locator(
+    synthetic_package: RulePackage,
+) -> None:
+    guidance = synthetic_package.guidance[0]
+    source = guidance.source.model_copy(update={"table": None, "figure": None})
+    package = synthetic_package.model_copy(
+        update={"guidance": (guidance.model_copy(update={"source": source}),)}
+    )
+
+    assert _result(validate_rule_package(package), "source_references").passed is True
+
+
 def test_owner_note_does_not_replace_table_or_figure_locator(
     synthetic_package: RulePackage,
 ) -> None:
