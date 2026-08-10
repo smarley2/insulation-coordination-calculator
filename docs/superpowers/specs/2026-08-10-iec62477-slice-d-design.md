@@ -311,6 +311,51 @@ Slice E content: Tables 26 through 30 and the five remaining test procedures. Co
 calculations in Issues #35 through #37. Any IEC 62477-1:2012 behaviour. Renaming the IEC 60664-4
 identifiers that spell out band figures; that decision is still open and is a breaking change.
 
+## Implementation notes
+
+Recorded after building the slice, where the documents required something the design above
+did not anticipate.
+
+**Table 9 needed a row strategy, not a splitting pass.** The table rules one box around
+several working-voltage lines, so its ruling lines cannot separate logical rows and every
+cell arrives holding three or six stacked values. Instead of a cell-splitting pass, a
+segment declares that its rows come from text lines; that yields one grid row per working
+voltage and no new normalization stage. Every other table keeps the line strategy. The
+table is also split by construction rather than one spec, because it answers a four-way
+question — construction, pollution degree, material group, working voltage — that two axes
+cannot hold. The printed-wiring lookup covers the rows carrying values and leaves the
+footnote stating its limit in the raw grid.
+
+**Table 8's blanks fill down.** The source prints a clearance only where it changes, so a
+blank repeats the last printed value in its own column. Recorded as inherited rather than
+left to block, because the reading is checkable: after filling down, no row decreases
+across the pollution degrees, asserted both publicly and against the document.
+
+**Comparison-only grids.** A spec can declare that its grid is evidence for a
+cross-standard check rather than an executable rule. Such a grid is never projected and its
+cells are never flagged for numeric review — they are only ever read as the source printed
+them, and a cell the parser cannot turn into a number could not be resolved at all. The
+three Annex F grids are comparison-only.
+
+**Notation versus requirement.** The IEC 62477-1 and IEC 60664-4 creepage tables agree on
+every numeric cell but mark an inapplicable cell differently: one prints a dash, the other
+leaves it empty. A check therefore declares the markers that mean "no requirement here".
+Any other unparsed text remains a divergence, and blanks inside the data region are
+compared rather than dropped.
+
+**Cross-standard mappings are reviewable artifacts.** A produced mapping carries its own
+review item and its source artifact is the pair of grids it compared, so a maintainer signs
+the equivalence off and a change to either grid resets that review.
+
+**Tables 8 and 9 against IEC 60664-1 are not yet compared.** The two documents' clearance
+tables do not align cell for cell: IEC 60664-1 Table F.2 lists 26 impulse rows against
+case A and case B for three pollution degrees, where Table 8 lists ten rows against four
+pollution degrees, and pollution degree 4 has no counterpart there at all. An index-based
+cell map would therefore assert correspondences the documents do not support. Comparing
+them needs matching by axis value plus a way to declare a column with no counterpart, which
+is left as follow-up work rather than approximated here. The Annex F comparisons, whose
+grids do align, are implemented.
+
 ## Risks
 
 The Table 9 stack splitting is the least certain part: if the licensed printing groups rows
