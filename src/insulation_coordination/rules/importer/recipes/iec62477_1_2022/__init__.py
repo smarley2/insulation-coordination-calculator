@@ -7,6 +7,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
     curves,
     identity,
     projection,
+    supply,
     tables,
 )
 
@@ -22,7 +23,7 @@ RECIPE = StandardRecipe(
     tables=tables.TABLES,
     formulas=tables.FORMULAS,
     mappings=(),
-    clauses=clauses.CLAUSES,
+    clauses=(*clauses.CLAUSES, *supply.SUPPLY_CLAUSES),
     curves=curves.CURVES,
     required_curves=(ids.DVC_FAULT_TIME_VOLTAGE,),
     grid_projectors={
@@ -31,6 +32,7 @@ RECIPE = StandardRecipe(
     },
     clause_projectors={
         ids.DVC_FAULT_APPLICABILITY: clauses.project_dvc_fault_applicability,
+        **supply.CLAUSE_PROJECTORS,
     },
 )
 
