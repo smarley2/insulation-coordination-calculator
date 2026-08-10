@@ -260,6 +260,12 @@ _INTERNAL_SPD_CLAUSE = "5.2.3.15"
 #: it becomes. Declared here because the spec tuple below names both.
 _PRECONDITIONING_GENERAL_CLAUSE = "5.2.3.1"
 PRECONDITIONING_APPLICABILITY_ID = f"{ids.TEST_PRECONDITIONING}.applicability"
+#: The clause that states the foil geometry, and the clause that states when an accessible
+#: surface calls for it. The matrix carries a classification for the first; the second is a
+#: sub-clause the matrix does not list separately, and it states a gate rather than a test.
+_FOIL_GEOMETRY_CLAUSE = "5.2.3.13.3"
+_VOLTAGE_TEST_PERFORMANCE_CLAUSE = "5.2.3.4.4"
+FOIL_APPLICABILITY_ID = f"{ids.TEST_ACCESSIBLE_SURFACE_FOIL}.applicability"
 
 PROCEDURE_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ClauseAuditSpec(
@@ -300,6 +306,35 @@ PROCEDURE_CLAUSES: tuple[ClauseAuditSpec, ...] = (
         #: complete equipment, neither of which is a preconditioning gate.
         expected_bbox=(65.0, 274.0, 535.0, 310.0),
         expected_root_kind="paragraph",
+        output_kind="decision",
+    ),
+    ClauseAuditSpec(
+        semantic_id=ids.TEST_ACCESSIBLE_SURFACE_FOIL,
+        clause=_FOIL_GEOMETRY_CLAUSE,
+        page_number=142,
+        #: The paragraph that states the foil's dimensions, placement and edge distance, and
+        #: cites the two figures that illustrate them. The bulleted test voltages further down
+        #: the page belong to the surrounding test, not to placing the foil.
+        expected_bbox=(65.0, 119.0, 535.0, 190.0),
+        expected_root_kind="paragraph",
+        output_kind="procedure",
+    ),
+    ClauseAuditSpec(
+        semantic_id=FOIL_APPLICABILITY_ID,
+        clause=_VOLTAGE_TEST_PERFORMANCE_CLAUSE,
+        page_number=130,
+        expected_bbox=(65.0, 142.0, 535.0, 190.0),
+        expected_root_kind="paragraph",
+        output_kind="decision",
+    ),
+    ClauseAuditSpec(
+        semantic_id=ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION,
+        clause=_VOLTAGE_TEST_PERFORMANCE_CLAUSE,
+        page_number=130,
+        #: The three conditions only. The sentence introducing them is above the first bullet,
+        #: where the extractor drops it rather than merging it into a condition.
+        expected_bbox=(65.0, 326.0, 535.0, 378.0),
+        expected_root_kind="bullets",
         output_kind="decision",
     ),
 )
@@ -608,11 +643,184 @@ def project_preconditioning_applicability(
     return (rule,), (_proposal(rule, "decision", fragment),)
 
 
+# --- accessible insulating surface, foil ---------------------------------------------
+
+_FOIL_SHAPE = ("paragraph", 1)
+_FOIL_APPLICABILITY_SHAPE = ("paragraph", 1)
+_FIGURE_REFERENCE_PREFIX = "figure-"
+#: What the accessible-surface clause permits in place of the classification the matrix marks
+#: for the surrounding test. Named as a substitution rather than as a classification of its
+#: own: the matrix marks that test as a type and a routine test and does not mark a sample
+#: test there, so a procedure declaring one would contradict it. This decision records what
+#: the clause permits without making that claim.
+_FOIL_SUBSTITUTIONS = ("sample_test_instead_of_routine_test",)
+
+
+def _figure_references(fragment: RawClauseFragment, label: str) -> str:
+    """The figure numbers the reviewed clause cites, in the order it cites them.
+
+    The figures illustrate a geometry the clause also states in prose, so neither is
+    digitized. They are kept as a source reference on the step they belong to, which is what
+    a maintainer follows to check the placement against the drawing.
+    """
+    numbers = tuple(
+        dict.fromkeys(
+            str(token.normalized).removeprefix(_FIGURE_REFERENCE_PREFIX)
+            for token in fragment.tokens
+            if token.kind == "reference"
+            and str(token.normalized).startswith(_FIGURE_REFERENCE_PREFIX)
+        )
+    )
+    if not numbers:
+        _block(f"{label} expected the reviewed figure references the clause cites")
+    return ", ".join(numbers)
+
+
+def project_accessible_surface_foil(
+    fragment: RawClauseFragment,
+    identity: StandardIdentity,
+    draft: ImportedRuleDraft,
+) -> tuple[tuple[ProcedureRule, ...], tuple[SemanticProposal, ...]]:
+    """Project the foil placement clause into a reviewed procedure."""
+
+    label = "accessible surface foil"
+    _require_own_fragment(fragment, identity, ids.TEST_ACCESSIBLE_SURFACE_FOIL, label)
+    _require_shape(fragment, _FOIL_SHAPE, label)
+    figures = _figure_references(fragment, label)
+
+    procedure = ProcedureRule(
+        id=ids.TEST_ACCESSIBLE_SURFACE_FOIL,
+        test_kind="accessible_surface_foil_placement",
+        classifications=("type_test",),
+        procedure_steps=(
+            ProcedureStep(
+                order=1,
+                text=fragment.nodes[0].raw_text,
+                source=fragment.nodes[0].source.model_copy(update={"figure": figures}),
+            ),
+        ),
+        applicability_rule_id=FOIL_APPLICABILITY_ID,
+        # The rule itself is a clause, not a figure: only the step that places the foil cites
+        # the drawings, so only that step carries them.
+        source=fragment.source,
+    )
+    validate_classifications(matrix_grid(draft, label), procedure)
+    return (procedure,), (_proposal(procedure, "procedure", fragment),)
+
+
+def project_accessible_surface_foil_applicability(
+    fragment: RawClauseFragment,
+    identity: StandardIdentity,
+    _draft: object = None,
+) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
+    """Project the accessible-surface gate for the foil into a decision.
+
+    The clause states what to do where a non-conductive accessible surface covers the
+    equipment. It states nothing about equipment without one, so that case is left uncovered
+    rather than read as a permission to skip the test.
+    """
+
+    label = "accessible surface foil applicability"
+    _require_own_fragment(fragment, identity, FOIL_APPLICABILITY_ID, label)
+    _require_shape(fragment, _FOIL_APPLICABILITY_SHAPE, label)
+
+    rule = DecisionRule(
+        id=FOIL_APPLICABILITY_ID,
+        inputs=(DecisionInput(name="non_conductive_accessible_surface_present", kind="boolean"),),
+        outputs=(
+            DecisionOutput(name="foil_wrap_required", kind="boolean"),
+            DecisionOutput(
+                name="permitted_classification_substitution",
+                kind="categorical",
+                allowed_values=_FOIL_SUBSTITUTIONS,
+            ),
+        ),
+        rows=(
+            DecisionRow(
+                matchers=(
+                    Matcher(
+                        input="non_conductive_accessible_surface_present",
+                        op="equals",
+                        boolean=True,
+                    ),
+                ),
+                values=(
+                    DecisionValue(name="foil_wrap_required", boolean=True),
+                    DecisionValue(
+                        name="permitted_classification_substitution",
+                        categorical=_FOIL_SUBSTITUTIONS[0],
+                    ),
+                ),
+                source=fragment.nodes[0].source,
+            ),
+        ),
+        exhaustive=False,
+        source=fragment.source,
+    )
+    return (rule,), (_proposal(rule, "decision", fragment),)
+
+
+# --- assembled-equipment routine test exemption ---------------------------------------
+
+_EXEMPTION_SHAPE = ("bullet", 3)
+#: One input per reviewed condition, in source order. Neutral descriptions of what each
+#: condition asks about; the source states them as prose this file does not copy.
+_EXEMPTION_CONDITIONS = (
+    "sub_assembly_routine_test_performed",
+    "assembly_shown_not_to_compromise_insulation",
+    "assembled_type_test_passed",
+)
+
+
+def project_assembled_routine_exemption(
+    fragment: RawClauseFragment,
+    identity: StandardIdentity,
+    _draft: object = None,
+) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
+    """Project the routine-test exemption for assembled equipment into a decision.
+
+    The source grants the exemption only where every one of its conditions holds. The rule
+    therefore carries exactly one row, the one the source states, and is not exhaustive: a
+    combination the source does not settle -- including one where a condition is simply not
+    known -- resolves to nothing, so a consumer blocks instead of reading silence as exempt.
+    """
+
+    label = "assembled routine exemption"
+    _require_own_fragment(fragment, identity, ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION, label)
+    _require_shape(fragment, _EXEMPTION_SHAPE, label)
+    if len(_EXEMPTION_CONDITIONS) != _EXEMPTION_SHAPE[1]:  # pragma: no cover - guards the pair
+        _block(f"{label} declares a different number of inputs than reviewed conditions")
+
+    rule = DecisionRule(
+        id=ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION,
+        inputs=tuple(
+            DecisionInput(name=condition, kind="boolean") for condition in _EXEMPTION_CONDITIONS
+        ),
+        outputs=(DecisionOutput(name="assembled_routine_test_exempt", kind="boolean"),),
+        rows=(
+            DecisionRow(
+                matchers=tuple(
+                    Matcher(input=condition, op="equals", boolean=True)
+                    for condition in _EXEMPTION_CONDITIONS
+                ),
+                values=(DecisionValue(name="assembled_routine_test_exempt", boolean=True),),
+                source=fragment.source,
+            ),
+        ),
+        exhaustive=False,
+        source=fragment.source,
+    )
+    return (rule,), (_proposal(rule, "decision", fragment),)
+
+
 CLAUSE_PROJECTORS: Mapping[str, ClauseProjector] = {
     ids.TEST_WORKING_VOLTAGE_DETERMINATION: project_working_voltage_determination,
     ids.TEST_INTERNAL_SPD_MONITORING: project_internal_spd_monitoring,
     ids.TEST_PRECONDITIONING: project_preconditioning,
     PRECONDITIONING_APPLICABILITY_ID: project_preconditioning_applicability,
+    ids.TEST_ACCESSIBLE_SURFACE_FOIL: project_accessible_surface_foil,
+    FOIL_APPLICABILITY_ID: project_accessible_surface_foil_applicability,
+    ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION: project_assembled_routine_exemption,
 }
 
 __all__ = [
@@ -621,12 +829,16 @@ __all__ = [
     "CLASSIFICATION_MATRIX_ID",
     "CLASSIFICATION_MATRIX_SPECS",
     "CLAUSE_PROJECTORS",
+    "FOIL_APPLICABILITY_ID",
     "PRECONDITIONING_APPLICABILITY_ID",
     "PROCEDURE_CLAUSES",
     "REQUIREMENT_CLAUSE_COLUMN",
     "TEST_CLAUSE_COLUMN",
     "matrix_classifications",
     "matrix_grid",
+    "project_accessible_surface_foil",
+    "project_accessible_surface_foil_applicability",
+    "project_assembled_routine_exemption",
     "project_internal_spd_monitoring",
     "project_preconditioning",
     "project_preconditioning_applicability",

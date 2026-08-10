@@ -50,18 +50,13 @@ def _item(
     )
 
 
-#: Required items whose extraction recipes are not written yet, so completeness reports
-#: them as deferred instead of missing and approval does not block a package on work that
-#: has not started. These are Issue #34's Slice E content -- Tables 26 to 30 and the
-#: remaining verification procedures. The set is expected to be empty when Slice E closes,
-#: and a test asserts every member is a required inventory item so it cannot hide a
-#: identifier that does not exist.
-DEFERRED_SEMANTIC_IDS: frozenset[str] = frozenset(
-    {
-        ids.TEST_ACCESSIBLE_SURFACE_FOIL,
-        ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION,
-    }
-)
+#: Required items whose extraction recipes are not written yet, so completeness reports them
+#: as deferred instead of missing and approval does not block a package on work that has not
+#: started. Empty since Slice E closed: every required item now has a recipe, so completeness
+#: reports a missing item as missing. The mechanism stays because it is how the next standard
+#: is landed a slice at a time, and a test asserts every member is a required inventory item
+#: so it cannot hide an identifier that does not exist.
+DEFERRED_SEMANTIC_IDS: frozenset[str] = frozenset()
 
 REQUIRED_SOURCE_ITEMS: tuple[RequiredSourceItem, ...] = (
     _item(ids.DVC_VOLTAGE_LIMITS, "decision", (35, 37), table="Table 2"),
