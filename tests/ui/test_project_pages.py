@@ -433,3 +433,22 @@ def test_reloading_a_project_shows_listed_defaults_without_a_legacy_marker(qtbot
     assert page._impulse_combo.currentText() == "1.2 kV"
     assert page._pollution_combo.currentText() == "2"
     assert page._cti_combo.currentText() == "II"
+
+
+def test_voltage_defaults_carry_the_same_help_as_the_pair_editor(qtbot_project):
+    from insulation_coordination.ui.voltage_guidance import (
+        VoltageGuidanceId,
+        guidance_for,
+    )
+
+    page = qtbot_project
+    assert page._freq_help.guidance_id is VoltageGuidanceId.FREQUENCY
+    assert page._impulse_help.guidance_id is VoltageGuidanceId.TRANSIENT_OVERVOLTAGE
+    assert page._freq_help.toolTip() == guidance_for(VoltageGuidanceId.FREQUENCY).short_text
+
+
+def test_project_help_opens_its_detail_view(qtbot_project, qtbot):
+    dialog = qtbot_project._impulse_help.open_details()
+    qtbot.addWidget(dialog)
+    assert dialog.isVisible()
+    assert "recurring" in dialog.body_text().lower()

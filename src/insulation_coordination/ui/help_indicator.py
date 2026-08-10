@@ -176,12 +176,20 @@ class FieldStateBadge(HelpIndicator):
     badge opens the same guidance the ⓘ beside the label would.
     """
 
-    def __init__(self, state: VoltageGuidanceId | None = None, parent: QWidget | None = None):
+    def __init__(
+        self,
+        state: VoltageGuidanceId | None = None,
+        states: tuple[VoltageGuidanceId, ...] = FIELD_STATE_IDS,
+        parent: QWidget | None = None,
+    ):
         super().__init__(VoltageGuidanceId.INHERITED_DEFAULT, parent)
-        # Wide enough for the longest state from the start: a value that turns out
-        # to be derived must not shove the field it belongs to sideways.
-        widest = max(field_state_label(state_id) for state_id in FIELD_STATE_IDS)
-        self.setMinimumWidth(self.fontMetrics().horizontalAdvance(widest) + 12)
+        # Wide enough for the longest state this field can reach, from the start:
+        # a value that turns out to be derived must not shove its field sideways.
+        # Pass every state the field can take, or the width will move when one
+        # that was left out arrives.
+        advance = self.fontMetrics().horizontalAdvance
+        widest = max(advance(field_state_label(state_id)) for state_id in states)
+        self.setMinimumWidth(widest + 12)
         self.set_state(state)
 
     def set_state(self, state: VoltageGuidanceId | None) -> None:
