@@ -21,8 +21,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QGroupBox,
-    QHBoxLayout,
-    QLabel,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -37,7 +35,7 @@ from insulation_coordination.domain.enums import (
 )
 from insulation_coordination.domain.project import NetClass
 from insulation_coordination.domain.topology import GalvanicDomain
-from insulation_coordination.ui.help_indicator import GuidanceDialog, HelpIndicator
+from insulation_coordination.ui.help_indicator import GuidanceDialog, HelpIndicator, labelled
 from insulation_coordination.ui.topology_guidance import (
     TopologyGuidanceId,
     guidance_id_for_connection_exposure,
@@ -98,27 +96,27 @@ class NetClassClassificationPanel(QWidget):
         self._type_combo = QComboBox()
         self._type_help = HelpIndicator(TopologyGuidanceId.NET_TYPE_CIRCUIT)
         self._type_combo.currentIndexChanged.connect(self._on_type_changed)
-        form.addRow(_labelled("Net class type:", self._type_help), self._type_combo)
+        form.addRow(labelled("Net class type:", self._type_help), self._type_combo)
 
         self._source_combo = QComboBox()
         self._source_help = HelpIndicator(TopologyGuidanceId.SOURCE_INTERNALLY_GENERATED)
         self._source_combo.currentIndexChanged.connect(self._on_source_changed)
-        form.addRow(_labelled("Source relationship:", self._source_help), self._source_combo)
+        form.addRow(labelled("Source relationship:", self._source_help), self._source_combo)
 
         self._exposure_combo = QComboBox()
         self._exposure_help = HelpIndicator(TopologyGuidanceId.EXPOSURE_INTERNAL_ONLY)
         self._exposure_combo.currentIndexChanged.connect(self._on_exposure_changed)
-        form.addRow(_labelled("Connection exposure:", self._exposure_help), self._exposure_combo)
+        form.addRow(labelled("Connection exposure:", self._exposure_help), self._exposure_combo)
 
         self._dvc_combo = QComboBox()
         self._dvc_help = HelpIndicator(TopologyGuidanceId.DVC_NOT_EVALUATED)
         self._dvc_combo.currentIndexChanged.connect(self._on_dvc_changed)
-        form.addRow(_labelled("DVC:", self._dvc_help), self._dvc_combo)
+        form.addRow(labelled("DVC:", self._dvc_help), self._dvc_combo)
 
         self._domain_combo = QComboBox()
         self._domain_help = HelpIndicator(TopologyGuidanceId.GALVANIC_DOMAIN_ASSIGNMENT)
         self._domain_combo.currentIndexChanged.connect(self._on_domain_changed)
-        form.addRow(_labelled("Galvanic domain:", self._domain_help), self._domain_combo)
+        form.addRow(labelled("Galvanic domain:", self._domain_help), self._domain_combo)
 
         self._how_to_choose = QPushButton("How to choose")
         self._how_to_choose.clicked.connect(self._on_how_to_choose_clicked)
@@ -284,14 +282,3 @@ class NetClassClassificationPanel(QWidget):
     def _on_how_to_choose_clicked(self) -> None:
         dialog = GuidanceDialog(TopologyGuidanceId.CLASSIFICATION_OVERVIEW, parent=self)
         dialog.open()
-
-
-def _labelled(text: str, help_indicator: HelpIndicator) -> QWidget:
-    """A form label with its ⓘ beside it, matching the project page's own helper."""
-    container = QWidget()
-    row = QHBoxLayout(container)
-    row.setContentsMargins(0, 0, 0, 0)
-    row.addWidget(QLabel(text))
-    row.addWidget(help_indicator)
-    row.addStretch(1)
-    return container

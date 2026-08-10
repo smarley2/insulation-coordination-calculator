@@ -42,7 +42,7 @@ from insulation_coordination.project.persistence import (
     save_project_atomic,
 )
 from insulation_coordination.ui.galvanic_domains import GalvanicDomainsPanel
-from insulation_coordination.ui.help_indicator import HelpIndicator
+from insulation_coordination.ui.help_indicator import HelpIndicator, labelled
 from insulation_coordination.ui.net_class_classification import NetClassClassificationPanel
 from insulation_coordination.ui.value_options import (
     IMPULSE_OPTIONS,
@@ -56,17 +56,6 @@ from insulation_coordination.ui.voltage_guidance import VoltageGuidanceId
 
 #: Upper bound on one bulk net-class add, so a mistyped amount cannot flood the pair set.
 MAX_BULK_NET_CLASSES = 64
-
-
-def _labelled(text: str, help_indicator: HelpIndicator) -> QWidget:
-    """A form label with its ⓘ beside it, so the help never sits inside the value."""
-    container = QWidget()
-    row = QHBoxLayout(container)
-    row.setContentsMargins(0, 0, 0, 0)
-    row.addWidget(QLabel(text))
-    row.addWidget(help_indicator)
-    row.addStretch(1)
-    return container
 
 
 class ProjectPage(QWidget):
@@ -110,14 +99,14 @@ class ProjectPage(QWidget):
         self._freq_edit = QLineEdit()
         self._freq_edit.editingFinished.connect(self._on_freq_changed)
         self._freq_help = HelpIndicator(VoltageGuidanceId.FREQUENCY)
-        defaults_layout.addRow(_labelled("Frequency (Hz):", self._freq_help), self._freq_edit)
+        defaults_layout.addRow(labelled("Frequency (Hz):", self._freq_help), self._freq_edit)
         self._impulse_combo = QComboBox()
         populate_combo(self._impulse_combo, IMPULSE_OPTIONS)
         self._impulse_combo.currentIndexChanged.connect(
             lambda index: self._update_combo_default("impulse_v", self._impulse_combo, index)
         )
         self._impulse_help = HelpIndicator(VoltageGuidanceId.TRANSIENT_OVERVOLTAGE)
-        defaults_layout.addRow(_labelled("Impulse:", self._impulse_help), self._impulse_combo)
+        defaults_layout.addRow(labelled("Impulse:", self._impulse_help), self._impulse_combo)
         self._insulation_combo = QComboBox()
         self._insulation_combo.addItem("")
         for insulation in InsulationType:

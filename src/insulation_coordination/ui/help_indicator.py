@@ -16,6 +16,7 @@ from PySide6.QtGui import QFocusEvent, QKeyEvent
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
+    QHBoxLayout,
     QLabel,
     QScrollArea,
     QToolButton,
@@ -207,3 +208,18 @@ class FieldStateBadge(HelpIndicator):
         self.setEnabled(True)
         self.set_guidance(state)
         self.setText(field_state_label(state))
+
+
+def labelled(text: str, help_indicator: HelpIndicator) -> QWidget:
+    """A form label with its ⓘ beside it, so the help never sits inside the value.
+
+    It lives beside the control it carries because every page that puts help on a form
+    needs the same row, and two copies of it drift.
+    """
+    container = QWidget()
+    row = QHBoxLayout(container)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.addWidget(QLabel(text))
+    row.addWidget(help_indicator)
+    row.addStretch(1)
+    return container
