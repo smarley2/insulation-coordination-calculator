@@ -24,12 +24,17 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import RECIP
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.procedures import (
     CLASSIFICATION_COLUMNS,
     CLASSIFICATION_MATRIX_ID,
+    PRECONDITIONING_APPLICABILITY_ID,
     PROCEDURE_CLAUSES,
     TEST_CLAUSE_COLUMN,
     project_internal_spd_monitoring,
+    project_preconditioning,
+    project_preconditioning_applicability,
     project_working_voltage_determination,
 )
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.verification import (
+    FIELD_ROWS,
+    VARIANT_COLUMNS,
     ProcedureStructureError,
 )
 from tests.fixtures.synthetic_rules import synthetic_rule_package
@@ -52,16 +57,25 @@ SOURCE = SourceReference(
 CLAUSE_OF = {
     ids.TEST_WORKING_VOLTAGE_DETERMINATION: "5.2.3.14",
     ids.TEST_INTERNAL_SPD_MONITORING: "5.2.3.15",
+    ids.TEST_PRECONDITIONING: "5.2.3.16",
+    PRECONDITIONING_APPLICABILITY_ID: "5.2.3.1",
 }
 
 
-def _fragment(semantic_id: str, node_count: int, kind: str = "bullet") -> RawClauseFragment:
+def _fragment(
+    semantic_id: str,
+    node_count: int,
+    kind: str = "bullet",
+    texts: tuple[str, ...] = (),
+) -> RawClauseFragment:
     source = SOURCE.model_copy(update={"clause": CLAUSE_OF[semantic_id]})
     nodes = tuple(
         ClauseNode(
             order=order,
             kind=kind,  # type: ignore[arg-type]
-            raw_text=f"perform the declared condition {order + 1}",
+            raw_text=(
+                texts[order] if order < len(texts) else f"perform the declared condition {order + 1}"
+            ),
             source=source,
         )
         for order in range(node_count)
@@ -192,10 +206,127 @@ def test_each_procedure_classification_matches_the_matrix() -> None:
 
 
 def test_a_procedure_cannot_be_projected_without_the_matrix_to_check_it() -> None:
-    with pytest.raises(ProcedureStructureError, match="matrix grid is absent"):
+    with pytest.raises(ProcedureStructureError, match="classification_matrix is absent"):
         project_working_voltage_determination(
             _fragment(ids.TEST_WORKING_VOLTAGE_DETERMINATION, 3), IDENTITY, _draft()
         )
+
+
+#: The Table 26 row and column that carry the preconditioning statement, read from the
+#: maintained recipe so the fixture cannot drift away from what the projection reads.
+_PRECONDITIONING_ROW = next(row for row, field in FIELD_ROWS if field == "preconditioning")
+_PRECONDITIONING_COLUMN = VARIANT_COLUMNS[0][1]
+
+
+def _general_fragment(step_clauses: tuple[str, ...]) -> RawClauseFragment:
+    """The general clause's paragraph, naming the preconditioning clauses it requires."""
+
+    named = " and ".join(step_clauses)
+    return _fragment(
+        PRECONDITIONING_APPLICABILITY_ID,
+        1,
+        kind="paragraph",
+        texts=(f"preconditioning according to {named} is required before the test",),
+    )
+
+
+def _table_26_grid(*, defers: bool = True) -> RawGrid:
+    text = (
+        "preconditioned once according to 5.2.3.1"
+        if defers
+        else "preconditioned once according to 5.2.6.3.1"
+    )
+    cell = RawGridCell(
+        row=_PRECONDITIONING_ROW,
+        column=_PRECONDITIONING_COLUMN,
+        raw_text=text,
+        role="data",
+        logical_row=_PRECONDITIONING_ROW,
+        logical_column="condition_insulation_basic",
+        parse_status="text",
+        source=SOURCE,
+    )
+    return RawGrid(
+        id=f"raw-{ids.TEST_IMPULSE_PROCEDURE}",
+        rows=_PRECONDITIONING_ROW + 1,
+        columns=_PRECONDITIONING_COLUMN + 1,
+        target_unit="1",
+        segments=(
+            RawGridSegment(
+                page_number=124,
+                row_start=0,
+                row_count=_PRECONDITIONING_ROW + 1,
+                source=SOURCE,
+            ),
+        ),
+        cells=(cell,),
+        source=SOURCE,
+    )
+
+
+def _preconditioning_draft(
+    *,
+    general_steps: tuple[str, ...] = ("5.2.6.3.1", "5.2.6.3.2", "5.2.6.3.3"),
+    defers: bool = True,
+) -> ImportedRuleDraft:
+    return _draft(
+        _agreeing_matrix(),
+        _table_26_grid(defers=defers),
+        fragments=(_general_fragment(general_steps),),
+    )
+
+
+def test_three_agreeing_sources_yield_one_procedure() -> None:
+    """The material clause enumerates three steps, and the other two sources require three."""
+    rules, proposals = project_preconditioning(
+        _fragment(ids.TEST_PRECONDITIONING, 3), IDENTITY, _preconditioning_draft()
+    )
+
+    assert len(rules) == 1
+    assert rules[0].id == ids.TEST_PRECONDITIONING
+    assert rules[0].applicability_rule_id == PRECONDITIONING_APPLICABILITY_ID
+    assert rules[0].classifications == ("type_test",)
+    assert [proposal.semantic_id for proposal in proposals] == [ids.TEST_PRECONDITIONING]
+
+
+def test_a_disagreement_between_the_three_sources_blocks() -> None:
+    """No precedence rule: a general clause naming fewer steps refuses the projection."""
+    with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_PRECONDITIONING_SOURCES"):
+        project_preconditioning(
+            _fragment(ids.TEST_PRECONDITIONING, 3),
+            IDENTITY,
+            _preconditioning_draft(general_steps=("5.2.6.3.1", "5.2.6.3.2")),
+        )
+
+
+def test_a_table_row_that_states_its_own_inventory_blocks() -> None:
+    """Table 26's row is a deferral. A printing that spelled its own steps is a fourth source."""
+    with pytest.raises(ProcedureStructureError, match="does not defer to clause"):
+        project_preconditioning(
+            _fragment(ids.TEST_PRECONDITIONING, 3),
+            IDENTITY,
+            _preconditioning_draft(defers=False),
+        )
+
+
+def test_preconditioning_blocks_when_a_source_it_must_agree_with_is_absent() -> None:
+    with pytest.raises(ProcedureStructureError, match="is absent from the draft"):
+        project_preconditioning(
+            _fragment(ids.TEST_PRECONDITIONING, 3), IDENTITY, _draft(_agreeing_matrix())
+        )
+
+
+def test_the_preconditioning_gate_never_settles_a_purpose_the_source_leaves_open() -> None:
+    rules, _proposals = project_preconditioning_applicability(
+        _general_fragment(("5.2.6.3.1", "5.2.6.3.2")), IDENTITY
+    )
+    rule = rules[0]
+
+    assert rule.id == PRECONDITIONING_APPLICABILITY_ID
+    assert rule.exhaustive is False
+    assert {
+        row.matchers[0].values[0]: row.values[0].boolean for row in rule.rows
+    } == {"type_test": True, "sample_test": True, "acceptance_criteria": False}
 
 
 def test_a_projection_refuses_a_fragment_that_is_not_its_own() -> None:

@@ -13,12 +13,20 @@ the calculator executes.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import NoReturn
 
 from insulation_coordination.domain.rules import (
+    DecisionInput,
+    DecisionOutput,
+    DecisionRow,
+    DecisionRule,
+    DecisionValue,
+    Matcher,
     ProcedureRule,
     ProcedureStep,
+    RuleKind,
 )
 from insulation_coordination.rules.importer.clauses import RawClauseFragment
 from insulation_coordination.rules.importer.extract import (
@@ -29,6 +37,7 @@ from insulation_coordination.rules.importer.extract import (
 )
 from insulation_coordination.rules.importer.identify import (
     ClauseAuditSpec,
+    ClauseProjector,
     StandardIdentity,
     TableAuditSpec,
     TableColumnSpec,
@@ -36,6 +45,8 @@ from insulation_coordination.rules.importer.identify import (
 )
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.verification import (
+    FIELD_ROWS,
+    VARIANT_COLUMNS,
     ProcedureStructureError,
 )
 
@@ -245,6 +256,10 @@ def validate_classifications(grid: RawGrid, procedure: ProcedureRule) -> None:
 
 _WORKING_VOLTAGE_CLAUSE = "5.2.3.14"
 _INTERNAL_SPD_CLAUSE = "5.2.3.15"
+#: The general clause Table 26's preconditioning row defers to, and the identifier of the gate
+#: it becomes. Declared here because the spec tuple below names both.
+_PRECONDITIONING_GENERAL_CLAUSE = "5.2.3.1"
+PRECONDITIONING_APPLICABILITY_ID = f"{ids.TEST_PRECONDITIONING}.applicability"
 
 PROCEDURE_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ClauseAuditSpec(
@@ -265,6 +280,27 @@ PROCEDURE_CLAUSES: tuple[ClauseAuditSpec, ...] = (
         expected_bbox=(65.0, 680.0, 535.0, 730.0),
         expected_root_kind="paragraph",
         output_kind="procedure",
+    ),
+    ClauseAuditSpec(
+        semantic_id=ids.TEST_PRECONDITIONING,
+        clause="5.2.3.16",
+        page_number=143,
+        #: The numbered steps only. The sentence above them states which requirements call for
+        #: the test, which is the applicability the general clause below settles.
+        expected_bbox=(65.0, 158.0, 535.0, 218.0),
+        expected_root_kind="bullets",
+        output_kind="procedure",
+    ),
+    ClauseAuditSpec(
+        semantic_id=PRECONDITIONING_APPLICABILITY_ID,
+        clause=_PRECONDITIONING_GENERAL_CLAUSE,
+        page_number=123,
+        #: The general clause's preconditioning paragraph alone. The paragraphs on either side
+        #: state the scope of the electrical tests and what may be tested in place of the
+        #: complete equipment, neither of which is a preconditioning gate.
+        expected_bbox=(65.0, 274.0, 535.0, 310.0),
+        expected_root_kind="paragraph",
+        output_kind="decision",
     ),
 )
 
@@ -303,32 +339,51 @@ def _require_shape(
 
 
 def _proposal(
-    rule: ProcedureRule,
+    rule: ProcedureRule | DecisionRule,
+    rule_kind: RuleKind,
     fragment: RawClauseFragment,
 ) -> SemanticProposal:
     return SemanticProposal(
         semantic_id=rule.id,
-        rule_kind="procedure",
+        rule_kind=rule_kind,
         state="proposed",
         rule_sha256=canonical_model_sha256(rule),
         source_artifact_sha256=canonical_model_sha256(fragment),
     )
 
 
-def matrix_grid(draft: ImportedRuleDraft, label: str) -> RawGrid:
-    """The reviewed classification matrix a procedure's classification is checked against.
+def _sibling_grid(draft: ImportedRuleDraft, semantic_id: str, label: str) -> RawGrid:
+    """A reviewed grid this projection has to read besides its own fragment.
 
-    A projection that cannot see the matrix cannot check what it declares, so it blocks
-    rather than letting an unchecked classification through.
+    A projection that cannot see a source it is required to agree with cannot check the
+    agreement, so it blocks rather than proceeding on the one source it can see.
     """
-    grid = next(
-        (item for item in draft.raw_grids if item.id == f"raw-{CLASSIFICATION_MATRIX_ID}"),
+    grid = next((item for item in draft.raw_grids if item.id == f"raw-{semantic_id}"), None)
+    if grid is None:
+        _block(f"{label} cannot be projected: grid {semantic_id} is absent from the draft")
+    return grid
+
+
+def _sibling_fragment(
+    draft: ImportedRuleDraft,
+    semantic_id: str,
+    label: str,
+) -> RawClauseFragment:
+    """A reviewed clause fragment this projection has to read besides its own."""
+
+    fragment = next(
+        (item for item in draft.raw_clause_fragments if item.id == f"raw-{semantic_id}"),
         None,
     )
-    if grid is None:
-        _fail(f"{label} cannot check its classification: the matrix grid is absent")
-        raise AssertionError  # pragma: no cover - _fail always raises
-    return grid
+    if fragment is None:
+        _block(f"{label} cannot be projected: fragment {semantic_id} is absent from the draft")
+    return fragment
+
+
+def matrix_grid(draft: ImportedRuleDraft, label: str) -> RawGrid:
+    """The reviewed classification matrix a procedure's classification is checked against."""
+
+    return _sibling_grid(draft, CLASSIFICATION_MATRIX_ID, label)
 
 
 def _steps(fragment: RawClauseFragment) -> tuple[ProcedureStep, ...]:
@@ -364,7 +419,7 @@ def project_working_voltage_determination(
         source=fragment.source,
     )
     validate_classifications(matrix_grid(draft, label), procedure)
-    return (procedure,), (_proposal(procedure, fragment),)
+    return (procedure,), (_proposal(procedure, "procedure", fragment),)
 
 
 def project_internal_spd_monitoring(
@@ -393,12 +448,171 @@ def project_internal_spd_monitoring(
         source=fragment.source,
     )
     validate_classifications(matrix_grid(draft, label), procedure)
-    return (procedure,), (_proposal(procedure, fragment),)
+    return (procedure,), (_proposal(procedure, "procedure", fragment),)
 
 
-CLAUSE_PROJECTORS = {
+# --- preconditioning ----------------------------------------------------------------
+
+#: The source states preconditioning in three places: a general clause that gates it on what
+#: the test is for, a material clause that enumerates the steps, and Table 26's own
+#: preconditioning row. The procedure is projected from the material clause, whose row the
+#: classification matrix carries; the general clause becomes the applicability decision.
+_PRECONDITIONING_SHAPE = ("bullet", 3)
+_PRECONDITIONING_GENERAL_SHAPE = ("paragraph", 1)
+#: The clause-reference shape of one of this standard's own preconditioning steps. Structural:
+#: it matches a clause number and never a step's wording.
+_PRECONDITIONING_STEP_REFERENCE = re.compile(r"\b5\.2\.6\.3\.\d+\b")
+#: The trailing boundary matters: without it this would also match the material clause's own
+#: number, which starts with the general clause's.
+_PRECONDITIONING_DEFERRAL = re.compile(r"\b5\.2\.3\.1\b")
+#: Which Table 26 row and condition column carry the preconditioning statement. Read from the
+#: maintained Table 26 recipe rather than restated, so the two cannot drift apart.
+_TABLE_26_PRECONDITIONING_ROW = next(
+    row for row, field in FIELD_ROWS if field == "preconditioning"
+)
+_TABLE_26_FIRST_CONDITION_COLUMN = VARIANT_COLUMNS[0][1]
+#: What the general clause's gate discriminates on. The source settles the type test, the
+#: sample test, and the acceptance-criteria case; it settles no other, so the decision is not
+#: exhaustive.
+_PRECONDITIONING_TEST_PURPOSES = ("type_test", "sample_test", "acceptance_criteria")
+
+
+def _cell_text(grid: RawGrid, row: int, column: int, label: str) -> str:
+    cell = next(
+        (item for item in grid.cells if (item.row, item.column) == (row, column)),
+        None,
+    )
+    if cell is None:
+        _block(f"{label}: grid row {row} column {column} is absent")
+    return cell.raw_text.strip()
+
+
+def _agreed_preconditioning_steps(
+    fragment: RawClauseFragment,
+    draft: ImportedRuleDraft,
+    label: str,
+) -> int:
+    """How many preconditioning steps all three sources require, or block if they differ.
+
+    The material clause enumerates its steps as reviewed nodes. The general clause names the
+    clauses it requires instead of enumerating them. Table 26's preconditioning row states no
+    inventory of its own: it defers to the general clause, and this confirms that deferral
+    rather than assuming it, because a printing that spelled its own inventory there would be
+    a fourth statement of the same requirement.
+
+    There is deliberately no precedence rule. Where the three disagree the projection blocks
+    and a maintainer decides which reading the package carries.
+    """
+    material_steps = len(fragment.nodes)
+    general = _sibling_fragment(draft, PRECONDITIONING_APPLICABILITY_ID, label)
+    _require_shape(general, _PRECONDITIONING_GENERAL_SHAPE, f"{label} general clause")
+    general_steps = len(
+        set(_PRECONDITIONING_STEP_REFERENCE.findall(general.nodes[0].raw_text))
+    )
+    if not general_steps:
+        _block(f"{label}: clause {_PRECONDITIONING_GENERAL_CLAUSE} names no preconditioning step")
+    row_text = _cell_text(
+        _sibling_grid(draft, ids.TEST_IMPULSE_PROCEDURE, label),
+        _TABLE_26_PRECONDITIONING_ROW,
+        _TABLE_26_FIRST_CONDITION_COLUMN,
+        label,
+    )
+    if not _PRECONDITIONING_DEFERRAL.search(row_text):
+        raise ProcedureStructureError(
+            f"AMBIGUOUS_PRECONDITIONING_SOURCES: {label}: Table 26 row "
+            f"{_TABLE_26_PRECONDITIONING_ROW + 1} does not defer to clause "
+            f"{_PRECONDITIONING_GENERAL_CLAUSE}, so its own inventory is a third statement "
+            "of the same requirement"
+        )
+    if material_steps != general_steps:
+        raise ProcedureStructureError(
+            "AMBIGUOUS_PRECONDITIONING_SOURCES: "
+            f"{label}: the material clause enumerates {material_steps} step(s) while clause "
+            f"{_PRECONDITIONING_GENERAL_CLAUSE}, which Table 26 row "
+            f"{_TABLE_26_PRECONDITIONING_ROW + 1} defers to, names {general_steps}; the three "
+            "sources do not agree and no precedence rule is applied"
+        )
+    return material_steps
+
+
+def project_preconditioning(
+    fragment: RawClauseFragment,
+    identity: StandardIdentity,
+    draft: ImportedRuleDraft,
+) -> tuple[tuple[ProcedureRule, ...], tuple[SemanticProposal, ...]]:
+    """Project the material preconditioning clause into one reviewed procedure.
+
+    One procedure only, and only when the general clause and Table 26's preconditioning row
+    require the same steps it enumerates.
+    """
+
+    label = "preconditioning"
+    _require_own_fragment(fragment, identity, ids.TEST_PRECONDITIONING, label)
+    _require_shape(fragment, _PRECONDITIONING_SHAPE, label)
+    _agreed_preconditioning_steps(fragment, draft, label)
+
+    procedure = ProcedureRule(
+        id=ids.TEST_PRECONDITIONING,
+        test_kind="material_preconditioning",
+        classifications=("type_test",),
+        procedure_steps=_steps(fragment),
+        applicability_rule_id=PRECONDITIONING_APPLICABILITY_ID,
+        source=fragment.source,
+    )
+    validate_classifications(matrix_grid(draft, label), procedure)
+    return (procedure,), (_proposal(procedure, "procedure", fragment),)
+
+
+def project_preconditioning_applicability(
+    fragment: RawClauseFragment,
+    identity: StandardIdentity,
+    _draft: object = None,
+) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
+    """Project the general clause's preconditioning gate into a decision.
+
+    The general clause settles whether preconditioning is required from what the test is
+    for, and nothing else. A purpose it does not settle is left uncovered so a consumer
+    blocks rather than inheriting a guessed answer.
+    """
+
+    label = "preconditioning applicability"
+    _require_own_fragment(fragment, identity, PRECONDITIONING_APPLICABILITY_ID, label)
+    _require_shape(fragment, _PRECONDITIONING_GENERAL_SHAPE, label)
+
+    rule = DecisionRule(
+        id=PRECONDITIONING_APPLICABILITY_ID,
+        inputs=(
+            DecisionInput(
+                name="test_purpose",
+                kind="categorical",
+                allowed_values=_PRECONDITIONING_TEST_PURPOSES,
+            ),
+        ),
+        outputs=(DecisionOutput(name="preconditioning_required", kind="boolean"),),
+        rows=tuple(
+            DecisionRow(
+                matchers=(Matcher(input="test_purpose", op="equals", values=(purpose,)),),
+                values=(
+                    DecisionValue(
+                        name="preconditioning_required",
+                        boolean=purpose != "acceptance_criteria",
+                    ),
+                ),
+                source=fragment.nodes[0].source,
+            )
+            for purpose in _PRECONDITIONING_TEST_PURPOSES
+        ),
+        exhaustive=False,
+        source=fragment.source,
+    )
+    return (rule,), (_proposal(rule, "decision", fragment),)
+
+
+CLAUSE_PROJECTORS: Mapping[str, ClauseProjector] = {
     ids.TEST_WORKING_VOLTAGE_DETERMINATION: project_working_voltage_determination,
     ids.TEST_INTERNAL_SPD_MONITORING: project_internal_spd_monitoring,
+    ids.TEST_PRECONDITIONING: project_preconditioning,
+    PRECONDITIONING_APPLICABILITY_ID: project_preconditioning_applicability,
 }
 
 __all__ = [
@@ -407,12 +621,15 @@ __all__ = [
     "CLASSIFICATION_MATRIX_ID",
     "CLASSIFICATION_MATRIX_SPECS",
     "CLAUSE_PROJECTORS",
+    "PRECONDITIONING_APPLICABILITY_ID",
     "PROCEDURE_CLAUSES",
     "REQUIREMENT_CLAUSE_COLUMN",
     "TEST_CLAUSE_COLUMN",
     "matrix_classifications",
     "matrix_grid",
     "project_internal_spd_monitoring",
+    "project_preconditioning",
+    "project_preconditioning_applicability",
     "project_working_voltage_determination",
     "validate_classifications",
 ]
