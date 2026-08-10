@@ -280,7 +280,14 @@ TABLE_F3 = TableAuditSpec(
     blank_cells=_TABLE_F3_BLANK_CELLS,
 )
 
-ANNEX_F_TABLES: tuple[TableAuditSpec, ...] = (TABLE_F1, TABLE_F2, TABLE_F3)
+#: Annex F reproduces IEC 60664-4:2005 requirements for the calculator's frequency range,
+#: and those rules are already approved in the package. These grids are therefore extracted
+#: as evidence for the cross-standard comparison rather than as rules of their own, so no
+#: package carries two copies of the same requirement.
+ANNEX_F_TABLES: tuple[TableAuditSpec, ...] = tuple(
+    spec.model_copy(update={"comparison_only": True})
+    for spec in (TABLE_F1, TABLE_F2, TABLE_F3)
+)
 
 __all__ = [
     "ANNEX_F_TABLES",

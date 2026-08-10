@@ -54,22 +54,21 @@ def test_only_the_verification_procedures_are_still_deferred() -> None:
     assert len(DEFERRED_SEMANTIC_IDS) == 10
 
 
-def test_every_slice_d_item_has_a_recipe() -> None:
-    """The build-time half of completeness, for the items this slice delivers.
+def test_every_item_this_build_does_not_defer_has_a_recipe() -> None:
+    """The build-time half of completeness.
 
     Approval refuses a draft that skipped content the recipes declare; this asserts the
-    other half, that the recipes really do declare what the inventory requires. Scoped to
-    the supply, spacing, and DVC items until the high-frequency recipe lands, and widened
-    to the whole inventory when Slice E empties the deferred set.
+    other half, that the recipes really do declare everything the inventory requires apart
+    from the items explicitly deferred. When Slice E lands and empties the deferred set,
+    this covers all twenty-five.
     """
     declared = {
         spec.semantic_id
         for recipe in RECIPES
         for spec in (*recipe.tables, *recipe.clauses, *recipe.curves, *recipe.formulas)
     }
-    pending_recipes = frozenset({"iec62477_2022.high_frequency.applicability"})
     for item in REQUIRED_SOURCE_ITEMS:
-        if item.semantic_id in DEFERRED_SEMANTIC_IDS | pending_recipes:
+        if item.semantic_id in DEFERRED_SEMANTIC_IDS:
             continue
         covered = any(
             candidate == item.semantic_id or candidate.startswith(f"{item.semantic_id}.")

@@ -52,6 +52,9 @@ SUPPLY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
         expected_bbox=(65.0, 80.0, 535.0, 232.0),
         expected_root_kind="bullets",
         output_kind="decision",
+        #: The clause's NOTEs become guidance rather than executable branches, and that
+        #: guidance is grounded in this same fragment.
+        projected_rule_ids=(f"{ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION}.guidance",),
     ),
     ClauseAuditSpec(
         semantic_id=ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION,

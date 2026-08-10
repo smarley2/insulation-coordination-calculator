@@ -32,18 +32,38 @@ def cell_id(cell: RawGridCell) -> str:
 
 
 def _data_cells(grid: RawGrid) -> dict[str, RawGridCell]:
-    return {cell_id(cell): cell for cell in grid.cells if cell.role == "data"}
+    """Every cell that occupies a logical coordinate, blanks included.
+
+    A blank inside the data region carries meaning -- both of these tables step their
+    requirements, leaving cells empty where a row does not apply -- so a blank compares
+    against a blank as agreement, and against a value as a divergence. Dropping blanks
+    would silently narrow the comparison to the cells that happen to be filled in.
+    """
+    return {
+        cell_id(cell): cell
+        for cell in grid.cells
+        if cell.logical_row is not None and cell.logical_column is not None
+    }
 
 
-def _comparable(cell: RawGridCell) -> Decimal | str:
+#: What a cell with no parsed value and no declared marker compares as.
+_NO_REQUIREMENT = "\x00no-requirement"
+
+
+def _comparable(cell: RawGridCell, no_requirement_tokens: tuple[str, ...]) -> Decimal | str:
     """What equality means for one cell.
 
-    A parsed number compares as a number, so a difference in printed form is not read as
-    a difference in requirement. A cell the extractor could not parse compares as its
-    stripped source text, so an unparsed cell can still be proven identical rather than
-    silently skipped.
+    A parsed number compares as a number, so a difference in printed form is not read as a
+    difference in requirement. A cell holding nothing, or holding one of the markers the
+    check declares for "no requirement here", compares equal to any other such cell. Any
+    other unparsed text compares as itself, so it can only ever match the same text.
     """
-    return cell.value if cell.value is not None else cell.raw_text.strip()
+    if cell.value is not None:
+        return cell.value
+    text = cell.raw_text.strip()
+    if not text or text in no_requirement_tokens:
+        return _NO_REQUIREMENT
+    return text
 
 
 def _item(spec: CrossStandardCheckSpec, code: str, detail: str) -> ImportReviewItem:
@@ -111,7 +131,8 @@ def compare_across_standards(
                 )
             )
             continue
-        if _comparable(source_cell) != _comparable(target_cell):
+        tokens = spec.no_requirement_tokens
+        if _comparable(source_cell, tokens) != _comparable(target_cell, tokens):
             items.append(
                 _item(
                     spec,

@@ -5,8 +5,10 @@ from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
     clauses,
     curves,
+    high_frequency,
     identity,
     projection,
+    spacing,
     supply,
     tables,
 )
@@ -23,7 +25,11 @@ RECIPE = StandardRecipe(
     tables=tables.TABLES,
     formulas=tables.FORMULAS,
     mappings=(),
-    clauses=(*clauses.CLAUSES, *supply.SUPPLY_CLAUSES),
+    clauses=(
+        *clauses.CLAUSES,
+        *supply.SUPPLY_CLAUSES,
+        *high_frequency.HIGH_FREQUENCY_CLAUSES,
+    ),
     curves=curves.CURVES,
     required_curves=(ids.DVC_FAULT_TIME_VOLTAGE,),
     grid_projectors={
@@ -33,7 +39,9 @@ RECIPE = StandardRecipe(
     clause_projectors={
         ids.DVC_FAULT_APPLICABILITY: clauses.project_dvc_fault_applicability,
         **supply.CLAUSE_PROJECTORS,
+        **high_frequency.CLAUSE_PROJECTORS,
     },
+    cross_standard_checks=spacing.CROSS_STANDARD_CHECKS,
 )
 
 __all__ = ["RECIPE"]

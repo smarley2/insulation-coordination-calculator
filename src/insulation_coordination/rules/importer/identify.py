@@ -280,6 +280,17 @@ class TableAuditSpec(FrozenModel):
     #: spec so completeness reporting reads the routes from the recipe rather than from a
     #: table of standard-specific identifiers inside generic review code.
     decision_route_ids: tuple[Identifier, ...] = ()
+    #: This grid is extracted as evidence for a cross-standard comparison, not as an
+    #: executable rule, so review does not project it. A standard that reproduces another's
+    #: table needs the numbers present to prove or refute equivalence, while the rule the
+    #: calculator executes stays the one already approved from the other standard.
+    comparison_only: bool = False
+
+    @model_validator(mode="after")
+    def _comparison_only_projects_nothing(self) -> TableAuditSpec:
+        if self.comparison_only and self.decision_route_ids:
+            raise ValueError("a comparison-only table cannot declare decision routes")
+        return self
 
     @model_validator(mode="after")
     def _axis_value_source_row_is_a_declared_header_row(self) -> TableAuditSpec:
@@ -376,6 +387,13 @@ class CrossStandardCheckSpec(FrozenModel):
     #: partial map cannot compare a subset of a table and still claim the whole table is
     #: equivalent.
     source_data_cell_ids: tuple[Identifier, ...]
+    #: Cell texts that mean "this cell carries no requirement". Two printings of the same
+    #: requirement may mark an inapplicable cell differently -- one leaves it empty, the
+    #: other prints a marker -- and that is a notation difference, not a difference in
+    #: requirement. Declaring the markers keeps the equivalence explicit: any other
+    #: unparsed text still counts as a divergence, so a cell reading "see another clause"
+    #: is never quietly equated with an empty one.
+    no_requirement_tokens: tuple[str, ...] = ()
     source: SourceReference
     notes: NotesText = ""
 
@@ -404,6 +422,11 @@ class ClauseAuditSpec(FrozenModel):
     expected_bbox: tuple[float, float, float, float]
     expected_root_kind: Literal["paragraph", "bullets"]
     output_kind: Literal["decision", "procedure"]
+    #: Rules this clause projects to beyond one carrying the spec's own identifier -- for
+    #: example the guidance a source NOTE becomes. Declared so a projected route inherits
+    #: this clause's review inventory and source artifact, while an unrelated rule that
+    #: merely starts with the same identifier does not.
+    projected_rule_ids: tuple[Identifier, ...] = ()
 
 
 class CurveAuditSpec(FrozenModel):

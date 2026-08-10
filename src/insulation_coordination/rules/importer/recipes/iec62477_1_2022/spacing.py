@@ -8,8 +8,10 @@ from their own header rows at import time.
 
 from typing import Literal
 
+from insulation_coordination.domain.rules import SourceReference
 from insulation_coordination.rules.importer.identify import (
     BlankCellSpec,
+    CrossStandardCheckSpec,
     MergedCellSpec,
     TableAuditSpec,
     TableColumnSpec,
@@ -310,7 +312,100 @@ SPACING_TABLES: tuple[TableAuditSpec, ...] = (
     TABLE_9_OTHER_INSULATORS,
 )
 
+
+def _aligned_cell_map(
+    *,
+    rows: int,
+    column_pairs: tuple[tuple[str, str], ...],
+) -> tuple[tuple[tuple[str, str], ...], tuple[str, ...]]:
+    """Pair two grids of the same shape cell by cell, row order against row order.
+
+    Both Annex F grids and their IEC 60664-4 counterparts declare the same number of data
+    rows over the same quantity, so position is the correspondence. If a printing ever
+    ordered them differently the comparison reports divergences rather than a mapping,
+    which is the outcome a maintainer needs to see.
+    """
+    cell_map = tuple(
+        (f"{row}/{source_column}", f"{row}/{target_column}")
+        for row in range(rows)
+        for source_column, target_column in column_pairs
+    )
+    return cell_map, tuple(source_id for source_id, _target_id in cell_map)
+
+
+_ANNEX_F1_CELL_MAP, _ANNEX_F1_SOURCE_CELLS = _aligned_cell_map(
+    rows=8,
+    column_pairs=(("clearance_mm", "clearance_mm"),),
+)
+_ANNEX_F3_CELL_MAP, _ANNEX_F3_SOURCE_CELLS = _aligned_cell_map(
+    rows=18,
+    column_pairs=tuple(
+        (
+            f"creepage_frequency_band_{ordinal}_mm",
+            target,
+        )
+        for ordinal, target in enumerate(
+            (
+                "frequency_30_100_khz_mm",
+                "frequency_200_khz_mm",
+                "frequency_400_khz_mm",
+                "frequency_700_khz_mm",
+                "frequency_1_mhz_mm",
+                "frequency_2_mhz_mm",
+                "frequency_3_mhz_mm",
+            ),
+            start=1,
+        )
+    ),
+)
+
+#: Annex F states that the design above its frequency threshold follows IEC 60664-4:2005,
+#: and the package already carries that standard's reviewed clearance and creepage rules.
+#: These checks prove the reproduction agrees cell for cell before a mapping is recorded;
+#: any divergence blocks approval and leaves both rules standing for a maintainer to judge.
+#: Table F.2 has no counterpart among the approved IEC 60664-4 rules, so it is declared no
+#: check at all rather than being paired with an approximate target.
+CROSS_STANDARD_CHECKS: tuple[CrossStandardCheckSpec, ...] = (
+    CrossStandardCheckSpec(
+        id=f"{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f1_matches_part4_clearance",
+        source_rule_id=f"raw-{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f1",
+        target_rule_id="raw-iec60664-4-table-1",
+        family="high-frequency-clearance",
+        cell_map=_ANNEX_F1_CELL_MAP,
+        source_data_cell_ids=_ANNEX_F1_SOURCE_CELLS,
+        source=SourceReference(
+            document_id="iec62477-1-2022",
+            standard="IEC 62477-1",
+            edition="2022",
+            page=197,
+            clause="F.2.2",
+            table="F.1",
+        ),
+    ),
+    CrossStandardCheckSpec(
+        id=f"{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f3_matches_part4_creepage",
+        source_rule_id=f"raw-{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f3",
+        target_rule_id="raw-iec60664-4-table-2",
+        family="high-frequency-creepage",
+        cell_map=_ANNEX_F3_CELL_MAP,
+        source_data_cell_ids=_ANNEX_F3_SOURCE_CELLS,
+        #: Both tables step their requirements and leave the inapplicable cells without a
+        #: number. The IEC 62477-1 printing marks those cells with a dash where the
+        #: IEC 60664-4 printing leaves them empty, which is notation, not requirement.
+        no_requirement_tokens=("--", "-", "–", "—"),
+        source=SourceReference(
+            document_id="iec62477-1-2022",
+            standard="IEC 62477-1",
+            edition="2022",
+            page=199,
+            clause="F.3",
+            table="F.3",
+        ),
+    ),
+)
+
 __all__ = [
+    "CROSS_STANDARD_CHECKS",
     "SPACING_TABLES",
     "TABLE_8",
     "TABLE_9_OTHER_INSULATORS",
