@@ -377,6 +377,14 @@ class ProjectPage(QWidget):
         self.project_changed.emit(self._project)
 
     def _refresh_net_list(self) -> None:
+        """Rebuild the list, keeping whichever net was selected selected.
+
+        Every project update refreshes the list, and clearing it drops the selection.
+        Without restoring it, editing one classification dropdown would deselect the net
+        and blank the panel before the next dropdown could be touched.
+        """
+        selected = self._net_list.currentItem()
+        selected_id = None if selected is None else selected.data(0x0100)
         self._net_list.clear()
         if self._project is None:
             return
@@ -384,6 +392,17 @@ class ProjectPage(QWidget):
             item = QListWidgetItem(net_class.name)
             item.setData(0x0100, str(net_class.id))
             self._net_list.addItem(item)
+        if selected_id is not None:
+            restored = next(
+                (
+                    index
+                    for index, net_class in enumerate(self._project.net_classes)
+                    if str(net_class.id) == selected_id
+                ),
+                None,
+            )
+            if restored is not None:
+                self._net_list.setCurrentRow(restored)
         self._on_net_selection_changed(self._net_list.currentRow())
 
     def _on_net_selection_changed(self, row: int) -> None:
