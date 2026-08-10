@@ -801,18 +801,21 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
                 # projector comes from the recipe, so this stays free of any one standard's
                 # identifiers.
                 expected, _proposals = projector(grid, identity)
-                expected_ids = {getattr(rule, "id") for rule in expected}  # noqa: B009
-                projected: tuple[object, ...] = (
-                    *draft.decisions,
-                    *draft.procedures,
-                    *draft.guidance,
-                )
-                actual = tuple(
-                    rule
-                    for rule in projected
-                    if getattr(rule, "id") in expected_ids  # noqa: B009
-                )
-                if actual != expected:
+                # Compared by identifier, not by position: one projection may return several
+                # kinds, and the draft keeps each kind in its own collection, so the order a
+                # rule appears in says nothing about whether it matches.
+                expected_by_id = {rule.id: rule for rule in expected}
+                actual_by_id: dict[str, object] = {}
+                for decision in draft.decisions:
+                    if decision.id in expected_by_id:
+                        actual_by_id[decision.id] = decision
+                for procedure in draft.procedures:
+                    if procedure.id in expected_by_id:
+                        actual_by_id[procedure.id] = procedure
+                for guidance_rule in draft.guidance:
+                    if guidance_rule.id in expected_by_id:
+                        actual_by_id[guidance_rule.id] = guidance_rule
+                if actual_by_id != expected_by_id:
                     raise ApprovalError(
                         "reviewed rule does not correspond to its raw recipe grid"
                     )
