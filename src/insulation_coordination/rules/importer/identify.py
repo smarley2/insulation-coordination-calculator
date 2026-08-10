@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from collections.abc import Callable, Mapping
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, model_validator
 from pypdf import PdfReader
@@ -17,8 +18,10 @@ from insulation_coordination.domain.rules import (
     CurveSegmentType,
     FaultTimeVoltageSelector,
     Identifier,
+    NotesText,
     ReferenceText,
     RuleKind,
+    SourceReference,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -89,6 +92,11 @@ class TableSegmentSpec(FrozenModel):
     footnote_rows: tuple[int, ...] = ()
     context_cells: tuple[tuple[int, int], ...] = ()
     page_search_radius: int = Field(default=0, ge=0, le=5)
+    #: How row boundaries are found. ``"lines"`` uses the ruling lines the page draws,
+    #: which is right for tables whose every logical row has its own rule. ``"text"``
+    #: takes one row per text line, which is what a table needs when several logical rows
+    #: share one ruled cell; without it those rows would arrive stacked inside one cell.
+    row_strategy: Literal["lines", "text"] = "lines"
 
 
 class CompoundQuantitySpec(FrozenModel):
@@ -268,6 +276,21 @@ class TableAuditSpec(FrozenModel):
     token_grammar: TokenGrammarSpec | None = None
     page_search_radius: int = Field(default=0, ge=0, le=5)
     interpolation: Literal["none", "linear"] = "none"
+    #: Decision rule IDs this table projects to instead of a ``Table``. Declared on the
+    #: spec so completeness reporting reads the routes from the recipe rather than from a
+    #: table of standard-specific identifiers inside generic review code.
+    decision_route_ids: tuple[Identifier, ...] = ()
+    #: This grid is extracted as evidence for a cross-standard comparison, not as an
+    #: executable rule, so review does not project it. A standard that reproduces another's
+    #: table needs the numbers present to prove or refute equivalence, while the rule the
+    #: calculator executes stays the one already approved from the other standard.
+    comparison_only: bool = False
+
+    @model_validator(mode="after")
+    def _comparison_only_projects_nothing(self) -> TableAuditSpec:
+        if self.comparison_only and self.decision_route_ids:
+            raise ValueError("a comparison-only table cannot declare decision routes")
+        return self
 
     @model_validator(mode="after")
     def _axis_value_source_row_is_a_declared_header_row(self) -> TableAuditSpec:
@@ -345,6 +368,117 @@ class MappingAuditSpec(FrozenModel):
     figure: ReferenceText | None = None
 
 
+class CrossStandardAxisMatchSpec(FrozenModel):
+    """Pair two grids by what their rows are about, not by where their rows sit.
+
+    Two standards may state the same requirement over the same quantity while printing
+    different subsets of it: IEC 62477-1 Table 8 lists ten impulse levels in volts where
+    IEC 60664-1 Table F.2 lists twenty-six in kilovolts. Row position is then not a
+    correspondence, and a position-based map would assert pairings the documents do not
+    support. A row's axis value is the correspondence, read in the target's axis unit
+    through ``axis_value_scale``.
+
+    What is left out is declared rather than inferred. A source column the target
+    standard does not carry -- pollution degree 4 has no counterpart in IEC 60664-1 -- and
+    a source row whose axis the target does not reach are each named with a reason, are
+    excluded from the equivalence claim, and are recorded in the mapping's notes. An
+    undeclared unmatched row or column still blocks, so an omission cannot pass as a
+    proven equivalence.
+    """
+
+    source_axis_column: Identifier
+    target_axis_column: Identifier
+    #: Multiply a source axis value by this to read it in the target's axis unit -- volts
+    #: against kilovolts is ``Decimal("0.001")``. Equal numbers in different units would
+    #: not prove equal requirements, so the conversion is declared, never guessed.
+    axis_value_scale: Decimal = Decimal(1)
+    #: ``(source column, target column)`` logical column pairs to compare on every
+    #: matched row.
+    column_pairs: tuple[tuple[Identifier, Identifier], ...] = Field(min_length=1)
+    #: ``(source column, reason)`` for each source data column the target standard has no
+    #: counterpart for. Excluded from the claim, kept in the mapping's notes.
+    uncompared_source_columns: tuple[tuple[Identifier, NotesText], ...] = ()
+    #: ``(source logical row, reason)`` for each source row the target standard's axis does
+    #: not reach. The row index is structural; the axis value it carries belongs to the
+    #: source document and is never written here.
+    uncompared_source_rows: tuple[tuple[int, NotesText], ...] = ()
+
+    @model_validator(mode="after")
+    def _every_declaration_is_made_once(self) -> CrossStandardAxisMatchSpec:
+        if self.axis_value_scale <= 0:
+            raise ValueError("cross-standard axis value scale must be positive")
+        columns = (
+            *(source for source, _target in self.column_pairs),
+            *(source for source, _reason in self.uncompared_source_columns),
+        )
+        if len(columns) != len(set(columns)):
+            raise ValueError("cross-standard axis match must declare each source column once")
+        if self.source_axis_column in columns:
+            raise ValueError("cross-standard axis match must not compare its own axis column")
+        rows = tuple(row for row, _reason in self.uncompared_source_rows)
+        if len(rows) != len(set(rows)):
+            raise ValueError("cross-standard axis match must declare each source row once")
+        if any(row < 0 for row in rows):
+            raise ValueError("cross-standard uncompared source row must be a grid row index")
+        return self
+
+
+class CrossStandardCheckSpec(FrozenModel):
+    """One declared equivalence claim between two grids, and the cells that prove it.
+
+    IEC 62477-1 reproduces spacing requirements the approved IEC 60664 rules already
+    carry. A check names the cells whose agreement would justify a compatibility mapping;
+    ``rules.importer.crosscheck`` performs the comparison.
+
+    A check pairs cells one of two ways: ``cell_map`` where both grids lay the same rows
+    out in the same order, or ``axis_match`` where they state overlapping subsets of one
+    quantity. Exactly one of the two is declared.
+    """
+
+    id: Identifier
+    source_rule_id: Identifier
+    target_rule_id: Identifier
+    family: Identifier
+    #: ``(source cell id, target cell id)`` pairs, where a cell id is
+    #: ``"<logical_row>/<logical_column>"`` as the raw grid records data cells.
+    cell_map: tuple[tuple[Identifier, Identifier], ...] = ()
+    #: Every data cell the source grid contains. Declared apart from ``cell_map`` so a
+    #: partial map cannot compare a subset of a table and still claim the whole table is
+    #: equivalent.
+    source_data_cell_ids: tuple[Identifier, ...] = ()
+    #: Row-by-axis-value pairing, for two grids whose rows do not align by position.
+    axis_match: CrossStandardAxisMatchSpec | None = None
+    #: Cell texts that mean "this cell carries no requirement". Two printings of the same
+    #: requirement may mark an inapplicable cell differently -- one leaves it empty, the
+    #: other prints a marker -- and that is a notation difference, not a difference in
+    #: requirement. Declaring the markers keeps the equivalence explicit: any other
+    #: unparsed text still counts as a divergence, so a cell reading "see another clause"
+    #: is never quietly equated with an empty one.
+    no_requirement_tokens: tuple[str, ...] = ()
+    source: SourceReference
+    notes: NotesText = ""
+
+    @model_validator(mode="after")
+    def _map_covers_every_source_data_cell(self) -> CrossStandardCheckSpec:
+        if (self.axis_match is not None) == bool(self.cell_map or self.source_data_cell_ids):
+            raise ValueError(
+                "a cross-standard check declares either an explicit cell map or an axis match"
+            )
+        if self.axis_match is not None:
+            # An axis match cannot enumerate its cells here: which rows correspond is only
+            # known once both grids are extracted. Its coverage is checked at comparison
+            # time instead, against the columns and rows the grids actually carry.
+            return self
+        mapped = tuple(source_id for source_id, _target_id in self.cell_map)
+        if len(mapped) != len(set(mapped)):
+            raise ValueError("cross-standard cell map must not repeat a source cell")
+        if set(mapped) != set(self.source_data_cell_ids):
+            raise ValueError("cross-standard cell map must cover every source data cell")
+        if len(self.source_data_cell_ids) != len(set(self.source_data_cell_ids)):
+            raise ValueError("cross-standard source data cell IDs must be unique")
+        return self
+
+
 class ClauseAuditSpec(FrozenModel):
     """Structural contract for one reviewed clause fragment.
 
@@ -358,6 +492,11 @@ class ClauseAuditSpec(FrozenModel):
     expected_bbox: tuple[float, float, float, float]
     expected_root_kind: Literal["paragraph", "bullets"]
     output_kind: Literal["decision", "procedure"]
+    #: Rules this clause projects to beyond one carrying the spec's own identifier -- for
+    #: example the guidance a source NOTE becomes. Declared so a projected route inherits
+    #: this clause's review inventory and source artifact, while an unrelated rule that
+    #: merely starts with the same identifier does not.
+    projected_rule_ids: tuple[Identifier, ...] = ()
 
 
 class CurveAuditSpec(FrozenModel):
@@ -384,6 +523,15 @@ class CurveAuditSpec(FrozenModel):
     permitted_interpolations: tuple[CurveInterpolation, ...] = Field(min_length=1)
 
 
+#: A recipe-declared projection from one reviewed raw artifact to typed rules, returning
+#: the projected rules and their semantic proposals. The artifact and rule types stay
+#: unannotated here on purpose: ``extract.py`` and ``clauses.py`` both import this module,
+#: so naming their models would close an import cycle. The recipe modules that register a
+#: projector carry the precise signatures.
+type GridProjector = Callable[[Any, StandardIdentity], tuple[tuple[Any, ...], tuple[Any, ...]]]
+type ClauseProjector = GridProjector
+
+
 class StandardRecipe(FrozenModel):
     id: Identifier
     standard: Identifier
@@ -404,6 +552,29 @@ class StandardRecipe(FrozenModel):
     #: curve rule for one of these cannot approve. Declared here so approval does
     #: not hard-code any one standard's curve IDs.
     required_curves: tuple[Identifier, ...] = ()
+    #: Projections keyed by the semantic ID of the spec they consume. Declared here so
+    #: generic review code dispatches by lookup instead of branching on one standard's
+    #: identifiers. A table without an entry projects through ``project_table``.
+    grid_projectors: Mapping[Identifier, GridProjector] = {}
+    clause_projectors: Mapping[Identifier, ClauseProjector] = {}
+    #: Equivalence claims against rules from another standard in the same package. A claim
+    #: either proves out and yields a compatibility mapping or blocks approval.
+    cross_standard_checks: tuple[CrossStandardCheckSpec, ...] = ()
+
+    @model_validator(mode="after")
+    def _projectors_match_declared_specs(self) -> StandardRecipe:
+        table_ids = {spec.semantic_id for spec in self.tables}
+        clause_ids = {spec.semantic_id for spec in self.clauses}
+        if set(self.grid_projectors) - table_ids:
+            raise ValueError("grid projector refers to an undeclared table spec")
+        if set(self.clause_projectors) != clause_ids:
+            raise ValueError("every clause spec needs exactly one projector")
+        if any(
+            spec.decision_route_ids and spec.semantic_id not in self.grid_projectors
+            for spec in self.tables
+        ):
+            raise ValueError("a table projecting decisions needs a grid projector")
+        return self
 
     def matches_text(self, text: str) -> bool:
         return all(_normalized(anchor) in text for anchor in self.identity_anchors)
@@ -484,7 +655,11 @@ def _read_pdf(
         )
     except StandardIdentificationError:
         raise
-    except (OSError, EOFError, PyPdfError, TypeError, ValueError) as error:
+    # A malformed font, page tree, or object reference surfaces from the PDF layer as a
+    # missing key or index rather than a PyPdfError. Identification is the gate in front
+    # of a file the maintainer picked, so it refuses the document instead of letting the
+    # PDF layer's own error escape.
+    except (OSError, EOFError, PyPdfError, TypeError, ValueError, LookupError) as error:
         raise UnsupportedStandardError("standard PDF could not be read") from error
 
 

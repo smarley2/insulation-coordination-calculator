@@ -15,6 +15,8 @@ from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as
 
 STANDARD = "IEC 62477-1"
 EDITION = "2022"
+#: The recipe whose document this inventory describes.
+RECIPE_ID = "iec62477-1-2022"
 
 
 class RequiredSourceItem(FrozenModel):
@@ -47,6 +49,27 @@ def _item(
         consumer_issue_ids=consumers,
     )
 
+
+#: Required items whose extraction recipes are not written yet, so completeness reports
+#: them as deferred instead of missing and approval does not block a package on work that
+#: has not started. These are Issue #34's Slice E content -- Tables 26 to 30 and the
+#: remaining verification procedures. The set is expected to be empty when Slice E closes,
+#: and a test asserts every member is a required inventory item so it cannot hide a
+#: identifier that does not exist.
+DEFERRED_SEMANTIC_IDS: frozenset[str] = frozenset(
+    {
+        ids.TEST_IMPULSE_PROCEDURE,
+        ids.TEST_IMPULSE_SELECTION,
+        ids.TEST_MAINS_DIELECTRIC_VALUES,
+        ids.TEST_NON_MAINS_DIELECTRIC_VALUES,
+        ids.TEST_PARTIAL_DISCHARGE,
+        ids.TEST_WORKING_VOLTAGE_DETERMINATION,
+        ids.TEST_INTERNAL_SPD_MONITORING,
+        ids.TEST_PRECONDITIONING,
+        ids.TEST_ACCESSIBLE_SURFACE_FOIL,
+        ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION,
+    }
+)
 
 REQUIRED_SOURCE_ITEMS: tuple[RequiredSourceItem, ...] = (
     _item(ids.DVC_VOLTAGE_LIMITS, "decision", (35, 37), table="Table 2"),

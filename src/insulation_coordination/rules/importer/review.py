@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import (
     ApprovalRecord,
     CompatibilityMapping,
@@ -28,6 +29,7 @@ from insulation_coordination.domain.rules import (
     FaultTimeVoltageVariant,
     Formula,
     GuidanceRule,
+    Identifier,
     LinearInterpolate,
     Literal,
     Lookup,
@@ -164,24 +166,35 @@ def _review_item_artifact_id(item: ImportReviewItem) -> str:
 
 
 def _source_semantic_id(proposal: SemanticProposal) -> str:
-    from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
+    """The recipe spec a projected rule came from.
 
-    table_decision_sources = {
-        ids.DVC_VOLTAGE_LIMITS: (
-            ids.DVC_VOLTAGE_LIMITS,
-            f"{ids.DVC_VOLTAGE_LIMITS}.fault_time_reference",
-            f"{ids.DVC_VOLTAGE_LIMITS}.impulse_reference",
-            f"{ids.DVC_VOLTAGE_LIMITS}.not_applicable",
-        ),
-        ids.DVC_PROTECTION_MATRIX: (
-            ids.DVC_PROTECTION_MATRIX,
-        ),
-        ids.DVC_FAULT_APPLICABILITY: (ids.DVC_FAULT_APPLICABILITY,),
-    }
-    if proposal.rule_kind == "decision":
-        for source_id, decision_ids in table_decision_sources.items():
-            if proposal.semantic_id in decision_ids:
-                return source_id
+    A projection may emit several rules from one source artifact -- a table that becomes a
+    family of decisions, a clause that yields a decision plus the guidance its NOTE
+    carries -- and names them ``"<spec id>.<route>"``. Their review inventory and source
+    artifact belong to the spec, not to the route, and the recipe is what knows which
+    specs exist, so this reads the declarations rather than listing one standard's
+    identifiers here.
+    """
+    from insulation_coordination.rules.importer.recipes import RECIPES
+
+    declared: set[str] = set()
+    for recipe in RECIPES:
+        declared.update(spec.semantic_id for spec in recipe.tables)
+        declared.update(spec.semantic_id for spec in recipe.clauses)
+        declared.update(spec.semantic_id for spec in recipe.curves)
+        declared.update(spec.semantic_id for spec in recipe.formulas)
+    if proposal.semantic_id in declared:
+        return proposal.semantic_id
+    #: Only a route the recipe declares resolves back to its spec. An identifier that
+    #: merely starts with a spec's identifier is not one of its routes and must not borrow
+    #: its grounding, so it keeps its own identifier and fails the review inventory check.
+    for recipe in RECIPES:
+        for table_spec in recipe.tables:
+            if proposal.semantic_id in table_spec.decision_route_ids:
+                return table_spec.semantic_id
+        for clause_spec in recipe.clauses:
+            if proposal.semantic_id in clause_spec.projected_rule_ids:
+                return clause_spec.semantic_id
     return proposal.semantic_id
 
 
@@ -300,12 +313,47 @@ def _current_source_artifact_sha256(
     )
     if geometry:
         return _aggregate_artifact_pairs(geometry)
+    cross_standard = _cross_standard_artifacts(draft, proposal)
+    if cross_standard:
+        return _aggregate_artifact_pairs(cross_standard)
     recipe_artifacts = _recipe_source_artifacts(proposal)
     if recipe_artifacts:
         return _aggregate_artifact_pairs(recipe_artifacts)
     raise ApprovalError(
         f"semantic proposal {proposal.semantic_id} has no real current source artifact"
     )
+
+
+def _cross_standard_artifacts(
+    draft: ImportedRuleDraft,
+    proposal: SemanticProposal,
+) -> tuple[tuple[str, str], ...]:
+    """Both compared grids, for a mapping a cross-standard check produced.
+
+    The evidence for an equivalence is the pair of grids it compared, so a change to
+    either one changes this proposal's artifact hash and resets its review. Neither grid
+    carries the mapping's own identifier, which is why the earlier lookups miss it.
+    """
+    from insulation_coordination.rules.importer.recipes import RECIPES
+
+    spec = next(
+        (
+            check
+            for recipe in RECIPES
+            for check in recipe.cross_standard_checks
+            if check.id == proposal.semantic_id
+        ),
+        None,
+    )
+    if spec is None:
+        return ()
+    compared = {spec.source_rule_id, spec.target_rule_id}
+    pairs = tuple(
+        (grid.id, canonical_model_sha256(grid))
+        for grid in draft.raw_grids
+        if grid.id in compared
+    )
+    return pairs if len(pairs) == len(compared) else ()
 
 
 def _require_current_proposal(
@@ -1111,15 +1159,8 @@ def build_reviewed_draft(
     notes: str,
 ) -> ImportedRuleDraft:
     """Project typed content only after every source artifact is accepted."""
-    from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
+    from insulation_coordination.rules.importer.crosscheck import compare_across_standards
     from insulation_coordination.rules.importer.recipes import RECIPES
-    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.clauses import (
-        project_dvc_fault_applicability,
-    )
-    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
-        project_dvc_protection_matrix,
-        project_dvc_voltage_limits,
-    )
 
     if unresolved_table_items(draft) or unresolved_raw_review_items(draft):
         raise ValueError("Review extracted tables first")
@@ -1137,36 +1178,67 @@ def build_reviewed_draft(
     formulas: dict[str, Formula] = {}
     mappings: dict[str, CompatibilityMapping] = {}
     decisions: dict[str, DecisionRule] = {rule.id: rule for rule in draft.decisions}
+    guidance: dict[str, GuidanceRule] = {rule.id: rule for rule in draft.guidance}
+
+    def collect(projected: tuple[object, ...]) -> None:
+        """Route each projected rule to the draft field its type belongs in.
+
+        A projection may return guidance alongside decisions -- a source NOTE becomes
+        guidance, never an executable branch -- and ``model_copy`` does not validate, so a
+        guidance rule appended to ``decisions`` would sit there undetected.
+        """
+        for rule in projected:
+            if isinstance(rule, DecisionRule):
+                decisions[rule.id] = rule
+            elif isinstance(rule, GuidanceRule):
+                guidance[rule.id] = rule
+            else:
+                raise TypeError(
+                    f"projection produced an unsupported rule type: {type(rule).__name__}"
+                )
 
     for recipe in RECIPES:
         identity = identities[recipe.id]
         for table_spec in recipe.tables:
             grid = grids[f"raw-{table_spec.semantic_id}"]
-            if table_spec.semantic_id == ids.DVC_VOLTAGE_LIMITS:
-                projected, _proposals = project_dvc_voltage_limits(grid, identity)
-                decisions.update((rule.id, rule) for rule in projected)
-            elif table_spec.semantic_id == ids.DVC_PROTECTION_MATRIX:
-                projected, _proposals = project_dvc_protection_matrix(grid, identity)
-                decisions.update((rule.id, rule) for rule in projected)
-            else:
+            if table_spec.comparison_only:
+                # Extracted to prove or refute equivalence with another standard's rule,
+                # not to be executed. The raw grid stays in the draft as the evidence.
+                continue
+            grid_projector = recipe.grid_projectors.get(table_spec.semantic_id)
+            if grid_projector is None:
                 tables[table_spec.semantic_id] = project_table(identity, table_spec, grid)
+                continue
+            projected, _proposals = grid_projector(grid, identity)
+            collect(projected)
         for formula_spec in recipe.formulas:
             formulas[formula_spec.semantic_id] = project_formula(identity, formula_spec, equations)
         for mapping_spec in recipe.mappings:
             mappings[mapping_spec.id] = project_mapping(identity, mapping_spec)
+        for check_spec in recipe.cross_standard_checks:
+            if not {check_spec.source_rule_id, check_spec.target_rule_id} <= set(grids):
+                # Neither grid can be compared before both are extracted. A draft that
+                # should hold them and does not is caught by the completeness gate at
+                # approval, which reports the absent content by name.
+                continue
+            mapping, divergences = compare_across_standards(grids, check_spec)
+            if divergences:
+                raise ValueError(
+                    "Resolve cross-standard divergences first: "
+                    + "; ".join(item.expected_contract for item in divergences[:3])
+                )
+            if mapping is not None:
+                mappings[mapping.id] = mapping
         for clause_spec in recipe.clauses:
             fragment = fragments.get(f"raw-{clause_spec.semantic_id}")
             if fragment is None:
                 # A draft extracted before this clause recipe existed has no
                 # fragment; approval gating reports the missing required content.
                 continue
-            if clause_spec.semantic_id == ids.DVC_FAULT_APPLICABILITY:
-                projected, _proposals = project_dvc_fault_applicability(fragment, identity)
-                decisions.update((rule.id, rule) for rule in projected)
-            else:
-                raise ValueError(
-                    f"no clause projection for {clause_spec.semantic_id}"
-                )
+            projected, _proposals = recipe.clause_projectors[clause_spec.semantic_id](
+                fragment, identity
+            )
+            collect(projected)
 
     changed = draft.model_copy(
         update={
@@ -1174,6 +1246,7 @@ def build_reviewed_draft(
             "formulas": tuple(formulas.values()),
             "mappings": tuple(mappings.values()),
             "decisions": tuple(decisions.values()),
+            "guidance": tuple(guidance.values()),
         }
     )
     return record_correction(
@@ -1217,7 +1290,6 @@ def _matches(source: SourceReference, expected: SourceReference) -> bool:
 
 def required_content_report(draft: ImportedRuleDraft) -> tuple[RequiredContentStatus, ...]:
     """Required tables/formulas/mappings and whether typed content is present."""
-    from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
     from insulation_coordination.rules.importer.recipes import RECIPES
 
     table_ids = {table.id: table for table in draft.tables}
@@ -1237,21 +1309,20 @@ def required_content_report(draft: ImportedRuleDraft) -> tuple[RequiredContentSt
                 clause=table_spec.clause,
                 table=table_spec.source_table,
             )
-            decision_routes = {
-                ids.DVC_VOLTAGE_LIMITS: {
-                    ids.DVC_VOLTAGE_LIMITS,
-                    f"{ids.DVC_VOLTAGE_LIMITS}.fault_time_reference",
-                    f"{ids.DVC_VOLTAGE_LIMITS}.impulse_reference",
-                    f"{ids.DVC_VOLTAGE_LIMITS}.not_applicable",
-                },
-                ids.DVC_PROTECTION_MATRIX: {ids.DVC_PROTECTION_MATRIX},
-            }.get(table_spec.semantic_id)
+            decision_routes = set(table_spec.decision_route_ids)
             table = table_ids.get(table_spec.semantic_id)
-            present = (
-                decision_routes <= decision_ids
-                if decision_routes is not None
-                else table is not None and _matches(table.source, expected)
-            )
+            if table_spec.comparison_only:
+                # A comparison-only grid is present once its raw evidence is in the draft;
+                # it never becomes a typed rule of its own.
+                present = f"raw-{table_spec.semantic_id}" in {
+                    raw_grid.id for raw_grid in draft.raw_grids
+                }
+            else:
+                present = (
+                    decision_routes <= decision_ids
+                    if decision_routes
+                    else table is not None and _matches(table.source, expected)
+                )
             statuses.append(
                 RequiredContentStatus(
                     standard=recipe.standard,
@@ -1327,6 +1398,115 @@ def required_content_report(draft: ImportedRuleDraft) -> tuple[RequiredContentSt
 def missing_required_content(draft: ImportedRuleDraft) -> tuple[RequiredContentStatus, ...]:
     """Required content that is not yet present as typed rule content."""
     return tuple(item for item in required_content_report(draft) if not item.present)
+
+
+class InventoryStatus(FrozenModel):
+    """How far one required source item has travelled through the pipeline."""
+
+    semantic_id: Identifier
+    consumer_issue_ids: tuple[int, ...]
+    located: bool
+    extracted: bool
+    typed: bool
+    approved: bool
+    deferred: bool
+
+
+def _covers(candidate: str, semantic_id: str) -> bool:
+    """Whether ``candidate`` is the required item or one of its declared routes.
+
+    A required item is often extracted as several specs -- Table 7 splits into an AC and a
+    DC route, Table 9 into one construction each -- so a route is named
+    ``"<semantic id>.<route>"``.
+    """
+    return candidate == semantic_id or candidate.startswith(f"{semantic_id}.")
+
+
+def inventory_report(draft: ImportedRuleDraft) -> tuple[InventoryStatus, ...]:
+    """Package completeness computed from the required source inventory.
+
+    Completeness is never a count of extracted tables: it is this checklist, in the order
+    the inventory declares, so a package cannot look complete while a required item is
+    absent.
+    """
+    from insulation_coordination.rules.importer.iec62477_2022.inventory import (
+        DEFERRED_SEMANTIC_IDS,
+        REQUIRED_SOURCE_ITEMS,
+    )
+    from insulation_coordination.rules.importer.recipes import RECIPES
+
+    declared: set[str] = set()
+    routes: dict[str, set[str]] = {}
+    for recipe in RECIPES:
+        for table_spec in recipe.tables:
+            declared.add(table_spec.semantic_id)
+            if table_spec.decision_route_ids:
+                routes[table_spec.semantic_id] = set(table_spec.decision_route_ids)
+        declared.update(spec.semantic_id for spec in recipe.clauses)
+        declared.update(spec.semantic_id for spec in recipe.curves)
+        declared.update(spec.semantic_id for spec in recipe.formulas)
+
+    raw_ids = {grid.id for grid in draft.raw_grids}
+    raw_ids.update(fragment.id for fragment in draft.raw_clause_fragments)
+    raw_ids.update(f"raw-{curve.id}" for curve in draft.curves)
+    typed_ids = {rule.id for rule in draft.tables}
+    typed_ids.update(rule.id for rule in draft.decisions)
+    typed_ids.update(rule.id for rule in draft.procedures)
+    typed_ids.update(rule.id for rule in draft.guidance)
+    typed_ids.update(rule.id for rule in draft.curves)
+    unresolved = {
+        item.semantic_id
+        for kind in ("table", "formula", "mapping", "clause", "semantic", "curve")
+        for item in _unresolved_items(draft, kind)
+    }
+
+    statuses: list[InventoryStatus] = []
+    for item in REQUIRED_SOURCE_ITEMS:
+        semantic_id = item.semantic_id
+        matching = {candidate for candidate in declared if _covers(candidate, semantic_id)}
+        located = bool(matching)
+        extracted = located and all(
+            f"raw-{candidate}" in raw_ids or candidate in raw_ids for candidate in matching
+        )
+        required_typed = {
+            route
+            for candidate in matching
+            for route in (routes.get(candidate) or {candidate})
+        }
+        typed = located and required_typed <= typed_ids
+        blocked = any(
+            _covers(pending, semantic_id) or pending.startswith(f"raw-{semantic_id}")
+            for pending in unresolved
+        )
+        statuses.append(
+            InventoryStatus(
+                semantic_id=semantic_id,
+                consumer_issue_ids=item.consumer_issue_ids,
+                located=located,
+                extracted=extracted,
+                typed=typed,
+                approved=typed and not blocked,
+                deferred=semantic_id in DEFERRED_SEMANTIC_IDS,
+            )
+        )
+    return tuple(statuses)
+
+
+def missing_inventory_items(draft: ImportedRuleDraft) -> tuple[InventoryStatus, ...]:
+    """Required inventory items this build can extract but this draft has not approved.
+
+    An item no recipe declares is not reported here: that is either Slice E content, which
+    the deferred set records, or a build running an injected recipe registry. Either way
+    the gap is in the build rather than in the draft, and
+    ``test_inventory.py`` asserts against the real registry that every non-deferred item
+    has a recipe. What this gate refuses is a draft that skipped content the build knows
+    how to extract.
+    """
+    return tuple(
+        status
+        for status in inventory_report(draft)
+        if status.located and not (status.approved or status.deferred)
+    )
 
 
 def placeholder_formula_ids() -> set[str]:

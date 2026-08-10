@@ -987,7 +987,12 @@ def _extract_segment(
     if not anchors:
         raise ExtractionError(f"layout anchor is missing for {semantic_id}; extraction refused")
     matching = []
-    for found in page.find_tables():
+    settings = (
+        {"horizontal_strategy": "text", "vertical_strategy": "lines"}
+        if segment.row_strategy == "text"
+        else {}
+    )
+    for found in page.find_tables(table_settings=settings):
         raw = found.extract()
         shape = (len(raw), max((len(row) for row in raw), default=0))
         bbox_matches = all(
@@ -1359,7 +1364,13 @@ def _extract_layout_table(
             expected_contract=f"raw-cell:{spec.semantic_id}:numeric",
         )
         for cell in cells
-        if spec.token_grammar is None
+        # A comparison-only grid is evidence for a cross-standard check, never an
+        # executable rule: its cells are compared against an already-approved rule's cells
+        # and are only ever read as the source printed them. Asking a maintainer to retype
+        # them as numbers would prove nothing, and a cell the parser cannot turn into a
+        # number could not be resolved at all.
+        if not spec.comparison_only
+        and spec.token_grammar is None
         and cell.role == "data"
         and cell.reference_token is None
         and cell.blank_semantics != "not_applicable"
@@ -1450,6 +1461,21 @@ def _manual_review_items(
         )
         for spec in recipe.mappings
     )
+    #: A proven cross-standard equivalence still needs a maintainer's sign-off before it
+    #: becomes an approved mapping: the comparison shows the numbers agree, not that the
+    #: two standards intend the same requirement.
+    cross_standard_items = tuple(
+        ImportReviewItem(
+            code="CROSS_STANDARD_EQUIVALENCE_REVIEW_REQUIRED",
+            semantic_id=spec.id,
+            kind="mapping",
+            source=spec.source,
+            expected_contract=(
+                f"cross-standard:{spec.id}:{spec.source_rule_id}:{spec.target_rule_id}"
+            ),
+        )
+        for spec in recipe.cross_standard_checks
+    )
     clause_items = tuple(
         ImportReviewItem(
             code="MANUAL_CLAUSE_DEFINITION_REQUIRED",
@@ -1467,7 +1493,13 @@ def _manual_review_items(
         )
         for spec in recipe.clauses
     )
-    return (*table_items, *formula_items, *mapping_items, *clause_items)
+    return (
+        *table_items,
+        *formula_items,
+        *mapping_items,
+        *cross_standard_items,
+        *clause_items,
+    )
 
 
 def _extract_real_layout(

@@ -609,6 +609,27 @@ def record_correction(
     )
 
 
+def _require_complete_inventory(draft: DraftRulePackage) -> None:
+    """Refuse a package that does not carry every required source item.
+
+    Completeness comes from the required source inventory rather than from counting
+    extracted tables, so a package cannot look finished while an item a consumer feature
+    depends on is missing. Items whose recipes are not written yet are declared deferred
+    and reported as such instead of blocking here.
+    """
+    from insulation_coordination.rules.importer.review import missing_inventory_items
+
+    if not isinstance(draft, ImportedRuleDraft):
+        return
+    missing = missing_inventory_items(draft)
+    if missing:
+        named = ", ".join(status.semantic_id for status in missing[:3])
+        suffix = "" if len(missing) <= 3 else f", and {len(missing) - 3} more"
+        raise ApprovalError(
+            f"draft is missing {len(missing)} required inventory item(s): {named}{suffix}"
+        )
+
+
 def _require_complete_audit(draft: DraftRulePackage) -> None:
     audited = {
         record.notes
@@ -1353,6 +1374,7 @@ def approve_draft(
             + "; ".join(item.expected_contract for item in blockers)
         )
     _require_source_genesis(draft)
+    _require_complete_inventory(draft)
     _require_complete_audit(draft)
     _require_compatibility_mapping(draft)
     _require_resolved_recipe_semantics(draft)

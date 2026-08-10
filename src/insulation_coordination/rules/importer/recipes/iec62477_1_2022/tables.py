@@ -12,6 +12,12 @@ from insulation_coordination.rules.importer.identify import (
     TokenGrammarSpec,
 )
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
+from insulation_coordination.rules.importer.recipes.iec62477_1_2022.annex_f import (
+    ANNEX_F_TABLES,
+)
+from insulation_coordination.rules.importer.recipes.iec62477_1_2022.spacing import (
+    SPACING_TABLES,
+)
 
 ColumnRole = Literal["axis", "data", "context"]
 
@@ -69,6 +75,12 @@ TABLE_2 = TableAuditSpec(
             target_rule_id=ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC,
             target_kind="table",
         ),
+    ),
+    decision_route_ids=(
+        ids.DVC_VOLTAGE_LIMITS,
+        f"{ids.DVC_VOLTAGE_LIMITS}.fault_time_reference",
+        f"{ids.DVC_VOLTAGE_LIMITS}.impulse_reference",
+        f"{ids.DVC_VOLTAGE_LIMITS}.not_applicable",
     ),
 )
 
@@ -347,6 +359,7 @@ TABLE_3 = TableAuditSpec(
         ),
         match="prefix",
     ),
+    decision_route_ids=(ids.DVC_PROTECTION_MATRIX,),
 )
 
 TABLES: tuple[TableAuditSpec, ...] = (
@@ -437,6 +450,8 @@ TABLES: tuple[TableAuditSpec, ...] = (
         ),
         columns=_altitude_band_columns(),
     ),
+    *SPACING_TABLES,
+    *ANNEX_F_TABLES,
 )
 
 FORMULAS: tuple[FormulaAuditSpec, ...] = (
