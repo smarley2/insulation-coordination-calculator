@@ -737,8 +737,17 @@ def _require_compatibility_mapping(draft: DraftRulePackage) -> None:
         raise ApprovalError("compatibility mappings are ambiguous")
     from insulation_coordination.rules.importer.recipes import RECIPES
 
+    # Two kinds of mapping reach a package. A declared mapping states a route the recipe
+    # asserts up front, and that family must be exactly complete. A cross-standard mapping
+    # exists only where a comparison proved two grids equal, so it is permitted rather than
+    # required here: a divergent comparison already refuses during review, and the inventory
+    # gate is what reports content a draft never carried.
     required = {spec.semantic_route for recipe in RECIPES for spec in recipe.mappings}
-    if set(routes) != required or len(routes) != len(required):
+    proven = {
+        check.source_rule_id for recipe in RECIPES for check in recipe.cross_standard_checks
+    }
+    declared = set(routes) - proven
+    if declared != required or len(declared) != len(required):
         raise ApprovalError("exact compatibility mapping family is incomplete")
 
 
