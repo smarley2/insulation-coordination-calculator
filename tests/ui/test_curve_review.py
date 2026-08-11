@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from pypdf import PdfWriter
+from PySide6.QtCore import QPointF
 
 from insulation_coordination.domain.rules import (
     ApprovalRecord,
@@ -234,7 +235,48 @@ def _calibration() -> ManualPlotCalibration:
 def local_manual_draft(
     manual_draft: ImportedRuleDraft, tmp_path
 ) -> tuple[ImportedRuleDraft, Path]:
-    model = CurveReviewModel(manual_draft)
+    path = tmp_path / "synthetic-curves.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=400, height=300)
+    with path.open("wb") as target:
+        writer.write(target)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    document = manual_draft.manifest.source_documents[0].model_copy(
+        update={"sha256": digest}
+    )
+    draft = manual_draft.model_copy(
+        update={
+            "manifest": manual_draft.manifest.model_copy(
+                update={"source_documents": (document,)}
+            )
+        }
+    )
+    content_digest = _content_digest(
+        draft.tables,
+        draft.formulas,
+        draft.mappings,
+        draft.review_items,
+        draft.raw_grids,
+        draft.raw_clause_fragments,
+        draft.manifest.source_documents,
+        draft.source_identities,
+        raw_figures=draft.raw_figures,
+    )
+    draft = draft.model_copy(
+        update={
+            "manifest": draft.manifest.model_copy(
+                update={
+                    "approval_records": (
+                        *draft.manifest.approval_records[:2],
+                        draft.manifest.approval_records[2].model_copy(
+                            update={"notes": f"content:{content_digest}"}
+                        ),
+                    )
+                }
+            )
+        }
+    )
+    model = CurveReviewModel(draft)
     model.set_calibration("5", _calibration(), actor="Reviewer", notes="Calibrated.")
     model.replace_points(
         "synthetic.curve.5.1",
@@ -245,25 +287,7 @@ def local_manual_draft(
         actor="Reviewer",
         notes="Entered synthetic points.",
     )
-    path = tmp_path / "synthetic-curves.pdf"
-    writer = PdfWriter()
-    writer.add_blank_page(width=400, height=300)
-    with path.open("wb") as target:
-        writer.write(target)
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    document = model.draft.manifest.source_documents[0].model_copy(
-        update={"sha256": digest}
-    )
-    return (
-        model.draft.model_copy(
-            update={
-                "manifest": model.draft.manifest.model_copy(
-                    update={"source_documents": (document,)}
-                )
-            }
-        ),
-        path,
-    )
+    return model.draft, path
 
 
 def test_dialog_shows_semantic_selector_text_and_stable_variant_id(
@@ -285,7 +309,112 @@ def test_dialog_shows_semantic_selector_text_and_stable_variant_id(
     assert dialog._variant_selector.currentData() == "synthetic.curve.5.1"
 
 
-def test_transitional_dialog_disables_retired_controls_without_model_calls(
+def test_dialog_exposes_manual_controls_without_retired_reconstruction_actions(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+
+    assert "Accessible circuit" in dialog.current_variant_label
+    assert dialog.point_table.columnCount() == 2
+    assert dialog.point_table.horizontalHeaderItem(0).text() == "X (ms)"
+    assert dialog.calibration_button.text() == "Set plot and axes…"
+    assert dialog.save_points_button.text() == "Save points"
+    assert dialog.accept_variant_button.text() == "Accept variant"
+    assert not hasattr(dialog, "_trace_button")
+    assert not hasattr(dialog, "_breakpoint_button")
+    assert not hasattr(dialog, "_segment_button")
+    assert not hasattr(dialog, "_reject_button")
+
+
+def test_table_edit_redraws_the_source_aligned_overlay_without_saving(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+
+    dialog.set_point_text(1, "10", "25")
+
+    assert dialog.point_text(1) == ("10", "25")
+    assert dialog.overlay_path.elementCount() == dialog.point_table.rowCount()
+    assert dialog.draft == draft
+
+
+def test_handle_move_updates_table_with_source_axis_values(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+
+    dialog.move_handle(1, Decimal(320), Decimal(210))
+
+    assert dialog.point_text(1) == ("1000", "1")
+    assert dialog.overlay_path.elementCount() == dialog.point_table.rowCount()
+
+
+def test_invalid_table_input_does_not_mutate_the_draft(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+    dialog.notes_edit.setText("Correct synthetic points.")
+    before = dialog.draft
+
+    dialog.set_point_text(0, "not-a-number", "10")
+    dialog.save_points()
+
+    assert dialog.draft == before
+    assert "valid decimal" in dialog.status_text.lower()
+
+
+def test_scene_calibration_uses_two_click_positions_and_decimal_bounds(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+    dialog.notes_edit.setText("Checked synthetic plot axes.")
+
+    dialog.set_plot_and_axes(
+        QPointF(20, 10),
+        QPointF(320, 210),
+        Decimal(1),
+        Decimal(1000),
+        Decimal(1),
+        Decimal(100),
+    )
+
+    calibration = dialog.draft.curve_calibrations[0].calibration
+    assert (calibration.left, calibration.top) == (Decimal(20), Decimal(10))
+    assert (calibration.right, calibration.bottom) == (Decimal(320), Decimal(210))
+    assert (calibration.x_min, calibration.y_max) == (Decimal(1), Decimal(100))
+
+
+def test_save_and_accept_require_notes_before_mutating_the_draft(
     qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
 ) -> None:
     draft, path = local_manual_draft
@@ -297,32 +426,19 @@ def test_transitional_dialog_disables_retired_controls_without_model_calls(
     qtbot.addWidget(dialog)
     before = dialog.draft
 
-    assert all(
-        not button.isEnabled()
-        for button in (
-            dialog._calibration_button,
-            dialog._trace_button,
-            dialog._breakpoint_button,
-            dialog._segment_button,
-            dialog._manual_button,
-            dialog._reject_button,
-        )
-    )
-    for callback in (
-        dialog._correct_calibration,
-        dialog._associate_trace,
-        dialog._correct_breakpoint,
-        dialog._correct_segment,
-        dialog._enter_manual_points,
-        dialog._reject_current,
-    ):
-        callback()
-
+    dialog.save_points()
     assert dialog.draft == before
-    assert not hasattr(CurveReviewModel, "associate_trace")
+    assert "notes are required" in dialog.status_text.lower()
+
+    dialog.notes_edit.setText("Reviewed synthetic curve.")
+    dialog.save_points()
+    dialog.accept_variant()
+
+    assert dialog.status_text == "Variant manually reviewed."
+    assert dialog.draft.curve_variant_reviews[0].variant_id == "synthetic.curve.5.1"
 
 
-def test_dialog_keeps_unfilled_semantic_slot_empty_and_unreviewable(
+def test_dialog_keeps_unfilled_semantic_slot_editable(
     qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
 ) -> None:
     draft, path = local_manual_draft
@@ -337,8 +453,11 @@ def test_dialog_keeps_unfilled_semantic_slot_empty_and_unreviewable(
 
     assert dialog._variant_selector.currentData() == "synthetic.curve.5.2"
     assert dialog.source_loaded is True
-    assert dialog.overlay_item.path().elementCount() == 0
-    assert dialog._review_button.isEnabled() is False
+    assert dialog.point_table.rowCount() == 0
+    dialog.add_point()
+    assert dialog.point_table.rowCount() == 1
+    dialog.remove_point()
+    assert dialog.point_table.rowCount() == 0
     assert "No points entered" in dialog._status.text()
 
 
