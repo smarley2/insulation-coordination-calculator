@@ -41,7 +41,7 @@ def test_curve_specs_declare_the_exact_eight_semantic_roles() -> None:
     )
     assert tuple(selector.voltage_basis for selector in selectors[2]) == (
         "dc",
-        "ac_peak",
+        "ac_unspecified",
     )
     assert all(
         selector.subject == "conductive_accessible_part"

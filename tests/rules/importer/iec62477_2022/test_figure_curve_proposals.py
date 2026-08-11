@@ -190,7 +190,7 @@ def test_none_dimensions_do_not_wildcard() -> None:
     # A selector with a DVC context must NOT match the variant whose context is None.
     probe = FaultTimeVoltageSelector(
         subject="conductive_accessible_part",
-        voltage_basis="ac_peak",
+        voltage_basis="ac_unspecified",
         dvc_context="dvc-a",
         environment_context=None,
     )
@@ -210,7 +210,7 @@ def test_exact_selector_evaluates_matching_variant() -> None:
         rule,
         FaultTimeVoltageSelector(
             subject="conductive_accessible_part",
-            voltage_basis="ac_peak",
+            voltage_basis="ac_unspecified",
             dvc_context=None,
             environment_context=None,
         ),
