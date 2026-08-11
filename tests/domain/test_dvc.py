@@ -10,6 +10,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from insulation_coordination.domain.dvc import (
+    PROTECTION_MATRIX_ROW_ORDER_CONFIRMED,
     PROTECTION_MATRIX_ROW_TOKENS,
     VOLTAGE_LIMITS_ROW_TOKENS,
     VOLTAGE_QUANTITY_COLUMN_TOKENS,
@@ -163,16 +164,16 @@ def test_dvc_c_uncovered_cell_is_unavailable_rather_than_guessed() -> None:
 # --- DvcGuidanceService.protection_relationships ------------------------------------
 
 
-def test_protection_relationships_render_with_their_source() -> None:
+def test_protection_relationships_are_withheld_until_the_row_order_is_confirmed() -> None:
+    """PROTECTION_MATRIX_ROW_ORDER_CONFIRMED is False, so even a fully matching package
+    gets the withheld reason instead of rendered relationships.
+    """
+    assert PROTECTION_MATRIX_ROW_ORDER_CONFIRMED is False
     service = DvcGuidanceService(synthetic_dvc_rule_package())
     summary = service.protection_relationships(DecisiveVoltageClass.DVC_B)
-    assert summary.available is True
-    contexts = {item.protection_context: item.requirement for item in summary.relationships}
-    assert contexts == {
-        "protection-context-1": "basic_protection",
-        "protection-context-2": "none",
-    }
-    assert all(item.source is not None for item in summary.relationships)
+    assert summary.available is False
+    assert summary.relationships == ()
+    assert "has not been confirmed against the source" in summary.reason
 
 
 def test_protection_relationships_not_evaluated_has_nothing_to_show() -> None:

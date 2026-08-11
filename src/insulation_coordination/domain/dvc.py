@@ -70,6 +70,19 @@ PROTECTION_MATRIX_ROW_TOKENS: Mapping[DecisiveVoltageClass, Identifier] = {
     DecisiveVoltageClass.DVC_C: "dvc-3",
 }
 
+# PROTECTION_MATRIX_ROW_TOKENS is unconfirmed (see the comment above it), yet the guide
+# cites a source for whatever it renders - inviting trust the mapping hasn't earned. Until
+# a maintainer confirms Table 3's row order, protection_relationships withholds its result
+# instead of rendering off an unverified mapping. Flip this to True once that confirmation
+# lands; the mapping and the evaluation code beneath it are already in place.
+PROTECTION_MATRIX_ROW_ORDER_CONFIRMED = False
+
+_PROTECTION_MATRIX_UNCONFIRMED_REASON = (
+    f"The decisive-voltage-class-to-row mapping {ids.DVC_PROTECTION_MATRIX} depends on "
+    "has not been confirmed against the source, so this section is withheld rather "
+    "than shown."
+)
+
 _VOLTAGE_LIMITS_RULE_IDS: tuple[Identifier, ...] = (
     ids.DVC_VOLTAGE_LIMITS,
     f"{ids.DVC_VOLTAGE_LIMITS}.fault_time_reference",
@@ -181,6 +194,10 @@ class DvcGuidanceService:
             )
         if not _from_expected_edition(rule):
             return DvcProtectionSummary(dvc=dvc, available=False, reason=_edition_reason(rule))
+        if not PROTECTION_MATRIX_ROW_ORDER_CONFIRMED:
+            return DvcProtectionSummary(
+                dvc=dvc, available=False, reason=_PROTECTION_MATRIX_UNCONFIRMED_REASON
+            )
         row = PROTECTION_MATRIX_ROW_TOKENS[dvc]
         try:
             context_input = next(item for item in rule.inputs if item.name == "protection_context")
@@ -294,6 +311,7 @@ def _evaluate_safe(rule: DecisionRule, inputs: dict[str, str]) -> DecisionResult
 
 
 __all__ = [
+    "PROTECTION_MATRIX_ROW_ORDER_CONFIRMED",
     "PROTECTION_MATRIX_ROW_TOKENS",
     "VOLTAGE_LIMITS_ROW_TOKENS",
     "VOLTAGE_QUANTITY_COLUMN_TOKENS",

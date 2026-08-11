@@ -83,13 +83,14 @@ def test_a_not_applicable_cell_says_so(qtbot) -> None:
     assert f"{_label(5)}: not applicable" in body
 
 
-def test_protection_relationships_render_with_their_source(qtbot) -> None:
+def test_protection_relationships_are_withheld_until_the_row_order_is_confirmed(qtbot) -> None:
     service = DvcGuidanceService(synthetic_dvc_rule_package())
     dialog = DvcGuideDialog(service, DecisiveVoltageClass.DVC_AS)
     qtbot.addWidget(dialog)
     body = dialog.body_text()
-    assert "Protection requirements" in body
-    assert "protection-context-1: none" in body
+    assert "Protection requirements: not available from the active package" in body
+    assert "has not been confirmed against the source" in body
+    assert "protection-context-1" not in body
 
 
 def test_a_package_missing_the_dvc_rules_degrades_with_a_stated_reason(qtbot) -> None:
