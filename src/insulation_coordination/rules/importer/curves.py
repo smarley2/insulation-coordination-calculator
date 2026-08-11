@@ -1033,32 +1033,24 @@ def _lower_envelope(
 ) -> Decimal | None:
     """Lowest source y at column x, interpolating between neighboring samples.
 
+    Points must arrive sorted: the proof probes thousands of columns against the
+    same trace, and re-sorting per probe dominated the runtime.
+
     Columns outside the traced endpoints have no source evidence: no curve is
     extrapolated there, so they contribute no envelope constraint.
     """
 
     if not source:
         return None
-    ordered = sorted(source)
-    if x < ordered[0][0] or x > ordered[-1][0]:
+    if x < source[0][0] or x > source[-1][0]:
         return None
-    for (lx, ly), (rx, ry) in pairwise(ordered):
+    for (lx, ly), (rx, ry) in pairwise(source):
         if lx <= x <= rx:
             if rx == lx:
                 return min(ly, ry)
             fraction = (x - lx) / (rx - lx)
             return ly + fraction * (ry - ly)
-    return ordered[-1][1]
-
-
-def _piecewise_value(
-    candidate: list[tuple[Decimal, Decimal]] | tuple[tuple[Decimal, Decimal], ...],
-    x: Decimal,
-) -> Decimal | None:
-    ordered = tuple(sorted(candidate))
-    if not ordered or x < ordered[0][0] or x > ordered[-1][0]:
-        return None
-    return _lower_envelope(ordered, x)
+    return source[-1][1]
 
 
 def conservative_simplify(
@@ -1252,7 +1244,8 @@ def prove_conservative(
         if envelope is None:
             continue
         lower = envelope - tolerance
-        candidate_y = _piecewise_value(candidate_points, x)
+        # The candidate is a piecewise curve, so its own envelope is its value at x.
+        candidate_y = _lower_envelope(candidate_points, x)
         if candidate_y is None:
             continue
         error = candidate_y - lower
