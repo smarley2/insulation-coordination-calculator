@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from enum import StrEnum
 
+from insulation_coordination.domain.display import OBC_APPLICABILITY_WARNING
 from insulation_coordination.domain.enums import (
     BarrierVerificationStatus,
     CircuitSourceRelationship,
@@ -27,18 +28,6 @@ from insulation_coordination.domain.enums import (
     NetClassType,
 )
 from insulation_coordination.ui.voltage_guidance import VoltageGuidance, register_guidance
-
-#: This application's own statement of scope for the on-board-charger (OBC) worked
-#: example: IEC 62477-1:2022 does not cover
-#: EV/OBC equipment, so the OBC example is a topology illustration only, never a claim of
-#: compliance. Kept as one constant so every place the OBC example appears - a guidance
-#: example below, or the example project's own domain descriptions - carries the identical
-#: wording rather than a paraphrase that could drift from it.
-OBC_APPLICABILITY_WARNING = (
-    "OBC is a topology example only. IEC 62477-1:2022 excludes electric-vehicle "
-    "electrical equipment/systems; the applicable EV/OBC product standard takes "
-    "precedence."
-)
 
 
 class TopologyGuidanceId(StrEnum):

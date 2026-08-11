@@ -4,17 +4,17 @@ A barrier records the verification status of the element between a pair of domai
 not evaluated, no galvanic isolation, or verified galvanic isolation - and, only for the
 verified case, the method and evidence reference that back the claim. ``domain_key`` on
 :class:`GalvanicBarrier` (``insulation_coordination.domain.topology``) is the one place
-that decides A-B and B-A are the same barrier; every transformation below refuses a
-second barrier for a pair that already has one, matching that identity.
+that decides A-B and B-A are the same barrier; every transformation refuses a second
+barrier for a pair that already has one, matching that identity.
 
-Every transformation is a pure, module-level function: it takes a :class:`Project` and
-returns a replacement one. A barrier is rebuilt through :class:`GalvanicBarrier`'s own
+The actual project edits - add, describe, mark verified, unmark verified, and delete -
+are pure functions in :mod:`insulation_coordination.project.topology_edits`, reusable
+outside this panel. A barrier is rebuilt there through :class:`GalvanicBarrier`'s own
 constructor rather than ``model_copy`` whenever its verification fields change, because
 ``model_copy`` skips model validation - only the constructor actually runs
 ``_requires_consistent_verification`` and refuses a missing method or a blank evidence
-reference with the domain model's own message. The panel at the bottom is a thin Qt
-wrapper around these functions; the rule tests exercise the functions directly and need
-no event loop.
+reference with the domain model's own message. The panel below is a thin Qt wrapper
+around those functions; the rule tests exercise them directly and need no event loop.
 
 Verified isolation recorded here grants no attenuation and no protection claim - it is a
 recorded fact about the barrier, nothing more. A rule package deciding what that fact is
@@ -23,7 +23,7 @@ worth is out of scope for this editor.
 
 from __future__ import annotations
 
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
@@ -44,124 +44,19 @@ from PySide6.QtWidgets import (
 
 from insulation_coordination.domain.enums import BarrierVerificationStatus, VerificationMethod
 from insulation_coordination.domain.project import Project
-from insulation_coordination.domain.topology import (
-    GalvanicBarrier,
-    barrier_between,
-    domain_by_id,
+from insulation_coordination.domain.topology import GalvanicBarrier
+from insulation_coordination.project.topology_edits import (
+    add_barrier,
+    delete_barrier,
+    mark_verified,
+    set_barrier_description,
+    unmark_verified,
 )
 from insulation_coordination.ui.help_indicator import HelpIndicator
 from insulation_coordination.ui.topology_guidance import (
     TopologyGuidanceId,
     guidance_id_for_barrier_status,
 )
-
-# --- pure project transformations ----------------------------------------------------
-
-
-def _barrier_by_id(project: Project, barrier_id: UUID) -> GalvanicBarrier:
-    barrier = next((b for b in project.galvanic_barriers if b.id == barrier_id), None)
-    if barrier is None:
-        raise ValueError("Unknown galvanic barrier")
-    return barrier
-
-
-def _replace_barrier(project: Project, barrier_id: UUID, **updates: object) -> Project:
-    """Rebuild one barrier through its constructor, so its own validator actually runs.
-
-    ``model_copy`` would apply ``updates`` without checking the result, letting a
-    verified status through with no evidence or a non-verified one with a stray method -
-    both are exactly the states ``GalvanicBarrier`` exists to refuse.
-    """
-    barrier = _barrier_by_id(project, barrier_id)
-    data = barrier.model_dump()
-    data.update(updates)
-    replacement = GalvanicBarrier(**data)
-    barriers = tuple(
-        replacement if existing.id == barrier_id else existing
-        for existing in project.galvanic_barriers
-    )
-    return project.model_copy(update={"galvanic_barriers": barriers})
-
-
-def add_barrier(
-    project: Project, domain_a_id: UUID, domain_b_id: UUID, description: str = ""
-) -> Project:
-    """Record a new, not-yet-evaluated barrier between two domains.
-
-    A-B and B-A are the same barrier: adding a second one for a pair that already has
-    one recorded is refused rather than silently replacing or duplicating it.
-    """
-    domain_by_id(project, domain_a_id)
-    domain_by_id(project, domain_b_id)
-    if barrier_between(project, domain_a_id, domain_b_id) is not None:
-        raise ValueError("A barrier already exists between these two domains")
-    barrier = GalvanicBarrier(
-        id=uuid4(),
-        domain_a_id=domain_a_id,
-        domain_b_id=domain_b_id,
-        status=BarrierVerificationStatus.NOT_EVALUATED,
-        description=description.strip(),
-    )
-    return project.model_copy(update={"galvanic_barriers": (*project.galvanic_barriers, barrier)})
-
-
-def set_barrier_description(project: Project, barrier_id: UUID, description: str) -> Project:
-    return _replace_barrier(project, barrier_id, description=description.strip())
-
-
-def mark_verified(
-    project: Project,
-    barrier_id: UUID,
-    verification_method: VerificationMethod | None,
-    evidence_reference: str,
-) -> Project:
-    """Select verified galvanic isolation for a barrier, keeping its id.
-
-    A missing method or a blank evidence reference is refused by
-    ``GalvanicBarrier._requires_consistent_verification`` itself, with its own message -
-    this function does not duplicate that check.
-    """
-    stripped = evidence_reference.strip()
-    return _replace_barrier(
-        project,
-        barrier_id,
-        status=BarrierVerificationStatus.VERIFIED_GALVANIC_ISOLATION,
-        verification_method=verification_method,
-        evidence_reference=stripped or None,
-    )
-
-
-def unmark_verified(
-    project: Project, barrier_id: UUID, new_status: BarrierVerificationStatus
-) -> Project:
-    """Move a barrier off verified isolation, clearing the fields only that status may carry.
-
-    Restricted to the two non-verified statuses - the caller (the panel's uncheck dialog)
-    always resolves to one of them, and this refuses anything else rather than silently
-    accepting a wrong one.
-    """
-    if new_status is BarrierVerificationStatus.VERIFIED_GALVANIC_ISOLATION:
-        raise ValueError("Use mark_verified to select verified isolation")
-    return _replace_barrier(
-        project,
-        barrier_id,
-        status=new_status,
-        verification_method=None,
-        evidence_reference=None,
-    )
-
-
-def delete_barrier(project: Project, barrier_id: UUID) -> Project:
-    """Remove one barrier record, leaving every domain, net, and pair untouched.
-
-    Deleting is not a remap: unlike a domain delete, a barrier has nothing on either
-    side to reassign the record to. This exists for the barrier recorded against the
-    wrong pair - the fix there is to remove it and add the correct one, not to have no
-    way back short of deleting an entire domain.
-    """
-    _barrier_by_id(project, barrier_id)
-    barriers = tuple(b for b in project.galvanic_barriers if b.id != barrier_id)
-    return project.model_copy(update={"galvanic_barriers": barriers})
 
 
 def _describe_barrier_deletion(barrier: GalvanicBarrier, project: Project) -> str:

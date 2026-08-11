@@ -4,17 +4,17 @@ A domain records a name, a description, and whether it is the direct/source side
 equipment - nothing about isolation itself. Isolation is a property of a *pair* of domains
 and belongs to the barrier editor (a sibling panel on the same page), not to this one.
 
-Every transformation below is a pure, module-level function: it takes a :class:`Project`
-and returns a replacement one, built with a single ``model_copy`` so the result is never
-assembled through intermediate states that would each have to satisfy the project
-validator on their own. The panel at the bottom of this module is a thin Qt wrapper around
-them; the rule tests exercise the functions directly and need no event loop.
+The actual project edits - adding, renaming, describing, promoting, and remap-and-deleting
+a domain - are pure functions in
+:mod:`insulation_coordination.project.topology_edits`, reusable outside this panel. This
+module is a thin Qt wrapper around them: every action method reads the current project,
+calls the matching function, and emits the complete replacement; the rule tests exercise
+those functions directly and need no event loop.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -31,221 +31,19 @@ from PySide6.QtWidgets import (
 )
 
 from insulation_coordination.domain.enums import BarrierVerificationStatus
-from insulation_coordination.domain.project import NetClass, Project
-from insulation_coordination.domain.topology import GalvanicBarrier, GalvanicDomain, domain_by_id
+from insulation_coordination.domain.project import Project
+from insulation_coordination.domain.topology import GalvanicDomain
+from insulation_coordination.project.topology_edits import (
+    DomainDeletionPreview,
+    add_domain,
+    preview_domain_deletion,
+    remap_and_delete_domain,
+    rename_domain,
+    set_direct_domain,
+    set_domain_description,
+)
 
 _DOMAIN_ID_ROLE = Qt.ItemDataRole.UserRole
-
-# --- pure project transformations ----------------------------------------------------
-
-
-def _normalised(name: str) -> str:
-    return name.strip().casefold()
-
-
-def _requires_unique_name(project: Project, name: str, *, except_id: UUID | None = None) -> None:
-    normalised = _normalised(name)
-    for domain in project.galvanic_domains:
-        if domain.id == except_id:
-            continue
-        if _normalised(domain.name) == normalised:
-            raise ValueError(f"A galvanic domain named '{name.strip()}' already exists")
-
-
-def add_domain(project: Project, name: str, description: str = "") -> Project:
-    """Append a new domain, becoming the direct source domain if it is the first one.
-
-    A project with any domains must have exactly one direct source domain, so the very
-    first domain added has nothing to inherit that flag from and must carry it itself.
-    """
-    name = name.strip()
-    if not name:
-        raise ValueError("Domain name must not be empty")
-    _requires_unique_name(project, name)
-    domain = GalvanicDomain(
-        id=uuid4(),
-        name=name,
-        description=description.strip(),
-        is_direct_source_domain=not project.galvanic_domains,
-    )
-    return project.model_copy(update={"galvanic_domains": (*project.galvanic_domains, domain)})
-
-
-def rename_domain(project: Project, domain_id: UUID, new_name: str) -> Project:
-    """Rename a domain, keeping its id - renaming is never a delete-and-recreate."""
-    new_name = new_name.strip()
-    if not new_name:
-        raise ValueError("Domain name must not be empty")
-    domain_by_id(project, domain_id)
-    _requires_unique_name(project, new_name, except_id=domain_id)
-    domains = tuple(
-        domain.model_copy(update={"name": new_name}) if domain.id == domain_id else domain
-        for domain in project.galvanic_domains
-    )
-    return project.model_copy(update={"galvanic_domains": domains})
-
-
-def set_domain_description(project: Project, domain_id: UUID, description: str) -> Project:
-    domain_by_id(project, domain_id)
-    domains = tuple(
-        domain.model_copy(update={"description": description.strip()})
-        if domain.id == domain_id
-        else domain
-        for domain in project.galvanic_domains
-    )
-    return project.model_copy(update={"galvanic_domains": domains})
-
-
-def set_direct_domain(project: Project, domain_id: UUID) -> Project:
-    """Make ``domain_id`` the direct source domain, clearing whichever one held it before.
-
-    Both edits land in the one ``model_copy`` call, so the project is never left - even
-    transiently - holding two direct source domains or none.
-    """
-    domain_by_id(project, domain_id)
-    domains = tuple(
-        domain.model_copy(update={"is_direct_source_domain": domain.id == domain_id})
-        for domain in project.galvanic_domains
-    )
-    return project.model_copy(update={"galvanic_domains": domains})
-
-
-def referencing_nets(project: Project, domain_id: UUID) -> tuple[NetClass, ...]:
-    """Every net currently assigned to ``domain_id``, in project order."""
-    return tuple(net for net in project.net_classes if net.galvanic_domain_id == domain_id)
-
-
-def referencing_barriers(project: Project, domain_id: UUID) -> tuple[GalvanicBarrier, ...]:
-    """Every barrier that names ``domain_id`` on either side, in project order."""
-    return tuple(
-        barrier
-        for barrier in project.galvanic_barriers
-        if domain_id in (barrier.domain_a_id, barrier.domain_b_id)
-    )
-
-
-@dataclass(frozen=True)
-class DomainDeletionPreview:
-    """Everything a remap-and-delete would touch, computed before it is applied.
-
-    ``dropped_barriers`` are referencing barriers that a remap would turn into either a
-    self-loop (the other side was the replacement itself) or a duplicate of a barrier the
-    replacement already has recorded against that same domain; neither can survive the
-    project validator, so they are dropped rather than merged or reported as an error.
-    """
-
-    domain: GalvanicDomain
-    replacement: GalvanicDomain | None
-    nets: tuple[NetClass, ...]
-    remapped_barriers: tuple[GalvanicBarrier, ...]
-    dropped_barriers: tuple[GalvanicBarrier, ...]
-
-
-def _resolve_replacement(
-    project: Project, domain_id: UUID, replacement_id: UUID | None
-) -> GalvanicDomain | None:
-    if replacement_id is None:
-        if len(project.galvanic_domains) > 1:
-            raise ValueError("A replacement domain is required while other domains remain")
-        return None
-    if replacement_id == domain_id:
-        raise ValueError("Replacement domain must differ from the domain being deleted")
-    return domain_by_id(project, replacement_id)
-
-
-def preview_domain_deletion(
-    project: Project, domain_id: UUID, replacement_id: UUID | None
-) -> DomainDeletionPreview:
-    domain = domain_by_id(project, domain_id)
-    replacement = _resolve_replacement(project, domain_id, replacement_id)
-    barriers = referencing_barriers(project, domain_id)
-
-    remapped: list[GalvanicBarrier] = []
-    dropped: list[GalvanicBarrier] = []
-    for barrier in barriers:
-        other_id = barrier.domain_b_id if barrier.domain_a_id == domain_id else barrier.domain_a_id
-        if replacement is None or other_id == replacement.id:
-            # No replacement to move to, or the barrier is against the replacement itself -
-            # remapping either side onto the other would self-loop, which is not a barrier.
-            dropped.append(barrier)
-            continue
-        collides = any(
-            b.id != barrier.id and {b.domain_a_id, b.domain_b_id} == {replacement.id, other_id}
-            for b in project.galvanic_barriers
-        )
-        if collides:
-            # The replacement already has a barrier recorded against this same domain.
-            dropped.append(barrier)
-        else:
-            remapped.append(barrier)
-
-    return DomainDeletionPreview(
-        domain=domain,
-        replacement=replacement,
-        nets=referencing_nets(project, domain_id),
-        remapped_barriers=tuple(remapped),
-        dropped_barriers=tuple(dropped),
-    )
-
-
-def remap_and_delete_domain(
-    project: Project, domain_id: UUID, replacement_id: UUID | None
-) -> Project:
-    """Delete ``domain_id``, moving every net and non-colliding barrier to the replacement.
-
-    Applies as a single ``model_copy`` so the project only ever holds the fully-remapped
-    state; pairs are untouched because a domain edit never changes which net classes exist.
-    """
-    preview = preview_domain_deletion(project, domain_id, replacement_id)
-    replacement = preview.replacement
-    replacement_domain_id = None if replacement is None else replacement.id
-
-    net_classes = tuple(
-        net.model_copy(update={"galvanic_domain_id": replacement_domain_id})
-        if net.galvanic_domain_id == domain_id
-        else net
-        for net in project.net_classes
-    )
-
-    dropped_ids = {barrier.id for barrier in preview.dropped_barriers}
-    remapped_ids = {barrier.id for barrier in preview.remapped_barriers}
-    barriers = tuple(
-        _remap_barrier(barrier, domain_id, replacement_domain_id)
-        if barrier.id in remapped_ids
-        else barrier
-        for barrier in project.galvanic_barriers
-        if barrier.id not in dropped_ids
-    )
-
-    domains: list[GalvanicDomain] = []
-    for existing in project.galvanic_domains:
-        if existing.id == domain_id:
-            continue
-        if (
-            replacement is not None
-            and existing.id == replacement.id
-            and preview.domain.is_direct_source_domain
-            and not existing.is_direct_source_domain
-        ):
-            existing = existing.model_copy(update={"is_direct_source_domain": True})
-        domains.append(existing)
-
-    return project.model_copy(
-        update={
-            "net_classes": net_classes,
-            "galvanic_barriers": barriers,
-            "galvanic_domains": tuple(domains),
-        }
-    )
-
-
-def _remap_barrier(barrier: GalvanicBarrier, old_id: UUID, new_id: UUID | None) -> GalvanicBarrier:
-    if new_id is None:
-        raise AssertionError("a remapped barrier always has a replacement domain")
-    if barrier.domain_a_id == old_id:
-        return barrier.model_copy(update={"domain_a_id": new_id})
-    return barrier.model_copy(update={"domain_b_id": new_id})
-
 
 # --- Qt widget -------------------------------------------------------------------------
 

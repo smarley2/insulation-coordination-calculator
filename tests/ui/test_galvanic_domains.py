@@ -18,10 +18,8 @@ from insulation_coordination.domain.project import (
     ProjectMetadata,
 )
 from insulation_coordination.domain.topology import GalvanicBarrier, GalvanicDomain
-from insulation_coordination.ui.galvanic_domains import (
+from insulation_coordination.project.topology_edits import (
     DomainDeletionPreview,
-    GalvanicDomainsPanel,
-    _describe_preview,
     add_domain,
     preview_domain_deletion,
     referencing_barriers,
@@ -31,6 +29,7 @@ from insulation_coordination.ui.galvanic_domains import (
     set_direct_domain,
     set_domain_description,
 )
+from insulation_coordination.ui.galvanic_domains import GalvanicDomainsPanel, _describe_preview
 
 
 def _project(**overrides: object) -> Project:

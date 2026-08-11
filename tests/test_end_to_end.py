@@ -10,6 +10,7 @@ from pypdf import PdfReader
 
 from insulation_coordination.calculation.engine import calculate_pair
 from insulation_coordination.calculation.grouping import group_results
+from insulation_coordination.domain.display import OBC_APPLICABILITY_WARNING
 from insulation_coordination.domain.enums import (
     BarrierVerificationStatus,
     ConstructionType,
@@ -36,10 +37,9 @@ from insulation_coordination.domain.topology import (
 from insulation_coordination.project.pairs import reconcile_pairs
 from insulation_coordination.project.persistence import load_project, save_project_atomic
 from insulation_coordination.project.resolver import resolve_effective_case
+from insulation_coordination.project.topology_edits import rename_domain
 from insulation_coordination.report.latex import render_latex
 from insulation_coordination.report.model import build_report_model
-from insulation_coordination.ui.galvanic_domains import rename_domain
-from insulation_coordination.ui.topology_guidance import OBC_APPLICABILITY_WARNING
 from tests.calculation.conftest import semantic_annex_g_rules, semantic_part4_rules
 from tests.fixtures.topology_examples import (
     obc_isolated_project,

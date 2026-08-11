@@ -14,7 +14,7 @@ lingering ``NOT_EVALUATED``/blank state left for a reviewer to close. ``topology
 on any of them reports ``is_complete=True``.
 
 The on-board-charger (OBC) example's domains carry
-:data:`insulation_coordination.ui.topology_guidance.OBC_APPLICABILITY_WARNING` verbatim in
+:data:`insulation_coordination.domain.display.OBC_APPLICABILITY_WARNING` verbatim in
 their ``description`` field, so the warning is genuinely part of the fixture data and shows
 up in a rendered report - not only in this docstring.
 """
@@ -25,6 +25,7 @@ from decimal import Decimal
 from itertools import combinations
 from uuid import UUID
 
+from insulation_coordination.domain.display import OBC_APPLICABILITY_WARNING
 from insulation_coordination.domain.enums import (
     BarrierVerificationStatus,
     CircuitSourceRelationship,
@@ -50,7 +51,6 @@ from insulation_coordination.domain.project import (
 )
 from insulation_coordination.domain.topology import GalvanicBarrier, GalvanicDomain
 from insulation_coordination.project.pairs import canonical_pair_key, reconcile_pairs
-from insulation_coordination.ui.topology_guidance import OBC_APPLICABILITY_WARNING
 
 _DEFAULTS = ProjectDefaults(
     frequency_hz=Decimal(50),

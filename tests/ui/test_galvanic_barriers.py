@@ -20,14 +20,16 @@ from insulation_coordination.domain.project import (
     ProjectMetadata,
 )
 from insulation_coordination.domain.topology import GalvanicBarrier, GalvanicDomain
-from insulation_coordination.ui.galvanic_barriers import (
-    GalvanicBarriersPanel,
-    _describe_barrier_deletion,
+from insulation_coordination.project.topology_edits import (
     add_barrier,
     delete_barrier,
     mark_verified,
     set_barrier_description,
     unmark_verified,
+)
+from insulation_coordination.ui.galvanic_barriers import (
+    GalvanicBarriersPanel,
+    _describe_barrier_deletion,
 )
 
 

@@ -101,7 +101,7 @@ def test_obc_guidance_examples_carry_the_applicability_warning_verbatim() -> Non
     Shown as guide content, the example carries the one constant verbatim, never a
     paraphrase that could drift from it.
     """
-    from insulation_coordination.ui.topology_guidance import OBC_APPLICABILITY_WARNING
+    from insulation_coordination.domain.display import OBC_APPLICABILITY_WARNING
 
     guidance_ids_with_obc_examples = (
         TopologyGuidanceId.GALVANIC_DOMAIN_ASSIGNMENT,
