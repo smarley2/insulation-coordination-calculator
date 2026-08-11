@@ -297,7 +297,16 @@ def wireless_charging_project(required_rules: RulePackageReference | None = None
 # --- on-board charger (isolated / non-isolated) -------------------------------------
 
 
-def _obc_nets(base_seed: int, primary_domain_id: UUID, secondary_domain_id: UUID) -> tuple[NetClass, ...]:
+def _obc_nets(
+    base_seed: int, primary_domain_id: UUID, secondary_domain_id: UUID
+) -> tuple[NetClass, ...]:
+    """The six OBC nodes, shared by both variants so only their grouping differs.
+
+    A real non-isolated charger would have no isolation transformer, so "Transformer
+    Primary" is a node it would not carry. It stays here because the two variants must
+    differ in their domains and barrier alone: that is what the examples are contrasting,
+    and a second skeleton would let a reader attribute the difference to the net list.
+    """
     return (
         _circuit(
             base_seed + 1,

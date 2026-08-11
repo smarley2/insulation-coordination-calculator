@@ -260,9 +260,10 @@ def test_worked_topology_example_round_trips_and_builds_a_report(
 
 
 def test_obc_isolated_and_non_isolated_variants_record_different_barrier_status() -> None:
-    """The isolated and non-isolated OBC examples share a net skeleton but differ in exactly
+    """Only the domain and barrier assignment separates the two OBC examples.
 
-    the domain/barrier assignment - proving the pair matrix does not depend on it.
+    They share one net skeleton, so an identical pair matrix on both proves the matrix does
+    not depend on how the nets are grouped into domains.
     """
     isolated = obc_isolated_project()
     non_isolated = obc_non_isolated_project()

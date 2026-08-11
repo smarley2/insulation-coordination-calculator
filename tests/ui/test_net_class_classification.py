@@ -96,9 +96,10 @@ def test_dvc_guidance_covers_exactly_the_four_iec_classes() -> None:
 
 
 def test_obc_guidance_examples_carry_the_applicability_warning_verbatim() -> None:
-    """Wherever the OBC worked example is shown as guide content, the warning must ride
+    """The applicability warning travels with the OBC example wherever it is shown.
 
-    along with it - never referenced by a paraphrase that could drift from it.
+    Shown as guide content, the example carries the one constant verbatim, never a
+    paraphrase that could drift from it.
     """
     from insulation_coordination.ui.topology_guidance import OBC_APPLICABILITY_WARNING
 

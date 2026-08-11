@@ -29,7 +29,7 @@ from insulation_coordination.domain.enums import (
 from insulation_coordination.ui.voltage_guidance import VoltageGuidance, register_guidance
 
 #: This application's own statement of scope for the on-board-charger (OBC) worked
-#: example (see :mod:`tests.fixtures.topology_examples`): IEC 62477-1:2022 does not cover
+#: example: IEC 62477-1:2022 does not cover
 #: EV/OBC equipment, so the OBC example is a topology illustration only, never a claim of
 #: compliance. Kept as one constant so every place the OBC example appears - a guidance
 #: example below, or the example project's own domain descriptions - carries the identical
