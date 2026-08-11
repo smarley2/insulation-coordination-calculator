@@ -445,6 +445,53 @@ def test_source_render_failure_keeps_dialog_constructible_and_blocked(
     assert "synthetic renderer failure" in dialog.status_text.lower()
 
 
+def test_source_block_cancels_active_calibration_and_prevents_late_mutation(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+    dialog.notes_edit.setText("Attempted synthetic recalibration.")
+    before = dialog.draft
+    dialog.begin_calibration()
+    dialog._record_calibration_corner(QPointF(30, 20))
+    path.unlink()
+
+    dialog._load_current_variant(dialog._variant_selector.currentIndex())
+
+    def accept_bounds_if_open() -> None:
+        active = QApplication.activeModalWidget()
+        if not isinstance(active, QDialog):
+            return
+        for field, value in zip(
+            active.findChildren(QLineEdit),
+            ("1", "1000", "1", "100"),
+            strict=True,
+        ):
+            field.setText(value)
+        active.accept()
+
+    QTimer.singleShot(0, accept_bounds_if_open)
+    dialog._record_calibration_corner(QPointF(300, 190))
+    QApplication.processEvents()
+    dialog.set_plot_and_axes(
+        QPointF(30, 20),
+        QPointF(300, 190),
+        Decimal(1),
+        Decimal(1000),
+        Decimal(1),
+        Decimal(100),
+    )
+
+    assert dialog.draft == before
+    assert dialog._view.capture_clicks is False
+    assert dialog._calibration_corners == []
+
+
 def test_table_edit_redraws_the_source_aligned_overlay_without_saving(
     qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
 ) -> None:
@@ -573,6 +620,27 @@ def test_overlay_renders_one_current_sibling_in_a_secondary_style(
     assert dialog._sibling_items[0].pen().color().name() != "#e53935"
     assert dialog.overlay_item.pen().color().name() == "#e53935"
     assert dialog.point_handle_count == 2
+
+
+def test_unfilled_selected_slot_still_shows_current_same_figure_sibling(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    draft = _review_variants(
+        draft,
+        (("synthetic.curve.5.1", Decimal(100), Decimal(20)),),
+    )
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+
+    dialog._variant_selector.setCurrentIndex(2)
+
+    assert dialog.point_table.rowCount() == 0
+    assert len(dialog._sibling_items) == 1
 
 
 def test_overlay_renders_multiple_current_siblings(

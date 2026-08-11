@@ -49,6 +49,7 @@ from insulation_coordination.rules.importer import recipes as recipe_registry
 from insulation_coordination.rules.importer.approval import (
     ApprovalError,
     _manual_curve_review_is_current,
+    _source_matches,
 )
 from insulation_coordination.rules.importer.curves import (
     ManualPlotCalibration,
@@ -517,6 +518,11 @@ class CurveReviewDialog(QDialog):
     ) -> None:
         """Save the same calibration captured by the two-click interaction."""
 
+        if not self._source_loaded:
+            self._status.setText(
+                "A verified local source must be loaded before calibration."
+            )
+            return
         if not self._require_notes("calibration"):
             return
         self._calibration_corners = [top_left, bottom_right]
@@ -703,6 +709,8 @@ class CurveReviewDialog(QDialog):
             control.setEnabled(available)
 
     def _block_source(self, error: Exception) -> None:
+        self._view.capture_clicks = False
+        self._calibration_corners.clear()
         self._scene.clear()
         self._overlay_item = None
         self._sibling_items = []
@@ -759,6 +767,10 @@ class CurveReviewDialog(QDialog):
     def _save_calibration(
         self, x_min: Decimal, x_max: Decimal, y_min: Decimal, y_max: Decimal
     ) -> None:
+        if not self._source_loaded:
+            raise ApprovalError(
+                "a verified local source must be loaded before calibration"
+            )
         source = self._current_source(self._current_variant())
         figure, _calibration = self._figure_and_calibration(source)
         if source.figure is None:
@@ -902,7 +914,7 @@ class CurveReviewDialog(QDialog):
             for rule in self._model.draft.curves
             for variant in rule.variants
             if variant.id != selected_id
-            and variant.source == source
+            and _source_matches(variant.source, source)
             and _manual_curve_review_is_current(self._model.draft, variant)
         )
 
