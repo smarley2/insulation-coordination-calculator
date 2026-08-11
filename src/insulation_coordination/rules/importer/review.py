@@ -1701,13 +1701,6 @@ def placeholder_formula_values(expression: Any) -> tuple[Decimal, ...]:
     return tuple(values)
 
 
-def _curve_rule(draft: ImportedRuleDraft, rule_id: str) -> PiecewiseCurveRule:
-    rule = next((rule for rule in draft.curves if rule.id == rule_id), None)
-    if rule is None:
-        raise ValueError(f"unknown curve rule: {rule_id}")
-    return rule
-
-
 def _manual_recipes() -> tuple[StandardRecipe, ...]:
     from insulation_coordination.rules.importer.recipes import RECIPES
 
@@ -1933,6 +1926,13 @@ def replace_manual_curve_variant(
         for point in source_points
     ):
         raise ApprovalError("manual curve points must be inside reviewed axis bounds")
+    if source_points and (
+        source_points[0].x != calibration.x_min
+        or source_points[-1].x != calibration.x_max
+    ):
+        raise ApprovalError(
+            "manual curve points must cover the full reviewed X-axis domain"
+        )
     x_scale = _source_x_scale(spec)
     points = tuple(
         CurvePoint(x=point.x * x_scale, y=point.y) for point in source_points

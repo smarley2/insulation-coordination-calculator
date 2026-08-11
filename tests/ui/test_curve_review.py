@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from pypdf import PdfWriter
 from PySide6.QtCore import QPointF, Qt, QTimer
-from PySide6.QtWidgets import QApplication, QDialog, QLineEdit
+from PySide6.QtWidgets import QApplication, QDialog, QLineEdit, QPushButton
 
 from insulation_coordination.domain.rules import (
     ApprovalRecord,
@@ -88,6 +88,12 @@ def manual_draft(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
             dvc_context="as",
             environment_context="dry",
         ),
+        FaultTimeVoltageSelector(
+            subject="accessible_circuit",
+            voltage_basis="ac_peak",
+            dvc_context="as",
+            environment_context="wet",
+        ),
     )
     recipe = StandardRecipe(
         id=identity.recipe_id,
@@ -147,7 +153,7 @@ def manual_draft(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
             ),
             expected_contract="Synthetic curve review.",
         )
-        for index in (1, 2)
+        for index in (1, 2, 3)
     )
     package = synthetic_rule_package()
     draft = ImportedRuleDraft(
@@ -358,6 +364,87 @@ def test_dialog_exposes_manual_controls_without_retired_reconstruction_actions(
     assert not hasattr(dialog, "_reject_button")
 
 
+def _assert_source_failure_blocks_mutation(dialog: CurveReviewDialog) -> None:
+    assert dialog.source_loaded is False
+    assert "source unavailable" in dialog.status_text.lower()
+    assert dialog.point_table.isEnabled() is False
+    buttons = {button.text(): button for button in dialog.findChildren(QPushButton)}
+    for label in (
+        "Add point",
+        "Remove point",
+        "Set plot and axes…",
+        "Save points",
+        "Accept variant",
+    ):
+        assert buttons[label].isEnabled() is False
+
+
+def test_missing_source_file_keeps_dialog_constructible_and_blocked(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    path.unlink()
+
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+
+    _assert_source_failure_blocks_mutation(dialog)
+    assert "could not be read" in dialog.status_text.lower()
+
+
+def test_source_hash_mismatch_keeps_dialog_constructible_and_blocked(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    document = draft.manifest.source_documents[0].model_copy(
+        update={"sha256": "f" * 64}
+    )
+    draft = draft.model_copy(
+        update={
+            "manifest": draft.manifest.model_copy(
+                update={"source_documents": (document,)}
+            )
+        }
+    )
+
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+
+    _assert_source_failure_blocks_mutation(dialog)
+    assert "sha-256 does not match" in dialog.status_text.lower()
+
+
+def test_source_render_failure_keeps_dialog_constructible_and_blocked(
+    qtbot,
+    local_manual_draft: tuple[ImportedRuleDraft, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    draft, path = local_manual_draft
+
+    def fail_render(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("synthetic renderer failure")
+
+    monkeypatch.setattr("insulation_coordination.ui.curve_review.pdfplumber.open", fail_render)
+
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+
+    _assert_source_failure_blocks_mutation(dialog)
+    assert "synthetic renderer failure" in dialog.status_text.lower()
+
+
 def test_table_edit_redraws_the_source_aligned_overlay_without_saving(
     qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
 ) -> None:
@@ -374,6 +461,169 @@ def test_table_edit_redraws_the_source_aligned_overlay_without_saving(
     assert dialog.point_text(1) == ("10", "25")
     assert dialog.overlay_path.elementCount() == dialog.point_table.rowCount()
     assert dialog.draft == draft
+
+
+def test_transformed_image_source_uses_the_same_scene_coordinates_as_vector_source(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    vector_dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(vector_dialog)
+    figure = draft.raw_figures[0]
+    raster_figure = RawFigure(
+        source=figure.source,
+        source_mode="image_xobject",
+        source_bbox=figure.source_bbox,
+        pixel_size=(800, 600),
+        transform=(
+            Decimal(2),
+            Decimal("0.25"),
+            Decimal("-0.5"),
+            Decimal(-3),
+            Decimal(40),
+            Decimal(250),
+        ),
+        artifact_sha256=figure.artifact_sha256,
+    )
+    raster_dialog = CurveReviewDialog(
+        draft.model_copy(update={"raw_figures": (raster_figure,)}),
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(raster_dialog)
+
+    assert raster_dialog._plot_item is not None
+    assert vector_dialog._plot_item is not None
+    assert raster_dialog._plot_item.rect() == vector_dialog._plot_item.rect()
+    assert raster_dialog.point_handle_positions == vector_dialog.point_handle_positions
+    assert tuple(
+        (raster_dialog.overlay_path.elementAt(index).x,
+         raster_dialog.overlay_path.elementAt(index).y)
+        for index in range(raster_dialog.overlay_path.elementCount())
+    ) == tuple(
+        (vector_dialog.overlay_path.elementAt(index).x,
+         vector_dialog.overlay_path.elementAt(index).y)
+        for index in range(vector_dialog.overlay_path.elementCount())
+    )
+
+
+def _review_variants(
+    draft: ImportedRuleDraft,
+    variants: tuple[tuple[str, Decimal, Decimal], ...],
+) -> ImportedRuleDraft:
+    model = CurveReviewModel(draft)
+    for variant_id, start_y, end_y in variants:
+        if not any(
+            variant.id == variant_id
+            for rule in model.draft.curves
+            for variant in rule.variants
+        ):
+            model.replace_points(
+                variant_id,
+                (
+                    CurvePoint(x=Decimal(1), y=start_y),
+                    CurvePoint(x=Decimal(1000), y=end_y),
+                ),
+                actor="Reviewer",
+                notes="Entered synthetic points.",
+            )
+        model.review_variant(
+            variant_id,
+            actor="Reviewer",
+            notes="Reviewed synthetic points.",
+        )
+    return model.draft
+
+
+def test_overlay_has_no_sibling_path_without_a_current_sibling_review(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog._sibling_items == []
+    assert dialog.point_handle_count == 2
+
+
+def test_overlay_renders_one_current_sibling_in_a_secondary_style(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    draft = _review_variants(
+        draft,
+        (("synthetic.curve.5.2", Decimal(80), Decimal(10)),),
+    )
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+
+    assert len(dialog._sibling_items) == 1
+    assert dialog._sibling_items[0].pen().color().name() != "#e53935"
+    assert dialog.overlay_item.pen().color().name() == "#e53935"
+    assert dialog.point_handle_count == 2
+
+
+def test_overlay_renders_multiple_current_siblings(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    draft = _review_variants(
+        draft,
+        (
+            ("synthetic.curve.5.2", Decimal(80), Decimal(10)),
+            ("synthetic.curve.5.3", Decimal(60), Decimal(5)),
+        ),
+    )
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+
+    assert len(dialog._sibling_items) == 2
+    assert dialog.point_handle_count == 2
+
+
+def test_selector_switch_moves_handles_to_selected_curve_and_keeps_sibling_secondary(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    draft = _review_variants(
+        draft,
+        (
+            ("synthetic.curve.5.1", Decimal(100), Decimal(20)),
+            ("synthetic.curve.5.2", Decimal(80), Decimal(10)),
+        ),
+    )
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+    first_selected = dialog.overlay_path.elementAt(0).y
+    first_sibling = dialog._sibling_items[0].path().elementAt(0).y
+
+    dialog._variant_selector.setCurrentIndex(1)
+
+    assert dialog.overlay_path.elementAt(0).y == pytest.approx(first_sibling)
+    assert dialog._sibling_items[0].path().elementAt(0).y == pytest.approx(
+        first_selected
+    )
+    assert dialog.point_handle_count == 2
 
 
 def test_handle_move_updates_table_with_source_axis_values(
@@ -411,6 +661,26 @@ def test_invalid_table_input_does_not_mutate_the_draft(
 
     assert dialog.draft == before
     assert "valid decimal" in dialog.status_text.lower()
+
+
+def test_save_rejects_points_that_do_not_cover_the_reviewed_x_domain(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+    dialog.notes_edit.setText("Correct synthetic points.")
+    dialog.set_point_text(0, "10", "100")
+    before = dialog.draft
+
+    dialog.save_points()
+
+    assert dialog.draft == before
+    assert "full reviewed x-axis domain" in dialog.status_text.lower()
 
 
 def test_accept_rejects_unsaved_visible_table_changes(
@@ -634,6 +904,7 @@ def test_empty_manual_draft_lists_every_recipe_slot(manual_draft: ImportedRuleDr
     assert tuple(identifier for _label, identifier in entries) == (
         "synthetic.curve.5.1",
         "synthetic.curve.5.2",
+        "synthetic.curve.5.3",
     )
     assert entries[0][0].startswith("Figure 5 — Accessible circuit · DC · DVC B · Dry")
 

@@ -46,7 +46,10 @@ from insulation_coordination.domain.rules import (
 )
 from insulation_coordination.rules.importer import canonical_model_sha256
 from insulation_coordination.rules.importer import recipes as recipe_registry
-from insulation_coordination.rules.importer.approval import ApprovalError
+from insulation_coordination.rules.importer.approval import (
+    ApprovalError,
+    _manual_curve_review_is_current,
+)
 from insulation_coordination.rules.importer.curves import (
     ManualPlotCalibration,
     RawFigure,
@@ -346,6 +349,7 @@ class CurveReviewDialog(QDialog):
         self._view = _CurveGraphicsView(self._scene)
         self._view.scene_clicked.connect(self._record_calibration_corner)
         self._overlay_item: QGraphicsPathItem | None = None
+        self._sibling_items: list[QGraphicsPathItem] = []
         self._plot_item: QGraphicsRectItem | None = None
         self._handles: list[_CurvePointHandle] = []
         self._handle_rows: list[int] = []
@@ -373,12 +377,12 @@ class CurveReviewDialog(QDialog):
         self.point_table.itemChanged.connect(self._table_changed)
         layout.addWidget(self.point_table)
         point_actions = QHBoxLayout()
-        add = QPushButton("Add point")
-        add.clicked.connect(self.add_point)
-        point_actions.addWidget(add)
-        remove = QPushButton("Remove point")
-        remove.clicked.connect(self.remove_point)
-        point_actions.addWidget(remove)
+        self.add_point_button = QPushButton("Add point")
+        self.add_point_button.clicked.connect(self.add_point)
+        point_actions.addWidget(self.add_point_button)
+        self.remove_point_button = QPushButton("Remove point")
+        self.remove_point_button.clicked.connect(self.remove_point)
+        point_actions.addWidget(self.remove_point_button)
         self.calibration_button = QPushButton("Set plot and axes…")
         self.calibration_button.clicked.connect(self.begin_calibration)
         point_actions.addWidget(self.calibration_button)
@@ -401,6 +405,15 @@ class CurveReviewDialog(QDialog):
         close.clicked.connect(self.accept)
         actions.addWidget(close)
         layout.addLayout(actions)
+
+        self._mutation_controls = (
+            self.add_point_button,
+            self.remove_point_button,
+            self.calibration_button,
+            self.save_points_button,
+            self.accept_variant_button,
+        )
+        self._set_source_available(False)
 
         if self._variant_selector.count():
             self._load_current_variant(0)
@@ -447,7 +460,12 @@ class CurveReviewDialog(QDialog):
         )
 
     def set_overlay_visible(self, visible: bool) -> None:
-        for item in (self._overlay_item, self._plot_item, *self._handles):
+        for item in (
+            self._overlay_item,
+            self._plot_item,
+            *self._sibling_items,
+            *self._handles,
+        ):
             if item is not None:
                 item.setVisible(visible)
 
@@ -632,23 +650,34 @@ class CurveReviewDialog(QDialog):
 
     def _load_current_variant(self, _index: int) -> None:
         variant = self._current_variant()
-        source = self._current_source(variant)
-        path = self._verified_path(source)
-        figure, calibration = self._figure_and_calibration(source)
-        assert source.page is not None
-        x0, top, x1, bottom = figure.source_bbox
-        bbox = (float(x0), float(top), float(x1), float(bottom))
-        with pdfplumber.open(path, password=self._pdf_passwords.get(path, "")) as pdf:
-            rendered = pdf.pages[source.page - 1].crop(bbox).to_image(resolution=110)
-            buffer = io.BytesIO()
-            rendered.save(buffer, format="PNG")
-        image = QImage()
-        if not image.loadFromData(buffer.getvalue()):
-            raise ApprovalError("local source PDF crop could not be decoded")
+        self._set_source_available(False)
+        try:
+            source = self._current_source(variant)
+            path = self._verified_path(source)
+            figure, calibration = self._figure_and_calibration(source)
+            if source.page is None:
+                raise ApprovalError("curve source page is unavailable")
+            x0, top, x1, bottom = figure.source_bbox
+            bbox = (float(x0), float(top), float(x1), float(bottom))
+            with pdfplumber.open(
+                path, password=self._pdf_passwords.get(path, "")
+            ) as pdf:
+                if not 1 <= source.page <= len(pdf.pages):
+                    raise ApprovalError("curve source page is unavailable")
+                rendered = pdf.pages[source.page - 1].crop(bbox).to_image(resolution=110)
+                buffer = io.BytesIO()
+                rendered.save(buffer, format="PNG")
+            image = QImage()
+            if not image.loadFromData(buffer.getvalue()):
+                raise ApprovalError("local source PDF crop could not be decoded")
+        except Exception as error:  # noqa: BLE001 - block every PDF/render failure in the UI.
+            self._block_source(error)
+            return
 
         self._scene.clear()
         self._scene.addPixmap(QPixmap.fromImage(image))
         self._overlay_item = None
+        self._sibling_items = []
         self._plot_item = None
         self._handles = []
         self._handle_rows = []
@@ -656,7 +685,7 @@ class CurveReviewDialog(QDialog):
         self._redraw_from_table()
         self._scene.setSceneRect(0, 0, image.width(), image.height())
         self._view.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
-        self._source_loaded = True
+        self._set_source_available(True)
         status = (
             f"Verified {source.standard} page {source.page}; "
             "source pixels remain local and are not stored in the draft."
@@ -666,6 +695,25 @@ class CurveReviewDialog(QDialog):
         if calibration is None:
             status += " Set the plot rectangle and log-axis bounds before saving points."
         self._status.setText(status)
+
+    def _set_source_available(self, available: bool) -> None:
+        self._source_loaded = available
+        self.point_table.setEnabled(available)
+        for control in self._mutation_controls:
+            control.setEnabled(available)
+
+    def _block_source(self, error: Exception) -> None:
+        self._scene.clear()
+        self._overlay_item = None
+        self._sibling_items = []
+        self._plot_item = None
+        self._handles = []
+        self._handle_rows = []
+        self._syncing = True
+        self.point_table.setRowCount(0)
+        self._syncing = False
+        detail = str(error).strip() or type(error).__name__
+        self._status.setText(f"Source unavailable; manual editing is blocked: {detail}")
 
     def _populate_table(self, variant: FaultTimeVoltageVariant | None) -> None:
         self._syncing = True
@@ -790,6 +838,22 @@ class CurveReviewDialog(QDialog):
                 float(calibration.bottom - calibration.top),
                 QPen(QColor("#1976d2"), 1.0),
             )
+            for sibling in self._reviewed_siblings(source):
+                sibling_path = QPainterPath()
+                scale = self._model.source_x_scale(sibling.id)
+                for point in sibling.points:
+                    x, y = source_point_to_pixel(
+                        CurvePoint(x=point.x / scale, y=point.y), calibration
+                    )
+                    if sibling_path.elementCount() == 0:
+                        sibling_path.moveTo(float(x), float(y))
+                    else:
+                        sibling_path.lineTo(float(x), float(y))
+                sibling_pen = QPen(QColor("#607d8b"), 1.5)
+                sibling_pen.setStyle(Qt.PenStyle.DashLine)
+                self._sibling_items.append(
+                    self._scene.addPath(sibling_path, sibling_pen)
+                )
             self._syncing = True
             try:
                 for row, point in points:
@@ -815,13 +879,32 @@ class CurveReviewDialog(QDialog):
         self.set_overlay_visible(self._overlay_toggle.isChecked())
 
     def _remove_overlay(self) -> None:
-        for item in (self._overlay_item, self._plot_item, *self._handles):
+        for item in (
+            self._overlay_item,
+            self._plot_item,
+            *self._sibling_items,
+            *self._handles,
+        ):
             if item is not None:
                 self._scene.removeItem(item)
         self._overlay_item = None
+        self._sibling_items = []
         self._plot_item = None
         self._handles = []
         self._handle_rows = []
+
+    def _reviewed_siblings(
+        self, source: SourceReference
+    ) -> tuple[FaultTimeVoltageVariant, ...]:
+        selected_id = self._variant_selector.currentData()
+        return tuple(
+            variant
+            for rule in self._model.draft.curves
+            for variant in rule.variants
+            if variant.id != selected_id
+            and variant.source == source
+            and _manual_curve_review_is_current(self._model.draft, variant)
+        )
 
     def _constrain_handle(self, row: int, candidate: QPointF) -> QPointF:
         source = self._current_source(self._current_variant())

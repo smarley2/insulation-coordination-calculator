@@ -401,6 +401,42 @@ def test_source_duration_converts_once_to_rule_unit(
     assert variant.points[-1].x == Decimal("1")
 
 
+@pytest.mark.parametrize(
+    "source_points",
+    (
+        (
+            CurvePoint(x=Decimal("10"), y=Decimal("100")),
+            CurvePoint(x=Decimal("1000"), y=Decimal("20")),
+        ),
+        (
+            CurvePoint(x=Decimal("1"), y=Decimal("100")),
+            CurvePoint(x=Decimal("100"), y=Decimal("20")),
+        ),
+    ),
+)
+def test_manual_variant_replacement_requires_full_reviewed_x_domain(
+    synthetic_curve_draft: ImportedRuleDraft,
+    source_points: tuple[CurvePoint, ...],
+) -> None:
+    calibrated = set_manual_curve_calibration(
+        synthetic_curve_draft,
+        figure="5",
+        calibration=_calibration(),
+        actor="Reviewer",
+        notes="Marked synthetic plot rectangle.",
+    )
+
+    with pytest.raises(ApprovalError, match="full reviewed X-axis domain"):
+        replace_manual_curve_variant(
+            calibrated,
+            variant_id="synthetic.curve.5.1",
+            source_points=source_points,
+            actor="Reviewer",
+            notes="Entered incomplete synthetic curve points.",
+            input_origin="empty",
+        )
+
+
 @pytest.fixture
 def two_reviewed_curve_draft(synthetic_curve_draft: ImportedRuleDraft) -> ImportedRuleDraft:
     calibrated = set_manual_curve_calibration(
