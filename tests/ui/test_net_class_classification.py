@@ -218,7 +218,10 @@ def test_dvc_guide_reads_the_project_s_active_rules_package(
     assert dialog is not None
     qtbot.addWidget(dialog)
     assert dialog.isVisible()
-    assert "AC voltage (RMS): 11 V" in dialog.body_text()
+    from insulation_coordination.domain.dvc import VOLTAGE_QUANTITY_COLUMN_TOKENS
+
+    rms_label = dict(VOLTAGE_QUANTITY_COLUMN_TOKENS)["voltage-quantity-1"]
+    assert f"{rms_label}: 11 V" in dialog.body_text()
 
 
 def test_dvc_guide_degrades_gracefully_with_no_rules_package_loaded(

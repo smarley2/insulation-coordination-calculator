@@ -22,6 +22,16 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.tables impor
 )
 from tests.fixtures.synthetic_rules import synthetic_dvc_rule_package, synthetic_rule_package
 
+
+def _label(column: int) -> str:
+    """Our own label for Table 2's Nth data column, read from the one place it is set.
+
+    Asserting the label text here would pin wording that deliberately belongs to a single
+    constant - the source's own headings may not be committed, so ours are free to change.
+    """
+    return dict(VOLTAGE_QUANTITY_COLUMN_TOKENS)[f"voltage-quantity-{column}"]
+
+
 # --- structural guard: the row/column token mapping never silently drifts ----------
 
 
@@ -108,7 +118,7 @@ def test_dvc_as_limits_render_numeric_values_with_their_source() -> None:
     service = DvcGuidanceService(synthetic_dvc_rule_package())
     summary = service.limits(DecisiveVoltageClass.DVC_AS)
     assert summary.available is True
-    rms = next(q for q in summary.quantities if q.label == "AC voltage (RMS)")
+    rms = next(q for q in summary.quantities if q.label == _label(1))
     assert rms.status == "value"
     assert rms.value == Decimal(11)
     assert rms.unit == "V"
@@ -119,7 +129,7 @@ def test_dvc_as_limits_render_numeric_values_with_their_source() -> None:
 def test_dvc_b_impulse_withstand_renders_as_a_reference_not_a_number() -> None:
     service = DvcGuidanceService(synthetic_dvc_rule_package())
     summary = service.limits(DecisiveVoltageClass.DVC_B)
-    impulse = next(q for q in summary.quantities if q.label == "impulse withstand voltage")
+    impulse = next(q for q in summary.quantities if q.label == _label(4))
     assert impulse.status == "reference"
     assert impulse.value is None
     assert impulse.reference_rule_id == "iec62477_2022.supply.impulse_by_system_voltage_ovc"
@@ -128,11 +138,7 @@ def test_dvc_b_impulse_withstand_renders_as_a_reference_not_a_number() -> None:
 def test_dvc_b_fault_condition_column_renders_as_a_curve_reference() -> None:
     service = DvcGuidanceService(synthetic_dvc_rule_package())
     summary = service.limits(DecisiveVoltageClass.DVC_B)
-    fault = next(
-        q
-        for q in summary.quantities
-        if q.label == "voltage during single-fault and abnormal operating conditions"
-    )
+    fault = next(q for q in summary.quantities if q.label == _label(5))
     assert fault.status == "reference"
     assert fault.reference_rule_id == "iec62477_2022.dvc.fault_time_voltage"
 
@@ -140,11 +146,7 @@ def test_dvc_b_fault_condition_column_renders_as_a_curve_reference() -> None:
 def test_dvc_c_not_applicable_cell_says_so_without_a_number() -> None:
     service = DvcGuidanceService(synthetic_dvc_rule_package())
     summary = service.limits(DecisiveVoltageClass.DVC_C)
-    fault = next(
-        q
-        for q in summary.quantities
-        if q.label == "voltage during single-fault and abnormal operating conditions"
-    )
+    fault = next(q for q in summary.quantities if q.label == _label(5))
     assert fault.status == "not_applicable"
     assert fault.value is None
 
@@ -153,7 +155,7 @@ def test_dvc_c_uncovered_cell_is_unavailable_rather_than_guessed() -> None:
     """The fixture only covers one column for DVC C; the rest must not be invented."""
     service = DvcGuidanceService(synthetic_dvc_rule_package())
     summary = service.limits(DecisiveVoltageClass.DVC_C)
-    mean = next(q for q in summary.quantities if q.label == "DC voltage (mean)")
+    mean = next(q for q in summary.quantities if q.label == _label(3))
     assert mean.status == "unavailable"
     assert mean.value is None
 

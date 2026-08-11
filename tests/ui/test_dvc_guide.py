@@ -7,7 +7,10 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 
-from insulation_coordination.domain.dvc import DvcGuidanceService
+from insulation_coordination.domain.dvc import (
+    VOLTAGE_QUANTITY_COLUMN_TOKENS,
+    DvcGuidanceService,
+)
 from insulation_coordination.domain.enums import DecisiveVoltageClass
 from insulation_coordination.ui.dvc_guide import (
     DVC_AS_CONDITION_NOTE,
@@ -15,6 +18,11 @@ from insulation_coordination.ui.dvc_guide import (
     DvcGuideDialog,
 )
 from tests.fixtures.synthetic_rules import synthetic_dvc_rule_package, synthetic_rule_package
+
+
+def _label(column: int) -> str:
+    """Our own label for Table 2's Nth data column, read from the one place it is set."""
+    return dict(VOLTAGE_QUANTITY_COLUMN_TOKENS)[f"voltage-quantity-{column}"]
 
 
 def test_dialog_opens_and_shows_the_class_in_its_title(qtbot) -> None:
@@ -53,7 +61,7 @@ def test_synthetic_package_limits_render_with_their_source(qtbot) -> None:
     dialog = DvcGuideDialog(service, DecisiveVoltageClass.DVC_AS)
     qtbot.addWidget(dialog)
     body = dialog.body_text()
-    assert "AC voltage (RMS): 11 V" in body
+    assert f"{_label(1)}: 11 V" in body
     assert "IEC 62477-1 2022" in body
     assert "Table synthetic-table-2" in body
 
@@ -63,7 +71,7 @@ def test_a_reference_cell_names_the_rule_it_refers_to_not_a_number(qtbot) -> Non
     dialog = DvcGuideDialog(service, DecisiveVoltageClass.DVC_B)
     qtbot.addWidget(dialog)
     body = dialog.body_text()
-    assert "impulse withstand voltage: refers to" in body
+    assert f"{_label(4)}: refers to" in body
     assert "iec62477_2022.supply.impulse_by_system_voltage_ovc" in body
 
 
@@ -72,7 +80,7 @@ def test_a_not_applicable_cell_says_so(qtbot) -> None:
     dialog = DvcGuideDialog(service, DecisiveVoltageClass.DVC_C)
     qtbot.addWidget(dialog)
     body = dialog.body_text()
-    assert "voltage during single-fault and abnormal operating conditions: not applicable" in body
+    assert f"{_label(5)}: not applicable" in body
 
 
 def test_protection_relationships_render_with_their_source(qtbot) -> None:

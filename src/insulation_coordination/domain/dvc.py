@@ -46,19 +46,17 @@ VOLTAGE_LIMITS_ROW_TOKENS: Mapping[DecisiveVoltageClass, Identifier] = {
     DecisiveVoltageClass.DVC_C: "dvc-4",
 }
 
-# Maintainer confirmed 2026-08-11: Table 2 has five data columns, in this order - AC
-# voltage (RMS), AC voltage (peak), DC voltage (mean), impulse withstand voltage, and
-# voltage during single-fault and abnormal operating conditions - and the projection's
-# column token for data column N is f"voltage-quantity-{N}".
+# Maintainer confirmed 2026-08-11 which quantity each of Table 2's five data columns
+# holds, and the projection's column token for data column N is f"voltage-quantity-{N}".
+# The labels below are this application's own wording for those quantities, never the
+# source's column headings: a heading is licensed text and may not be committed to this
+# public repository, so each one describes the quantity in our words instead.
 VOLTAGE_QUANTITY_COLUMN_TOKENS: tuple[tuple[Identifier, str], ...] = (
-    ("voltage-quantity-1", "AC voltage (RMS)"),
-    ("voltage-quantity-2", "AC voltage (peak)"),
-    ("voltage-quantity-3", "DC voltage (mean)"),
-    ("voltage-quantity-4", "impulse withstand voltage"),
-    (
-        "voltage-quantity-5",
-        "voltage during single-fault and abnormal operating conditions",
-    ),
+    ("voltage-quantity-1", "continuous AC working voltage, RMS"),
+    ("voltage-quantity-2", "continuous AC working voltage, peak"),
+    ("voltage-quantity-3", "continuous DC working voltage, mean"),
+    ("voltage-quantity-4", "withstand level for a transient impulse"),
+    ("voltage-quantity-5", "limit while a fault or abnormal operation persists"),
 )
 
 # Assumption, not a maintainer confirmation: Table 3 has three data rows
@@ -243,6 +241,9 @@ class DvcGuidanceService:
             )
         impulse = _evaluate_safe(rules[f"{ids.DVC_VOLTAGE_LIMITS}.impulse_reference"], inputs)
         if impulse is not None and impulse.status == "matched":
+            # The rule carries an AC and a DC reference, and the guide has no supply to
+            # choose between them: it names the base rule, which is the one a reader can
+            # look up, and leaves the AC/DC split to whoever has a system voltage in hand.
             return DvcVoltageQuantity(
                 label=label,
                 status="reference",
