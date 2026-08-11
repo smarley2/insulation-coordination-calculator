@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pytest
 from pypdf import PdfWriter
-from PySide6.QtCore import QPointF
+from PySide6.QtCore import QPointF, Qt, QTimer
+from PySide6.QtWidgets import QApplication, QDialog, QLineEdit
 
 from insulation_coordination.domain.rules import (
     ApprovalRecord,
@@ -231,6 +232,32 @@ def _calibration() -> ManualPlotCalibration:
     )
 
 
+def _submit_calibration_dialog(
+    qtbot,
+    dialog: CurveReviewDialog,
+    values: tuple[str, str, str, str],
+) -> None:
+    """Drive the real two-click and modal bounds-entry path."""
+
+    dialog.notes_edit.setText("Reviewed synthetic plot.")
+    dialog.begin_calibration()
+    first = dialog._view.mapFromScene(QPointF(20, 10))
+    qtbot.mouseClick(dialog._view.viewport(), Qt.MouseButton.LeftButton, pos=first)
+
+    def fill_bounds() -> None:
+        active = QApplication.activeModalWidget()
+        assert isinstance(active, QDialog)
+        fields = active.findChildren(QLineEdit)
+        assert len(fields) == 4
+        for field, value in zip(fields, values, strict=True):
+            field.setText(value)
+        active.accept()
+
+    QTimer.singleShot(0, fill_bounds)
+    second = dialog._view.mapFromScene(QPointF(320, 210))
+    qtbot.mouseClick(dialog._view.viewport(), Qt.MouseButton.LeftButton, pos=second)
+
+
 @pytest.fixture
 def local_manual_draft(
     manual_draft: ImportedRuleDraft, tmp_path
@@ -385,6 +412,112 @@ def test_invalid_table_input_does_not_mutate_the_draft(
 
     assert dialog.draft == before
     assert "valid decimal" in dialog.status_text.lower()
+
+
+def test_accept_rejects_unsaved_visible_table_changes(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+    dialog.notes_edit.setText("Reviewed synthetic curve.")
+    dialog.set_point_text(1, "10", "25")
+    before = dialog.draft
+
+    dialog.accept_variant()
+
+    assert dialog.draft == before
+    assert not dialog.draft.curve_variant_reviews
+    assert "save points" in dialog.status_text.lower()
+
+
+def test_accept_requires_a_current_manual_calibration(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft.model_copy(update={"curve_calibrations": ()}),
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+    dialog.notes_edit.setText("Reviewed synthetic curve.")
+    before = dialog.draft
+
+    dialog.accept_variant()
+
+    assert dialog.draft == before
+    assert not dialog.draft.curve_variant_reviews
+    assert "current manual calibration" in dialog.status_text.lower()
+
+
+def test_one_valid_point_stays_visible_and_draggable_in_the_preview(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+    dialog._variant_selector.setCurrentIndex(1)
+    dialog.add_point()
+    dialog.set_point_text(0, "10", "25")
+
+    assert dialog.point_handle_count == 1
+    dialog.move_handle(0, Decimal(320), Decimal(210))
+    assert dialog.point_text(0) == ("1000", "1")
+
+
+def test_two_click_calibration_dialog_parses_and_saves_decimal_bounds(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+
+    _submit_calibration_dialog(qtbot, dialog, ("1", "1000", "1", "100"))
+
+    assert dialog.status_text == "Plot calibration saved."
+    calibration = dialog.draft.curve_calibrations[0].calibration
+    assert (calibration.x_min, calibration.x_max) == (Decimal(1), Decimal(1000))
+    assert (calibration.y_min, calibration.y_max) == (Decimal(1), Decimal(100))
+
+
+@pytest.mark.parametrize(
+    "values",
+    (
+        ("not-a-number", "1000", "1", "100"),
+        ("1000", "1", "1", "100"),
+    ),
+)
+def test_invalid_two_click_calibration_leaves_the_draft_unchanged(
+    qtbot,
+    local_manual_draft: tuple[ImportedRuleDraft, Path],
+    values: tuple[str, str, str, str],
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+    before = dialog.draft
+
+    _submit_calibration_dialog(qtbot, dialog, values)
+
+    assert dialog.draft == before
+    assert "valid decimal axis bounds" in dialog.status_text.lower()
 
 
 def test_scene_calibration_uses_two_click_positions_and_decimal_bounds(

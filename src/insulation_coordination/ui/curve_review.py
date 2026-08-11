@@ -44,6 +44,7 @@ from insulation_coordination.domain.rules import (
     FaultTimeVoltageVariant,
     SourceReference,
 )
+from insulation_coordination.rules.importer import canonical_model_sha256
 from insulation_coordination.rules.importer import recipes as recipe_registry
 from insulation_coordination.rules.importer.approval import ApprovalError
 from insulation_coordination.rules.importer.curves import (
@@ -54,6 +55,7 @@ from insulation_coordination.rules.importer.curves import (
 )
 from insulation_coordination.rules.importer.extract import ImportedRuleDraft
 from insulation_coordination.rules.importer.review import (
+    _manual_reviewed_artifact_sha256,
     replace_manual_curve_variant,
     review_curve_variant,
     set_manual_curve_calibration,
@@ -346,6 +348,7 @@ class CurveReviewDialog(QDialog):
         self._overlay_item: QGraphicsPathItem | None = None
         self._plot_item: QGraphicsRectItem | None = None
         self._handles: list[_CurvePointHandle] = []
+        self._handle_rows: list[int] = []
         self._calibration_corners: list[QPointF] = []
         self._source_loaded = False
         self._syncing = False
@@ -428,6 +431,12 @@ class CurveReviewDialog(QDialog):
     def overlay_path(self) -> QPainterPath:
         return self.overlay_item.path()
 
+    @property
+    def point_handle_count(self) -> int:
+        """Number of individually valid table rows currently shown as handles."""
+
+        return len(self._handles)
+
     def set_overlay_visible(self, visible: bool) -> None:
         for item in (self._overlay_item, self._plot_item, *self._handles):
             if item is not None:
@@ -442,10 +451,17 @@ class CurveReviewDialog(QDialog):
     def set_point_text(self, row: int, x: str, y: str) -> None:
         self._set_table_text(row, 0, x)
         self._set_table_text(row, 1, y)
+        if not self._syncing:
+            self._redraw_from_table()
 
     def add_point(self) -> None:
-        self.point_table.insertRow(self.point_table.rowCount())
-        self.point_table.setCurrentCell(self.point_table.rowCount() - 1, 0)
+        row = self.point_table.rowCount()
+        self._syncing = True
+        self.point_table.insertRow(row)
+        self._set_table_text(row, 0, "")
+        self._set_table_text(row, 1, "")
+        self._syncing = False
+        self.point_table.setCurrentCell(row, 0)
 
     def remove_point(self) -> None:
         row = self.point_table.currentRow()
@@ -509,9 +525,11 @@ class CurveReviewDialog(QDialog):
         if not self._require_notes("acceptance"):
             return
         variant = self._current_variant()
-        if variant is None or not variant.points:
-            self._status.setText("Save at least two valid points before accepting this variant.")
+        error = self._acceptance_error(variant)
+        if error is not None:
+            self._status.setText(error)
             return
+        assert variant is not None
         try:
             self._model.review_variant(
                 variant.id,
@@ -524,9 +542,13 @@ class CurveReviewDialog(QDialog):
         self.draft_changed.emit(self._model.draft)
         self._status.setText("Variant manually reviewed.")
 
-    def move_handle(self, index: int, x: Decimal, y: Decimal) -> None:
+    def move_handle(self, row: int, x: Decimal, y: Decimal) -> None:
         """Move a selected handle in scene coordinates; used by deterministic UI tests."""
 
+        try:
+            index = self._handle_rows.index(row)
+        except ValueError as error:
+            raise IndexError("unknown curve point handle") from error
         if not 0 <= index < len(self._handles):
             raise IndexError("unknown curve point handle")
         self._handles[index].setPos(float(x), float(y))
@@ -620,6 +642,7 @@ class CurveReviewDialog(QDialog):
         self._overlay_item = None
         self._plot_item = None
         self._handles = []
+        self._handle_rows = []
         self._populate_table(variant)
         self._redraw_from_table()
         self._scene.setSceneRect(0, 0, image.width(), image.height())
@@ -728,13 +751,26 @@ class CurveReviewDialog(QDialog):
             raise ValueError("point X values must be strictly increasing")
         return tuple(points)
 
+    def _preview_points(self) -> tuple[tuple[int, CurvePoint], ...]:
+        """Return each independently valid table row without save-only constraints."""
+
+        points: list[tuple[int, CurvePoint]] = []
+        for row in range(self.point_table.rowCount()):
+            try:
+                point = CurvePoint(
+                    x=Decimal(self._table_text(row, 0).strip()),
+                    y=Decimal(self._table_text(row, 1).strip()),
+                )
+            except (InvalidOperation, ValueError):
+                continue
+            if point.x.is_finite() and point.y.is_finite():
+                points.append((row, point))
+        return tuple(points)
+
     def _redraw_from_table(self) -> None:
         source = self._current_source(self._current_variant())
         _figure, calibration = self._figure_and_calibration(source)
-        try:
-            points = self._table_points()
-        except ValueError:
-            points = ()
+        points = self._preview_points()
         self._remove_overlay()
         path = QPainterPath()
         if calibration is not None:
@@ -747,22 +783,23 @@ class CurveReviewDialog(QDialog):
             )
             self._syncing = True
             try:
-                for index, point in enumerate(points):
+                for row, point in points:
                     try:
                         x, y = source_point_to_pixel(point, calibration)
                     except ValueError:
                         continue
                     position = QPointF(float(x), float(y))
-                    if index == 0:
+                    if path.elementCount() == 0:
                         path.moveTo(position)
                     else:
                         path.lineTo(position)
                     handle = _CurvePointHandle(
-                        index, self._constrain_handle, self._handle_moved
+                        row, self._constrain_handle, self._handle_moved
                     )
                     self._scene.addItem(handle)
-                    handle.setPos(position)
                     self._handles.append(handle)
+                    self._handle_rows.append(row)
+                    handle.setPos(position)
             finally:
                 self._syncing = False
         self._overlay_item = self._scene.addPath(path, QPen(QColor("#e53935"), 2.0))
@@ -775,8 +812,9 @@ class CurveReviewDialog(QDialog):
         self._overlay_item = None
         self._plot_item = None
         self._handles = []
+        self._handle_rows = []
 
-    def _constrain_handle(self, index: int, candidate: QPointF) -> QPointF:
+    def _constrain_handle(self, row: int, candidate: QPointF) -> QPointF:
         source = self._current_source(self._current_variant())
         _figure, calibration = self._figure_and_calibration(source)
         if calibration is None:
@@ -788,13 +826,14 @@ class CurveReviewDialog(QDialog):
         x = min(max(candidate.x(), left), right)
         y = min(max(candidate.y(), top), bottom)
         gap = 0.000001
+        index = self._handle_rows.index(row)
         if index:
             x = max(x, self._handles[index - 1].pos().x() + gap)
         if index + 1 < len(self._handles):
             x = min(x, self._handles[index + 1].pos().x() - gap)
         return QPointF(x, y)
 
-    def _handle_moved(self, index: int, position: QPointF) -> None:
+    def _handle_moved(self, row: int, position: QPointF) -> None:
         if self._syncing:
             return
         source = self._current_source(self._current_variant())
@@ -808,8 +847,8 @@ class CurveReviewDialog(QDialog):
         except ValueError:
             return
         self._syncing = True
-        self._set_table_text(index, 0, self._decimal_text(point.x))
-        self._set_table_text(index, 1, self._decimal_text(point.y))
+        self._set_table_text(row, 0, self._decimal_text(point.x))
+        self._set_table_text(row, 1, self._decimal_text(point.y))
         self._syncing = False
         self._update_overlay_path()
 
@@ -820,18 +859,63 @@ class CurveReviewDialog(QDialog):
         _figure, calibration = self._figure_and_calibration(source)
         if calibration is None:
             return
-        try:
-            points = self._table_points()
-        except ValueError:
-            return
+        points = self._preview_points()
         path = QPainterPath()
-        for index, point in enumerate(points):
-            x, y = source_point_to_pixel(point, calibration)
-            if index == 0:
+        for _row, point in points:
+            try:
+                x, y = source_point_to_pixel(point, calibration)
+            except ValueError:
+                continue
+            if path.elementCount() == 0:
                 path.moveTo(float(x), float(y))
             else:
                 path.lineTo(float(x), float(y))
         self._overlay_item.setPath(path)
+
+    def _acceptance_error(self, variant: FaultTimeVoltageVariant | None) -> str | None:
+        """Require stored manual provenance and an unchanged, currently visible table."""
+
+        if variant is None:
+            return "Save at least two valid points before accepting this variant."
+        source = self._current_source(variant)
+        figure, calibration = self._figure_and_calibration(source)
+        calibrations = tuple(
+            item
+            for item in self._model.draft.curve_calibrations
+            if item.figure_artifact_sha256 == figure.artifact_sha256
+            and item.calibration.figure_artifact_sha256 == figure.artifact_sha256
+            and item.calibration_sha256 == canonical_model_sha256(item.calibration)
+        )
+        if calibration is None or len(calibrations) != 1:
+            return "A current manual calibration is required before accepting this variant."
+        try:
+            visible_points = self._table_points()
+        except ValueError:
+            return "Visible points are not ready; save points before accepting this variant."
+        scale = self._model.source_x_scale(variant.id)
+        stored_points = tuple(
+            CurvePoint(x=point.x / scale, y=point.y) for point in variant.points
+        )
+        if visible_points != stored_points:
+            return "Visible points have unsaved changes; save points before accepting."
+        calibration_sha256 = calibrations[0].calibration_sha256
+        source_artifact_sha256 = _manual_reviewed_artifact_sha256(
+            figure, calibration_sha256
+        )
+        inputs = tuple(
+            item
+            for item in self._model.draft.manual_curve_variant_inputs
+            if item.variant_id == variant.id
+            and item.variant_sha256 == canonical_model_sha256(variant)
+            and item.source_artifact_sha256 == source_artifact_sha256
+            and item.calibration_sha256 == calibration_sha256
+        )
+        if (
+            variant.reviewed_artifact_sha256 != source_artifact_sha256
+            or len(inputs) != 1
+        ):
+            return "Saved points lack current manual provenance; save points before accepting."
+        return None
 
     def _require_notes(self, action: str) -> bool:
         if self.notes_edit.text().strip():
