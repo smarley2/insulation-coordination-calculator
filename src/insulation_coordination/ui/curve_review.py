@@ -336,7 +336,7 @@ class CurveReviewDialog(QDialog):
         pdf_passwords: Mapping[Path, str] | None = None,
     ) -> None:
         super().__init__()
-        self.setWindowTitle("Review reconstructed curves")
+        self.setWindowTitle("Manual curve review")
         self.resize(1000, 760)
         self._model = CurveReviewModel(draft)
         self._actor = actor

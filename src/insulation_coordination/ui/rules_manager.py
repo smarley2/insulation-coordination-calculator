@@ -143,7 +143,7 @@ class RulesManagerWindow(QWidget):
         self._review_equations_button.setEnabled(False)
         self._review_equations_button.clicked.connect(self._on_review_equations_clicked)
         review_actions.addWidget(self._review_equations_button)
-        self._review_curves_button = QPushButton("Review reconstructed curves…")
+        self._review_curves_button = QPushButton("Review manual curves…")
         self._review_curves_button.setEnabled(False)
         self._review_curves_button.clicked.connect(self._on_review_curves_clicked)
         review_actions.addWidget(self._review_curves_button)

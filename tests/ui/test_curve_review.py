@@ -345,6 +345,7 @@ def test_dialog_exposes_manual_controls_without_retired_reconstruction_actions(
     )
     qtbot.addWidget(dialog)
 
+    assert dialog.windowTitle() == "Manual curve review"
     assert "Accessible circuit" in dialog.current_variant_label
     assert dialog.point_table.columnCount() == 2
     assert dialog.point_table.horizontalHeaderItem(0).text() == "X (ms)"
