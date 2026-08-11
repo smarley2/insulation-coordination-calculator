@@ -8,9 +8,8 @@ designations) and #50 (an unstated Figure 7 basis).
 
 Annex E separates E.1 and E.2. E.1's factor is consumed by the clearance-dimensioning path,
 and the main clearance clause points at E.1; E.2's corrected voltages serve clearance
-verification, and the impulse-test procedure points at E.2. These are maintainer-reviewed
-source facts, recorded here as the basis of the split; no licensed value or wording enters
-this repository.
+verification. These are maintainer-reviewed source facts, recorded here as the basis of the
+split; no licensed value or wording enters this repository.
 
 ## The contract
 

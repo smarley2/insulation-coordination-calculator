@@ -555,12 +555,13 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 - [ ] **Step 1: Run the full suite with coverage**
 
 ```bash
-$env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"; $env:QT_QPA_PLATFORM = "offscreen"; uv run pytest -n 12 -q
+$env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"; $env:QT_QPA_PLATFORM = "offscreen"; uv run pytest -n auto --cov=insulation_coordination --cov-branch --cov-report=term-missing -q
 ```
 
-Expected: 0 failed. Record the passed and skipped counts and the coverage percentage, which
-must be at or above the 80% floor. If anything fails, stop and report; do not open a PR on a
-red suite.
+Expected: 0 failed, and a "Required test coverage of 80.0% reached" line. Record the passed
+and skipped counts and the total coverage. Coverage flags are not in addopts, so they must be
+passed explicitly, exactly as CI does. If anything fails, stop and report; do not open a PR on
+a red suite.
 
 - [ ] **Step 2: Re-run ruff and mypy at the final head**
 

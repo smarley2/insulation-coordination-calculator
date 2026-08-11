@@ -106,15 +106,23 @@ def test_each_annex_e_table_owns_its_own_semantic_id() -> None:
     re-nesting one table under the other's family, which is the defect #52 removed.
     """
     e1 = next(
-        spec
-        for spec in RECIPE.tables
-        if spec.semantic_id == ids.ALTITUDE_CLEARANCE_CORRECTION
+        (
+            spec
+            for spec in RECIPE.tables
+            if spec.semantic_id == ids.ALTITUDE_CLEARANCE_CORRECTION
+        ),
+        None,
     )
+    assert e1 is not None, f"no spec declares {ids.ALTITUDE_CLEARANCE_CORRECTION}"
     e2 = next(
-        spec
-        for spec in RECIPE.tables
-        if spec.semantic_id == ids.ALTITUDE_TEST_VOLTAGE_CORRECTION
+        (
+            spec
+            for spec in RECIPE.tables
+            if spec.semantic_id == ids.ALTITUDE_TEST_VOLTAGE_CORRECTION
+        ),
+        None,
     )
+    assert e2 is not None, f"no spec declares {ids.ALTITUDE_TEST_VOLTAGE_CORRECTION}"
 
     assert e1.source_table == "E.1"
     assert e1.clause == "E.1"

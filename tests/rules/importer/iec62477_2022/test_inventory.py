@@ -85,12 +85,12 @@ def test_every_item_this_build_does_not_defer_has_a_recipe() -> None:
 
 
 def test_annex_e_tables_are_two_required_items_with_their_own_consumers() -> None:
-    """Each Annex E table is required in its own right, independently of the recipe.
+    """Each Annex E table is required in its own right, with its own consumer.
 
     E.1 feeds clearance dimensioning in #36; E.2 feeds verification in #37. Stated here
-    rather than derived from the specs, because that is the hole the single parent item left:
-    had one table's recipe been removed, ``_covers`` would have matched the parent through
-    the surviving route and the checklist could still have reported complete.
+    rather than derived from the specs: the split itself is what closes the hole the single
+    parent item left, and this guard is what stops the two items being re-merged or their
+    tables and consumers swapped.
     """
     items = {
         item.semantic_id: item
