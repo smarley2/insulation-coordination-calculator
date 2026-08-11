@@ -106,9 +106,9 @@ def test_select_pair_fills_editor(qtbot, pair_page):
 def test_frequency_override_is_visible(qtbot, pair_page):
     pair = pair_page.project.pairs[0]
     pair_page.select_pair_by_id(str(pair.id))
-    assert pair_page.editor.frequency_source_text == "Default"
+    assert pair_page.editor.frequency_source_text == "Project default"
     pair_page.editor.set_frequency_override("100 kHz")
-    assert pair_page.editor.frequency_source_text == "Override"
+    assert pair_page.editor.frequency_source_text == "Manual"
 
 
 def test_set_long_term_rms_updates_project(qtbot, pair_page):
@@ -321,9 +321,9 @@ def test_clicking_matrix_cell_loads_pair_editor(qtbot, pair_page):
 def test_pair_editor_shows_inherited_default_values(qtbot, pair_page):
     pair_page.select_pair_by_id(str(pair_page.project.pairs[0].id))
     assert pair_page.editor._freq_edit.text() == "50"
-    assert pair_page.editor._freq_source_label.text() == "Default"
+    assert pair_page.editor._freq_source_label.text() == "Project default"
     assert pair_page.editor._impulse_combo.currentText() == "1.2 kV"
-    assert pair_page.editor._impulse_source_label.text() == "Default"
+    assert pair_page.editor._impulse_source_label.text() == "Project default"
 
 
 def test_pairs_page_uses_splitters_and_expanding_matrix(qtbot, pair_page):
@@ -372,7 +372,10 @@ def test_pair_editor_does_not_force_horizontal_page_growth(qtbot, pair_page):
 def test_pair_inputs_stay_narrow_and_hug_the_right_edge(qtbot, pair_page):
     from PySide6.QtWidgets import QApplication, QWidget
 
-    pair_page.resize(1600, 900)
+    # Wide enough that the editor gets the width it asks for. A row now carries a
+    # help control, the input, a state badge and a button, so below roughly 1700
+    # the splitter's half caps the editor and every row is squeezed flush.
+    pair_page.resize(1900, 900)
     pair_page.show()
     pair_page.select_pair_by_id(str(pair_page.project.pairs[0].id))
     QApplication.processEvents()
@@ -527,7 +530,7 @@ def test_copy_paste_moves_configuration_to_another_pair(qtbot, pair_page):
     assert pasted.notes == "Belongs to the source pair only"
     assert (pasted.id, pasted.net_a, pasted.net_b) == (target.id, target.net_a, target.net_b)
     assert page.editor.pair.id == target.id
-    assert page.editor.frequency_source_text == "Override"
+    assert page.editor.frequency_source_text == "Manual"
 
 
 def test_copy_paste_leaves_the_source_pair_untouched(qtbot, pair_page):
@@ -698,7 +701,7 @@ def test_choosing_a_dropdown_value_overrides_the_project_default(qtbot, pair_pag
     page = pair_page
     pair = page.project.pairs[0]
     page.select_pair_by_id(str(pair.id))
-    assert page.editor._impulse_source_label.text() == "Default"
+    assert page.editor._impulse_source_label.text() == "Project default"
 
     page.editor._impulse_combo.setCurrentText("2.5 kV")
     page.editor._pollution_combo.setCurrentText("1")
@@ -708,7 +711,7 @@ def test_choosing_a_dropdown_value_overrides_the_project_default(qtbot, pair_pag
     assert updated.impulse_v.value == Decimal(2500)
     assert updated.pollution_degree.value == 1
     assert updated.cti_or_material_group.value == "IIIa"
-    assert page.editor._impulse_source_label.text() == "Override"
+    assert page.editor._impulse_source_label.text() == "Manual"
 
 
 def test_an_off_list_override_is_offered_back_as_legacy(qtbot, pair_page):
@@ -770,7 +773,7 @@ def test_default_button_restores_inheritance_and_shows_the_inherited_value(qtbot
 
     assert not page.project.pair_by_id(pair.id).impulse_v.is_override
     assert page.editor._impulse_combo.currentText() == "1.2 kV"
-    assert page.editor._impulse_source_label.text() == "Default"
+    assert page.editor._impulse_source_label.text() == "Project default"
 
 
 _OVERRIDE_CASES = (

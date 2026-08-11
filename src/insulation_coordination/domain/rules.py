@@ -426,8 +426,20 @@ class CurveSegment(FrozenModel):
 
 
 class FaultTimeVoltageSelector(FrozenModel):
+    """Which curve variant a fault-time voltage question is asking about.
+
+    ``voltage_basis`` names the quantity the source draws its curve against.
+    ``ac_unspecified`` means the source identifies the variant as AC without specifying
+    RMS or peak: it is a source-contract identity, never a wildcard. A consumer whose own
+    engineering quantity is RMS or peak submits ``ac_rms`` or ``ac_peak`` and must not
+    coerce that input to ``ac_unspecified`` in order to obtain a curve.
+
+    Nobody may narrow ``ac_unspecified`` to a more specific basis without new explicit
+    normative evidence stating that basis for the figure in question.
+    """
+
     subject: TypingLiteral["accessible_circuit", "conductive_accessible_part"]
-    voltage_basis: TypingLiteral["ac_rms", "ac_peak", "dc"]
+    voltage_basis: TypingLiteral["ac_rms", "ac_peak", "ac_unspecified", "dc"]
     dvc_context: Identifier | None
     environment_context: Identifier | None
 

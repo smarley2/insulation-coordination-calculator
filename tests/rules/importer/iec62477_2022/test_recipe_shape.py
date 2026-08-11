@@ -97,13 +97,48 @@ def test_every_62477_table_searches_a_page_window() -> None:
     )
 
 
-def test_altitude_tables_share_one_semantic_family() -> None:
+def test_each_annex_e_table_owns_its_own_semantic_id() -> None:
+    """Annex E's two tables do two different jobs, so each owns an identifier.
+
+    E.1 gives an altitude correction factor for dimensioning clearances; E.2 gives test
+    voltages corrected for the altitude of the testing laboratory. Pinning each identifier
+    together with the table and subclause it reads is what stops a future edit from
+    re-nesting one table under the other's family, which is the defect #52 removed.
+    """
+    e1 = next(
+        (
+            spec
+            for spec in RECIPE.tables
+            if spec.semantic_id == ids.ALTITUDE_CLEARANCE_CORRECTION
+        ),
+        None,
+    )
+    assert e1 is not None, f"no spec declares {ids.ALTITUDE_CLEARANCE_CORRECTION}"
+    e2 = next(
+        (
+            spec
+            for spec in RECIPE.tables
+            if spec.semantic_id == ids.ALTITUDE_TEST_VOLTAGE_CORRECTION
+        ),
+        None,
+    )
+    assert e2 is not None, f"no spec declares {ids.ALTITUDE_TEST_VOLTAGE_CORRECTION}"
+
+    assert e1.source_table == "E.1"
+    assert e1.clause == "E.1"
+
+    assert e2.source_table == "E.2"
+    assert e2.clause == "E.2"
+
     altitude = [
         spec
         for spec in RECIPE.tables
-        if spec.semantic_id.startswith(ids.ALTITUDE_TEST_VOLTAGE_CORRECTION)
+        if spec.semantic_id.startswith("iec62477_2022.altitude.")
     ]
-    assert len(altitude) == 2
+    assert [spec.semantic_id for spec in altitude] == [
+        ids.ALTITUDE_CLEARANCE_CORRECTION,
+        ids.ALTITUDE_TEST_VOLTAGE_CORRECTION,
+    ]
 
 
 def test_column_headings_are_neutral_internal_descriptions() -> None:
@@ -127,7 +162,7 @@ def test_no_column_hardcodes_a_licensed_axis_value() -> None:
     altitude_e2 = next(
         spec
         for spec in RECIPE.tables
-        if spec.semantic_id == f"{ids.ALTITUDE_TEST_VOLTAGE_CORRECTION}.e2"
+        if spec.semantic_id == ids.ALTITUDE_TEST_VOLTAGE_CORRECTION
     )
     altitude_data_columns = [
         column for column in altitude_e2.columns if column.role == "data"

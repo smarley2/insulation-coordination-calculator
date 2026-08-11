@@ -32,6 +32,16 @@ def test_prove_conservative_accepts_candidate_on_lower_boundary() -> None:
     assert report.maximum_positive_voltage_error <= Decimal(0)
 
 
+def test_unordered_input_proves_the_same_as_ordered() -> None:
+    """The envelope helpers assume sorted points; prove_conservative still sorts for them."""
+
+    source = [(Decimal(0), Decimal(1)), (Decimal(2), Decimal(2))]
+    candidate = [(Decimal(1), Decimal("1.4")), (Decimal(2), Decimal(2)), (Decimal(0), Decimal(1))]
+    shuffled = prove_conservative(source[::-1], candidate, Decimal("0.1"))
+    ordered = prove_conservative(source, sorted(candidate), Decimal("0.1"))
+    assert shuffled == ordered
+
+
 def test_conservative_simplify_rounds_time_outward_voltage_downward() -> None:
     points = [
         (Decimal("1.004"), Decimal("100.4")),

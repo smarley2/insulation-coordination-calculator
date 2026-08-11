@@ -657,8 +657,11 @@ def project_spd_reduction_requirements(
 
 # --- high-frequency isolating transformer ------------------------------------------
 
-#: DVC designations. Designations only; no source value or wording.
-_DVC_DESIGNATIONS = ("dvc_a", "dvc_as", "dvc_b", "dvc_c", "dvc_d")
+#: DVC designations. Designations only; no source value or wording. The document defines
+#: exactly these three (3.19, 3.20, 3.21) and Table 2 and Table 3 name no others; there is
+#: no DVC A and no DVC D. Table 2 splits DVC As into a wet and a dry row, which changes the
+#: voltage limits, not the designation.
+_DVC_DESIGNATIONS = ("dvc_as", "dvc_b", "dvc_c")
 #: The clause's own DVC gate.
 _HF_TRANSFORMER_DVC_GATE = ("dvc_as", "dvc_b")
 _ATTENUATION_EVIDENCE_KINDS = ("none", "test", "simulation", "calculation")

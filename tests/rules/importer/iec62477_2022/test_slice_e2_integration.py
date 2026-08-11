@@ -1,5 +1,5 @@
 """Slice E2 closure: nothing is deferred, every required item has a recipe, and the
-Rules Manager reports all twenty-five of them.
+Rules Manager reports all twenty-six of them.
 
 No source content: this reads the recipe registry and the required inventory, both of which
 carry identifiers only.
@@ -30,10 +30,10 @@ def test_the_deferred_set_is_empty_and_every_item_has_a_recipe() -> None:
 
     While anything was deferred, a required item without a recipe was reported as deferred
     rather than missing. With the set empty the two halves have to agree: every one of the
-    twenty-five items is declared by a spec, under its own identifier or one of its routes.
+    twenty-six items is declared by a spec, under its own identifier or one of its routes.
     """
     assert DEFERRED_SEMANTIC_IDS == frozenset()
-    assert len(REQUIRED_SOURCE_ITEMS) == 25
+    assert len(REQUIRED_SOURCE_ITEMS) == 26
 
     declared = frozenset(EXPECTATIONS.typed_results)
     for item in REQUIRED_SOURCE_ITEMS:

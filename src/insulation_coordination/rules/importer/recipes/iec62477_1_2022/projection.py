@@ -115,12 +115,21 @@ def _table_2_inputs(grid: RawGrid) -> tuple[DecisionInput, ...]:
         DecisionInput(
             name="dvc",
             kind="categorical",
-            allowed_values=tuple(f"dvc-{index}" for index in range(1, 5)),
+            # Positional row and column ids, not designations: Table 2 carries four data
+            # rows over the document's three DVC designations because DVC As is split
+            # into a wet and a dry row. The counts come from the audited spec so the
+            # contract cannot drift from the grid the reviewer approved.
+            allowed_values=tuple(
+                f"dvc-{index}" for index in range(1, TABLE_2.expected_data_rows + 1)
+            ),
         ),
         DecisionInput(
             name="voltage_quantity",
             kind="categorical",
-            allowed_values=tuple(f"voltage-quantity-{index}" for index in range(1, 6)),
+            allowed_values=tuple(
+                f"voltage-quantity-{index}"
+                for index in range(1, TABLE_2.expected_data_columns + 1)
+            ),
         ),
         DecisionInput(name="unit", kind="categorical", allowed_values=(grid.target_unit,)),
     )

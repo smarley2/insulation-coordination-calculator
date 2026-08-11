@@ -42,8 +42,8 @@ def test_table_seven_and_the_altitude_tables_are_extracted(draft) -> None:
     assert f"raw-{ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC}.dc" in grid_ids
     assert f"raw-{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.ac" in grid_ids
     assert f"raw-{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.dc" in grid_ids
-    assert f"raw-{ids.ALTITUDE_TEST_VOLTAGE_CORRECTION}.e1" in grid_ids
-    assert f"raw-{ids.ALTITUDE_TEST_VOLTAGE_CORRECTION}.e2" in grid_ids
+    assert f"raw-{ids.ALTITUDE_CLEARANCE_CORRECTION}" in grid_ids
+    assert f"raw-{ids.ALTITUDE_TEST_VOLTAGE_CORRECTION}" in grid_ids
 
 
 def test_every_62477_cell_carries_full_provenance(draft) -> None:

@@ -44,6 +44,7 @@ from insulation_coordination.domain.project import (
 )
 from insulation_coordination.domain.rules import RulePackage
 from insulation_coordination.project.resolver import resolve_effective_case
+from insulation_coordination.ui.help_indicator import FieldStateBadge, HelpIndicator
 from insulation_coordination.ui.pair_models import (
     MATRIX_PARAMETERS,
     CoverageMatrixModel,
@@ -56,6 +57,12 @@ from insulation_coordination.ui.value_options import (
     impulse_display,
     populate_combo,
     select_combo_value,
+)
+from insulation_coordination.ui.voltage_guidance import (
+    VoltageGuidanceId,
+    guidance_for,
+    override_field_state,
+    voltage_field_state,
 )
 
 
@@ -88,6 +95,12 @@ def _parse_frequency(text: str) -> Decimal:
 #: Pair inputs hold short values, so they stay narrow and hug the right edge.
 _FIELD_WIDTH = 220
 
+#: The states a voltage stress can reach today. #36 adds the derived ones.
+_VOLTAGE_STATES = (VoltageGuidanceId.MANUAL_VALUE, VoltageGuidanceId.NOT_APPLICABLE)
+
+#: A defaultable parameter carries either the pair's own value or the project's.
+_OVERRIDE_STATES = (VoltageGuidanceId.MANUAL_VALUE, VoltageGuidanceId.INHERITED_DEFAULT)
+
 #: Shown in a voltage field that was marked not applicable, because an empty box
 #: is indistinguishable from a stress nobody has filled in yet.
 _NOT_APPLICABLE_TEXT = "N/A"
@@ -115,13 +128,27 @@ def _wrap(row: QHBoxLayout) -> QWidget:
     return container
 
 
+def _labelled(label: QLabel, help_indicator: HelpIndicator) -> QWidget:
+    """A form label with its ⓘ beside it, never inside the value.
+
+    Returned as one widget so the two of them occupy the form's label column and
+    the value column keeps its full width.
+    """
+    row = QHBoxLayout()
+    row.setContentsMargins(0, 0, 0, 0)
+    row.addWidget(label)
+    row.addWidget(help_indicator)
+    row.addStretch(1)
+    return _wrap(row)
+
+
 def _override_row(
     widget: QWidget,
-    label: QLabel,
+    label: FieldStateBadge,
     reset_slot: Callable[[], None],
     object_name: str,
 ) -> QWidget:
-    """Wrap a control plus a Default/Override provenance label."""
+    """Wrap a control plus its provenance badge."""
     row = _field_row(widget)
     row.addWidget(label)
     reset_button = QPushButton("Default")
@@ -141,8 +168,9 @@ def _select_enum(combo: QComboBox, value: object, enum: type[StrEnum]) -> None:
         combo.setCurrentIndex(-1)
 
 
-def _voltage_row(edit: QLineEdit, na_button: QPushButton) -> QWidget:
+def _voltage_row(edit: QLineEdit, badge: FieldStateBadge, na_button: QPushButton) -> QWidget:
     row = _field_row(edit)
+    row.addWidget(badge)
     row.addWidget(na_button)
     return _wrap(row)
 
@@ -192,40 +220,76 @@ class PairEditor(QWidget):
         voltages_layout = QFormLayout(voltages_group)
         self._rms_edit = QLineEdit()
         self._rms_edit.editingFinished.connect(self._on_rms_changed)
-        self._rms_na_button = QPushButton("RMS N/A")
+        self._rms_na_button = QPushButton("N/A")
         self._rms_na_button.clicked.connect(self._on_rms_na)
-        voltages_layout.addRow("Long-term RMS:", _voltage_row(self._rms_edit, self._rms_na_button))
+        self._rms_badge = FieldStateBadge(states=_VOLTAGE_STATES)
+        self._rms_help = HelpIndicator(VoltageGuidanceId.LONG_TERM_RMS)
+        voltages_layout.addRow(
+            _labelled(QLabel("Long-term RMS:"), self._rms_help),
+            _voltage_row(self._rms_edit, self._rms_badge, self._rms_na_button),
+        )
         self._steady_peak_edit = QLineEdit()
         self._steady_peak_edit.editingFinished.connect(self._on_steady_peak_changed)
-        self._steady_na_button = QPushButton("Steady peak N/A")
+        self._steady_na_button = QPushButton("N/A")
         self._steady_na_button.clicked.connect(self._on_steady_na)
+        self._steady_badge = FieldStateBadge(states=_VOLTAGE_STATES)
+        self._steady_help = HelpIndicator(VoltageGuidanceId.STEADY_STATE_PEAK)
         voltages_layout.addRow(
-            "Steady-state peak:", _voltage_row(self._steady_peak_edit, self._steady_na_button)
+            _labelled(QLabel("Steady-state peak:"), self._steady_help),
+            _voltage_row(self._steady_peak_edit, self._steady_badge, self._steady_na_button),
         )
         self._recurring_peak_edit = QLineEdit()
         self._recurring_peak_edit.editingFinished.connect(self._on_recurring_peak_changed)
-        self._recurring_na_button = QPushButton("Recurring N/A")
+        self._recurring_na_button = QPushButton("N/A")
         self._recurring_na_button.clicked.connect(self._on_recurring_na)
+        self._recurring_badge = FieldStateBadge(states=_VOLTAGE_STATES)
+        self._recurring_help = HelpIndicator(VoltageGuidanceId.RECURRING_PEAK)
         voltages_layout.addRow(
-            "Recurring peak:", _voltage_row(self._recurring_peak_edit, self._recurring_na_button)
+            _labelled(QLabel("Recurring peak:"), self._recurring_help),
+            _voltage_row(
+                self._recurring_peak_edit, self._recurring_badge, self._recurring_na_button
+            ),
         )
         self._to_peak_edit = QLineEdit()
         self._to_peak_edit.editingFinished.connect(self._on_to_peak_changed)
-        self._to_na_button = QPushButton("Temp OV N/A")
+        self._to_na_button = QPushButton("N/A")
         self._to_na_button.clicked.connect(self._on_to_na)
+        self._to_badge = FieldStateBadge(states=_VOLTAGE_STATES)
+        self._to_help = HelpIndicator(VoltageGuidanceId.TEMPORARY_OVERVOLTAGE)
         voltages_layout.addRow(
-            "Temporary OV peak:", _voltage_row(self._to_peak_edit, self._to_na_button)
+            _labelled(QLabel("Temporary OV peak:"), self._to_help),
+            _voltage_row(self._to_peak_edit, self._to_badge, self._to_na_button),
         )
         layout.addWidget(voltages_group)
+
+        #: Every voltage stress with the widgets that display it, so one pass over
+        #: the pair keeps badge, help context, and text in step.
+        self._voltage_fields = (
+            ("long_term_rms_v", self._rms_badge, self._rms_help, self._rms_na_button),
+            ("steady_state_peak_v", self._steady_badge, self._steady_help, self._steady_na_button),
+            (
+                "recurring_peak_v",
+                self._recurring_badge,
+                self._recurring_help,
+                self._recurring_na_button,
+            ),
+            ("temporary_overvoltage_peak_v", self._to_badge, self._to_help, self._to_na_button),
+        )
+        # Every N/A button reads "N/A": the row label says which stress it belongs
+        # to, but a screen reader announcing four identical buttons does not.
+        for _field, _badge, help_indicator, na_button in self._voltage_fields:
+            stress = guidance_for(help_indicator.guidance_id).title
+            na_button.setAccessibleName(f"Mark {stress} not applicable")
 
         params_group = QGroupBox("Parameters")
         params_layout = QFormLayout(params_group)
 
         self._freq_edit = QLineEdit()
         self._freq_edit.editingFinished.connect(self._on_freq_changed)
-        self._freq_source_label = QLabel("Default")
+        self._freq_source_label = FieldStateBadge(VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES)
+        self._freq_help = HelpIndicator(VoltageGuidanceId.FREQUENCY)
         params_layout.addRow(
-            "Frequency:",
+            _labelled(QLabel("Frequency:"), self._freq_help),
             _override_row(
                 self._freq_edit,
                 self._freq_source_label,
@@ -238,7 +302,7 @@ class PairEditor(QWidget):
         for t in InsulationType:
             self._insulation_combo.addItem(t.value)
         self._insulation_combo.currentTextChanged.connect(self._on_insulation_changed)
-        self._insulation_source_label = QLabel("Default")
+        self._insulation_source_label = FieldStateBadge(VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES)
         params_layout.addRow(
             "Insulation type:",
             _override_row(
@@ -252,9 +316,10 @@ class PairEditor(QWidget):
         self._impulse_combo = QComboBox()
         populate_combo(self._impulse_combo, IMPULSE_OPTIONS, blank=False)
         self._impulse_combo.currentIndexChanged.connect(self._on_impulse_selected)
-        self._impulse_source_label = QLabel("Default")
+        self._impulse_source_label = FieldStateBadge(VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES)
+        self._impulse_help = HelpIndicator(VoltageGuidanceId.TRANSIENT_OVERVOLTAGE)
         params_layout.addRow(
-            "Impulse:",
+            _labelled(QLabel("Impulse:"), self._impulse_help),
             _override_row(
                 self._impulse_combo,
                 self._impulse_source_label,
@@ -267,7 +332,7 @@ class PairEditor(QWidget):
         for field in FieldCondition:
             self._field_combo.addItem(field.value)
         self._field_combo.currentTextChanged.connect(self._on_field_changed)
-        self._field_source_label = QLabel("Default")
+        self._field_source_label = FieldStateBadge(VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES)
         params_layout.addRow(
             "Field condition:",
             _override_row(
@@ -280,7 +345,7 @@ class PairEditor(QWidget):
 
         self._radius_edit = QLineEdit()
         self._radius_edit.editingFinished.connect(self._on_radius_changed)
-        self._radius_source_label = QLabel("Default")
+        self._radius_source_label = FieldStateBadge(VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES)
         params_layout.addRow(
             "Electrode radius (mm):",
             _override_row(
@@ -293,7 +358,7 @@ class PairEditor(QWidget):
 
         self._altitude_edit = QLineEdit()
         self._altitude_edit.editingFinished.connect(self._on_altitude_changed)
-        self._altitude_source_label = QLabel("Default")
+        self._altitude_source_label = FieldStateBadge(VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES)
         params_layout.addRow(
             "Altitude (m):",
             _override_row(
@@ -307,7 +372,7 @@ class PairEditor(QWidget):
         self._pollution_combo = QComboBox()
         populate_combo(self._pollution_combo, POLLUTION_OPTIONS, blank=False)
         self._pollution_combo.currentIndexChanged.connect(self._on_pollution_selected)
-        self._pollution_source_label = QLabel("Default")
+        self._pollution_source_label = FieldStateBadge(VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES)
         params_layout.addRow(
             "Pollution degree:",
             _override_row(
@@ -322,7 +387,7 @@ class PairEditor(QWidget):
         for construction in ConstructionType:
             self._construction_combo.addItem(construction.value)
         self._construction_combo.currentTextChanged.connect(self._on_construction_changed)
-        self._construction_source_label = QLabel("Default")
+        self._construction_source_label = FieldStateBadge(VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES)
         params_layout.addRow(
             "Construction:",
             _override_row(
@@ -336,7 +401,7 @@ class PairEditor(QWidget):
         self._cti_combo = QComboBox()
         populate_combo(self._cti_combo, MATERIAL_OPTIONS, blank=False)
         self._cti_combo.currentIndexChanged.connect(self._on_cti_selected)
-        self._cti_source_label = QLabel("Default")
+        self._cti_source_label = FieldStateBadge(VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES)
         params_layout.addRow(
             "CTI / material group:",
             _override_row(
@@ -391,20 +456,12 @@ class PairEditor(QWidget):
             edit.setToolTip(voltage.justification or "")
         frequency_value = effective.frequency_hz.value if effective is not None else pair.frequency_hz.value
         self._freq_edit.setText(str(frequency_value) if frequency_value is not None else "")
-        self._freq_source_label.setText(
-            "Override" if pair.frequency_hz.is_override else "Default"
-        )
-
         insulation_value = (
             effective.insulation_type.value
             if effective is not None
             else pair.insulation_type.value
         )
         _select_enum(self._insulation_combo, insulation_value, InsulationType)
-        self._insulation_source_label.setText(
-            "Override" if pair.insulation_type.is_override else "Default"
-        )
-
         impulse_value = effective.impulse_v.value if effective is not None else pair.impulse_v.value
         select_combo_value(
             self._impulse_combo,
@@ -413,12 +470,8 @@ class PairEditor(QWidget):
             None if impulse_value is None else impulse_display(impulse_value),
             blank=False,
         )
-        self._impulse_source_label.setText("Override" if pair.impulse_v.is_override else "Default")
         field_value = effective.field_condition.value if effective is not None else pair.field_condition.value
         _select_enum(self._field_combo, field_value, FieldCondition)
-        self._field_source_label.setText(
-            "Override" if pair.field_condition.is_override else "Default"
-        )
         radius_value = (
             effective.electrode_radius_mm.value
             if effective is not None
@@ -427,14 +480,8 @@ class PairEditor(QWidget):
         self._radius_edit.setText(
             str(radius_value) if radius_value is not None else ""
         )
-        self._radius_source_label.setText(
-            "Override" if pair.electrode_radius_mm.is_override else "Default"
-        )
         altitude_value = effective.altitude_m.value if effective is not None else pair.altitude_m.value
         self._altitude_edit.setText(str(altitude_value) if altitude_value is not None else "")
-        self._altitude_source_label.setText(
-            "Override" if pair.altitude_m.is_override else "Default"
-        )
         pollution_value = (
             effective.pollution_degree.value
             if effective is not None
@@ -447,18 +494,12 @@ class PairEditor(QWidget):
             None if pollution_value is None else str(pollution_value),
             blank=False,
         )
-        self._pollution_source_label.setText(
-            "Override" if pair.pollution_degree.is_override else "Default"
-        )
         construction_value = (
             effective.construction_type.value
             if effective is not None
             else pair.construction_type.value
         )
         _select_enum(self._construction_combo, construction_value, ConstructionType)
-        self._construction_source_label.setText(
-            "Override" if pair.construction_type.is_override else "Default"
-        )
         cti_value = (
             effective.cti_or_material_group.value
             if effective is not None
@@ -466,9 +507,6 @@ class PairEditor(QWidget):
         )
         select_combo_value(
             self._cti_combo, MATERIAL_OPTIONS, cti_value, cti_value, blank=False
-        )
-        self._cti_source_label.setText(
-            "Override" if pair.cti_or_material_group.is_override else "Default"
         )
         self._notes_edit.setText(pair.notes or "")
 
@@ -486,6 +524,39 @@ class PairEditor(QWidget):
         self._construction_combo.blockSignals(False)
         self._cti_combo.blockSignals(False)
         self._notes_edit.blockSignals(False)
+        self._refresh_states()
+
+    #: Defaultable fields, paired with the badge that names where their value came from.
+    _OVERRIDE_BADGES = (
+        ("frequency_hz", "_freq_source_label"),
+        ("insulation_type", "_insulation_source_label"),
+        ("impulse_v", "_impulse_source_label"),
+        ("field_condition", "_field_source_label"),
+        ("electrode_radius_mm", "_radius_source_label"),
+        ("altitude_m", "_altitude_source_label"),
+        ("pollution_degree", "_pollution_source_label"),
+        ("construction_type", "_construction_source_label"),
+        ("cti_or_material_group", "_cti_source_label"),
+    )
+
+    def _refresh_states(self) -> None:
+        """Read every badge and help context straight off the loaded pair.
+
+        Deriving them here rather than at each edit site is what keeps the badge
+        honest: it reports the engineering provenance the model holds, never what
+        a widget happened to be told last.
+        """
+        pair = self._pair
+        if pair is None:
+            return
+        for field, badge, help_indicator, _na_button in self._voltage_fields:
+            voltage: PairVoltage = getattr(pair.voltages, field)
+            badge.set_state(voltage_field_state(voltage))
+            # The N/A justification has no other home in the UI.
+            help_indicator.set_context(voltage.justification or "")
+        for field, badge_name in self._OVERRIDE_BADGES:
+            badge = getattr(self, badge_name)
+            badge.set_state(override_field_state(getattr(pair, field)))
 
     def set_long_term_rms(self, text: str) -> None:
         if self._pair is None:
@@ -554,10 +625,9 @@ class PairEditor(QWidget):
         value = _parse_voltage(text)
         override = OverrideValue[Decimal].override(value)
         self._update_pair(impulse_v=override)
-        self._impulse_source_label.setText("Override")
 
     def clear_impulse_override(self) -> None:
-        self._clear_override("impulse_v", self._impulse_source_label)
+        self._clear_override("impulse_v")
 
     def set_frequency_override(self, text: str) -> None:
         if self._pair is None:
@@ -565,28 +635,25 @@ class PairEditor(QWidget):
         value = _parse_frequency(text)
         override = OverrideValue[Decimal].override(value)
         self._update_pair(frequency_hz=override)
-        self._freq_source_label.setText("Override")
 
-    def _clear_override(self, field: str, source_label: QLabel) -> None:
+    def _clear_override(self, field: str) -> None:
         if self._pair is None:
             return
         current = getattr(self._pair, field)
         self._update_pair(**{field: type(current).inherit()})
-        source_label.setText("Default")
         if self._pair is not None:
             self.load_pair(self._pair, self._defaults)
 
     def clear_frequency_override(self) -> None:
-        self._clear_override("frequency_hz", self._freq_source_label)
+        self._clear_override("frequency_hz")
 
     def set_insulation_override(self, value: InsulationType) -> None:
         if self._pair is None:
             return
         self._update_pair(insulation_type=OverrideValue[InsulationType].override(value))
-        self._insulation_source_label.setText("Override")
 
     def clear_insulation_override(self) -> None:
-        self._clear_override("insulation_type", self._insulation_source_label)
+        self._clear_override("insulation_type")
 
     def _on_rms_changed(self) -> None:
         text = self._rms_edit.text().strip()
@@ -652,59 +719,53 @@ class PairEditor(QWidget):
         if self._pair is None:
             return
         self._update_pair(field_condition=OverrideValue[FieldCondition].override(value))
-        self._field_source_label.setText("Override")
 
     def clear_field_override(self) -> None:
-        self._clear_override("field_condition", self._field_source_label)
+        self._clear_override("field_condition")
 
     def set_radius_override(self, text: str) -> None:
         if self._pair is None:
             return
         value = Decimal(text.strip())
         self._update_pair(electrode_radius_mm=OverrideValue[Decimal].override(value))
-        self._radius_source_label.setText("Override")
 
     def clear_radius_override(self) -> None:
-        self._clear_override("electrode_radius_mm", self._radius_source_label)
+        self._clear_override("electrode_radius_mm")
 
     def set_altitude_override(self, text: str) -> None:
         if self._pair is None:
             return
         value = Decimal(text.strip())
         self._update_pair(altitude_m=OverrideValue[Decimal].override(value))
-        self._altitude_source_label.setText("Override")
 
     def clear_altitude_override(self) -> None:
-        self._clear_override("altitude_m", self._altitude_source_label)
+        self._clear_override("altitude_m")
 
     def set_pollution_override(self, text: str) -> None:
         if self._pair is None:
             return
         value = int(text.strip())
         self._update_pair(pollution_degree=OverrideValue[int].override(value))
-        self._pollution_source_label.setText("Override")
 
     def clear_pollution_override(self) -> None:
-        self._clear_override("pollution_degree", self._pollution_source_label)
+        self._clear_override("pollution_degree")
 
     def set_construction_override(self, value: ConstructionType) -> None:
         if self._pair is None:
             return
         self._update_pair(construction_type=OverrideValue[ConstructionType].override(value))
-        self._construction_source_label.setText("Override")
 
     def clear_construction_override(self) -> None:
-        self._clear_override("construction_type", self._construction_source_label)
+        self._clear_override("construction_type")
 
     def set_cti_override(self, text: str) -> None:
         if self._pair is None:
             return
         value = text.strip()
         self._update_pair(cti_or_material_group=OverrideValue[str].override(value))
-        self._cti_source_label.setText("Override")
 
     def clear_cti_override(self) -> None:
-        self._clear_override("cti_or_material_group", self._cti_source_label)
+        self._clear_override("cti_or_material_group")
 
     def set_notes(self, text: str) -> None:
         if self._pair is None:
@@ -793,6 +854,7 @@ class PairEditor(QWidget):
         if self._pair is None:
             return
         self._pair = self._pair.model_copy(update=updates)
+        self._refresh_states()
         self.pair_changed.emit(self._pair)
 
 
