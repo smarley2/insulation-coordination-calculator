@@ -243,7 +243,9 @@ def test_the_five_delivered_items_are_typed_and_the_five_e2_items_are_deferred(
 
 
 def test_only_the_five_e2_test_items_remain_deferred() -> None:
-    assert len(DEFERRED_SEMANTIC_IDS) == 5
+    #: E2 removes each identifier as it delivers it, so the count only ever shrinks from the
+    #: five this slice inherited.
+    assert len(DEFERRED_SEMANTIC_IDS) <= 5
     assert all(
         semantic_id.startswith("iec62477_2022.test.")
         for semantic_id in DEFERRED_SEMANTIC_IDS
