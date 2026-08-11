@@ -14,6 +14,7 @@ from insulation_coordination.release_diagnostic import (
 )
 from insulation_coordination.report.tectonic import TectonicRuntime
 from scripts.create_release_fixtures import create_release_fixtures
+from tests.fixtures.images import attachment_from, png_bytes
 
 
 def _fake_tectonic(path: Path, exit_code: int = 0) -> tuple[str, str]:
@@ -58,6 +59,21 @@ def test_release_diagnostic_loads_calculates_and_compiles(
     assert result.tex_path.exists()
     assert result.pdf_path is not None and result.pdf_path.exists()
     assert result.rules_sha256 == load_project(project_path).required_rules.sha256
+
+
+def test_release_diagnostic_stages_an_attached_diagram_beside_the_tex(
+    tmp_path: Path, release_fixture: tuple[Path, Path]
+) -> None:
+    project_path, rules_path = release_fixture
+    project = load_project(project_path)
+    attachment = attachment_from(png_bytes())
+    save_project_atomic(project_path, project.model_copy(update={"circuit_diagram": attachment}))
+
+    source = render_release_tex(project_path, rules_path, tmp_path / "output")
+
+    staged = source.tex_path.parent / attachment.staged_filename
+    assert staged.read_bytes() == attachment.decoded_bytes()
+    assert f"{{{attachment.staged_filename}}}" in source.tex_path.read_text(encoding="utf-8")
 
 
 def test_release_diagnostic_rejects_project_rules_hash_mismatch(

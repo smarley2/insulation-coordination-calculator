@@ -24,8 +24,11 @@ from insulation_coordination.domain.project import (
     RulePackageReference,
 )
 from insulation_coordination.project.pairs import reconcile_pairs
+from insulation_coordination.project.persistence import load_project
 from insulation_coordination.rules.archive import load_rule_package, write_rule_package
+from insulation_coordination.ui.project_pages import ProjectPage
 from insulation_coordination.ui.report_page import ReportPage
+from tests.fixtures.images import png_bytes
 from tests.fixtures.synthetic_rules import synthetic_hf_rule_package
 
 
@@ -165,6 +168,69 @@ def test_groups_and_validation_summary_visible(qtbot, complete_workspace) -> Non
     qtbot.addWidget(page)
     assert page.group_count >= 1
     assert page.validation_summary == "All pairs calculated"
+
+
+def test_attached_diagram_survives_moving_the_project_and_losing_the_original(
+    qtbot, complete_workspace
+) -> None:
+    """Attach, save, delete the source image, reopen elsewhere, still report it."""
+    workspace = complete_workspace
+    project_page = ProjectPage()
+    qtbot.addWidget(project_page)
+    project_page.load_project(workspace.project)
+    source_image = workspace.tmp_path / "topology.png"
+    source_image.write_bytes(png_bytes(40, 20))
+    project_page._diagram_box.attach_path(source_image)
+    saved = workspace.tmp_path / "portable.icproj"
+    project_page.save_project(saved)
+
+    source_image.unlink()
+    moved = workspace.tmp_path / "elsewhere" / "portable.icproj"
+    moved.parent.mkdir()
+    moved.write_bytes(saved.read_bytes())
+    saved.unlink()
+    reopened = ProjectPage()
+    qtbot.addWidget(reopened)
+    reopened.open_project(moved)
+
+    page = workspace.report_page
+    qtbot.addWidget(page)
+    page.load_project(reopened.project)
+    destination = workspace.tmp_path / "portable-report"
+    result = page.generate(destination)
+
+    attachment = reopened.project.circuit_diagram
+    assert attachment is not None
+    staged = destination / attachment.staged_filename
+    assert staged.read_bytes() == attachment.decoded_bytes()
+    tex = result.tex_path.read_text(encoding="utf-8")
+    assert f"{{{attachment.staged_filename}}}" in tex
+    assert "topology.png" not in tex
+    assert str(workspace.tmp_path) not in tex
+    assert result.pdf_path is not None
+
+
+def test_removing_the_diagram_leaves_the_report_unchanged(qtbot, complete_workspace) -> None:
+    workspace = complete_workspace
+    project_page = ProjectPage()
+    qtbot.addWidget(project_page)
+    project_page.load_project(workspace.project)
+    page = workspace.report_page
+    qtbot.addWidget(page)
+    without = page.generate(workspace.tmp_path / "without").tex_path.read_text(encoding="utf-8")
+
+    image = workspace.tmp_path / "topology.png"
+    image.write_bytes(png_bytes(40, 20))
+    project_page._diagram_box.attach_path(image)
+    project_page._diagram_box.remove()
+    saved = workspace.tmp_path / "removed.icproj"
+    project_page.save_project(saved)
+    page.load_project(load_project(saved))
+    again = page.generate(workspace.tmp_path / "again").tex_path.read_text(encoding="utf-8")
+
+    assert load_project(saved).circuit_diagram is None
+    assert "Circuit Diagram" not in again
+    assert again == without
 
 
 def test_export_writes_tex_and_pdf_with_log(qtbot, complete_workspace) -> None:

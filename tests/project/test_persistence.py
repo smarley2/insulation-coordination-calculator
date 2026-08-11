@@ -31,6 +31,7 @@ from insulation_coordination.project.persistence import (
     migrate_project_document,
     save_project_atomic,
 )
+from tests.fixtures.images import attachment_from, png_bytes
 
 
 @pytest.fixture
@@ -102,14 +103,19 @@ def test_migration_returns_new_document_without_overwriting_source() -> None:
 
     migrated = migrate_project_document(raw)
 
-    assert migrated == {"schema_version": 2, "sentinel": True, "group_splits": []}
+    assert migrated == {
+        "schema_version": 3,
+        "sentinel": True,
+        "group_splits": [],
+        "circuit_diagram": None,
+    }
     assert raw == original
     assert migrated is not raw
 
 
 def test_future_schema_is_rejected() -> None:
     with pytest.raises(ProjectVersionError, match="newer"):
-        migrate_project_document({"schema_version": 3})
+        migrate_project_document({"schema_version": 4})
 
 
 def test_unsupported_older_schema_is_rejected() -> None:
@@ -119,7 +125,7 @@ def test_unsupported_older_schema_is_rejected() -> None:
 
 def test_load_rejects_future_schema_without_changing_file(tmp_path: Path) -> None:
     path = tmp_path / "future.icproj"
-    original = json.dumps({"schema_version": 3})
+    original = json.dumps({"schema_version": 4})
     path.write_text(original, encoding="utf-8")
 
     with pytest.raises(ProjectVersionError, match="newer"):
@@ -128,11 +134,12 @@ def test_load_rejects_future_schema_without_changing_file(tmp_path: Path) -> Non
     assert path.read_text(encoding="utf-8") == original
 
 
-def test_schema_v1_loads_with_empty_group_splits_and_save_writes_v2(
+def test_schema_v1_loads_with_empty_group_splits_and_save_writes_the_current_schema(
     sample_project: Project, tmp_path: Path
 ) -> None:
     old_document = {"schema_version": 1, **sample_project.model_dump(mode="json")}
     old_document.pop("group_splits", None)
+    old_document.pop("circuit_diagram", None)
     path = tmp_path / "old.icproj"
     path.write_text(json.dumps(old_document), encoding="utf-8")
 
@@ -141,8 +148,68 @@ def test_schema_v1_loads_with_empty_group_splits_and_save_writes_v2(
     saved = json.loads(path.read_text(encoding="utf-8"))
 
     assert loaded.group_splits == ()
-    assert saved["schema_version"] == 2
+    assert loaded.circuit_diagram is None
+    assert saved["schema_version"] == 3
     assert saved["group_splits"] == []
+    assert saved["circuit_diagram"] is None
+
+
+def test_schema_v2_loads_without_a_circuit_diagram(
+    sample_project: Project, tmp_path: Path
+) -> None:
+    document = {"schema_version": 2, **sample_project.model_dump(mode="json")}
+    document.pop("circuit_diagram", None)
+    path = tmp_path / "v2.icproj"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    assert load_project(path).circuit_diagram is None
+
+
+def test_schema_v2_with_a_circuit_diagram_is_rejected(
+    sample_project: Project, tmp_path: Path
+) -> None:
+    document = {"schema_version": 2, **sample_project.model_dump(mode="json")}
+    document["circuit_diagram"] = None
+    original = json.dumps(document)
+    path = tmp_path / "mislabeled-v2.icproj"
+    path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ProjectVersionError, match="circuit_diagram"):
+        load_project(path)
+
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_circuit_diagram_survives_save_and_load_unchanged(
+    sample_project: Project, tmp_path: Path
+) -> None:
+    attachment = attachment_from(png_bytes(), caption="Main topology", source_note="EDA export")
+    project = sample_project.model_copy(update={"circuit_diagram": attachment})
+    path = tmp_path / "diagram.icproj"
+
+    save_project_atomic(path, project)
+    loaded = load_project(path)
+
+    assert loaded.circuit_diagram == attachment
+    assert loaded.circuit_diagram is not None
+    assert loaded.circuit_diagram.decoded_bytes() == attachment.decoded_bytes()
+    assert loaded.circuit_diagram.sha256 == attachment.sha256
+
+
+@pytest.mark.parametrize("field", ["sha256", "data_base64"])
+def test_corrupted_attachment_payload_is_rejected_on_load(
+    sample_project: Project, tmp_path: Path, field: str
+) -> None:
+    attachment = attachment_from(png_bytes())
+    project = sample_project.model_copy(update={"circuit_diagram": attachment})
+    path = tmp_path / "diagram.icproj"
+    save_project_atomic(path, project)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["circuit_diagram"][field] = "f" * 64 if field == "sha256" else "!not base64!"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ProjectLoadError, match="SHA-256|base64"):
+        load_project(path)
 
 
 def test_schema_v1_with_mislabeled_group_splits_is_rejected_without_rewriting_source(

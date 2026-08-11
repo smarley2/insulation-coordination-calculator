@@ -12,6 +12,8 @@
 \usepackage{array}
 \usepackage{booktabs}
 \usepackage{fancyhdr}
+% Always loaded, diagram or not, so the offline Tectonic cache holds it.
+\usepackage{graphicx}
 \usepackage{longtable}
 \usepackage{tabularx}
 \usepackage[hidelinks]{hyperref}
@@ -88,6 +90,28 @@ Name & Description & Notes \\
 {% endfor %}
 \bottomrule
 \end{longtable}
+
+{% if model.circuit_diagram %}
+\section{Circuit Diagram}
+The diagram below is the topology this report was dimensioned against. It is
+stored inside the project file, so it travels with the project.
+
+\begin{center}
+% The minipage keeps the caption on the page that carries the image; the size
+% limits and keepaspectratio keep the image on one page without distortion.
+\begin{minipage}{\linewidth}
+\centering
+\includegraphics[width=\linewidth,height=0.68\textheight,keepaspectratio]{ {{- model.circuit_diagram.staged_filename -}} }
+{% if model.circuit_diagram.caption %}
+\par\medskip
+{{ model.circuit_diagram.caption|tex }}
+{% endif %}
+\end{minipage}
+\end{center}
+{% if model.circuit_diagram.source_note %}
+Source: {{ model.circuit_diagram.source_note|tex }}
+{% endif %}
+{% endif %}
 
 {% if model.excluded_pairs %}
 \section{Pairs Excluded from the Analysis}

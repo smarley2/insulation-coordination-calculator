@@ -14,9 +14,11 @@ from insulation_coordination.domain.project import (
     ProjectMetadata,
     RulePackageReference,
 )
+from insulation_coordination.project.image_attachments import ImageAttachmentError
 from insulation_coordination.ui.app import create_application
 from insulation_coordination.ui.main_window import MainWindow
 from insulation_coordination.ui.project_pages import ProjectPage
+from tests.fixtures.images import gif_bytes, png_bytes
 from tests.fixtures.synthetic_rules import synthetic_rule_package
 
 
@@ -164,6 +166,51 @@ def test_dirty_state_tracking(qtbot, qtbot_project):
     assert page.is_dirty
     page.mark_saved()
     assert not page.is_dirty
+
+
+def test_attaching_a_diagram_updates_the_project_and_marks_it_dirty(
+    qtbot, tmp_path, qtbot_project
+):
+    page = qtbot_project
+    path = tmp_path / "topology.png"
+    path.write_bytes(png_bytes(20, 10))
+
+    with qtbot.waitSignal(page.project_changed, timeout=1000):
+        page._diagram_box.attach_path(path)
+
+    attachment = page.project.circuit_diagram
+    assert attachment is not None
+    assert attachment.original_filename == "topology.png"
+    assert page.is_dirty
+
+
+def test_a_rejected_diagram_leaves_the_project_clean(qtbot, tmp_path, qtbot_project):
+    page = qtbot_project
+    path = tmp_path / "animation.png"
+    path.write_bytes(gif_bytes())
+
+    with pytest.raises(ImageAttachmentError):
+        page._diagram_box.attach_path(path)
+
+    assert page.project.circuit_diagram is None
+    assert not page.is_dirty
+
+
+def test_reopening_a_project_shows_its_diagram(qtbot, tmp_path, qtbot_project):
+    page = qtbot_project
+    image = tmp_path / "topology.png"
+    image.write_bytes(png_bytes(20, 10))
+    page._diagram_box.attach_path(image)
+    path = tmp_path / "with-diagram.icproj"
+    page.save_project(path)
+
+    reopened = ProjectPage()
+    qtbot.addWidget(reopened)
+    reopened.open_project(path)
+
+    assert reopened.project.circuit_diagram == page.project.circuit_diagram
+    assert reopened._diagram_box.attachment == page.project.circuit_diagram
+    assert not reopened._diagram_box._add_button.isEnabled()
 
 
 def test_save_and_open_round_trip(qtbot, tmp_path, qtbot_project):

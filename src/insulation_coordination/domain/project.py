@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from insulation_coordination.domain.attachments import ProjectImageAttachment
 from insulation_coordination.domain.enums import (
     Applicability,
     ConstructionType,
@@ -212,6 +213,7 @@ class Project(FrozenModel):
     net_classes: tuple[NetClass, ...]
     pairs: tuple[PairCase, ...]
     group_splits: tuple[GroupSplit, ...] = ()
+    circuit_diagram: ProjectImageAttachment | None = None
 
     @model_validator(mode="after")
     def _requires_consistent_pairs(self) -> Self:

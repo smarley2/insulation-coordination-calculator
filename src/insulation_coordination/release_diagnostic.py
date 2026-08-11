@@ -64,6 +64,8 @@ def render_release_tex(
     if expected != actual:
         raise ReleaseDiagnosticError("project rules package pin does not match the rules package")
 
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     try:
         results = tuple(
             calculate_pair(resolve_effective_case(project.defaults, pair), rules)
@@ -71,12 +73,10 @@ def render_release_tex(
             if not pair.is_excluded
         )
         groups = group_results(results, project.group_splits)
-        model = build_report_model(project, results, groups, rules)
+        model = build_report_model(project, results, groups, rules, image_directory=output_dir)
     except ValueError as error:
         raise ReleaseDiagnosticError(str(error)) from error
 
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
     tex_path = output_dir / "release-diagnostic.tex"
     _write_safe_text(tex_path, render_latex(model))
     return ReleaseReportSource(_project_sha256(project), rules.package_sha256, tex_path)

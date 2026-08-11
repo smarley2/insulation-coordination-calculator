@@ -207,6 +207,7 @@ class ReportPage(QWidget):
                 self._results,
                 self._groups,
                 self._rules,
+                image_directory=destination,
             )
         except ReportBuildError as error:
             raise RuntimeError(str(error)) from error
