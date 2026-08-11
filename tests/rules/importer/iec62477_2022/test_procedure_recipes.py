@@ -29,10 +29,13 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.procedures i
     CLASSIFICATION_COLUMNS,
     CLASSIFICATION_MATRIX_ID,
     FOIL_APPLICABILITY_ID,
+    MATERIAL_PRECONDITIONING_INVOCATIONS,
     PRECONDITIONING_APPLICABILITY_ID,
     PRECONDITIONING_ELECTRICAL_ID,
+    PRECONDITIONING_MATERIAL_CONTEXTS,
     PRECONDITIONING_MATERIAL_ID,
     PROCEDURE_CLAUSES,
+    REQUIREMENT_CLAUSE_COLUMN,
     TEST_CLAUSE_COLUMN,
     project_accessible_surface_foil,
     project_assembled_routine_exemption,
@@ -101,14 +104,31 @@ def _fragment(
     return fragment.model_copy(update={"raw_sha256": canonical_model_sha256(fragment)})
 
 
-def _matrix_grid(marks: dict[str, tuple[str, ...]]) -> RawGrid:
-    """A matrix grid marking the given classifications for the given test clauses."""
+def _matrix_grid(
+    marks: dict[str, tuple[str, ...]],
+    invocations: tuple[str, ...] = MATERIAL_PRECONDITIONING_INVOCATIONS,
+) -> RawGrid:
+    """A matrix grid marking the given classifications for the given test clauses.
 
-    columns = (*(f"{name}_mark" for name, _column in CLASSIFICATION_COLUMNS), TEST_CLAUSE_COLUMN)
+    Its requirement column carries the requirements that invoke the material preconditioning
+    clause, because the gate reads them from here.
+    """
+
+    columns = (
+        *(f"{name}_mark" for name, _column in CLASSIFICATION_COLUMNS),
+        TEST_CLAUSE_COLUMN,
+        REQUIREMENT_CLAUSE_COLUMN,
+    )
+    material_clause = CLAUSE_OF[ids.TEST_PRECONDITIONING]
     cells: list[RawGridCell] = []
     for row, (clause, marked) in enumerate(marks.items()):
         for index, column in enumerate(columns):
-            text = clause if column == TEST_CLAUSE_COLUMN else ("M" if column[:-5] in marked else "")
+            if column == TEST_CLAUSE_COLUMN:
+                text = clause
+            elif column == REQUIREMENT_CLAUSE_COLUMN:
+                text = ", ".join(invocations) if clause == material_clause else ""
+            else:
+                text = "M" if column[:-5] in marked else ""
             cells.append(
                 RawGridCell(
                     row=row,
@@ -154,8 +174,12 @@ def _draft(*grids: RawGrid, fragments: tuple[RawClauseFragment, ...] = ()) -> Im
     )
 
 
-def _agreeing_matrix() -> RawGrid:
-    return _matrix_grid({clause: ("type_test",) for clause in CLAUSE_OF.values()})
+def _agreeing_matrix(
+    invocations: tuple[str, ...] = MATERIAL_PRECONDITIONING_INVOCATIONS,
+) -> RawGrid:
+    return _matrix_grid(
+        {clause: ("type_test",) for clause in CLAUSE_OF.values()}, invocations
+    )
 
 
 def test_the_recipe_registers_a_projector_for_every_procedure_clause() -> None:
@@ -279,9 +303,10 @@ def _preconditioning_draft(
     *,
     general_steps: tuple[str, ...] = ("5.2.6.3.1", "5.2.6.3.2", "5.2.6.3.3"),
     defers: bool = True,
+    invocations: tuple[str, ...] = MATERIAL_PRECONDITIONING_INVOCATIONS,
 ) -> ImportedRuleDraft:
     return _draft(
-        _agreeing_matrix(),
+        _agreeing_matrix(invocations),
         _table_26_grid(defers=defers),
         fragments=(_general_fragment(general_steps),),
     )
@@ -361,7 +386,7 @@ def test_the_preconditioning_gate_selects_the_route_for_the_test_context() -> No
     )
     material = evaluate_decision(
         rule,
-        {"test_context": "solid_insulation_material_requirement", "test_purpose": "type_test"},
+        {"test_context": PRECONDITIONING_MATERIAL_CONTEXTS[0], "test_purpose": "type_test"},
     )
     exempt = evaluate_decision(
         rule, {"test_context": "electrical_test", "test_purpose": "acceptance_criteria"}
@@ -376,6 +401,35 @@ def test_the_preconditioning_gate_selects_the_route_for_the_test_context() -> No
         "preconditioning_procedure_rule_id": PRECONDITIONING_MATERIAL_ID,
     }
     assert _values(exempt)["preconditioning_required"] is False
+
+
+def test_the_material_route_is_gated_on_the_requirements_that_invoke_it() -> None:
+    """The material clause applies when a named requirement calls for it, not to material work."""
+    rules, _proposals = project_preconditioning_applicability(
+        _general_fragment(("5.2.6.3.1", "5.2.6.3.2")), IDENTITY, _preconditioning_draft()
+    )
+    rule = next(item for item in rules if isinstance(item, DecisionRule))
+    contexts = next(item for item in rule.inputs if item.name == "test_context").allowed_values
+
+    assert set(contexts) == {"electrical_test", *PRECONDITIONING_MATERIAL_CONTEXTS}
+    assert len(PRECONDITIONING_MATERIAL_CONTEXTS) == len(MATERIAL_PRECONDITIONING_INVOCATIONS)
+    for context in PRECONDITIONING_MATERIAL_CONTEXTS:
+        selected = evaluate_decision(
+            rule, {"test_context": context, "test_purpose": "type_test"}
+        )
+        assert _values(selected) == {
+            "preconditioning_required": True,
+            "preconditioning_procedure_rule_id": PRECONDITIONING_MATERIAL_ID,
+        }
+
+
+def test_the_gate_blocks_when_the_matrix_invokes_the_material_clause_differently() -> None:
+    with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_PRECONDITIONING_SOURCES"):
+        project_preconditioning_applicability(
+            _general_fragment(("5.2.6.3.1", "5.2.6.3.2")),
+            IDENTITY,
+            _preconditioning_draft(invocations=MATERIAL_PRECONDITIONING_INVOCATIONS[:1]),
+        )
 
 
 def _values(result: DecisionResult) -> dict[str, object]:

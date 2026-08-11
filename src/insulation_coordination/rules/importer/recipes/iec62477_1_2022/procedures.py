@@ -259,6 +259,8 @@ _INTERNAL_SPD_CLAUSE = "5.2.3.15"
 #: The general clause Table 26's preconditioning row defers to, and the identifier of the gate
 #: it becomes. Declared here because the spec tuple below names both.
 _PRECONDITIONING_GENERAL_CLAUSE = "5.2.3.1"
+#: The material clause. Named here because the gate reads the matrix row for it.
+_PRECONDITIONING_MATERIAL_CLAUSE = "5.2.3.16"
 PRECONDITIONING_APPLICABILITY_ID = f"{ids.TEST_PRECONDITIONING}.applicability"
 #: Preconditioning has two routes under one required inventory item, because its two source
 #: clauses carry two different gates: the general clause governs the electrical tests, the
@@ -298,7 +300,7 @@ PROCEDURE_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ),
     ClauseAuditSpec(
         semantic_id=ids.TEST_PRECONDITIONING,
-        clause="5.2.3.16",
+        clause=_PRECONDITIONING_MATERIAL_CLAUSE,
         page_number=143,
         #: The numbered steps only. The sentence above them states which requirements call for
         #: the test, which is the applicability the general clause below settles.
@@ -514,12 +516,25 @@ _PRECONDITIONING_TEST_PURPOSES = ("type_test", "sample_test", "acceptance_criter
 #: governs; the gate selects the route from this, so a consumer never has to know that the
 #: source states preconditioning twice.
 _PRECONDITIONING_ELECTRICAL_CONTEXT = "electrical_test"
-_PRECONDITIONING_MATERIAL_CONTEXT = "solid_insulation_material_requirement"
+#: The requirements the material clause states it is invoked by. It applies when one of them
+#: requires it and nowhere else, so the gate discriminates on which one is being met rather
+#: than on a label for material work in general, which would make the clause universal. The
+#: cross-reference matrix lists the same three against this clause, and the gate refuses to be
+#: projected if a printing stops doing so.
+MATERIAL_PRECONDITIONING_INVOCATIONS = ("4.4.7.8.4.2", "4.4.7.8.4.3", "4.4.7.9")
+#: One context per invoking requirement. A consumer names the requirement it is meeting; a
+#: request that names none of them matches no row, so nothing is preconditioned by default.
+PRECONDITIONING_MATERIAL_CONTEXTS = tuple(
+    f"solid_insulation_requirement_{clause}" for clause in MATERIAL_PRECONDITIONING_INVOCATIONS
+)
 _PRECONDITIONING_TEST_CONTEXTS = (
     _PRECONDITIONING_ELECTRICAL_CONTEXT,
-    _PRECONDITIONING_MATERIAL_CONTEXT,
+    *PRECONDITIONING_MATERIAL_CONTEXTS,
 )
 _PRECONDITIONING_ROUTES = (PRECONDITIONING_ELECTRICAL_ID, PRECONDITIONING_MATERIAL_ID)
+#: A clause reference as the matrix prints one in its requirement column. Structural: it
+#: matches a clause number and never a requirement's wording.
+_REQUIREMENT_REFERENCE = re.compile(r"\b\d+(?:\.\d+)+\b")
 
 
 def _cell_text(grid: RawGrid, row: int, column: int, label: str) -> str:
@@ -551,6 +566,34 @@ def _require_table_26_defers(draft: ImportedRuleDraft, label: str) -> None:
             f"{_TABLE_26_PRECONDITIONING_ROW + 1} does not defer to clause "
             f"{_PRECONDITIONING_GENERAL_CLAUSE}, so its own inventory is a third statement "
             "of the same requirement"
+        )
+
+
+def _require_matrix_names_the_invocations(draft: ImportedRuleDraft, label: str) -> None:
+    """Confirm the matrix lists the requirements this recipe reviewed as invoking the clause.
+
+    The material clause applies when one of a few named requirements calls for it, and the gate
+    keys its rows on exactly those. The matrix states the same relation in its requirement
+    column, so a printing that names a different set means the gate would silently answer for
+    the wrong requirements, and it blocks instead.
+    """
+    grid = matrix_grid(draft, label)
+    rows: dict[int, dict[str, str]] = {}
+    for cell in grid.cells:
+        if cell.logical_row is None or cell.logical_column is None:
+            continue
+        rows.setdefault(cell.logical_row, {})[cell.logical_column] = cell.raw_text.strip()
+    listed = frozenset(
+        reference
+        for row in rows.values()
+        if row.get(TEST_CLAUSE_COLUMN) == _PRECONDITIONING_MATERIAL_CLAUSE
+        for reference in _REQUIREMENT_REFERENCE.findall(row.get(REQUIREMENT_CLAUSE_COLUMN, ""))
+    )
+    if listed != frozenset(MATERIAL_PRECONDITIONING_INVOCATIONS):
+        raise ProcedureStructureError(
+            f"AMBIGUOUS_PRECONDITIONING_SOURCES: {label}: the matrix lists "
+            f"{len(listed)} requirement(s) invoking clause {_PRECONDITIONING_MATERIAL_CLAUSE} "
+            f"where this recipe reviewed {sorted(MATERIAL_PRECONDITIONING_INVOCATIONS)}"
         )
 
 
@@ -624,6 +667,11 @@ def project_preconditioning_applicability(
     procedure to follow. A test purpose the source does not settle is left uncovered, so a
     consumer blocks rather than inheriting a guessed answer.
 
+    The material route is gated the way its own clause states it: it applies when one of the
+    requirements that clause names calls for it, so the gate carries one row per named
+    requirement. Material work that none of those requirements calls for is left uncovered
+    too: the material clause is invoked, not universal.
+
     The electrical route declares no classification: the cross-reference matrix has no row
     for this clause, and a classification it does not carry would be this recipe's invention.
     """
@@ -632,6 +680,7 @@ def project_preconditioning_applicability(
     _require_own_fragment(fragment, identity, PRECONDITIONING_APPLICABILITY_ID, label)
     _require_shape(fragment, _PRECONDITIONING_GENERAL_SHAPE, label)
     _require_table_26_defers(draft, label)
+    _require_matrix_names_the_invocations(draft, label)
 
     rule = DecisionRule(
         id=PRECONDITIONING_APPLICABILITY_ID,
@@ -680,25 +729,25 @@ def project_preconditioning_applicability(
                 )
                 for purpose in _PRECONDITIONING_TEST_PURPOSES
             ),
-            # The material clause states its steps for the requirements it covers without
-            # qualifying them by what the test is for, so this row matches on the context
-            # alone rather than reading the general clause's exemption across the gate.
-            DecisionRow(
-                matchers=(
-                    Matcher(
-                        input="test_context",
-                        op="equals",
-                        values=(_PRECONDITIONING_MATERIAL_CONTEXT,),
+            # One row per requirement the material clause states it is invoked by. The clause
+            # states its steps for those requirements without qualifying them by what the test
+            # is for, so each row matches on the context alone rather than reading the general
+            # clause's exemption across the gate.
+            *(
+                DecisionRow(
+                    matchers=(
+                        Matcher(input="test_context", op="equals", values=(context,)),
                     ),
-                ),
-                values=(
-                    DecisionValue(name="preconditioning_required", boolean=True),
-                    DecisionValue(
-                        name="preconditioning_procedure_rule_id",
-                        categorical=PRECONDITIONING_MATERIAL_ID,
+                    values=(
+                        DecisionValue(name="preconditioning_required", boolean=True),
+                        DecisionValue(
+                            name="preconditioning_procedure_rule_id",
+                            categorical=PRECONDITIONING_MATERIAL_ID,
+                        ),
                     ),
-                ),
-                source=fragment.nodes[0].source,
+                    source=fragment.nodes[0].source,
+                )
+                for context in PRECONDITIONING_MATERIAL_CONTEXTS
             ),
         ),
         exhaustive=False,
@@ -867,8 +916,10 @@ __all__ = [
     "CLASSIFICATION_MATRIX_SPECS",
     "CLAUSE_PROJECTORS",
     "FOIL_APPLICABILITY_ID",
+    "MATERIAL_PRECONDITIONING_INVOCATIONS",
     "PRECONDITIONING_APPLICABILITY_ID",
     "PRECONDITIONING_ELECTRICAL_ID",
+    "PRECONDITIONING_MATERIAL_CONTEXTS",
     "PRECONDITIONING_MATERIAL_ID",
     "PROCEDURE_CLAUSES",
     "REQUIREMENT_CLAUSE_COLUMN",
