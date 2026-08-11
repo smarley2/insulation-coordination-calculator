@@ -58,6 +58,14 @@ def test_add_net_class_leaves_the_domain_unset_without_a_direct_source_domain(qt
     assert page.project.net_classes[0].galvanic_domain_id is None
 
 
+def test_set_rules_package_reaches_the_classification_panel(qtbot, qtbot_project):
+    """The DVC guide reads the project's active package through this path."""
+    page = qtbot_project
+    package = synthetic_rule_package()
+    page.set_rules_package(package)
+    assert page._classification_panel._rules_package is package
+
+
 def test_add_net_class_assigns_the_projects_direct_source_domain(qtbot, qtbot_project):
     from insulation_coordination.domain.topology import GalvanicDomain
 

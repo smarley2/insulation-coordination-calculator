@@ -176,6 +176,71 @@ def test_how_to_choose_opens_the_overview_guidance(
     )
 
 
+def test_panel_has_a_dvc_guide_button(panel: NetClassClassificationPanel) -> None:
+    assert isinstance(panel._dvc_guide_button, QPushButton)
+    assert panel._dvc_guide_button.text() == "DVC guide"
+
+
+def test_dvc_guide_button_disabled_for_a_non_circuit_net(
+    panel: NetClassClassificationPanel,
+) -> None:
+    panel.set_net_class(_non_circuit())
+    assert not panel._dvc_guide_button.isEnabled()
+
+
+def test_dvc_guide_button_disabled_when_nothing_selected(
+    panel: NetClassClassificationPanel,
+) -> None:
+    panel.set_net_class(_circuit())
+    panel.set_net_class(None)
+    assert not panel._dvc_guide_button.isEnabled()
+
+
+def test_dvc_guide_reads_the_project_s_active_rules_package(
+    panel: NetClassClassificationPanel, qtbot
+) -> None:
+    from tests.fixtures.synthetic_rules import synthetic_dvc_rule_package
+
+    package = synthetic_dvc_rule_package()
+    panel.set_rules_package(package)
+    panel.set_net_class(_circuit(decisive_voltage_class=DecisiveVoltageClass.DVC_AS))
+
+    from insulation_coordination.ui.dvc_guide import DvcGuideDialog
+
+    dialog: DvcGuideDialog | None = None
+
+    def capture() -> None:
+        nonlocal dialog
+        dialog = panel.findChild(DvcGuideDialog)
+
+    panel._dvc_guide_button.clicked.connect(capture)
+    qtbot.mouseClick(panel._dvc_guide_button, Qt.MouseButton.LeftButton)
+    assert dialog is not None
+    qtbot.addWidget(dialog)
+    assert dialog.isVisible()
+    assert "AC voltage (RMS): 11 V" in dialog.body_text()
+
+
+def test_dvc_guide_degrades_gracefully_with_no_rules_package_loaded(
+    panel: NetClassClassificationPanel, qtbot
+) -> None:
+    panel.set_net_class(_circuit(decisive_voltage_class=DecisiveVoltageClass.DVC_B))
+
+    from insulation_coordination.ui.dvc_guide import DvcGuideDialog
+
+    dialog: DvcGuideDialog | None = None
+
+    def capture() -> None:
+        nonlocal dialog
+        dialog = panel.findChild(DvcGuideDialog)
+
+    panel._dvc_guide_button.clicked.connect(capture)
+    qtbot.mouseClick(panel._dvc_guide_button, Qt.MouseButton.LeftButton)
+    assert dialog is not None
+    qtbot.addWidget(dialog)
+    assert "No rule package is loaded" in dialog.body_text()
+
+
 # --- widget: enabled / disabled / N/A state --------------------------------------
 
 

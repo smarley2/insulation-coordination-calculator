@@ -214,6 +214,7 @@ class ProjectPage(QWidget):
             f"{package.manifest.package_id} v{package.manifest.version} "
             f"({package.package_sha256 or 'no digest'})"
         )
+        self._classification_panel.set_rules_package(package)
 
     def load_project(self, project: Project) -> None:
         self._project = project

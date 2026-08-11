@@ -46,6 +46,8 @@ from insulation_coordination.domain.rules import (
     TableCell,
     Variable,
 )
+from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
+from insulation_coordination.rules.importer.iec62477_2022.inventory import EDITION, STANDARD
 
 
 def synthetic_rule_package() -> RulePackage:
@@ -997,6 +999,224 @@ def synthetic_hf_rule_package() -> RulePackage:
                 ),
             ),
         }
+    )
+
+
+def synthetic_dvc_rule_package(*, edition: str = EDITION) -> RulePackage:
+    """A DVC-only package in the same positional shape as the real Table 2/3 projection.
+
+    ``edition`` lets a test build a package that carries the right semantic IDs but the
+    wrong source edition, to exercise the "wrong-edition package is refused" path without
+    needing a second, differently-shaped fixture. No IEC value appears here; every
+    numeric cell is an invented placeholder.
+    """
+    reference = SourceReference(
+        document_id="synthetic-dvc-source",
+        standard=STANDARD,
+        edition=edition,
+        clause="synthetic-clause",
+        table="synthetic-table-2",
+        row="synthetic row",
+        column="synthetic column",
+        note="Synthetic fixture only; contains no IEC numeric values.",
+    )
+
+    def cell_source(row: str, column: str) -> SourceReference:
+        return reference.model_copy(update={"row": row, "column": column})
+
+    dvc_input = DecisionInput(
+        name="dvc",
+        kind="categorical",
+        allowed_values=tuple(f"dvc-{index}" for index in range(1, 5)),
+    )
+    quantity_input = DecisionInput(
+        name="voltage_quantity",
+        kind="categorical",
+        allowed_values=tuple(f"voltage-quantity-{index}" for index in range(1, 6)),
+    )
+    unit_input = DecisionInput(name="unit", kind="categorical", allowed_values=("V",))
+    table_2_inputs = (dvc_input, quantity_input, unit_input)
+
+    def matchers(dvc: str, quantity: str) -> tuple[Matcher, ...]:
+        return (
+            Matcher(input="dvc", op="equals", values=(dvc,)),
+            Matcher(input="voltage_quantity", op="equals", values=(quantity,)),
+            Matcher(input="unit", op="equals", values=("V",)),
+        )
+
+    numeric_cells = (
+        # DVC A-s dry (dvc-2): every normal-operation quantity is a plain number.
+        ("dvc-2", "voltage-quantity-1", Decimal(11)),
+        ("dvc-2", "voltage-quantity-2", Decimal(22)),
+        ("dvc-2", "voltage-quantity-3", Decimal(33)),
+        ("dvc-2", "voltage-quantity-4", Decimal(44)),
+        # DVC B (dvc-3): the normal-operation limits are numbers; impulse is not (below).
+        ("dvc-3", "voltage-quantity-1", Decimal(55)),
+        ("dvc-3", "voltage-quantity-2", Decimal(66)),
+        ("dvc-3", "voltage-quantity-3", Decimal(77)),
+        # DVC C (dvc-4): only one column populated, to exercise a partly covered row.
+        ("dvc-4", "voltage-quantity-1", Decimal(88)),
+    )
+    voltage_limits = DecisionRule(
+        id=ids.DVC_VOLTAGE_LIMITS,
+        inputs=table_2_inputs,
+        outputs=(DecisionOutput(name="voltage_limit", kind="numeric", unit="V"),),
+        rows=tuple(
+            DecisionRow(
+                matchers=matchers(dvc, quantity),
+                values=(DecisionValue(name="voltage_limit", numeric=value, unit="V"),),
+                source=cell_source(dvc, quantity),
+            )
+            for dvc, quantity, value in numeric_cells
+        ),
+        exhaustive=False,
+        source=reference,
+    )
+
+    fault_time_cells = (("dvc-2", "voltage-quantity-5"), ("dvc-3", "voltage-quantity-5"))
+    fault_time_reference = DecisionRule(
+        id=f"{ids.DVC_VOLTAGE_LIMITS}.fault_time_reference",
+        inputs=table_2_inputs,
+        outputs=(DecisionOutput(name="fault_time_voltage", kind="reference"),),
+        rows=tuple(
+            DecisionRow(
+                matchers=matchers(dvc, quantity),
+                values=(
+                    DecisionValue(
+                        name="fault_time_voltage", reference=ids.DVC_FAULT_TIME_VOLTAGE
+                    ),
+                ),
+                source=cell_source(dvc, quantity),
+            )
+            for dvc, quantity in fault_time_cells
+        ),
+        exhaustive=False,
+        source=reference,
+    )
+
+    impulse_cells = (("dvc-3", "voltage-quantity-4"),)
+    impulse_reference = DecisionRule(
+        id=f"{ids.DVC_VOLTAGE_LIMITS}.impulse_reference",
+        inputs=table_2_inputs,
+        outputs=(
+            DecisionOutput(name="ac_reference", kind="reference"),
+            DecisionOutput(name="dc_reference", kind="reference"),
+        ),
+        rows=tuple(
+            DecisionRow(
+                matchers=matchers(dvc, quantity),
+                values=(
+                    DecisionValue(
+                        name="ac_reference",
+                        reference=f"{ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC}.ac",
+                    ),
+                    DecisionValue(
+                        name="dc_reference",
+                        reference=f"{ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC}.dc",
+                    ),
+                ),
+                source=cell_source(dvc, quantity),
+            )
+            for dvc, quantity in impulse_cells
+        ),
+        exhaustive=False,
+        source=reference,
+    )
+
+    not_applicable_cells = (("dvc-4", "voltage-quantity-5"),)
+    not_applicable = DecisionRule(
+        id=f"{ids.DVC_VOLTAGE_LIMITS}.not_applicable",
+        inputs=table_2_inputs,
+        outputs=(DecisionOutput(name="applicable", kind="boolean"),),
+        rows=tuple(
+            DecisionRow(
+                matchers=matchers(dvc, quantity),
+                values=(DecisionValue(name="applicable", boolean=False),),
+                source=cell_source(dvc, quantity),
+            )
+            for dvc, quantity in not_applicable_cells
+        ),
+        exhaustive=False,
+        source=reference,
+    )
+
+    protection_dvc_input = DecisionInput(
+        name="dvc", kind="categorical", allowed_values=("dvc-1", "dvc-2", "dvc-3")
+    )
+    protection_context_input = DecisionInput(
+        name="protection_context",
+        kind="categorical",
+        allowed_values=tuple(f"protection-context-{index}" for index in range(1, 3)),
+    )
+    protection_cells = {
+        ("dvc-1", "protection-context-1"): "none",
+        ("dvc-1", "protection-context-2"): "none",
+        ("dvc-2", "protection-context-1"): "basic_protection",
+        ("dvc-2", "protection-context-2"): "none",
+        ("dvc-3", "protection-context-1"): "enhanced_protection",
+        ("dvc-3", "protection-context-2"): "basic_protection",
+    }
+    protection_matrix = DecisionRule(
+        id=ids.DVC_PROTECTION_MATRIX,
+        inputs=(protection_dvc_input, protection_context_input),
+        outputs=(
+            DecisionOutput(
+                name="protection_requirement",
+                kind="categorical",
+                allowed_values=("none", "basic_protection", "enhanced_protection"),
+            ),
+        ),
+        rows=tuple(
+            DecisionRow(
+                matchers=(
+                    Matcher(input="dvc", op="equals", values=(dvc,)),
+                    Matcher(input="protection_context", op="equals", values=(context,)),
+                ),
+                values=(DecisionValue(name="protection_requirement", categorical=requirement),),
+                source=cell_source(dvc, context),
+            )
+            for (dvc, context), requirement in protection_cells.items()
+        ),
+        exhaustive=True,
+        source=reference,
+    )
+
+    return RulePackage(
+        manifest=Manifest(
+            schema_version=RULE_SCHEMA_VERSION,
+            package_id="00000000-0000-0000-0000-00000000000a",
+            version="dvc-synthetic-1",
+            importer_version="test-1",
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            source_documents=(
+                SourceDocument(
+                    id="synthetic-dvc-source",
+                    standard=STANDARD,
+                    edition=edition,
+                    sha256="d" * 64,
+                ),
+            ),
+            approved=True,
+            compatible=True,
+            approval_records=(
+                ApprovalRecord(
+                    action="approval",
+                    actor="Synthetic Reviewer",
+                    recorded_at=datetime(2026, 1, 2, tzinfo=UTC),
+                    notes="Synthetic DVC data reviewed.",
+                ),
+            ),
+        ),
+        tables=(),
+        formulas=(),
+        mappings=(),
+        decisions=(
+            voltage_limits,
+            fault_time_reference,
+            impulse_reference,
+            not_applicable,
+            protection_matrix,
+        ),
     )
 
 

@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insulation_coordination.domain.dvc import DvcGuidanceService
 from insulation_coordination.domain.enums import (
     CircuitSourceRelationship,
     ConnectionExposure,
@@ -34,7 +35,9 @@ from insulation_coordination.domain.enums import (
     ReviewState,
 )
 from insulation_coordination.domain.project import NetClass
+from insulation_coordination.domain.rules import RulePackage
 from insulation_coordination.domain.topology import GalvanicDomain
+from insulation_coordination.ui.dvc_guide import DvcGuideDialog
 from insulation_coordination.ui.help_indicator import GuidanceDialog, HelpIndicator, labelled
 from insulation_coordination.ui.topology_guidance import (
     TopologyGuidanceId,
@@ -89,6 +92,7 @@ class NetClassClassificationPanel(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._net_class: NetClass | None = None
+        self._rules_package: RulePackage | None = None
 
         group = QGroupBox("Net classification")
         form = QFormLayout(group)
@@ -112,6 +116,10 @@ class NetClassClassificationPanel(QWidget):
         self._dvc_help = HelpIndicator(TopologyGuidanceId.DVC_NOT_EVALUATED)
         self._dvc_combo.currentIndexChanged.connect(self._on_dvc_changed)
         form.addRow(labelled("DVC:", self._dvc_help), self._dvc_combo)
+
+        self._dvc_guide_button = QPushButton("DVC guide")
+        self._dvc_guide_button.clicked.connect(self._on_dvc_guide_clicked)
+        form.addRow(self._dvc_guide_button)
 
         self._domain_combo = QComboBox()
         self._domain_help = HelpIndicator(TopologyGuidanceId.GALVANIC_DOMAIN_ASSIGNMENT)
@@ -164,6 +172,7 @@ class NetClassClassificationPanel(QWidget):
         )
         if net_class.decisive_voltage_class is not None:
             self._dvc_help.set_guidance(guidance_id_for_dvc(net_class.decisive_voltage_class))
+        self._dvc_guide_button.setEnabled(is_circuit)
 
         domain_options: tuple[tuple[str, UUID | None], ...] = (
             ("Unset", None),
@@ -180,8 +189,17 @@ class NetClassClassificationPanel(QWidget):
             self._exposure_combo,
             self._dvc_combo,
             self._domain_combo,
+            self._dvc_guide_button,
         ):
             widget.setEnabled(enabled)
+
+    def set_rules_package(self, package: RulePackage | None) -> None:
+        """Record the project's active package, so the DVC guide reads from it.
+
+        The panel never evaluates anything itself; it only carries the package through
+        to :class:`DvcGuideDialog` when the guide button is activated.
+        """
+        self._rules_package = package
 
     def _fill_combo(
         self,
@@ -281,4 +299,12 @@ class NetClassClassificationPanel(QWidget):
 
     def _on_how_to_choose_clicked(self) -> None:
         dialog = GuidanceDialog(TopologyGuidanceId.CLASSIFICATION_OVERVIEW, parent=self)
+        dialog.open()
+
+    def _on_dvc_guide_clicked(self) -> None:
+        if self._net_class is None:
+            return
+        dvc = self._net_class.decisive_voltage_class or DecisiveVoltageClass.NOT_EVALUATED
+        service = DvcGuidanceService(self._rules_package)
+        dialog = DvcGuideDialog(service, dvc, parent=self)
         dialog.open()
