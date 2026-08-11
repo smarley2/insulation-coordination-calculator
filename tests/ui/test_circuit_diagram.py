@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QSize
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from insulation_coordination.project.image_attachments import ImageAttachmentError
 from insulation_coordination.ui.circuit_diagram import CircuitDiagramBox
@@ -157,6 +157,47 @@ def test_remove_asks_first_and_clears_the_preview(
     assert diagram_box.attachment is None
     assert diagram_box._preview.pixmap().isNull()
     assert diagram_box._add_button.isEnabled()
+
+
+def test_choosing_a_file_attaches_it_and_cancelling_changes_nothing(
+    diagram_box: CircuitDiagramBox, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = write(tmp_path, "chosen.png", png_bytes())
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(path), ""))
+
+    diagram_box._add_button.click()
+
+    assert diagram_box.attachment is not None
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: ("", ""))
+    unchanged = diagram_box.attachment
+
+    diagram_box._replace_button.click()
+
+    assert diagram_box.attachment == unchanged
+
+
+def test_choosing_an_unusable_file_warns_and_keeps_the_project_unchanged(
+    diagram_box: CircuitDiagramBox, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = write(tmp_path, "animation.png", gif_bytes())
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(path), ""))
+    warnings: list[str] = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda _p, _t, message: warnings.append(message))
+
+    diagram_box._add_button.click()
+
+    assert diagram_box.attachment is None
+    assert "PNG and JPEG" in warnings[0]
+
+
+def test_resizing_the_box_repaints_the_preview(
+    diagram_box: CircuitDiagramBox, tmp_path: Path
+) -> None:
+    diagram_box.attach_path(write(tmp_path, "diagram.png", png_bytes(200, 800)))
+
+    diagram_box.resize(QSize(320, 240))
+
+    assert not diagram_box._preview.pixmap().isNull()
 
 
 def test_controls_are_keyboard_reachable_and_named(diagram_box: CircuitDiagramBox) -> None:
