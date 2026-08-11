@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from insulation_coordination.rules.importer.clauses import RawClauseFragment
     from insulation_coordination.rules.importer.curves import (
         CurveDigitizationResult,
+        ManualPlotCalibration,
         OcrEngine,
         RawCurveTrace,
         RawFigure,
@@ -79,6 +80,7 @@ def _missing_parts_message(loaded: set[str]) -> str:
 
 __all__ = [
     "ComponentFormulaCandidate",
+    "CurveCalibrationReview",
     "CurveTraceAssociation",
     "CurveVariantRejection",
     "CurveVariantReview",
@@ -168,6 +170,19 @@ class CurveVariantReview(FrozenModel):
     variant_id: Identifier
     variant_sha256: str = Field(pattern=r"[0-9a-f]{64}")
     source_artifact_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    calibration_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    input_origin: Literal["empty", "automatic_suggestion"]
+    actor: str = Field(min_length=1, max_length=200)
+    recorded_at: datetime
+    notes: NotesText
+
+
+class CurveCalibrationReview(FrozenModel):
+    """Draft-only calibration bound to one immutable source figure."""
+
+    figure_artifact_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    calibration: ManualPlotCalibration
+    calibration_sha256: str = Field(pattern=r"[0-9a-f]{64}")
     actor: str = Field(min_length=1, max_length=200)
     recorded_at: datetime
     notes: NotesText
@@ -516,6 +531,7 @@ class ImportedRuleDraft(DraftRulePackage):
     raw_clause_fragments: tuple[RawClauseFragment, ...] = ()
     raw_figures: tuple[RawFigure, ...] = ()
     curve_digitizations: tuple[CurveDigitizationResult, ...] = ()
+    curve_calibrations: tuple[CurveCalibrationReview, ...] = ()
     curve_variant_reviews: tuple[CurveVariantReview, ...] = ()
     curve_trace_associations: tuple[CurveTraceAssociation, ...] = ()
     curve_variant_rejections: tuple[CurveVariantRejection, ...] = ()
@@ -542,6 +558,7 @@ def _content_digest(
     curves: tuple[PiecewiseCurveRule, ...] = (),
     raw_figures: tuple[RawFigure, ...] = (),
     curve_digitizations: tuple[CurveDigitizationResult, ...] = (),
+    curve_calibrations: tuple[CurveCalibrationReview, ...] = (),
     curve_variant_reviews: tuple[CurveVariantReview, ...] = (),
     curve_trace_associations: tuple[CurveTraceAssociation, ...] = (),
     curve_variant_rejections: tuple[CurveVariantRejection, ...] = (),
@@ -565,6 +582,9 @@ def _content_digest(
         "raw_figures": [item.model_dump(mode="json") for item in raw_figures],
         "curve_digitizations": [
             item.model_dump(mode="json") for item in curve_digitizations
+        ],
+        "curve_calibrations": [
+            item.model_dump(mode="json") for item in curve_calibrations
         ],
         "curve_variant_reviews": [
             item.model_dump(mode="json") for item in curve_variant_reviews
@@ -2033,6 +2053,7 @@ def _rebuild_draft_model() -> None:
     from insulation_coordination.rules.importer.clauses import RawClauseFragment
     from insulation_coordination.rules.importer.curves import (
         CurveDigitizationResult,
+        ManualPlotCalibration,
         RawCurveTrace,
         RawFigure,
     )
@@ -2042,10 +2063,14 @@ def _rebuild_draft_model() -> None:
             "RawClauseFragment": RawClauseFragment,
             "RawFigure": RawFigure,
             "CurveDigitizationResult": CurveDigitizationResult,
+            "ManualPlotCalibration": ManualPlotCalibration,
             "RawCurveTrace": RawCurveTrace,
         }
     )
     ManualCurveTrace.model_rebuild(_types_namespace={"RawCurveTrace": RawCurveTrace})
+    CurveCalibrationReview.model_rebuild(
+        _types_namespace={"ManualPlotCalibration": ManualPlotCalibration}
+    )
 
 
 _rebuild_draft_model()

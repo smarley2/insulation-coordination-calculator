@@ -16,6 +16,7 @@ from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
+from typing import Literal as TypingLiteral
 
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import (
@@ -26,6 +27,7 @@ from insulation_coordination.domain.rules import (
     CurveSegment,
     DecisionRule,
     DraftRulePackage,
+    FaultTimeVoltageSelector,
     FaultTimeVoltageVariant,
     Formula,
     GuidanceRule,
@@ -48,15 +50,18 @@ from insulation_coordination.rules.importer.approval import ApprovalError, recor
 from insulation_coordination.rules.importer.curves import (
     ConservatismReport,
     CurveDigitizationResult,
+    ManualPlotCalibration,
     PlotCalibration,
     RawCurveTrace,
     RawFigure,
     _log_space_point,
+    infer_curve_segments,
     prove_variant_conservative,
     rebuild_variant_from_calibration,
 )
 from insulation_coordination.rules.importer.extract import (
     ComponentFormulaCandidate,
+    CurveCalibrationReview,
     CurveTraceAssociation,
     CurveVariantRejection,
     CurveVariantReview,
@@ -70,6 +75,7 @@ from insulation_coordination.rules.importer.extract import (
     is_recipe_derived,
 )
 from insulation_coordination.rules.importer.identify import (
+    CurveAuditSpec,
     FormulaAuditSpec,
     MappingAuditSpec,
     StandardIdentity,
@@ -1712,6 +1718,235 @@ def _curve_rule(draft: ImportedRuleDraft, rule_id: str) -> PiecewiseCurveRule:
     return rule
 
 
+def _manual_recipes() -> tuple[StandardRecipe, ...]:
+    from insulation_coordination.rules.importer.recipes import RECIPES
+
+    return RECIPES
+
+
+def _manual_curve_slot(
+    draft: ImportedRuleDraft, variant_id: str
+) -> tuple[CurveAuditSpec, FaultTimeVoltageSelector]:
+    """Resolve a stable variant ID from the recipe slot inventory."""
+
+    matches: list[tuple[CurveAuditSpec, FaultTimeVoltageSelector]] = []
+    for identity in draft.source_identities:
+        for recipe in _manual_recipes():
+            if (
+                recipe.id != identity.recipe_id
+                or recipe.standard != identity.standard
+                or recipe.edition != identity.edition
+            ):
+                continue
+            for spec in recipe.curves:
+                for index, selector in enumerate(spec.variant_slots, start=1):
+                    if variant_id == f"{spec.semantic_id}.{spec.figure}.{index}":
+                        matches.append((spec, selector))
+    if len(matches) != 1:
+        raise ValueError(f"unknown curve variant: {variant_id}")
+    return matches[0]
+
+
+def _manual_figure(draft: ImportedRuleDraft, spec: CurveAuditSpec) -> RawFigure:
+    matches = tuple(
+        figure
+        for figure in draft.raw_figures
+        if figure.source.page == spec.page_number
+        and figure.source.figure == spec.figure
+        and any(
+            identity.standard == figure.source.standard
+            and identity.edition == figure.source.edition
+            for identity in draft.source_identities
+        )
+    )
+    if len(matches) != 1:
+        raise ApprovalError("curve variant must have exactly one matching source figure")
+    return matches[0]
+
+
+def _manual_calibration(
+    draft: ImportedRuleDraft, figure: RawFigure
+) -> CurveCalibrationReview:
+    matches = tuple(
+        review
+        for review in draft.curve_calibrations
+        if review.figure_artifact_sha256 == figure.artifact_sha256
+    )
+    if len(matches) != 1:
+        raise ApprovalError("curve variant must have exactly one reviewed calibration")
+    calibration = matches[0]
+    if (
+        calibration.calibration.figure_artifact_sha256 != figure.artifact_sha256
+        or calibration.calibration_sha256
+        != canonical_model_sha256(calibration.calibration)
+    ):
+        raise ApprovalError("curve variant has stale calibration evidence")
+    return calibration
+
+
+def _manual_reviewed_artifact_sha256(
+    figure: RawFigure, calibration_sha256: str
+) -> str:
+    return hashlib.sha256(
+        _canonical_json(
+            {
+                "figure_artifact_sha256": figure.artifact_sha256,
+                "calibration_sha256": calibration_sha256,
+            }
+        )
+    ).hexdigest()
+
+
+def _source_x_scale(spec: CurveAuditSpec) -> Decimal:
+    source_unit = spec.x_source_unit or spec.x_unit
+    if source_unit == spec.x_unit:
+        return Decimal(1)
+    if (source_unit, spec.x_unit) == ("ms", "s"):
+        return Decimal("0.001")
+    raise ApprovalError("unsupported source-axis unit conversion")
+
+
+def set_manual_curve_calibration(
+    draft: ImportedRuleDraft,
+    *,
+    figure: str,
+    calibration: ManualPlotCalibration,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Record one local plot calibration and invalidate its curve reviews."""
+
+    figures = tuple(
+        raw_figure for raw_figure in draft.raw_figures if raw_figure.source.figure == figure
+    )
+    if len(figures) != 1:
+        raise ValueError(f"unknown raw figure: {figure}")
+    raw_figure = figures[0]
+    if calibration.figure_artifact_sha256 != raw_figure.artifact_sha256:
+        raise ApprovalError("manual calibration does not match the source figure")
+    reviewed_ids = {
+        variant.id
+        for rule in draft.curves
+        for variant in rule.variants
+        if _source_matches(variant.source, raw_figure.source)
+    }
+    calibration_review = CurveCalibrationReview(
+        figure_artifact_sha256=raw_figure.artifact_sha256,
+        calibration=calibration,
+        calibration_sha256=canonical_model_sha256(calibration),
+        actor=actor.strip(),
+        recorded_at=datetime.now(UTC),
+        notes=notes.strip(),
+    )
+    changed = draft.model_copy(
+        update={
+            "curve_calibrations": (
+                *(
+                    item
+                    for item in draft.curve_calibrations
+                    if item.figure_artifact_sha256 != raw_figure.artifact_sha256
+                ),
+                calibration_review,
+            ),
+            "curve_variant_reviews": tuple(
+                review
+                for review in draft.curve_variant_reviews
+                if review.variant_id not in reviewed_ids
+            ),
+        }
+    )
+    return record_correction(draft, changed, actor=actor, notes=notes)
+
+
+def replace_manual_curve_variant(
+    draft: ImportedRuleDraft,
+    *,
+    variant_id: str,
+    source_points: tuple[CurvePoint, ...],
+    actor: str,
+    notes: str,
+    input_origin: TypingLiteral["empty", "automatic_suggestion"],
+) -> ImportedRuleDraft:
+    """Atomically replace one manually reviewed curve variant from table points."""
+
+    spec, selector = _manual_curve_slot(draft, variant_id)
+    raw_figure = _manual_figure(draft, spec)
+    calibration_review = _manual_calibration(draft, raw_figure)
+    calibration = calibration_review.calibration
+    if input_origin not in {"empty", "automatic_suggestion"}:
+        raise ValueError("manual curve input origin is invalid")
+    if any(
+        point.x < calibration.x_min
+        or point.x > calibration.x_max
+        or point.y < calibration.y_min
+        or point.y > calibration.y_max
+        for point in source_points
+    ):
+        raise ApprovalError("manual curve points must be inside reviewed axis bounds")
+    x_scale = _source_x_scale(spec)
+    points = tuple(
+        CurvePoint(x=point.x * x_scale, y=point.y) for point in source_points
+    )
+    variant = FaultTimeVoltageVariant(
+        id=variant_id,
+        selector=selector,
+        x_axis=CurveAxis(
+            quantity_kind=spec.x_quantity_kind,
+            unit=spec.x_unit,
+            scale=spec.x_scale,
+            minimum=calibration.x_min * x_scale,
+            maximum=calibration.x_max * x_scale,
+        ),
+        y_axis=CurveAxis(
+            quantity_kind=spec.y_quantity_kind,
+            unit=spec.y_unit,
+            scale=spec.y_scale,
+            minimum=calibration.y_min,
+            maximum=calibration.y_max,
+        ),
+        points=points,
+        segments=infer_curve_segments(points),
+        applicability="manually reviewed",
+        source=raw_figure.source,
+        reviewed_artifact_sha256=_manual_reviewed_artifact_sha256(
+            raw_figure, calibration_review.calibration_sha256
+        ),
+    )
+    rules = tuple(rule for rule in draft.curves if rule.id == spec.semantic_id)
+    if len(rules) > 1:
+        raise ApprovalError("curve rule inventory is ambiguous")
+    current = {member.id: member for member in rules[0].variants} if rules else {}
+    current[variant.id] = variant
+    order = tuple(
+        f"{candidate.semantic_id}.{candidate.figure}.{index}"
+        for recipe in _manual_recipes()
+        for candidate in recipe.curves
+        if candidate.semantic_id == spec.semantic_id
+        for index, _selector in enumerate(candidate.variant_slots, start=1)
+    )
+    changed_rule = PiecewiseCurveRule(
+        id=spec.semantic_id,
+        variants=tuple(current[item] for item in order if item in current),
+        source=rules[0].source if rules else raw_figure.source,
+    )
+    changed = draft.model_copy(
+        update={
+            "curves": tuple(
+                changed_rule if rule.id == spec.semantic_id else rule
+                for rule in draft.curves
+            )
+            if rules
+            else (*draft.curves, changed_rule),
+            "curve_variant_reviews": tuple(
+                review
+                for review in draft.curve_variant_reviews
+                if review.variant_id != variant_id
+            ),
+        }
+    )
+    return record_correction(draft, changed, actor=actor, notes=notes)
+
+
 def _replace_curve(
     draft: ImportedRuleDraft,
     rule_id: str,
@@ -2723,11 +2958,96 @@ def review_curve_variant(
     *,
     actor: str,
     notes: str,
+    input_origin: TypingLiteral["empty", "automatic_suggestion"] = "empty",
 ) -> ImportedRuleDraft:
-    """Record an exact member review; review the aggregate only after every member."""
+    """Record an exact manual review; review the aggregate after every member."""
 
     if not actor.strip() or not notes.strip():
         raise ApprovalError("curve review actor and notes are required")
+    rule = next((rule for rule in draft.curves for v in rule.variants if v.id == variant_id), None)
+    if rule is None:
+        raise ValueError(f"unknown curve variant: {variant_id}")
+    variant = _variant(rule, variant_id)
+    try:
+        spec, _selector = _manual_curve_slot(draft, variant_id)
+    except ValueError:
+        return _review_automatic_curve_variant(
+            draft, variant_id, actor=actor, notes=notes
+        )
+    figure = _manual_figure(draft, spec)
+    if not any(
+        item.figure_artifact_sha256 == figure.artifact_sha256
+        for item in draft.curve_calibrations
+    ):
+        return _review_automatic_curve_variant(
+            draft, variant_id, actor=actor, notes=notes
+        )
+    calibration = _manual_calibration(draft, figure)
+    if variant.reviewed_artifact_sha256 != _manual_reviewed_artifact_sha256(
+        figure, calibration.calibration_sha256
+    ):
+        raise ApprovalError("curve variant provenance is stale for reviewed calibration")
+    review = CurveVariantReview(
+        variant_id=variant.id,
+        variant_sha256=canonical_model_sha256(variant),
+        source_artifact_sha256=variant.reviewed_artifact_sha256,
+        calibration_sha256=calibration.calibration_sha256,
+        input_origin=input_origin,
+        actor=actor.strip(),
+        recorded_at=datetime.now(UTC),
+        notes=notes.strip(),
+    )
+    member_items = tuple(
+        item
+        for item in draft.review_items
+        if item.kind == "curve" and item.semantic_id == variant.id
+    )
+    if len(member_items) != 1:
+        raise ApprovalError("curve variant lacks one exact review item")
+    if any(
+        item.review_item_sha256 == member_items[0].sha256
+        for item in draft.review_resolutions
+    ):
+        raise ApprovalError("curve variant review item is already resolved")
+    changed = draft.model_copy(
+        update={
+            "curve_variant_reviews": tuple(
+                item
+                for item in draft.curve_variant_reviews
+                if item.variant_id != variant.id
+            )
+            + (review,)
+        }
+    )
+    changed = record_correction(
+        draft,
+        changed,
+        actor=actor,
+        notes=f"record exact curve variant review: {notes}",
+        resolve=member_items,
+    )
+    if all(
+        any(
+            item.variant_id == member.id
+            and item.variant_sha256 == canonical_model_sha256(member)
+            and item.source_artifact_sha256 == member.reviewed_artifact_sha256
+            for item in changed.curve_variant_reviews
+        )
+        for member in rule.variants
+    ):
+        return mark_proposal_reviewed(changed, rule.id, actor=actor, notes=notes)
+    return changed
+
+
+def _review_automatic_curve_variant(
+    draft: ImportedRuleDraft,
+    variant_id: str,
+    *,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Keep existing automatic drafts reviewable until their importer path is removed."""
+
     rule = next((rule for rule in draft.curves for v in rule.variants if v.id == variant_id), None)
     if rule is None:
         raise ValueError(f"unknown curve variant: {variant_id}")
@@ -2738,7 +3058,7 @@ def review_curve_variant(
         for rejection in draft.curve_variant_rejections
     ):
         raise ApprovalError("rejected curve variant must be corrected before review")
-    figure, _digitization, _trace = _variant_evidence(draft, variant)
+    figure, digitization, _trace = _variant_evidence(draft, variant)
     if variant.reviewed_artifact_sha256 == figure.artifact_sha256:
         changed_variant, digitizations = _reprove_curve_variant(draft, variant)
         changed_rule = rule.model_copy(
@@ -2759,11 +3079,15 @@ def review_curve_variant(
         )
         rule = next(rule for rule in draft.curves if rule.id == changed_rule.id)
         variant = _variant(rule, variant_id)
+        _figure, digitization, _trace = _variant_evidence(draft, variant)
     validate_current_curve_evidence(draft, variant)
+    assert digitization.calibration is not None
     review = CurveVariantReview(
         variant_id=variant.id,
         variant_sha256=canonical_model_sha256(variant),
         source_artifact_sha256=variant.reviewed_artifact_sha256,
+        calibration_sha256=canonical_model_sha256(digitization.calibration),
+        input_origin="automatic_suggestion",
         actor=actor.strip(),
         recorded_at=datetime.now(UTC),
         notes=notes.strip(),
@@ -2787,11 +3111,13 @@ def review_curve_variant(
             notes=notes,
             resolve=member_items,
         )
-    current = tuple(
-        item for item in base.curve_variant_reviews if item.variant_id != variant.id
-    )
     changed = base.model_copy(
-        update={"curve_variant_reviews": (*current, review)}
+        update={
+            "curve_variant_reviews": tuple(
+                item for item in base.curve_variant_reviews if item.variant_id != variant.id
+            )
+            + (review,)
+        }
     )
     changed = record_correction(
         base,

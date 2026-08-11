@@ -81,7 +81,7 @@ def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft
             and result.conservatism is not None
             and result.conservatism.proven
             for figure, result in zip(changed.raw_figures, changed.curve_digitizations)
-        )
+        ) or any(review.variant_id == item.semantic_id for review in changed.curve_variant_reviews)
     if item.code in {"AMBIGUOUS_COMPOUND_CELL", "AMBIGUOUS_COMPONENT_FORMULA"}:
         grid_id, row_text, column_text, source_index_text = item.semantic_id.rsplit(":", 3)
         cell = next(
@@ -477,6 +477,7 @@ def record_correction(
         changed.raw_clause_fragments,
         changed.raw_figures,
         changed.curve_digitizations,
+        changed.curve_calibrations,
         changed.curve_variant_reviews,
         changed.curve_trace_associations,
         changed.curve_variant_rejections,
@@ -486,6 +487,7 @@ def record_correction(
         original.raw_clause_fragments,
         original.raw_figures,
         original.curve_digitizations,
+        original.curve_calibrations,
         original.curve_variant_reviews,
         original.curve_trace_associations,
         original.curve_variant_rejections,
@@ -524,6 +526,7 @@ def record_correction(
         curves=original.curves,
         raw_figures=original.raw_figures,
         curve_digitizations=original.curve_digitizations,
+        curve_calibrations=original.curve_calibrations,
         curve_variant_reviews=original.curve_variant_reviews,
         curve_trace_associations=original.curve_trace_associations,
         curve_variant_rejections=original.curve_variant_rejections,
@@ -555,6 +558,7 @@ def record_correction(
         curves=changed.curves,
         raw_figures=changed.raw_figures,
         curve_digitizations=changed.curve_digitizations,
+        curve_calibrations=changed.curve_calibrations,
         curve_variant_reviews=changed.curve_variant_reviews,
         curve_trace_associations=changed.curve_trace_associations,
         curve_variant_rejections=changed.curve_variant_rejections,
@@ -599,6 +603,7 @@ def record_correction(
         raw_clause_fragments=changed.raw_clause_fragments,
         raw_figures=changed.raw_figures,
         curve_digitizations=changed.curve_digitizations,
+        curve_calibrations=changed.curve_calibrations,
         curve_variant_reviews=changed.curve_variant_reviews,
         curve_trace_associations=changed.curve_trace_associations,
         curve_variant_rejections=changed.curve_variant_rejections,
@@ -711,21 +716,24 @@ def _require_logged_content(draft: DraftRulePackage) -> None:
         guidance=draft.guidance,
         curves=draft.curves,
         raw_figures=(draft.raw_figures if isinstance(draft, ImportedRuleDraft) else ()),
-            curve_digitizations=(
-                draft.curve_digitizations if isinstance(draft, ImportedRuleDraft) else ()
-            ),
-            curve_variant_reviews=(
-                draft.curve_variant_reviews if isinstance(draft, ImportedRuleDraft) else ()
-            ),
-            curve_trace_associations=(
-                draft.curve_trace_associations if isinstance(draft, ImportedRuleDraft) else ()
-            ),
-            curve_variant_rejections=(
-                draft.curve_variant_rejections if isinstance(draft, ImportedRuleDraft) else ()
-            ),
-            manual_curve_traces=(
-                draft.manual_curve_traces if isinstance(draft, ImportedRuleDraft) else ()
-            ),
+        curve_digitizations=(
+            draft.curve_digitizations if isinstance(draft, ImportedRuleDraft) else ()
+        ),
+        curve_calibrations=(
+            draft.curve_calibrations if isinstance(draft, ImportedRuleDraft) else ()
+        ),
+        curve_variant_reviews=(
+            draft.curve_variant_reviews if isinstance(draft, ImportedRuleDraft) else ()
+        ),
+        curve_trace_associations=(
+            draft.curve_trace_associations if isinstance(draft, ImportedRuleDraft) else ()
+        ),
+        curve_variant_rejections=(
+            draft.curve_variant_rejections if isinstance(draft, ImportedRuleDraft) else ()
+        ),
+        manual_curve_traces=(
+            draft.manual_curve_traces if isinstance(draft, ImportedRuleDraft) else ()
+        ),
     )
     if actual != expected:
         raise ApprovalError("draft contains an unlogged content change")
