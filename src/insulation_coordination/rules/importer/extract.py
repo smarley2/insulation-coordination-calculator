@@ -91,6 +91,7 @@ __all__ = [
     "ImportReviewItem",
     "ImportedRuleDraft",
     "ManualCurveTrace",
+    "ManualCurveVariantInput",
     "MappingAuditSpec",
     "ProposalState",
     "RawGrid",
@@ -186,6 +187,16 @@ class CurveCalibrationReview(FrozenModel):
     actor: str = Field(min_length=1, max_length=200)
     recorded_at: datetime
     notes: NotesText
+
+
+class ManualCurveVariantInput(FrozenModel):
+    """Current manual-entry provenance for one draft curve variant."""
+
+    variant_id: Identifier
+    variant_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    source_artifact_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    calibration_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    input_origin: Literal["empty", "automatic_suggestion"]
 
 
 class CurveTraceAssociation(FrozenModel):
@@ -532,6 +543,7 @@ class ImportedRuleDraft(DraftRulePackage):
     raw_figures: tuple[RawFigure, ...] = ()
     curve_digitizations: tuple[CurveDigitizationResult, ...] = ()
     curve_calibrations: tuple[CurveCalibrationReview, ...] = ()
+    manual_curve_variant_inputs: tuple[ManualCurveVariantInput, ...] = ()
     curve_variant_reviews: tuple[CurveVariantReview, ...] = ()
     curve_trace_associations: tuple[CurveTraceAssociation, ...] = ()
     curve_variant_rejections: tuple[CurveVariantRejection, ...] = ()
@@ -559,6 +571,7 @@ def _content_digest(
     raw_figures: tuple[RawFigure, ...] = (),
     curve_digitizations: tuple[CurveDigitizationResult, ...] = (),
     curve_calibrations: tuple[CurveCalibrationReview, ...] = (),
+    manual_curve_variant_inputs: tuple[ManualCurveVariantInput, ...] = (),
     curve_variant_reviews: tuple[CurveVariantReview, ...] = (),
     curve_trace_associations: tuple[CurveTraceAssociation, ...] = (),
     curve_variant_rejections: tuple[CurveVariantRejection, ...] = (),
@@ -585,6 +598,9 @@ def _content_digest(
         ],
         "curve_calibrations": [
             item.model_dump(mode="json") for item in curve_calibrations
+        ],
+        "manual_curve_variant_inputs": [
+            item.model_dump(mode="json") for item in manual_curve_variant_inputs
         ],
         "curve_variant_reviews": [
             item.model_dump(mode="json") for item in curve_variant_reviews

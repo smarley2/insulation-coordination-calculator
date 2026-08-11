@@ -177,6 +177,12 @@ def synthetic_curve_draft(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
                         dvc_context=None,
                         environment_context=None,
                     ),
+                    FaultTimeVoltageSelector(
+                        subject="conductive_accessible_part",
+                        voltage_basis="ac_unspecified",
+                        dvc_context=None,
+                        environment_context=None,
+                    ),
                 ),
                 permitted_segment_types=("continuous", "plateau"),
                 permitted_interpolations=("log_log", "constant"),
@@ -201,14 +207,17 @@ def synthetic_curve_draft(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
         traces=(),
         artifact_sha256="0" * 64,
     )
-    item = ImportReviewItem(
-        code="SYNTHETIC_CURVE_REVIEW",
-        semantic_id="synthetic.curve.5.1",
-        kind="curve",
-        source=source.model_copy(
-            update={"geometry": SourceGeometryReference(artifact_sha256="0" * 64)}
-        ),
-        expected_contract="Synthetic curve review.",
+    items = tuple(
+        ImportReviewItem(
+            code=f"SYNTHETIC_CURVE_REVIEW_{index}",
+            semantic_id=f"synthetic.curve.5.{index}",
+            kind="curve",
+            source=source.model_copy(
+                update={"geometry": SourceGeometryReference(artifact_sha256="0" * 64)}
+            ),
+            expected_contract="Synthetic curve review.",
+        )
+        for index in (1, 2)
     )
     package = synthetic_rule_package()
     draft = ImportedRuleDraft(
@@ -230,7 +239,7 @@ def synthetic_curve_draft(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
         tables=(),
         formulas=(),
         mappings=(),
-        review_items=(item,),
+        review_items=items,
         raw_grids=(),
         raw_figures=(figure,),
         source_identities=(identity,),
@@ -382,3 +391,138 @@ def test_source_duration_converts_once_to_rule_unit(
     variant = changed.curves[0].variants[0]
     assert variant.points[0].x == Decimal("0.001")
     assert variant.points[-1].x == Decimal("1")
+
+
+@pytest.fixture
+def two_reviewed_curve_draft(synthetic_curve_draft: ImportedRuleDraft) -> ImportedRuleDraft:
+    calibrated = set_manual_curve_calibration(
+        synthetic_curve_draft,
+        figure="5",
+        calibration=_calibration(),
+        actor="Reviewer",
+        notes="Marked synthetic plot rectangle.",
+    )
+    for variant_id, points in (
+        (
+            "synthetic.curve.5.1",
+            (
+                CurvePoint(x=Decimal("1"), y=Decimal("100")),
+                CurvePoint(x=Decimal("1000"), y=Decimal("20")),
+            ),
+        ),
+        (
+            "synthetic.curve.5.2",
+            (
+                CurvePoint(x=Decimal("1"), y=Decimal("80")),
+                CurvePoint(x=Decimal("1000"), y=Decimal("10")),
+            ),
+        ),
+    ):
+        calibrated = replace_manual_curve_variant(
+            calibrated,
+            variant_id=variant_id,
+            source_points=points,
+            actor="Reviewer",
+            notes="Entered synthetic curve points.",
+            input_origin="empty",
+        )
+    for variant_id in ("synthetic.curve.5.1", "synthetic.curve.5.2"):
+        calibrated = review_curve_variant(
+            calibrated,
+            variant_id,
+            actor="Reviewer",
+            notes="Reviewed synthetic curve points.",
+        )
+    return calibrated
+
+
+def test_calibration_edit_reopens_every_affected_curve_review(
+    two_reviewed_curve_draft: ImportedRuleDraft,
+) -> None:
+    changed = set_manual_curve_calibration(
+        two_reviewed_curve_draft,
+        figure="5",
+        calibration=_calibration().model_copy(update={"right": Decimal("321")}),
+        actor="Reviewer",
+        notes="Corrected synthetic plot corner.",
+    )
+
+    assert not changed.curve_variant_reviews
+    assert not changed.review_resolutions
+    for variant_id in ("synthetic.curve.5.1", "synthetic.curve.5.2"):
+        changed = review_curve_variant(
+            changed,
+            variant_id,
+            actor="Reviewer",
+            notes="Reviewed after calibration correction.",
+        )
+    assert {review.variant_id for review in changed.curve_variant_reviews} == {
+        "synthetic.curve.5.1",
+        "synthetic.curve.5.2",
+    }
+
+
+def test_point_replacement_reopens_only_its_curve_review(
+    two_reviewed_curve_draft: ImportedRuleDraft,
+) -> None:
+    changed = replace_manual_curve_variant(
+        two_reviewed_curve_draft,
+        variant_id="synthetic.curve.5.1",
+        source_points=(
+            CurvePoint(x=Decimal("1"), y=Decimal("90")),
+            CurvePoint(x=Decimal("1000"), y=Decimal("20")),
+        ),
+        actor="Reviewer",
+        notes="Corrected synthetic curve points.",
+        input_origin="empty",
+    )
+
+    assert {review.variant_id for review in changed.curve_variant_reviews} == {
+        "synthetic.curve.5.2"
+    }
+    assert {
+        item.semantic_id
+        for item in changed.review_items
+        if item.sha256 in {resolution.review_item_sha256 for resolution in changed.review_resolutions}
+    } == {"synthetic.curve.5.2"}
+    reviewed = review_curve_variant(
+        changed,
+        "synthetic.curve.5.1",
+        actor="Reviewer",
+        notes="Reviewed corrected synthetic curve points.",
+    )
+    assert {review.variant_id for review in reviewed.curve_variant_reviews} == {
+        "synthetic.curve.5.1",
+        "synthetic.curve.5.2",
+    }
+
+
+def test_manual_review_records_the_replacement_input_origin(
+    synthetic_curve_draft: ImportedRuleDraft,
+) -> None:
+    calibrated = set_manual_curve_calibration(
+        synthetic_curve_draft,
+        figure="5",
+        calibration=_calibration(),
+        actor="Reviewer",
+        notes="Marked synthetic plot rectangle.",
+    )
+    replaced = replace_manual_curve_variant(
+        calibrated,
+        variant_id="synthetic.curve.5.1",
+        source_points=(
+            CurvePoint(x=Decimal("1"), y=Decimal("100")),
+            CurvePoint(x=Decimal("1000"), y=Decimal("20")),
+        ),
+        actor="Reviewer",
+        notes="Accepted automatic suggestion as a starting point.",
+        input_origin="automatic_suggestion",
+    )
+
+    reviewed = review_curve_variant(
+        replaced,
+        "synthetic.curve.5.1",
+        actor="Reviewer",
+        notes="Reviewed the suggested synthetic curve points.",
+    )
+    assert reviewed.curve_variant_reviews[0].input_origin == "automatic_suggestion"

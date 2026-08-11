@@ -323,27 +323,37 @@ def _require_valid_review_resolutions(
     original: ImportedRuleDraft,
     changed: ImportedRuleDraft,
     resolve: tuple[ImportReviewItem, ...],
+    reopen: tuple[ImportReviewItem, ...],
     *,
     actor: str,
     notes: str,
     recorded_at: datetime,
 ) -> tuple[ImportReviewResolution, ...]:
     inventory = {item.sha256: item for item in original.review_items}
+    reopened = {item.sha256 for item in reopen}
     existing = {resolution.review_item_sha256 for resolution in original.review_resolutions}
     requested = {item.sha256 for item in resolve}
     if (
         len(inventory) != len(original.review_items)
         or len(requested) != len(resolve)
+        or len(reopened) != len(reopen)
         or not requested <= set(inventory)
+        or not reopened <= set(inventory)
         or any(inventory.get(item.sha256) != item for item in resolve)
+        or any(inventory.get(item.sha256) != item for item in reopen)
+        or not reopened <= existing
     ):
         raise ApprovalError("manual review resolution does not match original inventory")
-    if requested & existing:
+    if requested & (existing - reopened):
         raise ApprovalError("manual review item is already resolved")
     if any(not _review_resolution_exists(item, changed) for item in resolve):
         raise ApprovalError("manual review resolution lacks matching typed content")
     return (
-        *original.review_resolutions,
+        *(
+            resolution
+            for resolution in original.review_resolutions
+            if resolution.review_item_sha256 not in reopened
+        ),
         *(
             ImportReviewResolution(
                 review_item_sha256=item.sha256,
@@ -434,6 +444,7 @@ def record_correction(
     actor: str,
     notes: str,
     resolve: tuple[ImportReviewItem, ...] = (),
+    reopen: tuple[ImportReviewItem, ...] = (),
 ) -> ImportedRuleDraft:
     """Return corrected content with immutable item and content audits appended."""
 
@@ -478,6 +489,7 @@ def record_correction(
         changed.raw_figures,
         changed.curve_digitizations,
         changed.curve_calibrations,
+        changed.manual_curve_variant_inputs,
         changed.curve_variant_reviews,
         changed.curve_trace_associations,
         changed.curve_variant_rejections,
@@ -488,6 +500,7 @@ def record_correction(
         original.raw_figures,
         original.curve_digitizations,
         original.curve_calibrations,
+        original.manual_curve_variant_inputs,
         original.curve_variant_reviews,
         original.curve_trace_associations,
         original.curve_variant_rejections,
@@ -500,7 +513,7 @@ def record_correction(
         raise ApprovalError(
             "curve proof evidence can change only with its re-proven semantic curve"
         )
-    if not content_changed and not raw_changed and not resolve:
+    if not content_changed and not raw_changed and not resolve and not reopen:
         raise ApprovalError("a correction must change rule content")
     original_reviews = original.review_items
     changed_reviews = changed.review_items
@@ -527,6 +540,7 @@ def record_correction(
         raw_figures=original.raw_figures,
         curve_digitizations=original.curve_digitizations,
         curve_calibrations=original.curve_calibrations,
+        manual_curve_variant_inputs=original.manual_curve_variant_inputs,
         curve_variant_reviews=original.curve_variant_reviews,
         curve_trace_associations=original.curve_trace_associations,
         curve_variant_rejections=original.curve_variant_rejections,
@@ -537,6 +551,7 @@ def record_correction(
         original,
         changed,
         resolve,
+        reopen,
         actor=actor.strip(),
         notes=notes.strip(),
         recorded_at=recorded_at,
@@ -559,6 +574,7 @@ def record_correction(
         raw_figures=changed.raw_figures,
         curve_digitizations=changed.curve_digitizations,
         curve_calibrations=changed.curve_calibrations,
+        manual_curve_variant_inputs=changed.manual_curve_variant_inputs,
         curve_variant_reviews=changed.curve_variant_reviews,
         curve_trace_associations=changed.curve_trace_associations,
         curve_variant_rejections=changed.curve_variant_rejections,
@@ -604,6 +620,7 @@ def record_correction(
         raw_figures=changed.raw_figures,
         curve_digitizations=changed.curve_digitizations,
         curve_calibrations=changed.curve_calibrations,
+        manual_curve_variant_inputs=changed.manual_curve_variant_inputs,
         curve_variant_reviews=changed.curve_variant_reviews,
         curve_trace_associations=changed.curve_trace_associations,
         curve_variant_rejections=changed.curve_variant_rejections,
@@ -721,6 +738,11 @@ def _require_logged_content(draft: DraftRulePackage) -> None:
         ),
         curve_calibrations=(
             draft.curve_calibrations if isinstance(draft, ImportedRuleDraft) else ()
+        ),
+        manual_curve_variant_inputs=(
+            draft.manual_curve_variant_inputs
+            if isinstance(draft, ImportedRuleDraft)
+            else ()
         ),
         curve_variant_reviews=(
             draft.curve_variant_reviews if isinstance(draft, ImportedRuleDraft) else ()

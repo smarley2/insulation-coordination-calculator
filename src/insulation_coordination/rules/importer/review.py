@@ -68,6 +68,7 @@ from insulation_coordination.rules.importer.extract import (
     ImportedRuleDraft,
     ImportReviewItem,
     ManualCurveTrace,
+    ManualCurveVariantInput,
     RawGrid,
     RawGridCell,
     SemanticProposal,
@@ -1797,6 +1798,21 @@ def _manual_reviewed_artifact_sha256(
     ).hexdigest()
 
 
+def _resolved_curve_items(
+    draft: ImportedRuleDraft, variant_ids: set[str]
+) -> tuple[ImportReviewItem, ...]:
+    resolved = {item.review_item_sha256 for item in draft.review_resolutions}
+    return tuple(
+        item
+        for item in draft.review_items
+        if (
+            item.kind == "curve"
+            and item.semantic_id in variant_ids
+            and item.sha256 in resolved
+        )
+    )
+
+
 def _source_x_scale(spec: CurveAuditSpec) -> Decimal:
     source_unit = spec.x_source_unit or spec.x_unit
     if source_unit == spec.x_unit:
@@ -1824,22 +1840,40 @@ def set_manual_curve_calibration(
     raw_figure = figures[0]
     if calibration.figure_artifact_sha256 != raw_figure.artifact_sha256:
         raise ApprovalError("manual calibration does not match the source figure")
-    reviewed_ids = {
-        variant.id
+    calibration_sha256 = canonical_model_sha256(calibration)
+    reviewed_artifact_sha256 = _manual_reviewed_artifact_sha256(
+        raw_figure, calibration_sha256
+    )
+    updated_variants = {
+        variant.id: variant.model_copy(
+            update={"reviewed_artifact_sha256": reviewed_artifact_sha256}
+        )
         for rule in draft.curves
         for variant in rule.variants
         if _source_matches(variant.source, raw_figure.source)
     }
+    reviewed_ids = set(updated_variants)
     calibration_review = CurveCalibrationReview(
         figure_artifact_sha256=raw_figure.artifact_sha256,
         calibration=calibration,
-        calibration_sha256=canonical_model_sha256(calibration),
+        calibration_sha256=calibration_sha256,
         actor=actor.strip(),
         recorded_at=datetime.now(UTC),
         notes=notes.strip(),
     )
     changed = draft.model_copy(
         update={
+            "curves": tuple(
+                rule.model_copy(
+                    update={
+                        "variants": tuple(
+                            updated_variants.get(variant.id, variant)
+                            for variant in rule.variants
+                        )
+                    }
+                )
+                for rule in draft.curves
+            ),
             "curve_calibrations": (
                 *(
                     item
@@ -1853,9 +1887,29 @@ def set_manual_curve_calibration(
                 for review in draft.curve_variant_reviews
                 if review.variant_id not in reviewed_ids
             ),
+            "manual_curve_variant_inputs": tuple(
+                input.model_copy(
+                    update={
+                        "variant_sha256": canonical_model_sha256(
+                            updated_variants[input.variant_id]
+                        ),
+                        "source_artifact_sha256": reviewed_artifact_sha256,
+                        "calibration_sha256": calibration_sha256,
+                    }
+                )
+                if input.variant_id in updated_variants
+                else input
+                for input in draft.manual_curve_variant_inputs
+            ),
         }
     )
-    return record_correction(draft, changed, actor=actor, notes=notes)
+    return record_correction(
+        draft,
+        changed,
+        actor=actor,
+        notes=notes,
+        reopen=_resolved_curve_items(draft, reviewed_ids),
+    )
 
 
 def replace_manual_curve_variant(
@@ -1942,9 +1996,29 @@ def replace_manual_curve_variant(
                 for review in draft.curve_variant_reviews
                 if review.variant_id != variant_id
             ),
+            "manual_curve_variant_inputs": tuple(
+                input
+                for input in draft.manual_curve_variant_inputs
+                if input.variant_id != variant_id
+            )
+            + (
+                ManualCurveVariantInput(
+                    variant_id=variant.id,
+                    variant_sha256=canonical_model_sha256(variant),
+                    source_artifact_sha256=variant.reviewed_artifact_sha256,
+                    calibration_sha256=calibration_review.calibration_sha256,
+                    input_origin=input_origin,
+                ),
+            ),
         }
     )
-    return record_correction(draft, changed, actor=actor, notes=notes)
+    return record_correction(
+        draft,
+        changed,
+        actor=actor,
+        notes=notes,
+        reopen=_resolved_curve_items(draft, {variant_id}),
+    )
 
 
 def _replace_curve(
@@ -2958,7 +3032,6 @@ def review_curve_variant(
     *,
     actor: str,
     notes: str,
-    input_origin: TypingLiteral["empty", "automatic_suggestion"] = "empty",
 ) -> ImportedRuleDraft:
     """Record an exact manual review; review the aggregate after every member."""
 
@@ -2987,12 +3060,24 @@ def review_curve_variant(
         figure, calibration.calibration_sha256
     ):
         raise ApprovalError("curve variant provenance is stale for reviewed calibration")
+    inputs = tuple(
+        input
+        for input in draft.manual_curve_variant_inputs
+        if (
+            input.variant_id == variant.id
+            and input.variant_sha256 == canonical_model_sha256(variant)
+            and input.source_artifact_sha256 == variant.reviewed_artifact_sha256
+            and input.calibration_sha256 == calibration.calibration_sha256
+        )
+    )
+    if len(inputs) != 1:
+        raise ApprovalError("curve variant lacks one exact manual input origin")
     review = CurveVariantReview(
         variant_id=variant.id,
         variant_sha256=canonical_model_sha256(variant),
         source_artifact_sha256=variant.reviewed_artifact_sha256,
         calibration_sha256=calibration.calibration_sha256,
-        input_origin=input_origin,
+        input_origin=inputs[0].input_origin,
         actor=actor.strip(),
         recorded_at=datetime.now(UTC),
         notes=notes.strip(),
