@@ -19,7 +19,7 @@ from collections import deque
 from decimal import Decimal, InvalidOperation
 from itertools import pairwise
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, Self, cast, runtime_checkable
 
 import pdfplumber
 from PIL import Image
@@ -36,6 +36,8 @@ if TYPE_CHECKING:
         StandardIdentity,
     )
 from insulation_coordination.domain.rules import (
+    CurvePoint,
+    CurveSegment,
     FaultTimeVoltageVariant,
     Identifier,
     PiecewiseCurveRule,
@@ -188,6 +190,7 @@ def _parse_tsv(payload: bytes) -> tuple[OcrToken, ...]:
 
 __all__ = [
     "LocatedCurveSource",
+    "ManualPlotCalibration",
     "OcrEngine",
     "OcrEngineIdentity",
     "OcrError",
@@ -198,7 +201,10 @@ __all__ = [
     "RawFigure",
     "TesseractOcrEngine",
     "extract_raw_figure",
+    "infer_curve_segments",
     "locate_curve_source",
+    "pixel_to_source_point",
+    "source_point_to_pixel",
 ]
 
 
@@ -226,6 +232,40 @@ class RawFigure(FrozenModel):
     ocr_tokens: tuple[OcrToken, ...]
     traces: tuple[RawCurveTrace, ...]
     artifact_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+
+
+class ManualPlotCalibration(FrozenModel):
+    figure_artifact_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    left: Decimal
+    top: Decimal
+    right: Decimal
+    bottom: Decimal
+    x_min: Decimal
+    x_max: Decimal
+    y_min: Decimal
+    y_max: Decimal
+
+    @model_validator(mode="after")
+    def _valid_bounds(self) -> Self:
+        values = (
+            self.left,
+            self.top,
+            self.right,
+            self.bottom,
+            self.x_min,
+            self.x_max,
+            self.y_min,
+            self.y_max,
+        )
+        if any(not value.is_finite() for value in values):
+            raise ValueError("manual curve calibration values must be finite")
+        if self.left >= self.right or self.top >= self.bottom:
+            raise ValueError("manual curve plot rectangle must be ordered")
+        if self.x_min <= 0 or self.y_min <= 0:
+            raise ValueError("manual log-axis bounds must be positive")
+        if self.x_min >= self.x_max or self.y_min >= self.y_max:
+            raise ValueError("manual curve axis bounds must be ordered")
+        return self
 
 
 _PATH_OPERATORS = {"m", "l", "c", "v", "y", "h", "re"}
@@ -1176,6 +1216,77 @@ def _log10(value: Decimal) -> Decimal:
 
 def _log10_to_value(log_value: Decimal) -> Decimal:
     return (log_value * Decimal(10).ln()).exp()
+
+
+def _require_finite(value: Decimal, name: str) -> None:
+    if not value.is_finite():
+        raise ValueError(f"manual curve {name} must be finite")
+
+
+def pixel_to_source_point(
+    pixel_x: Decimal,
+    pixel_y: Decimal,
+    calibration: ManualPlotCalibration,
+) -> CurvePoint:
+    """Convert a reviewed plot pixel to a log-log source point."""
+
+    _require_finite(pixel_x, "pixel x")
+    _require_finite(pixel_y, "pixel y")
+    if not (
+        calibration.left <= pixel_x <= calibration.right
+        and calibration.top <= pixel_y <= calibration.bottom
+    ):
+        raise ValueError("point is outside reviewed plot rectangle")
+    x_fraction = (pixel_x - calibration.left) / (calibration.right - calibration.left)
+    y_fraction = (calibration.bottom - pixel_y) / (
+        calibration.bottom - calibration.top
+    )
+    x_log = calibration.x_min.log10() + x_fraction * (
+        calibration.x_max.log10() - calibration.x_min.log10()
+    )
+    y_log = calibration.y_min.log10() + y_fraction * (
+        calibration.y_max.log10() - calibration.y_min.log10()
+    )
+    return CurvePoint(x=_log10_to_value(x_log), y=_log10_to_value(y_log))
+
+
+def source_point_to_pixel(
+    point: CurvePoint,
+    calibration: ManualPlotCalibration,
+) -> tuple[Decimal, Decimal]:
+    """Convert a log-log source point to a reviewed plot pixel."""
+
+    _require_finite(point.x, "source x")
+    _require_finite(point.y, "source y")
+    if not (
+        calibration.x_min <= point.x <= calibration.x_max
+        and calibration.y_min <= point.y <= calibration.y_max
+    ):
+        raise ValueError("point is outside reviewed source axis bounds")
+    x_fraction = (point.x.log10() - calibration.x_min.log10()) / (
+        calibration.x_max.log10() - calibration.x_min.log10()
+    )
+    y_fraction = (point.y.log10() - calibration.y_min.log10()) / (
+        calibration.y_max.log10() - calibration.y_min.log10()
+    )
+    return (
+        calibration.left + x_fraction * (calibration.right - calibration.left),
+        calibration.bottom - y_fraction * (calibration.bottom - calibration.top),
+    )
+
+
+def infer_curve_segments(points: tuple[CurvePoint, ...]) -> tuple[CurveSegment, ...]:
+    """Infer constant plateaus and continuous log-log intervals in one pass."""
+
+    return tuple(
+        CurveSegment(
+            start=index,
+            end=index + 1,
+            segment_type="plateau" if left.y == right.y else "continuous",
+            interpolation="constant" if left.y == right.y else "log_log",
+        )
+        for index, (left, right) in enumerate(pairwise(points))
+    )
 
 
 def _log_space_point(point: RawCurvePoint, calibration: PlotCalibration) -> tuple[Decimal, Decimal]:
