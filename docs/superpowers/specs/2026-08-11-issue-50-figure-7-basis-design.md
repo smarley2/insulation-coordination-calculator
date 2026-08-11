@@ -123,8 +123,10 @@ cannot select `ac_unspecified` and then compare the returned number against an R
 quantity. When #36 and #37 add engineering comparisons, they add the consumer-level test
 that a known RMS or peak quantity is never coerced to `ac_unspecified`.
 
-Private: the licensed-document curve inventory test follows the new variant inventory. It
-skips where no licensed standards directory is configured, so the maintainer runs it.
+Private: no edit. `tests/private/test_iec62477_curves.py` compares canonical hashes and
+stable semantic identities and never asserts a basis, so it re-verifies determinism against
+the changed contract as it stands. It skips where no licensed standards directory is
+configured, so the maintainer runs it and reports the result.
 
 ## Public record
 
