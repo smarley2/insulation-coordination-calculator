@@ -440,10 +440,12 @@ class ClauseAuditSpec(FrozenModel):
     expected_bbox: tuple[float, float, float, float]
     expected_root_kind: Literal["paragraph", "bullets"]
     output_kind: Literal["decision", "procedure"]
-    #: Rules this clause projects to beyond one carrying the spec's own identifier -- for
-    #: example the guidance a source NOTE becomes. Declared so a projected route inherits
-    #: this clause's review inventory and source artifact, while an unrelated rule that
-    #: merely starts with the same identifier does not.
+    #: The rules this clause projects, when they are not exactly one carrying the spec's own
+    #: identifier -- the guidance a source NOTE becomes, or one route per gate where the
+    #: clause states a requirement other clauses also state. Declaring any route declares all
+    #: of them, so this is the clause's whole typed inventory whenever it is not empty.
+    #: Declared so a projected route inherits this clause's review inventory and source
+    #: artifact, while an unrelated rule that merely starts with the same identifier does not.
     projected_rule_ids: tuple[Identifier, ...] = ()
 
 

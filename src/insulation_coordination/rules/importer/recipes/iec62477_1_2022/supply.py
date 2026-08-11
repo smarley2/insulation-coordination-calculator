@@ -53,8 +53,12 @@ SUPPLY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
         expected_root_kind="bullets",
         output_kind="decision",
         #: The clause's NOTEs become guidance rather than executable branches, and that
-        #: guidance is grounded in this same fragment.
-        projected_rule_ids=(f"{ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION}.guidance",),
+        #: guidance is grounded in this same fragment. A clause that declares routes declares
+        #: all of them, this one's own decision included.
+        projected_rule_ids=(
+            ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,
+            f"{ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION}.guidance",
+        ),
     ),
     ClauseAuditSpec(
         semantic_id=ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION,

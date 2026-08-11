@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from insulation_coordination.domain.rules import ProcedureRule, SourceReference
-from insulation_coordination.rules.evaluator import evaluate_decision
+from insulation_coordination.domain.rules import DecisionRule, ProcedureRule, SourceReference
+from insulation_coordination.rules.evaluator import DecisionResult, evaluate_decision
 from insulation_coordination.rules.importer.clauses import (
     ClauseNode,
     ClauseToken,
@@ -31,6 +31,8 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.procedures i
     CLASSIFICATION_MATRIX_ID,
     FOIL_APPLICABILITY_ID,
     PRECONDITIONING_APPLICABILITY_ID,
+    PRECONDITIONING_ELECTRICAL_ID,
+    PRECONDITIONING_MATERIAL_ID,
     PROCEDURE_CLAUSES,
     TEST_CLAUSE_COLUMN,
     project_accessible_surface_foil,
@@ -288,31 +290,52 @@ def _preconditioning_draft(
     )
 
 
-def test_three_agreeing_sources_yield_one_procedure() -> None:
-    """The material clause enumerates three steps, and the other two sources require three."""
+def test_the_material_clause_yields_the_material_route() -> None:
+    """The material clause's own three steps, under the route the maintainer decided on."""
     rules, proposals = project_preconditioning(
         _fragment(ids.TEST_PRECONDITIONING, 3), IDENTITY, _preconditioning_draft()
     )
 
     assert len(rules) == 1
-    assert rules[0].id == ids.TEST_PRECONDITIONING
+    assert rules[0].id == PRECONDITIONING_MATERIAL_ID
+    assert len(rules[0].procedure_steps) == 3
     assert rules[0].applicability_rule_id == PRECONDITIONING_APPLICABILITY_ID
     assert rules[0].classifications == ("type_test",)
-    assert [proposal.semantic_id for proposal in proposals] == [ids.TEST_PRECONDITIONING]
+    assert [proposal.semantic_id for proposal in proposals] == [PRECONDITIONING_MATERIAL_ID]
 
 
-def test_a_disagreement_between_the_three_sources_blocks() -> None:
-    """No precedence rule: a general clause naming fewer steps refuses the projection."""
+def test_the_general_clause_yields_the_gate_and_the_electrical_route() -> None:
+    """Two gates, two routes: the electrical route carries what the general clause names."""
+    rules, proposals = project_preconditioning_applicability(
+        _general_fragment(("5.2.6.3.1", "5.2.6.3.2")), IDENTITY, _preconditioning_draft()
+    )
+    procedure = next(rule for rule in rules if isinstance(rule, ProcedureRule))
+
+    assert procedure.id == PRECONDITIONING_ELECTRICAL_ID
+    assert len(procedure.procedure_steps) == 2
+    assert procedure.applicability_rule_id == PRECONDITIONING_APPLICABILITY_ID
+    # The matrix has no row for the general clause, so the route claims no classification.
+    assert procedure.classifications == ()
+    assert {proposal.semantic_id for proposal in proposals} == {
+        PRECONDITIONING_APPLICABILITY_ID,
+        PRECONDITIONING_ELECTRICAL_ID,
+    }
+
+
+def test_a_clause_inventory_that_is_not_the_reviewed_shape_still_blocks() -> None:
+    """The block was never "the two clauses differ" -- it is "no precedence rule is invented"."""
     with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_PRECONDITIONING_SOURCES"):
+        project_preconditioning_applicability(
+            _general_fragment(("5.2.6.3.1",)), IDENTITY, _preconditioning_draft()
+        )
+    with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_PROCEDURE_STRUCTURE"):
         project_preconditioning(
-            _fragment(ids.TEST_PRECONDITIONING, 3),
-            IDENTITY,
-            _preconditioning_draft(general_steps=("5.2.6.3.1", "5.2.6.3.2")),
+            _fragment(ids.TEST_PRECONDITIONING, 2), IDENTITY, _preconditioning_draft()
         )
 
 
 def test_a_table_row_that_states_its_own_inventory_blocks() -> None:
-    """Table 26's row is a deferral. A printing that spelled its own steps is a fourth source."""
+    """Table 26's row is a deferral. A printing that spelled its own steps is a third source."""
     with pytest.raises(ProcedureStructureError, match="does not defer to clause"):
         project_preconditioning(
             _fragment(ids.TEST_PRECONDITIONING, 3),
@@ -321,24 +344,48 @@ def test_a_table_row_that_states_its_own_inventory_blocks() -> None:
         )
 
 
-def test_preconditioning_blocks_when_a_source_it_must_agree_with_is_absent() -> None:
+def test_preconditioning_blocks_when_a_source_it_must_read_is_absent() -> None:
     with pytest.raises(ProcedureStructureError, match="is absent from the draft"):
         project_preconditioning(
             _fragment(ids.TEST_PRECONDITIONING, 3), IDENTITY, _draft(_agreeing_matrix())
         )
 
 
-def test_the_preconditioning_gate_never_settles_a_purpose_the_source_leaves_open() -> None:
+def test_the_preconditioning_gate_selects_the_route_for_the_test_context() -> None:
     rules, _proposals = project_preconditioning_applicability(
-        _general_fragment(("5.2.6.3.1", "5.2.6.3.2")), IDENTITY
+        _general_fragment(("5.2.6.3.1", "5.2.6.3.2")), IDENTITY, _preconditioning_draft()
     )
-    rule = rules[0]
+    rule = next(item for item in rules if isinstance(item, DecisionRule))
 
     assert rule.id == PRECONDITIONING_APPLICABILITY_ID
     assert rule.exhaustive is False
-    assert {
-        row.matchers[0].values[0]: row.values[0].boolean for row in rule.rows
-    } == {"type_test": True, "sample_test": True, "acceptance_criteria": False}
+    electrical = evaluate_decision(
+        rule, {"test_context": "electrical_test", "test_purpose": "type_test"}
+    )
+    material = evaluate_decision(
+        rule,
+        {"test_context": "solid_insulation_material_requirement", "test_purpose": "type_test"},
+    )
+    exempt = evaluate_decision(
+        rule, {"test_context": "electrical_test", "test_purpose": "acceptance_criteria"}
+    )
+
+    assert _values(electrical) == {
+        "preconditioning_required": True,
+        "preconditioning_procedure_rule_id": PRECONDITIONING_ELECTRICAL_ID,
+    }
+    assert _values(material) == {
+        "preconditioning_required": True,
+        "preconditioning_procedure_rule_id": PRECONDITIONING_MATERIAL_ID,
+    }
+    assert _values(exempt)["preconditioning_required"] is False
+
+
+def _values(result: DecisionResult) -> dict[str, object]:
+    return {
+        value.name: value.boolean if value.boolean is not None else value.categorical
+        for value in result.values
+    }
 
 
 def _foil_fragment(*, figures: tuple[str, ...] = ("23", "24")) -> RawClauseFragment:
