@@ -324,9 +324,9 @@ def compare_across_standards(
     """Compare two grids cell by cell; map them only when every mapped pair agrees."""
 
     absent = tuple(
-        rule_id
-        for rule_id in (spec.source_rule_id, spec.target_rule_id)
-        if rule_id not in grids
+        grid_id
+        for grid_id in (spec.source_grid_id, spec.target_grid_id)
+        if grid_id not in grids
     )
     if absent:
         return None, (
@@ -336,8 +336,8 @@ def compare_across_standards(
                 f"draft holds no grid for {', '.join(absent)}",
             ),
         )
-    source_grid = grids[spec.source_rule_id]
-    target_grid = grids[spec.target_rule_id]
+    source_grid = grids[spec.source_grid_id]
+    target_grid = grids[spec.target_grid_id]
     if source_grid.target_unit != target_grid.target_unit:
         return None, (
             _item(
@@ -363,7 +363,7 @@ def compare_across_standards(
                 _item(
                     spec,
                     "CROSS_STANDARD_SOURCE_MISSING",
-                    f"source cell {source_id} is absent from {spec.source_rule_id}",
+                    f"source cell {source_id} is absent from {spec.source_grid_id}",
                 )
             )
             continue
@@ -372,7 +372,7 @@ def compare_across_standards(
                 _item(
                     spec,
                     "CROSS_STANDARD_TARGET_MISSING",
-                    f"target cell {target_id} is absent from {spec.target_rule_id}",
+                    f"target cell {target_id} is absent from {spec.target_grid_id}",
                 )
             )
             continue

@@ -8,6 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
+from weakref import WeakKeyDictionary
 
 import pdfplumber
 from pdfminer.pdfexceptions import PDFException
@@ -915,7 +916,31 @@ def _source(
     )
 
 
+#: Anchor boxes already located, keyed by anchor text. Finding an anchor walks the page's
+#: whole content stream, and every spec searching a page repeats that walk for the same
+#: title. Keyed on the page object so it dies with the document.
+_ANCHOR_CACHE: WeakKeyDictionary[
+    PageObject, dict[str, tuple[dict[str, float], ...]]
+] = WeakKeyDictionary()
+
+
 def _anchor_boxes(
+    page: PageObject,
+    *,
+    anchor_text: str,
+) -> tuple[dict[str, float], ...]:
+    try:
+        cached = _ANCHOR_CACHE.setdefault(page, {})
+    except TypeError:  # pragma: no cover - a page object without weak reference support
+        cached = {}
+    if anchor_text in cached:
+        return cached[anchor_text]
+    found = _locate_anchor_boxes(page, anchor_text=anchor_text)
+    cached[anchor_text] = found
+    return found
+
+
+def _locate_anchor_boxes(
     page: PageObject,
     *,
     anchor_text: str,
@@ -977,6 +1002,39 @@ def _legacy_segment(spec: TableAuditSpec) -> TableSegmentSpec:
     )
 
 
+#: Tables already located on a page, keyed by row strategy. Locating tables on a dense page
+#: costs tens of milliseconds and every spec searches its page plus a radius around it, so
+#: one page is examined many times over a single import -- more so as the recipes grow. The
+#: cache lives on the open document and dies with it, so nothing is retained between imports
+#: and a reopened document is re-read from the file.
+_TABLE_CACHE: WeakKeyDictionary[
+    pdfplumber.pdf.PDF, dict[tuple[int, str], list[pdfplumber.table.Table]]
+] = WeakKeyDictionary()
+
+_ROW_STRATEGY_SETTINGS: dict[str, dict[str, str]] = {
+    "lines": {},
+    "text": {"horizontal_strategy": "text", "vertical_strategy": "lines"},
+}
+
+
+def _found_tables(
+    page: pdfplumber.page.Page,
+    row_strategy: str,
+) -> list[pdfplumber.table.Table]:
+    """Every table on one page under one row strategy, located at most once per document."""
+
+    document = page.pdf
+    if document is None:  # pragma: no cover - a page always belongs to a document
+        return list(page.find_tables(table_settings=_ROW_STRATEGY_SETTINGS[row_strategy]))
+    by_page = _TABLE_CACHE.setdefault(document, {})
+    key = (page.page_number, row_strategy)
+    if key not in by_page:
+        by_page[key] = list(
+            page.find_tables(table_settings=_ROW_STRATEGY_SETTINGS[row_strategy])
+        )
+    return by_page[key]
+
+
 def _extract_segment(
     page: pdfplumber.page.Page,
     anchor_page: PageObject,
@@ -987,12 +1045,7 @@ def _extract_segment(
     if not anchors:
         raise ExtractionError(f"layout anchor is missing for {semantic_id}; extraction refused")
     matching = []
-    settings = (
-        {"horizontal_strategy": "text", "vertical_strategy": "lines"}
-        if segment.row_strategy == "text"
-        else {}
-    )
-    for found in page.find_tables(table_settings=settings):
+    for found in _found_tables(page, segment.row_strategy):
         raw = found.extract()
         shape = (len(raw), max((len(row) for row in raw), default=0))
         bbox_matches = all(
@@ -1369,7 +1422,10 @@ def _extract_layout_table(
         # and are only ever read as the source printed them. Asking a maintainer to retype
         # them as numbers would prove nothing, and a cell the parser cannot turn into a
         # number could not be resolved at all.
+        # A text field table states a procedure, not quantities: there is no number to
+        # retype, and the rule projected from the grid carries the review instead.
         if not spec.comparison_only
+        and not spec.text_field_table
         and spec.token_grammar is None
         and cell.role == "data"
         and cell.reference_token is None

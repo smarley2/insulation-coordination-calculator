@@ -285,11 +285,20 @@ class TableAuditSpec(FrozenModel):
     #: table needs the numbers present to prove or refute equivalence, while the rule the
     #: calculator executes stays the one already approved from the other standard.
     comparison_only: bool = False
+    #: This grid's data cells are reviewed text, not quantities: the source states a
+    #: procedure as a table of subjects and conditions. Its cells are therefore not flagged
+    #: for numeric retyping -- there is no number to retype -- and the rule projected from
+    #: the grid is what a maintainer reviews, exactly as a clause fragment's projected rule
+    #: is. Only the projection understands which row means what, so a spec that sets this
+    #: must also register a grid projector.
+    text_field_table: bool = False
 
     @model_validator(mode="after")
     def _comparison_only_projects_nothing(self) -> TableAuditSpec:
         if self.comparison_only and self.decision_route_ids:
             raise ValueError("a comparison-only table cannot declare decision routes")
+        if self.comparison_only and self.text_field_table:
+            raise ValueError("a table is either comparison evidence or a text field table")
         return self
 
     @model_validator(mode="after")
@@ -436,8 +445,17 @@ class CrossStandardCheckSpec(FrozenModel):
     """
 
     id: Identifier
+    #: The route the resulting mapping records, and the rule it resolves to -- the same
+    #: shape ``MappingAuditSpec`` declares, not the raw grids compared to prove the claim.
+    #: The source is a semantic route of this standard, unique per check; the target is the
+    #: already-approved formula of the other standard that satisfies it, and several checks
+    #: may share one target.
     source_rule_id: Identifier
     target_rule_id: Identifier
+    #: The raw grids whose cells prove the claim. They live in the draft as evidence and
+    #: never enter the approved package.
+    source_grid_id: Identifier
+    target_grid_id: Identifier
     family: Identifier
     #: ``(source cell id, target cell id)`` pairs, where a cell id is
     #: ``"<logical_row>/<logical_column>"`` as the raw grid records data cells.
@@ -492,10 +510,12 @@ class ClauseAuditSpec(FrozenModel):
     expected_bbox: tuple[float, float, float, float]
     expected_root_kind: Literal["paragraph", "bullets"]
     output_kind: Literal["decision", "procedure"]
-    #: Rules this clause projects to beyond one carrying the spec's own identifier -- for
-    #: example the guidance a source NOTE becomes. Declared so a projected route inherits
-    #: this clause's review inventory and source artifact, while an unrelated rule that
-    #: merely starts with the same identifier does not.
+    #: The rules this clause projects, when they are not exactly one carrying the spec's own
+    #: identifier -- the guidance a source NOTE becomes, or one route per gate where the
+    #: clause states a requirement other clauses also state. Declaring any route declares all
+    #: of them, so this is the clause's whole typed inventory whenever it is not empty.
+    #: Declared so a projected route inherits this clause's review inventory and source
+    #: artifact, while an unrelated rule that merely starts with the same identifier does not.
     projected_rule_ids: tuple[Identifier, ...] = ()
 
 
@@ -529,7 +549,15 @@ class CurveAuditSpec(FrozenModel):
 #: so naming their models would close an import cycle. The recipe modules that register a
 #: projector carry the precise signatures.
 type GridProjector = Callable[[Any, StandardIdentity], tuple[tuple[Any, ...], tuple[Any, ...]]]
-type ClauseProjector = GridProjector
+#: A clause projection additionally receives the reviewed draft the fragment came from. A
+#: source that states one requirement in several places -- a procedure whose classification
+#: only the test cross-reference matrix carries, a preconditioning requirement stated in two
+#: clauses and a table row -- cannot be projected from one fragment alone, and reading the
+#: sibling artifacts from the draft keeps that cross-reading inside the projection instead of
+#: spreading a second mechanism across review.
+type ClauseProjector = Callable[
+    [Any, StandardIdentity, Any], tuple[tuple[Any, ...], tuple[Any, ...]]
+]
 
 
 class StandardRecipe(FrozenModel):
@@ -569,11 +597,17 @@ class StandardRecipe(FrozenModel):
             raise ValueError("grid projector refers to an undeclared table spec")
         if set(self.clause_projectors) != clause_ids:
             raise ValueError("every clause spec needs exactly one projector")
-        if any(
-            spec.decision_route_ids and spec.semantic_id not in self.grid_projectors
-            for spec in self.tables
-        ):
-            raise ValueError("a table projecting decisions needs a grid projector")
+        for spec in self.tables:
+            if spec.semantic_id in self.grid_projectors:
+                continue
+            # Only a projection understands which reviewed text cell means what, so a text
+            # field table without one yields nothing. The registry lives here rather than on
+            # the spec, so the spec cannot check this itself -- but the recipe author is
+            # still stopped when the recipe is constructed instead of when a gate reads it.
+            if spec.text_field_table:
+                raise ValueError("a text field table needs a grid projector to read its cells")
+            if spec.decision_route_ids:
+                raise ValueError("a table projecting decisions needs a grid projector")
         return self
 
     def matches_text(self, text: str) -> bool:

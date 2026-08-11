@@ -18,6 +18,9 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.annex_f impo
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.spacing import (
     SPACING_TABLES,
 )
+from insulation_coordination.rules.importer.recipes.iec62477_1_2022.verification import (
+    VERIFICATION_TABLES,
+)
 
 ColumnRole = Literal["axis", "data", "context"]
 
@@ -452,6 +455,7 @@ TABLES: tuple[TableAuditSpec, ...] = (
     ),
     *SPACING_TABLES,
     *ANNEX_F_TABLES,
+    *VERIFICATION_TABLES,
 )
 
 FORMULAS: tuple[FormulaAuditSpec, ...] = (

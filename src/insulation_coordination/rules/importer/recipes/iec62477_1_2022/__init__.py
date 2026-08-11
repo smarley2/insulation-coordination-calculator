@@ -7,10 +7,12 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
     curves,
     high_frequency,
     identity,
+    procedures,
     projection,
     spacing,
     supply,
     tables,
+    verification,
 )
 
 RECIPE = StandardRecipe(
@@ -22,24 +24,27 @@ RECIPE = StandardRecipe(
     metadata_identity_fields=identity.METADATA_IDENTITY_FIELDS,
     metadata_identity_anchors=identity.METADATA_IDENTITY_ANCHORS,
     identity_anchors=identity.IDENTITY_ANCHORS,
-    tables=tables.TABLES,
+    tables=(*tables.TABLES, *procedures.CLASSIFICATION_MATRIX_SPECS),
     formulas=tables.FORMULAS,
     mappings=(),
     clauses=(
         *clauses.CLAUSES,
         *supply.SUPPLY_CLAUSES,
         *high_frequency.HIGH_FREQUENCY_CLAUSES,
+        *procedures.PROCEDURE_CLAUSES,
     ),
     curves=curves.CURVES,
     required_curves=(ids.DVC_FAULT_TIME_VOLTAGE,),
     grid_projectors={
         ids.DVC_VOLTAGE_LIMITS: projection.project_dvc_voltage_limits,
         ids.DVC_PROTECTION_MATRIX: projection.project_dvc_protection_matrix,
+        **verification.GRID_PROJECTORS,
     },
     clause_projectors={
         ids.DVC_FAULT_APPLICABILITY: clauses.project_dvc_fault_applicability,
         **supply.CLAUSE_PROJECTORS,
         **high_frequency.CLAUSE_PROJECTORS,
+        **procedures.CLAUSE_PROJECTORS,
     },
     cross_standard_checks=spacing.CROSS_STANDARD_CHECKS,
 )

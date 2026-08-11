@@ -55,6 +55,7 @@ def _fail(message: str) -> None:
 def project_dvc_fault_applicability(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
+    _draft: object = None,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project a reviewed DVC fault-applicability fragment into a typed decision."""
 

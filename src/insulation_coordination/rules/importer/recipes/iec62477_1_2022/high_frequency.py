@@ -134,6 +134,7 @@ def _frequency_bounds_hz(
 def project_high_frequency_applicability(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
+    _draft: object = None,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the annex's general clause into an applicability decision."""
 

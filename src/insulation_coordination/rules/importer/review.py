@@ -347,7 +347,7 @@ def _cross_standard_artifacts(
     )
     if spec is None:
         return ()
-    compared = {spec.source_rule_id, spec.target_rule_id}
+    compared = {spec.source_grid_id, spec.target_grid_id}
     pairs = tuple(
         (grid.id, canonical_model_sha256(grid))
         for grid in draft.raw_grids
@@ -1179,19 +1179,23 @@ def build_reviewed_draft(
     mappings: dict[str, CompatibilityMapping] = {}
     decisions: dict[str, DecisionRule] = {rule.id: rule for rule in draft.decisions}
     guidance: dict[str, GuidanceRule] = {rule.id: rule for rule in draft.guidance}
+    procedures: dict[str, ProcedureRule] = {rule.id: rule for rule in draft.procedures}
 
     def collect(projected: tuple[object, ...]) -> None:
         """Route each projected rule to the draft field its type belongs in.
 
-        A projection may return guidance alongside decisions -- a source NOTE becomes
-        guidance, never an executable branch -- and ``model_copy`` does not validate, so a
-        guidance rule appended to ``decisions`` would sit there undetected.
+        One source artifact may project several kinds: a clause yields a decision plus the
+        guidance its NOTE carries, and a procedure table yields one procedure per variant.
+        ``model_copy`` does not validate, so a rule appended to the wrong field would sit
+        there undetected -- hence the explicit refusal of a kind this does not know.
         """
         for rule in projected:
             if isinstance(rule, DecisionRule):
                 decisions[rule.id] = rule
             elif isinstance(rule, GuidanceRule):
                 guidance[rule.id] = rule
+            elif isinstance(rule, ProcedureRule):
+                procedures[rule.id] = rule
             else:
                 raise TypeError(
                     f"projection produced an unsupported rule type: {type(rule).__name__}"
@@ -1216,7 +1220,7 @@ def build_reviewed_draft(
         for mapping_spec in recipe.mappings:
             mappings[mapping_spec.id] = project_mapping(identity, mapping_spec)
         for check_spec in recipe.cross_standard_checks:
-            if not {check_spec.source_rule_id, check_spec.target_rule_id} <= set(grids):
+            if not {check_spec.source_grid_id, check_spec.target_grid_id} <= set(grids):
                 # Neither grid can be compared before both are extracted. A draft that
                 # should hold them and does not is caught by the completeness gate at
                 # approval, which reports the absent content by name.
@@ -1236,7 +1240,7 @@ def build_reviewed_draft(
                 # fragment; approval gating reports the missing required content.
                 continue
             projected, _proposals = recipe.clause_projectors[clause_spec.semantic_id](
-                fragment, identity
+                fragment, identity, draft
             )
             collect(projected)
 
@@ -1247,6 +1251,7 @@ def build_reviewed_draft(
             "mappings": tuple(mappings.values()),
             "decisions": tuple(decisions.values()),
             "guidance": tuple(guidance.values()),
+            "procedures": tuple(procedures.values()),
         }
     )
     return record_correction(
@@ -1429,22 +1434,23 @@ def inventory_report(draft: ImportedRuleDraft) -> tuple[InventoryStatus, ...]:
     the inventory declares, so a package cannot look complete while a required item is
     absent.
     """
+    from insulation_coordination.rules.importer.expectations import package_expectations
     from insulation_coordination.rules.importer.iec62477_2022.inventory import (
         DEFERRED_SEMANTIC_IDS,
         REQUIRED_SOURCE_ITEMS,
     )
     from insulation_coordination.rules.importer.recipes import RECIPES
 
-    declared: set[str] = set()
-    routes: dict[str, set[str]] = {}
-    for recipe in RECIPES:
-        for table_spec in recipe.tables:
-            declared.add(table_spec.semantic_id)
-            if table_spec.decision_route_ids:
-                routes[table_spec.semantic_id] = set(table_spec.decision_route_ids)
-        declared.update(spec.semantic_id for spec in recipe.clauses)
-        declared.update(spec.semantic_id for spec in recipe.curves)
-        declared.update(spec.semantic_id for spec in recipe.formulas)
+    # What each declared spec is expected to contribute, from the one derivation the
+    # approval and validation gates also read. A spec's kind decides both whether a raw
+    # artifact must exist for it and what counts as its typed result, so they cannot share
+    # one set: a formula has no raw grid, and a comparison-only grid never becomes a typed
+    # rule at all.
+    expectations = package_expectations(RECIPES)
+    needs_raw = expectations.raw_artifact_ids
+    evidence_only = expectations.evidence_grid_ids
+    typed_expected = expectations.typed_results
+    declared = frozenset(typed_expected)
 
     raw_ids = {grid.id for grid in draft.raw_grids}
     raw_ids.update(fragment.id for fragment in draft.raw_clause_fragments)
@@ -1454,6 +1460,7 @@ def inventory_report(draft: ImportedRuleDraft) -> tuple[InventoryStatus, ...]:
     typed_ids.update(rule.id for rule in draft.procedures)
     typed_ids.update(rule.id for rule in draft.guidance)
     typed_ids.update(rule.id for rule in draft.curves)
+    typed_ids.update(rule.id for rule in draft.formulas)
     unresolved = {
         item.semantic_id
         for kind in ("table", "formula", "mapping", "clause", "semantic", "curve")
@@ -1466,12 +1473,15 @@ def inventory_report(draft: ImportedRuleDraft) -> tuple[InventoryStatus, ...]:
         matching = {candidate for candidate in declared if _covers(candidate, semantic_id)}
         located = bool(matching)
         extracted = located and all(
-            f"raw-{candidate}" in raw_ids or candidate in raw_ids for candidate in matching
+            f"raw-{candidate}" in raw_ids or candidate in raw_ids
+            for candidate in matching & needs_raw
         )
+        # A comparison-only grid contributes evidence, not a rule, so it satisfies this item
+        # by being extracted. Everything else must produce the typed result its kind implies.
         required_typed = {
             route
-            for candidate in matching
-            for route in (routes.get(candidate) or {candidate})
+            for candidate in matching - evidence_only
+            for route in typed_expected.get(candidate, frozenset({candidate}))
         }
         typed = located and required_typed <= typed_ids
         blocked = any(
