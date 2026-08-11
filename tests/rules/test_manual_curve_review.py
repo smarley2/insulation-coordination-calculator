@@ -17,6 +17,7 @@ from insulation_coordination.domain.rules import (
 from insulation_coordination.rules.importer import recipes as recipe_registry
 from insulation_coordination.rules.importer.approval import (
     ApprovalError,
+    _review_resolution_exists,
     approval_blockers,
     record_correction,
 )
@@ -29,10 +30,12 @@ from insulation_coordination.rules.importer.curves import (
 )
 from insulation_coordination.rules.importer.extract import (
     IMPORTER_VERSION,
+    CurveVariantReview,
     ImportedRuleDraft,
     ImportReviewItem,
     ImportReviewResolution,
     _content_digest,
+    canonical_model_sha256,
 )
 from insulation_coordination.rules.importer.identify import (
     CurveAuditSpec,
@@ -656,4 +659,51 @@ def test_stale_manual_calibration_blocks_curve_approval(
     assert any(
         item.code == "CURVE_VARIANT_REVIEW_REQUIRED"
         for item in approval_blockers(stale)
+    )
+
+
+def test_tampered_manual_provenance_blocks_approval_and_resolution(
+    two_reviewed_curve_draft: ImportedRuleDraft,
+) -> None:
+    rule = two_reviewed_curve_draft.curves[0]
+    variant = rule.variants[0]
+    tampered_variant = variant.model_copy(update={"reviewed_artifact_sha256": "f" * 64})
+    review = next(
+        review
+        for review in two_reviewed_curve_draft.curve_variant_reviews
+        if review.variant_id == variant.id
+    )
+    tampered_review = CurveVariantReview(
+        variant_id=tampered_variant.id,
+        variant_sha256=canonical_model_sha256(tampered_variant),
+        source_artifact_sha256=tampered_variant.reviewed_artifact_sha256,
+        calibration_sha256=review.calibration_sha256,
+        input_origin=review.input_origin,
+        actor=review.actor,
+        recorded_at=review.recorded_at,
+        notes=review.notes,
+    )
+    tampered = two_reviewed_curve_draft.model_copy(
+        update={
+            "curves": (rule.model_copy(update={"variants": (tampered_variant, rule.variants[1])}),),
+            "curve_variant_reviews": (
+                tampered_review,
+                *(
+                    item
+                    for item in two_reviewed_curve_draft.curve_variant_reviews
+                    if item.variant_id != variant.id
+                ),
+            ),
+        }
+    )
+    item = next(
+        item
+        for item in tampered.review_items
+        if item.semantic_id == tampered_variant.id
+    )
+
+    assert _review_resolution_exists(item, tampered) is False
+    assert any(
+        blocker.code == "CURVE_VARIANT_REVIEW_REQUIRED"
+        for blocker in approval_blockers(tampered)
     )

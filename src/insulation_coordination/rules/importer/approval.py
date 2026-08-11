@@ -70,6 +70,14 @@ def _manual_curve_review_is_current(
     if len(calibrations) != 1:
         return False
     calibration = calibrations[0]
+    from insulation_coordination.rules.importer.review import (
+        _manual_reviewed_artifact_sha256,
+    )
+
+    if variant.reviewed_artifact_sha256 != _manual_reviewed_artifact_sha256(
+        figure, calibration.calibration_sha256
+    ):
+        return False
     return len(
         tuple(
             review
