@@ -6,11 +6,13 @@ pollution-degree and material-group axis values belong to the source tables and 
 from their own header rows at import time.
 """
 
+from decimal import Decimal
 from typing import Literal
 
 from insulation_coordination.domain.rules import SourceReference
 from insulation_coordination.rules.importer.identify import (
     BlankCellSpec,
+    CrossStandardAxisMatchSpec,
     CrossStandardCheckSpec,
     MergedCellSpec,
     TableAuditSpec,
@@ -359,6 +361,69 @@ _ANNEX_F3_CELL_MAP, _ANNEX_F3_SOURCE_CELLS = _aligned_cell_map(
     ),
 )
 
+#: IEC 62477-1 Table 8 lists ten impulse levels in volts where the IEC 60664-1 clearance
+#: table lists twenty-six in kilovolts, so its rows pair by the impulse level they state,
+#: scaled into the target's unit, never by position. Every source row does find a target
+#: row; pollution degrees 1 to 3 agree cell for cell against the target's first three
+#: clearance columns. Pollution degree 4 has no counterpart in IEC 60664-1 at all, so it is
+#: declared out of the claim rather than paired with an approximation.
+_TABLE_8_AXIS_MATCH = CrossStandardAxisMatchSpec(
+    source_axis_column="impulse_withstand_voltage_v",
+    target_axis_column="impulse_withstand_kv",
+    axis_value_scale=Decimal("0.001"),
+    column_pairs=tuple(
+        (f"clearance_pollution_degree_{ordinal}_mm", target)
+        for ordinal, target in enumerate(("case_a_pd1_mm", "case_a_pd2_mm", "case_a_pd3_mm"), 1)
+    ),
+    uncompared_source_columns=(
+        (
+            "clearance_pollution_degree_4_mm",
+            (
+                "IEC 60664-1 carries no column for this pollution degree, so this column "
+                "is the IEC 62477-1 rule's own requirement and no equivalence is claimed "
+                "for it"
+            ),
+        ),
+    ),
+)
+
+#: The printed-wiring creepage columns pair against the IEC 60664-1 printed-wiring columns
+#: over the working voltages both documents state. IEC 62477-1 starts its axis below the
+#: lowest voltage that table reaches and carries one row above where its printed-wiring
+#: columns stop, so those three rows are declared out of the claim; every remaining row
+#: agrees. The other-insulator half of Table 9 is not checked at all: the IEC 60664-1
+#: recipe reads those columns as context, so their cells hold no logical coordinates to
+#: compare against, and pairing them would need that reviewed table's own shape to change.
+_TABLE_9_PRINTED_WIRING_AXIS_MATCH = CrossStandardAxisMatchSpec(
+    source_axis_column=_WORKING_VOLTAGE_AXIS,
+    target_axis_column="rms_voltage_v",
+    column_pairs=(
+        ("printed_wiring_pollution_1_mm", "pcb_pollution_1"),
+        ("printed_wiring_pollution_2_mm", "pcb_pollution_2"),
+    ),
+    uncompared_source_rows=(
+        *(
+            (
+                row,
+                (
+                    "the IEC 60664-1 printed-wiring table's axis does not reach this "
+                    "working voltage, so the requirement on this row is the IEC 62477-1 "
+                    "rule's own"
+                ),
+            )
+            for row in (0, 1)
+        ),
+        (
+            20,
+            (
+                "the IEC 60664-1 printed-wiring columns carry no requirement on the row "
+                "of this working voltage, so nothing there can prove or refute "
+                "equivalence"
+            ),
+        ),
+    ),
+)
+
 #: Annex F states that the design above its frequency threshold follows IEC 60664-4:2005,
 #: and the package already carries that standard's reviewed clearance and creepage rules.
 #: These checks prove the reproduction agrees cell for cell before a mapping is recorded;
@@ -369,6 +434,40 @@ _ANNEX_F3_CELL_MAP, _ANNEX_F3_SOURCE_CELLS = _aligned_cell_map(
 #: Table F.2 has no counterpart among the approved IEC 60664-4 rules, so it is declared no
 #: check at all rather than being paired with an approximate target.
 CROSS_STANDARD_CHECKS: tuple[CrossStandardCheckSpec, ...] = (
+    CrossStandardCheckSpec(
+        id=f"{ids.CLEARANCE_REQUIREMENTS}.matches_part1_clearance",
+        source_rule_id=ids.CLEARANCE_REQUIREMENTS,
+        target_rule_id="iec60664-1:f2-clearance",
+        source_grid_id=f"raw-{ids.CLEARANCE_REQUIREMENTS}",
+        target_grid_id="raw-iec60664-1-f2",
+        family="clearance",
+        axis_match=_TABLE_8_AXIS_MATCH,
+        source=SourceReference(
+            document_id="iec62477-1-2022",
+            standard="IEC 62477-1",
+            edition="2022",
+            page=_TABLE_8_PAGE,
+            clause=_TABLE_8_CLAUSE,
+            table="8",
+        ),
+    ),
+    CrossStandardCheckSpec(
+        id=f"{ids.CREEPAGE_REQUIREMENTS}.printed_wiring_matches_part1_creepage",
+        source_rule_id=f"{ids.CREEPAGE_REQUIREMENTS}.printed_wiring",
+        target_rule_id="iec60664-1:f5-pcb-creepage",
+        source_grid_id=f"raw-{ids.CREEPAGE_REQUIREMENTS}.printed_wiring",
+        target_grid_id="raw-iec60664-1-f5",
+        family="creepage",
+        axis_match=_TABLE_9_PRINTED_WIRING_AXIS_MATCH,
+        source=SourceReference(
+            document_id="iec62477-1-2022",
+            standard="IEC 62477-1",
+            edition="2022",
+            page=_TABLE_9_PAGE,
+            clause=_TABLE_9_CLAUSE,
+            table="9",
+        ),
+    ),
     CrossStandardCheckSpec(
         id=f"{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f1_matches_part4_clearance",
         source_rule_id="iec62477-1:high_frequency:clearance:annex=f1",
