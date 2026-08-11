@@ -15,6 +15,7 @@ from insulation_coordination.domain.rules import (
     SourceReference,
 )
 from insulation_coordination.rules.importer import recipes as recipe_registry
+from insulation_coordination.rules.importer.approval import ApprovalError, record_correction
 from insulation_coordination.rules.importer.curves import (
     ManualPlotCalibration,
     RawFigure,
@@ -26,6 +27,7 @@ from insulation_coordination.rules.importer.extract import (
     IMPORTER_VERSION,
     ImportedRuleDraft,
     ImportReviewItem,
+    ImportReviewResolution,
     _content_digest,
 )
 from insulation_coordination.rules.importer.identify import (
@@ -495,6 +497,101 @@ def test_point_replacement_reopens_only_its_curve_review(
         "synthetic.curve.5.1",
         "synthetic.curve.5.2",
     }
+
+
+@pytest.mark.parametrize("kind", ("table", "formula"))
+def test_reopen_rejects_an_unchanged_non_curve_review_item(
+    synthetic_curve_draft: ImportedRuleDraft,
+    kind: str,
+) -> None:
+    item = ImportReviewItem(
+        code=f"SYNTHETIC_{kind.upper()}_REVIEW",
+        semantic_id=f"synthetic.{kind}",
+        kind=kind,  # type: ignore[arg-type]
+        source=synthetic_curve_draft.raw_figures[0].source,
+        expected_contract="Synthetic unrelated review.",
+    )
+    resolved = synthetic_curve_draft.model_copy(
+        update={
+            "review_items": (*synthetic_curve_draft.review_items, item),
+            "review_resolutions": (
+                ImportReviewResolution(
+                    review_item_sha256=item.sha256,
+                    actor="Reviewer",
+                    recorded_at=datetime(2026, 8, 11, tzinfo=UTC),
+                    notes="Resolved synthetic unrelated review.",
+                ),
+            ),
+        }
+    )
+    digest = _content_digest(
+        resolved.tables,
+        resolved.formulas,
+        resolved.mappings,
+        resolved.review_items,
+        resolved.raw_grids,
+        resolved.raw_clause_fragments,
+        resolved.manifest.source_documents,
+        resolved.source_identities,
+        resolved.review_resolutions,
+        resolved.extracted_equations,
+        decisions=resolved.decisions,
+        procedures=resolved.procedures,
+        guidance=resolved.guidance,
+        curves=resolved.curves,
+        raw_figures=resolved.raw_figures,
+        curve_digitizations=resolved.curve_digitizations,
+        curve_calibrations=resolved.curve_calibrations,
+        manual_curve_variant_inputs=resolved.manual_curve_variant_inputs,
+        curve_variant_reviews=resolved.curve_variant_reviews,
+        curve_trace_associations=resolved.curve_trace_associations,
+        curve_variant_rejections=resolved.curve_variant_rejections,
+        manual_curve_traces=resolved.manual_curve_traces,
+    )
+    resolved = resolved.model_copy(
+        update={
+            "manifest": resolved.manifest.model_copy(
+                update={
+                    "approval_records": tuple(
+                        record.model_copy(update={"notes": f"content:{digest}"})
+                        if record.action == "extraction"
+                        and record.actor == f"icc-importer/{IMPORTER_VERSION}"
+                        and record.notes.startswith("content:")
+                        else record
+                        for record in resolved.manifest.approval_records
+                    )
+                }
+            )
+        }
+    )
+
+    with pytest.raises(ApprovalError, match="curve"):
+        record_correction(
+            resolved,
+            resolved,
+            actor="Reviewer",
+            notes="Attempted unrelated reopen.",
+            reopen=(item,),
+        )
+
+
+def test_reopen_rejects_curve_review_without_changed_evidence(
+    two_reviewed_curve_draft: ImportedRuleDraft,
+) -> None:
+    item = next(
+        item
+        for item in two_reviewed_curve_draft.review_items
+        if item.semantic_id == "synthetic.curve.5.1"
+    )
+
+    with pytest.raises(ApprovalError, match="curve"):
+        record_correction(
+            two_reviewed_curve_draft,
+            two_reviewed_curve_draft,
+            actor="Reviewer",
+            notes="Attempted evidence-free curve reopen.",
+            reopen=(item,),
+        )
 
 
 def test_manual_review_records_the_replacement_input_origin(

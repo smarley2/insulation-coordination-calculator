@@ -319,6 +319,60 @@ def _require_safe_equation_correction(
         raise ApprovalError("a correction cannot rewrite extracted equation text or source")
 
 
+def _curve_reopen_evidence(
+    draft: ImportedRuleDraft,
+    variant_id: str,
+) -> tuple[object, ...]:
+    variants = tuple(
+        variant
+        for curve in draft.curves
+        for variant in curve.variants
+        if variant.id == variant_id
+    )
+    if len(variants) != 1:
+        raise ApprovalError("curve review reopening requires one exact curve variant")
+    variant = variants[0]
+    figures = tuple(
+        figure for figure in draft.raw_figures if _source_matches(figure.source, variant.source)
+    )
+    if len(figures) != 1:
+        raise ApprovalError("curve review reopening requires one exact source figure")
+    artifact_sha256 = figures[0].artifact_sha256
+    return (
+        variant,
+        tuple(
+            calibration
+            for calibration in draft.curve_calibrations
+            if calibration.figure_artifact_sha256 == artifact_sha256
+        ),
+        tuple(
+            input
+            for input in draft.manual_curve_variant_inputs
+            if input.variant_id == variant_id
+        ),
+        tuple(
+            result
+            for figure, result in zip(draft.raw_figures, draft.curve_digitizations)
+            if figure.artifact_sha256 == artifact_sha256
+        ),
+        tuple(
+            association
+            for association in draft.curve_trace_associations
+            if association.variant_id == variant_id
+        ),
+        tuple(
+            rejection
+            for rejection in draft.curve_variant_rejections
+            if rejection.variant_id == variant_id
+        ),
+        tuple(
+            trace
+            for trace in draft.manual_curve_traces
+            if trace.figure_artifact_sha256 == artifact_sha256
+        ),
+    )
+
+
 def _require_valid_review_resolutions(
     original: ImportedRuleDraft,
     changed: ImportedRuleDraft,
@@ -346,6 +400,14 @@ def _require_valid_review_resolutions(
         raise ApprovalError("manual review resolution does not match original inventory")
     if requested & (existing - reopened):
         raise ApprovalError("manual review item is already resolved")
+    if any(item.kind != "curve" for item in reopen):
+        raise ApprovalError("only changed curve review evidence can be reopened")
+    if any(
+        _curve_reopen_evidence(original, item.semantic_id)
+        == _curve_reopen_evidence(changed, item.semantic_id)
+        for item in reopen
+    ):
+        raise ApprovalError("curve review reopening requires changed curve evidence")
     if any(not _review_resolution_exists(item, changed) for item in resolve):
         raise ApprovalError("manual review resolution lacks matching typed content")
     return (
