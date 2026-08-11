@@ -53,29 +53,12 @@ Note that identification reads each PDF in the folder. A malformed unrelated doc
 to crash the fixture rather than being skipped; that is fixed, but a folder of hundreds of
 PDFs will still cost seconds per file.
 
-**Tesseract.** The curve rules digitize the source figures, and that path shells out to a
-local `tesseract` binary. Without it every curve test fails with `OCR_UNAVAILABLE`, and
-because the curve rules are part of the package, so does anything that approves or exports
-one. There is no offline substitute.
+**Manual curve review.** The curve workflow imports only verified local source artifacts.
+Maintainers calibrate each plot and enter points during review.
 
-```bash
-winget install UB-Mannheim.TesseractOCR
-```
-
-If `winget` is not on your PATH it may still be installed — try
-`& "$env:LOCALAPPDATA\Microsoft\WindowsApps\winget.exe"`. The importer invokes the bare name
-`tesseract`, so either accept the installer's PATH option or prepend the install directory
-for the run:
-
-```bash
-$env:PATH = "$env:LOCALAPPDATA\Programs\Tesseract-OCR;$env:PATH"
-```
-
-**What it costs.** A full licensed run is 11 to 15 minutes, dominated by rasterizing the
-source figures for the curve rules; one import of all three documents is about 20 seconds.
-Session-scoped fixtures in `tests/private/conftest.py` share one import and one review pass,
-so add tests that read a draft rather than building their own — and if you genuinely need a
-second independent import, say why in the test, as the determinism tests do.
+**What it costs.** The private suite shares one source-only import and one local manual-review
+pass. Run it once with the timeout below; do not add timing claims without a measured licensed
+run, and avoid a second import unless that is the assertion under test.
 
 Raise the per-test timeout for licensed work; the default is 120 s and several of these
 tests legitimately exceed it:
