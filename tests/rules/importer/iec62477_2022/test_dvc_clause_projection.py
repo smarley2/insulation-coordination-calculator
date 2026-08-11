@@ -138,7 +138,7 @@ def test_projection_evaluates_all_four_curve_selector_routes() -> None:
         ("accessible_circuit", "dc"),
         ("accessible_circuit", "ac_peak"),
         ("conductive_accessible_part", "dc"),
-        ("conductive_accessible_part", "ac_peak"),
+        ("conductive_accessible_part", "ac_unspecified"),
     ):
         result = evaluate_decision(rule, {"subject": subject, "voltage_basis": basis})
         assert result.values[0].boolean is True

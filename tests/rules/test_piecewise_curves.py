@@ -352,3 +352,23 @@ def test_variant_requires_valid_reviewed_artifact_sha256() -> None:
         FaultTimeVoltageVariant.model_validate(
             {**variant.model_dump(mode="python"), "reviewed_artifact_sha256": "not-a-hash"}
         )
+
+
+def test_voltage_basis_vocabulary_carries_an_unspecified_ac_token() -> None:
+    """Figure 7 identifies its variant as AC without specifying RMS or peak.
+
+    The token exists so that contract can be stated exactly, instead of a specific basis
+    being asserted on the source's behalf.
+    """
+    permitted = get_args(FaultTimeVoltageSelector.model_fields["voltage_basis"].annotation)
+    assert set(permitted) == {"ac_rms", "ac_peak", "ac_unspecified", "dc"}
+
+
+def test_a_selector_can_carry_the_unspecified_ac_basis() -> None:
+    selector = FaultTimeVoltageSelector(
+        subject="conductive_accessible_part",
+        voltage_basis="ac_unspecified",
+        dvc_context=None,
+        environment_context=None,
+    )
+    assert selector.voltage_basis == "ac_unspecified"
