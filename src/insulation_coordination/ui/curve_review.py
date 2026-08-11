@@ -34,6 +34,7 @@ from insulation_coordination.domain.rules import (
     CurvePoint,
     FaultTimeVoltageSelector,
     FaultTimeVoltageVariant,
+    SourceReference,
 )
 from insulation_coordination.rules.importer import recipes as recipe_registry
 from insulation_coordination.rules.importer.approval import ApprovalError
@@ -314,24 +315,42 @@ class CurveReviewDialog(QDialog):
         if self._overlay_item is not None:
             self._overlay_item.setVisible(visible)
 
-    def _current_variant(self) -> FaultTimeVoltageVariant:
+    def _current_variant(self) -> FaultTimeVoltageVariant | None:
         variant_id = self._variant_selector.currentData()
         return next(
-            variant
-            for rule in self._model.draft.curves
-            for variant in rule.variants
-            if variant.id == variant_id
+            (
+                variant
+                for rule in self._model.draft.curves
+                for variant in rule.variants
+                if variant.id == variant_id
+            ),
+            None,
         )
 
-    def _verified_path(self, variant: FaultTimeVoltageVariant) -> Path:
-        path = self._pdf_paths.get(variant.source.standard)
+    def _current_source(
+        self, variant: FaultTimeVoltageVariant | None
+    ) -> SourceReference:
+        if variant is not None:
+            return variant.source
+        variant_id = self._variant_selector.currentData()
+        sources = tuple(
+            item.source
+            for item in self._model.draft.review_items
+            if item.kind == "curve" and item.semantic_id == variant_id
+        )
+        if len(sources) != 1:
+            raise ApprovalError("curve selector lacks a unique source figure")
+        return sources[0]
+
+    def _verified_path(self, source: SourceReference) -> Path:
+        path = self._pdf_paths.get(source.standard)
         if path is None:
             raise ApprovalError("local source PDF is unavailable")
         document = next(
             (
                 item
                 for item in self._model.draft.manifest.source_documents
-                if item.id == variant.source.document_id
+                if item.id == source.document_id
             ),
             None,
         )
@@ -346,19 +365,22 @@ class CurveReviewDialog(QDialog):
         return path
 
     def _figure_and_calibration(
-        self, variant: FaultTimeVoltageVariant
+        self,
+        source: SourceReference,
+        variant: FaultTimeVoltageVariant | None,
     ) -> tuple[RawFigure, PlotCalibration | None]:
         figures = tuple(
             figure
             for figure in self._model.draft.raw_figures
-            if figure.source.document_id == variant.source.document_id
-            and figure.source.page == variant.source.page
-            and figure.source.figure == variant.source.figure
+            if figure.source.document_id == source.document_id
+            and figure.source.page == source.page
+            and figure.source.figure == source.figure
         )
         digitizations = tuple(
             item
             for item in self._model.draft.curve_digitizations
-            if item.proposed_rule is not None
+            if variant is not None
+            and item.proposed_rule is not None
             and any(member.id == variant.id for member in item.proposed_rule.variants)
             and item.calibration is not None
         )
@@ -370,13 +392,15 @@ class CurveReviewDialog(QDialog):
 
     def _load_current_variant(self, _index: int) -> None:
         variant = self._current_variant()
-        path = self._verified_path(variant)
-        figure, calibration = self._figure_and_calibration(variant)
-        assert variant.source.page is not None
+        source = self._current_source(variant)
+        self._review_button.setEnabled(variant is not None and bool(variant.points))
+        path = self._verified_path(source)
+        figure, calibration = self._figure_and_calibration(source, variant)
+        assert source.page is not None
         x0, top, x1, bottom = figure.source_bbox
         bbox = (float(x0), float(top), float(x1), float(bottom))
         with pdfplumber.open(path, password=self._pdf_passwords.get(path, "")) as pdf:
-            rendered = pdf.pages[variant.source.page - 1].crop(bbox).to_image(resolution=110)
+            rendered = pdf.pages[source.page - 1].crop(bbox).to_image(resolution=110)
             buffer = io.BytesIO()
             rendered.save(buffer, format="PNG")
         image = QImage()
@@ -386,7 +410,7 @@ class CurveReviewDialog(QDialog):
         self._scene.clear()
         self._scene.addPixmap(QPixmap.fromImage(image))
         overlay = QPainterPath()
-        if calibration is not None:
+        if calibration is not None and variant is not None:
             source_width, source_height = figure.pixel_size or (
                 max(1, image.width()),
                 max(1, image.height()),
@@ -413,17 +437,21 @@ class CurveReviewDialog(QDialog):
         self._scene.setSceneRect(self._scene.itemsBoundingRect())
         self._view.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
         self._source_loaded = True
-        self._status.setText(
-            f"Verified {variant.source.standard} page {variant.source.page}; "
+        status = (
+            f"Verified {source.standard} page {source.page}; "
             "source pixels remain local and are not stored in the draft."
         )
+        if variant is None:
+            status += " No points entered for this variant."
+        self._status.setText(status)
 
     def _review_current(self) -> None:
         notes = self._notes.text().strip()
-        if not notes:
+        variant = self._current_variant()
+        if not notes or variant is None:
             return
         self._model.review_variant(
-            self._current_variant().id,
+            variant.id,
             actor=self._actor,
             notes=notes,
         )

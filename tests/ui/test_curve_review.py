@@ -322,6 +322,26 @@ def test_transitional_dialog_disables_retired_controls_without_model_calls(
     assert not hasattr(CurveReviewModel, "associate_trace")
 
 
+def test_dialog_keeps_unfilled_semantic_slot_empty_and_unreviewable(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+
+    dialog._variant_selector.setCurrentIndex(1)
+
+    assert dialog._variant_selector.currentData() == "synthetic.curve.5.2"
+    assert dialog.source_loaded is True
+    assert dialog.overlay_item.path().elementCount() == 0
+    assert dialog._review_button.isEnabled() is False
+    assert "No points entered" in dialog._status.text()
+
+
 def test_empty_manual_draft_lists_every_recipe_slot(manual_draft: ImportedRuleDraft) -> None:
     entries = CurveReviewModel(manual_draft).variant_entries
 
