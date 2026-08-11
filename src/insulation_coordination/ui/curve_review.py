@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import io
 from collections.abc import Mapping
-from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -25,7 +24,6 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
     QGraphicsView,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -33,39 +31,56 @@ from PySide6.QtWidgets import (
 )
 
 from insulation_coordination.domain.rules import (
-    CurveInterpolation,
     CurvePoint,
-    CurveSegment,
-    CurveSegmentType,
+    FaultTimeVoltageSelector,
     FaultTimeVoltageVariant,
 )
 from insulation_coordination.rules.importer import recipes as recipe_registry
-from insulation_coordination.rules.importer.approval import ApprovalError, approval_blockers
+from insulation_coordination.rules.importer.approval import ApprovalError
 from insulation_coordination.rules.importer.curves import (
-    AxisCalibration,
+    ManualPlotCalibration,
     PlotCalibration,
-    RawCurvePoint,
-    RawCurveTrace,
     RawFigure,
 )
 from insulation_coordination.rules.importer.extract import ImportedRuleDraft
 from insulation_coordination.rules.importer.review import (
-    associate_curve_trace,
-    correct_curve_calibration,
-    recover_blocked_curve_figures,
-    reject_curve_variant,
-    replace_curve_breakpoint,
-    replace_curve_points,
-    replace_curve_segment,
+    replace_manual_curve_variant,
     review_curve_variant,
+    set_manual_curve_calibration,
 )
 
 if TYPE_CHECKING:
     from insulation_coordination.ui.rules_manager import RulesManagerWindow
 
 
+def curve_variant_label(
+    *,
+    figure: str,
+    variant_id: str,
+    selector: FaultTimeVoltageSelector,
+) -> str:
+    """Return neutral UI text from typed selector fields."""
+
+    subject = {
+        "accessible_circuit": "Accessible circuit",
+        "conductive_accessible_part": "Conductive accessible part",
+    }[selector.subject]
+    voltage = {
+        "ac_rms": "AC RMS",
+        "ac_peak": "AC peak",
+        "ac_unspecified": "AC",
+        "dc": "DC",
+    }[selector.voltage_basis]
+    fields = [subject, voltage]
+    if selector.dvc_context is not None:
+        fields.append(f"DVC {selector.dvc_context.upper()}")
+    if selector.environment_context is not None:
+        fields.append(selector.environment_context.replace("_", " ").title())
+    return f"Figure {figure} — {' · '.join(fields)} ({variant_id})"
+
+
 class CurveReviewModel:
-    """Review actions over one draft's reconstructed curve rule."""
+    """Manual curve-review actions over one imported draft."""
 
     def __init__(self, draft: ImportedRuleDraft) -> None:
         self._draft = draft
@@ -83,101 +98,75 @@ class CurveReviewModel:
     def draft(self) -> ImportedRuleDraft:
         return self._draft
 
-    def set_breakpoint(
-        self,
-        variant_id: str,
-        index: int,
-        point: CurvePoint,
-        *,
-        actor: str,
-        notes: str,
-    ) -> ImportedRuleDraft:
-        self._draft = replace_curve_breakpoint(
-            self._draft,
-            variant_id=variant_id,
-            index=index,
-            point=point,
-            actor=actor,
-            notes=notes,
-        )
-        return self._draft
+    @property
+    def variant_entries(self) -> tuple[tuple[str, str], ...]:
+        """Recipe slots for available source figures, in recipe order."""
+
+        entries: list[tuple[str, str]] = []
+        for identity in self._draft.source_identities:
+            for recipe in recipe_registry.RECIPES:
+                if (
+                    recipe.id != identity.recipe_id
+                    or recipe.standard != identity.standard
+                    or recipe.edition != identity.edition
+                ):
+                    continue
+                for spec in recipe.curves:
+                    if not any(
+                        figure.source.standard == identity.standard
+                        and figure.source.edition == identity.edition
+                        and figure.source.page == spec.page_number
+                        and figure.source.figure == spec.figure
+                        for figure in self._draft.raw_figures
+                    ):
+                        continue
+                    for index, selector in enumerate(spec.variant_slots, start=1):
+                        variant_id = f"{spec.semantic_id}.{spec.figure}.{index}"
+                        entries.append(
+                            (
+                                curve_variant_label(
+                                    figure=spec.figure,
+                                    variant_id=variant_id,
+                                    selector=selector,
+                                ),
+                                variant_id,
+                            )
+                        )
+        return tuple(entries)
 
     def set_calibration(
         self,
-        figure_page: int,
-        axis: Literal["x", "y"],
-        calibration: AxisCalibration,
+        figure: str,
+        calibration: ManualPlotCalibration,
         *,
         actor: str,
         notes: str,
     ) -> ImportedRuleDraft:
-        """Replace one axis calibration for exactly one source figure."""
-
-        if axis not in {"x", "y"}:
-            raise ValueError("axis must be x or y with an AxisCalibration")
-        digitization = next(
-            (
-                item
-                for item in self._draft.curve_digitizations
-                if item.proposed_rule is not None
-                and item.proposed_rule.source.page == figure_page
-                and item.calibration is not None
-            ),
-            None,
-        )
-        if digitization is None or digitization.calibration is None:
-            raise ValueError(f"unknown calibrated figure on page {figure_page}")
-        changed = digitization.calibration.model_copy(update={axis: calibration})
-        self._draft = correct_curve_calibration(
+        self._draft = set_manual_curve_calibration(
             self._draft,
-            figure_page=figure_page,
-            calibration=changed,
+            figure=figure,
+            calibration=calibration,
             actor=actor,
             notes=notes,
         )
         return self._draft
 
-    def set_segment(
+    def replace_points(
         self,
         variant_id: str,
-        index: int,
-        start: int,
-        end: int,
-        segment_type: CurveSegmentType,
-        interpolation: CurveInterpolation,
+        source_points: tuple[CurvePoint, ...],
         *,
         actor: str,
         notes: str,
+        input_origin: Literal["empty", "automatic_suggestion"] = "empty",
     ) -> ImportedRuleDraft:
-        self._draft = replace_curve_segment(
+        self._draft = replace_manual_curve_variant(
             self._draft,
             variant_id=variant_id,
-            index=index,
-            segment=CurveSegment(
-                start=start,
-                end=end,
-                segment_type=segment_type,
-                interpolation=interpolation,
-            ),
+            source_points=source_points,
             actor=actor,
             notes=notes,
-        )
-        return self._draft
-
-    def associate_trace(
-        self,
-        trace_id: str,
-        variant_id: str,
-        *,
-        actor: str,
-        notes: str,
-    ) -> ImportedRuleDraft:
-        self._draft = associate_curve_trace(
-            self._draft,
-            trace_id=trace_id,
-            variant_id=variant_id,
-            actor=actor,
-            notes=notes,
+            input_origin=input_origin,
         )
         return self._draft
 
@@ -201,63 +190,6 @@ class CurveReviewModel:
         )
         return self._draft
 
-    def reject_variant(
-        self,
-        variant_id: str,
-        *,
-        actor: str,
-        notes: str,
-    ) -> ImportedRuleDraft:
-        self._draft = reject_curve_variant(
-            self._draft, variant_id, actor=actor, notes=notes
-        )
-        return self._draft
-
-    def set_manual_points(
-        self,
-        variant_id: str,
-        points: tuple[CurvePoint, ...],
-        *,
-        actor: str,
-        notes: str,
-    ) -> ImportedRuleDraft:
-        self._draft = replace_curve_points(
-            self._draft,
-            variant_id=variant_id,
-            points=points,
-            actor=actor,
-            notes=notes,
-        )
-        return self._draft
-
-    def recover_blocked(
-        self,
-        replacements: tuple[
-            tuple[int, int, str | RawCurveTrace, PlotCalibration, tuple[CurvePoint, ...]], ...
-        ],
-        *,
-        actor: str,
-        notes: str,
-    ) -> ImportedRuleDraft:
-        self._draft = recover_blocked_curve_figures(
-            self._draft,
-            replacements=replacements,
-            actor=actor,
-            notes=notes,
-        )
-        return self._draft
-
-    @property
-    def manual_entry_enabled(self) -> bool:
-        return bool(self._draft.curve_variant_rejections) or any(
-            item.blocking_review_items for item in self._draft.curve_digitizations
-        )
-
-    @property
-    def can_approve(self) -> bool:
-        return not approval_blockers(self._draft)
-
-
 class _CurveGraphicsView(QGraphicsView):
     def wheelEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
@@ -266,6 +198,10 @@ class _CurveGraphicsView(QGraphicsView):
 
 class CurveReviewDialog(QDialog):
     """Render a verified local source crop with a separate semantic curve overlay."""
+
+    # Transitional boundary: Task 5 replaces these automatic-correction controls with
+    # the manual table/drag editor. Keep this dialog constructible, but do not recreate
+    # removed CurveReviewModel methods merely to support the retired controls.
 
     draft_changed = Signal(object)
 
@@ -329,7 +265,7 @@ class CurveReviewDialog(QDialog):
         layout.addLayout(correction_actions)
         actions = QHBoxLayout()
         self._manual_button = QPushButton("Enter points manually…")
-        self._manual_button.setEnabled(self._model.manual_entry_enabled)
+        self._manual_button.setEnabled(False)
         self._manual_button.clicked.connect(self._enter_manual_points)
         actions.addWidget(self._manual_button)
         self._reject_button = QPushButton("Reject automatic reconstruction")
@@ -349,10 +285,11 @@ class CurveReviewDialog(QDialog):
             self._trace_button,
             self._breakpoint_button,
             self._segment_button,
+            self._manual_button,
             self._reject_button,
-            self._review_button,
         ):
-            button.setEnabled(has_variants)
+            button.setEnabled(False)
+        self._review_button.setEnabled(has_variants)
         if has_variants:
             self._load_current_variant(0)
 
@@ -486,304 +423,26 @@ class CurveReviewDialog(QDialog):
         )
         self.draft_changed.emit(self._model.draft)
 
-    def _required_notes(self) -> str | None:
-        notes = self._notes.text().strip()
-        return notes or None
+    def _retired_correction(self) -> None:
+        self._status.setText("Manual point editing is available in the updated review editor.")
 
     def _correct_calibration(self) -> None:
-        notes = self._required_notes()
-        if notes is None:
-            return
-        variant = self._current_variant()
-        _figure, current = self._figure_and_calibration(variant)
-        assert current is not None and variant.source.page is not None
-        axis, accepted = QInputDialog.getItem(
-            self, "Correct calibration", "Axis", ("x", "y"), editable=False
-        )
-        if not accepted:
-            return
-        existing = current.x if axis == "x" else current.y
-        value, accepted = QInputDialog.getText(
-            self,
-            "Correct calibration",
-            "slope, intercept, residual pixels, minor-grid pixels",
-            text=(
-                f"{existing.slope},{existing.intercept},"
-                f"{existing.residual_pixels},{existing.minor_grid_spacing_pixels}"
-            ),
-        )
-        if not accepted:
-            return
-        slope, intercept, residual, spacing = (
-            Decimal(part.strip()) for part in value.split(",")
-        )
-        self._model.set_calibration(
-            variant.source.page,
-            axis,  # type: ignore[arg-type]
-            AxisCalibration(
-                scale="log10",
-                slope=slope,
-                intercept=intercept,
-                residual_pixels=residual,
-                minor_grid_spacing_pixels=spacing,
-            ),
-            actor=self._actor,
-            notes=notes,
-        )
-        self.draft_changed.emit(self._model.draft)
-        self._load_current_variant(self._variant_selector.currentIndex())
+        self._retired_correction()
 
     def _associate_trace(self) -> None:
-        notes = self._required_notes()
-        if notes is None:
-            return
-        variant = self._current_variant()
-        figure, _calibration = self._figure_and_calibration(variant)
-        trace_id, accepted = QInputDialog.getItem(
-            self,
-            "Associate trace",
-            "Source trace",
-            tuple(trace.id for trace in figure.traces),
-            editable=False,
-        )
-        if not accepted:
-            return
-        self._model.associate_trace(
-            trace_id, variant.id, actor=self._actor, notes=notes
-        )
-        self.draft_changed.emit(self._model.draft)
-        self._load_current_variant(self._variant_selector.currentIndex())
+        self._retired_correction()
 
     def _correct_breakpoint(self) -> None:
-        notes = self._required_notes()
-        if notes is None:
-            return
-        variant = self._current_variant()
-        index, accepted = QInputDialog.getInt(
-            self,
-            "Correct breakpoint",
-            "Point index",
-            0,
-            0,
-            len(variant.points) - 1,
-        )
-        if not accepted:
-            return
-        point = variant.points[index]
-        value, accepted = QInputDialog.getText(
-            self,
-            "Correct breakpoint",
-            "x, y engineering values",
-            text=f"{point.x},{point.y}",
-        )
-        if not accepted:
-            return
-        x, y = (Decimal(part.strip()) for part in value.split(","))
-        self._model.set_breakpoint(
-            variant.id,
-            index,
-            CurvePoint(x=x, y=y),
-            actor=self._actor,
-            notes=notes,
-        )
-        self.draft_changed.emit(self._model.draft)
-        self._load_current_variant(self._variant_selector.currentIndex())
+        self._retired_correction()
 
     def _correct_segment(self) -> None:
-        notes = self._required_notes()
-        if notes is None:
-            return
-        variant = self._current_variant()
-        index, accepted = QInputDialog.getInt(
-            self,
-            "Correct segment",
-            "Segment index",
-            0,
-            0,
-            len(variant.segments) - 1,
-        )
-        if not accepted:
-            return
-        interpolation, accepted = QInputDialog.getItem(
-            self,
-            "Correct segment",
-            "Interpolation",
-            ("log_log", "constant"),
-            editable=False,
-        )
-        if not accepted:
-            return
-        segment = variant.segments[index]
-        segment_type = "plateau" if interpolation == "constant" else "continuous"
-        self._model.set_segment(
-            variant.id,
-            index,
-            segment.start,
-            segment.end,
-            segment_type,  # type: ignore[arg-type]
-            interpolation,  # type: ignore[arg-type]
-            actor=self._actor,
-            notes=notes,
-        )
-        self.draft_changed.emit(self._model.draft)
-        self._load_current_variant(self._variant_selector.currentIndex())
+        self._retired_correction()
 
     def _enter_manual_points(self) -> None:
-        notes = self._required_notes()
-        if notes is None or not self._model.manual_entry_enabled:
-            return
-        if not self._model.draft.curves:
-            self._recover_blocked_figures(notes)
-            return
-        variant = self._current_variant()
-        value, accepted = QInputDialog.getText(
-            self,
-            "Enter points manually",
-            "Semicolon-separated x,y engineering points",
-            text=";".join(f"{point.x},{point.y}" for point in variant.points),
-        )
-        if not accepted:
-            return
-        points = tuple(
-            CurvePoint(
-                x=Decimal(pair.split(",", 1)[0].strip()),
-                y=Decimal(pair.split(",", 1)[1].strip()),
-            )
-            for pair in value.split(";")
-            if pair.strip()
-        )
-        self._model.set_manual_points(
-            variant.id,
-            points,
-            actor=self._actor,
-            notes=notes,
-        )
-        self._manual_button.setEnabled(self._model.manual_entry_enabled)
-        self.draft_changed.emit(self._model.draft)
-        self._load_current_variant(self._variant_selector.currentIndex())
-
-    def _recover_blocked_figures(self, notes: str) -> None:
-        replacements: list[
-            tuple[int, int, str | RawCurveTrace, PlotCalibration, tuple[CurvePoint, ...]]
-        ] = []
-        for index, (figure, result) in enumerate(
-            zip(
-                self._model.draft.raw_figures,
-                self._model.draft.curve_digitizations,
-            )
-        ):
-            if result.proposed_rule is not None:
-                continue
-            axes: list[AxisCalibration] = []
-            for axis in ("x", "y"):
-                value, accepted = QInputDialog.getText(
-                    self,
-                    f"Recover Figure {figure.source.figure}",
-                    f"{axis}-axis: slope, intercept, residual pixels, minor-grid pixels",
-                    text="0.01,0,0,10",
-                )
-                if not accepted:
-                    return
-                slope, intercept, residual, spacing = (
-                    Decimal(part.strip()) for part in value.split(",")
-                )
-                axes.append(
-                    AxisCalibration(
-                        scale="log10",
-                        slope=slope,
-                        intercept=intercept,
-                        residual_pixels=residual,
-                        minor_grid_spacing_pixels=spacing,
-                    )
-                )
-            spec = next(
-                spec
-                for recipe in recipe_registry.RECIPES
-                if recipe.id == "iec62477-1-2022"
-                for spec in recipe.curves
-                if spec.figure == figure.source.figure
-            )
-            for slot_index, selector in enumerate(spec.variant_slots):
-                trace_input: str | RawCurveTrace
-                if figure.traces:
-                    trace_input, accepted = QInputDialog.getItem(
-                        self,
-                        f"Recover Figure {figure.source.figure}",
-                        f"Source trace for {selector.subject}/{selector.voltage_basis}",
-                        tuple(trace.id for trace in figure.traces),
-                        editable=False,
-                    )
-                    if not accepted:
-                        return
-                else:
-                    raw_value, accepted = QInputDialog.getText(
-                        self,
-                        f"Recover Figure {figure.source.figure}",
-                        f"Source pixel x,y points for slot {slot_index + 1}",
-                    )
-                    if not accepted:
-                        return
-                    raw_points = tuple(
-                        RawCurvePoint(
-                            x=Decimal(pair.split(",", 1)[0].strip()),
-                            y=Decimal(pair.split(",", 1)[1].strip()),
-                            space="pixel",
-                            primitive_ref=f"manual-{slot_index}-{position}",
-                        )
-                        for position, pair in enumerate(raw_value.split(";"))
-                        if pair.strip()
-                    )
-                    trace_input = RawCurveTrace(
-                        id=f"manual-trace-{figure.source.figure}-{slot_index + 1}",
-                        points=raw_points,
-                        stroke_width=Decimal(1),
-                    )
-                value, accepted = QInputDialog.getText(
-                    self,
-                    f"Recover Figure {figure.source.figure}",
-                    f"Engineering x,y points for slot {slot_index + 1}",
-                )
-                if not accepted:
-                    return
-                points = tuple(
-                    CurvePoint(
-                        x=Decimal(pair.split(",", 1)[0].strip()),
-                        y=Decimal(pair.split(",", 1)[1].strip()),
-                    )
-                    for pair in value.split(";")
-                    if pair.strip()
-                )
-                replacements.append(
-                    (
-                        index,
-                        slot_index,
-                        trace_input,
-                        PlotCalibration(x=axes[0], y=axes[1]),
-                        points,
-                    )
-                )
-        self._model.recover_blocked(
-            tuple(replacements), actor=self._actor, notes=notes
-        )
-        self._manual_button.setEnabled(False)
-        self.draft_changed.emit(self._model.draft)
-        self._variant_selector.clear()
-        for rule in self._model.draft.curves:
-            for variant in rule.variants:
-                self._variant_selector.addItem(variant.id, variant.id)
-        self._load_current_variant(0)
+        self._retired_correction()
 
     def _reject_current(self) -> None:
-        notes = self._notes.text().strip()
-        if not notes:
-            return
-        self._model.reject_variant(
-            self._current_variant().id,
-            actor=self._actor,
-            notes=notes,
-        )
-        self._manual_button.setEnabled(True)
-        self.draft_changed.emit(self._model.draft)
+        self._retired_correction()
 
 
 __all__ = ["CurveReviewDialog", "CurveReviewModel"]
