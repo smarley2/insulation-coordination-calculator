@@ -244,6 +244,8 @@ def build_human_report_view(model: ReportModel) -> HumanReportView:
             )
         )
 
+    # Three topology sections name the same domains, so the lookup is built once here.
+    domain_names = {domain.id: domain.name for domain in model.galvanic_domains}
     warnings = _deduplicate_advisories(model.warnings)
     verification_requirements = _deduplicate_advisories(model.verification_requirements)
     warning_codes = {item.code for item in warnings}
@@ -256,16 +258,17 @@ def build_human_report_view(model: ReportModel) -> HumanReportView:
         groups=tuple(report_groups),
         advisories=warnings,
         verification_requirements=verification_requirements,
-        net_classifications=_human_net_classifications(model),
+        net_classifications=_human_net_classifications(model, domain_names),
         galvanic_domains=_human_galvanic_domains(model),
-        galvanic_barriers=_human_galvanic_barriers(model),
-        topology_status=_human_topology_status(model),
+        galvanic_barriers=_human_galvanic_barriers(model, domain_names),
+        topology_status=_human_topology_status(model, domain_names),
         rules=model.rules,
     )
 
 
-def _human_net_classifications(model: ReportModel) -> tuple[HumanNetClassification, ...]:
-    domain_names = {domain.id: domain.name for domain in model.galvanic_domains}
+def _human_net_classifications(
+    model: ReportModel, domain_names: dict[UUID, str]
+) -> tuple[HumanNetClassification, ...]:
     return tuple(
         HumanNetClassification(
             name=net.name,
@@ -296,8 +299,9 @@ def _human_galvanic_domains(model: ReportModel) -> tuple[HumanGalvanicDomain, ..
     )
 
 
-def _human_galvanic_barriers(model: ReportModel) -> tuple[HumanGalvanicBarrier, ...]:
-    domain_names = {domain.id: domain.name for domain in model.galvanic_domains}
+def _human_galvanic_barriers(
+    model: ReportModel, domain_names: dict[UUID, str]
+) -> tuple[HumanGalvanicBarrier, ...]:
     return tuple(
         HumanGalvanicBarrier(
             domain_a=domain_names.get(barrier.domain_a_id, "?"),
@@ -326,9 +330,10 @@ def _barrier_label(
     return _domain_pair_label(barrier.domain_a_id, barrier.domain_b_id, domain_names)
 
 
-def _human_topology_status(model: ReportModel) -> HumanTopologyStatus:
+def _human_topology_status(
+    model: ReportModel, domain_names: dict[UUID, str]
+) -> HumanTopologyStatus:
     net_names = {net.id: net.name for net in model.net_classes}
-    domain_names = {domain.id: domain.name for domain in model.galvanic_domains}
     topology = model.topology
     return HumanTopologyStatus(
         is_complete=topology.is_complete,
