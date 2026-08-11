@@ -13,7 +13,6 @@ from insulation_coordination.domain.rules import DecisionRule, ProcedureRule, So
 from insulation_coordination.rules.evaluator import DecisionResult, evaluate_decision
 from insulation_coordination.rules.importer.clauses import (
     ClauseNode,
-    ClauseToken,
     RawClauseFragment,
 )
 from insulation_coordination.rules.importer.extract import (
@@ -36,7 +35,6 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.procedures i
     PROCEDURE_CLAUSES,
     TEST_CLAUSE_COLUMN,
     project_accessible_surface_foil,
-    project_accessible_surface_foil_applicability,
     project_assembled_routine_exemption,
     project_internal_spd_monitoring,
     project_preconditioning,
@@ -70,8 +68,7 @@ CLAUSE_OF = {
     ids.TEST_INTERNAL_SPD_MONITORING: "5.2.3.15",
     ids.TEST_PRECONDITIONING: "5.2.3.16",
     PRECONDITIONING_APPLICABILITY_ID: "5.2.3.1",
-    ids.TEST_ACCESSIBLE_SURFACE_FOIL: "5.2.3.13.3",
-    FOIL_APPLICABILITY_ID: "5.2.3.4.4",
+    ids.TEST_ACCESSIBLE_SURFACE_FOIL: "5.2.3.4.4",
     ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION: "5.2.3.4.4",
 }
 
@@ -388,58 +385,33 @@ def _values(result: DecisionResult) -> dict[str, object]:
     }
 
 
-def _foil_fragment(*, figures: tuple[str, ...] = ("23", "24")) -> RawClauseFragment:
-    source = SOURCE.model_copy(update={"clause": CLAUSE_OF[ids.TEST_ACCESSIBLE_SURFACE_FOIL]})
-    node = ClauseNode(
-        order=0,
-        kind="paragraph",
-        raw_text="place the foil as the cited drawings show",
-        source=source,
-    )
-    fragment = RawClauseFragment(
-        id=f"raw-{ids.TEST_ACCESSIBLE_SURFACE_FOIL}",
-        raw_sha256="0" * 64,
-        nodes=(node,),
-        tokens=tuple(
-            ClauseToken(
-                kind="reference",
-                raw_text=f"Figure {number}",
-                normalized=f"figure-{number}",
-                source=source,
-            )
-            for number in figures
-        ),
-        source=source,
-    )
-    return fragment.model_copy(update={"raw_sha256": canonical_model_sha256(fragment)})
+def _foil_fragment() -> RawClauseFragment:
+    return _fragment(ids.TEST_ACCESSIBLE_SURFACE_FOIL, 1, kind="paragraph")
 
 
-def test_the_foil_procedure_keeps_its_figures_as_references_not_geometry() -> None:
-    rules, _proposals = project_accessible_surface_foil(
-        _foil_fragment(), IDENTITY, _draft(_agreeing_matrix())
-    )
+def test_the_foil_family_is_grounded_in_the_voltage_test_clause_alone() -> None:
+    """One paragraph of the voltage test states the gate and the action, and nothing else."""
+    rules, proposals = project_accessible_surface_foil(_foil_fragment(), IDENTITY)
     procedure = next(rule for rule in rules if isinstance(rule, ProcedureRule))
 
-    assert procedure.source.figure is None
-    assert all(step.source.figure for step in procedure.procedure_steps)
-    assert any("23" in (step.source.figure or "") for step in procedure.procedure_steps)
-    assert any("24" in (step.source.figure or "") for step in procedure.procedure_steps)
+    assert procedure.source.clause == "5.2.3.4.4"
     assert procedure.applicability_rule_id == FOIL_APPLICABILITY_ID
-
-
-def test_the_foil_procedure_blocks_when_the_clause_cites_no_figure() -> None:
-    with pytest.raises(ProcedureStructureError, match="figure references"):
-        project_accessible_surface_foil(
-            _foil_fragment(figures=()), IDENTITY, _draft(_agreeing_matrix())
-        )
+    assert len(procedure.procedure_steps) == 1
+    # The mandrel test's figures belong to the thin-sheet procedure, not to this family.
+    assert procedure.source.figure is None
+    assert all(step.source.figure is None for step in procedure.procedure_steps)
+    # The matrix has no row for this sub-clause, so the procedure claims no classification.
+    assert procedure.classifications == ()
+    assert {proposal.semantic_id for proposal in proposals} == {
+        ids.TEST_ACCESSIBLE_SURFACE_FOIL,
+        FOIL_APPLICABILITY_ID,
+    }
 
 
 def test_the_foil_gate_records_a_substitution_rather_than_a_classification() -> None:
     """The matrix marks no sample test for the surrounding test, so no rule claims one."""
-    rules, _proposals = project_accessible_surface_foil_applicability(
-        _fragment(FOIL_APPLICABILITY_ID, 1, kind="paragraph"), IDENTITY
-    )
-    rule = rules[0]
+    rules, _proposals = project_accessible_surface_foil(_foil_fragment(), IDENTITY)
+    rule = next(item for item in rules if isinstance(item, DecisionRule))
 
     assert rule.id == FOIL_APPLICABILITY_ID
     assert rule.exhaustive is False

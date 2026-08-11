@@ -267,10 +267,12 @@ PRECONDITIONING_APPLICABILITY_ID = f"{ids.TEST_PRECONDITIONING}.applicability"
 #: gates are distinct is the maintainer's decision, recorded here rather than inferred.
 PRECONDITIONING_ELECTRICAL_ID = f"{ids.TEST_PRECONDITIONING}.electrical_tests"
 PRECONDITIONING_MATERIAL_ID = f"{ids.TEST_PRECONDITIONING}.material"
-#: The clause that states the foil geometry, and the clause that states when an accessible
-#: surface calls for it. The matrix carries a classification for the first; the second is a
-#: sub-clause the matrix does not list separately, and it states a gate rather than a test.
-_FOIL_GEOMETRY_CLAUSE = "5.2.3.13.3"
+#: The clause that performs the AC or DC voltage test. One paragraph of it states both when a
+#: non-conductive accessible surface calls for the foil and what the test does once it is
+#: wrapped, so the gate and the procedure are two readings of one paragraph and share one
+#: fragment. The mandrel test's own foil, which is placed on a thin-sheet specimen after the
+#: rotation, is a different requirement that happens to involve foil: it belongs to the
+#: thin-sheet procedure, which is not one of the required items and is not extracted here.
 _VOLTAGE_TEST_PERFORMANCE_CLAUSE = "5.2.3.4.4"
 FOIL_APPLICABILITY_ID = f"{ids.TEST_ACCESSIBLE_SURFACE_FOIL}.applicability"
 
@@ -321,22 +323,17 @@ PROCEDURE_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ),
     ClauseAuditSpec(
         semantic_id=ids.TEST_ACCESSIBLE_SURFACE_FOIL,
-        clause=_FOIL_GEOMETRY_CLAUSE,
-        page_number=142,
-        #: The paragraph that states the foil's dimensions, placement and edge distance, and
-        #: cites the two figures that illustrate them. The bulleted test voltages further down
-        #: the page belong to the surrounding test, not to placing the foil.
-        expected_bbox=(65.0, 119.0, 535.0, 190.0),
-        expected_root_kind="paragraph",
-        output_kind="procedure",
-    ),
-    ClauseAuditSpec(
-        semantic_id=FOIL_APPLICABILITY_ID,
         clause=_VOLTAGE_TEST_PERFORMANCE_CLAUSE,
         page_number=130,
+        #: The accessible-surface paragraph alone. The paragraph above it states what may be
+        #: bridged or disconnected before testing and the one below what an opening permits,
+        #: neither of which concerns an accessible surface.
         expected_bbox=(65.0, 142.0, 535.0, 190.0),
         expected_root_kind="paragraph",
-        output_kind="decision",
+        output_kind="procedure",
+        #: The same paragraph states the gate, so this spec projects it beside the procedure
+        #: rather than extracting the paragraph twice.
+        projected_rule_ids=(FOIL_APPLICABILITY_ID,),
     ),
     ClauseAuditSpec(
         semantic_id=ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION,
@@ -724,8 +721,6 @@ def project_preconditioning_applicability(
 # --- accessible insulating surface, foil ---------------------------------------------
 
 _FOIL_SHAPE = ("paragraph", 1)
-_FOIL_APPLICABILITY_SHAPE = ("paragraph", 1)
-_FIGURE_REFERENCE_PREFIX = "figure-"
 #: What the accessible-surface clause permits in place of the classification the matrix marks
 #: for the surrounding test. Named as a substitution rather than as a classification of its
 #: own: the matrix marks that test as a type and a routine test and does not mark a sample
@@ -734,74 +729,36 @@ _FIGURE_REFERENCE_PREFIX = "figure-"
 _FOIL_SUBSTITUTIONS = ("sample_test_instead_of_routine_test",)
 
 
-def _figure_references(fragment: RawClauseFragment, label: str) -> str:
-    """The figure numbers the reviewed clause cites, in the order it cites them.
-
-    The figures illustrate a geometry the clause also states in prose, so neither is
-    digitized. They are kept as a source reference on the step they belong to, which is what
-    a maintainer follows to check the placement against the drawing.
-    """
-    numbers = tuple(
-        dict.fromkeys(
-            str(token.normalized).removeprefix(_FIGURE_REFERENCE_PREFIX)
-            for token in fragment.tokens
-            if token.kind == "reference"
-            and str(token.normalized).startswith(_FIGURE_REFERENCE_PREFIX)
-        )
-    )
-    if not numbers:
-        _block(f"{label} expected the reviewed figure references the clause cites")
-    return ", ".join(numbers)
-
-
 def project_accessible_surface_foil(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
-    draft: ImportedRuleDraft,
-) -> tuple[tuple[ProcedureRule, ...], tuple[SemanticProposal, ...]]:
-    """Project the foil placement clause into a reviewed procedure."""
+    _draft: object = None,
+) -> tuple[tuple[ProcedureRule | DecisionRule, ...], tuple[SemanticProposal, ...]]:
+    """Project the accessible-surface paragraph into the foil procedure and its gate.
+
+    The paragraph states one requirement: where a non-conductive accessible surface covers the
+    equipment, conductive foil is wrapped around that surface and the voltage test is performed
+    against it, and the test between a circuit and the surface may then be a sample test in
+    place of a routine test. The gate carries the condition and what it permits, the procedure
+    the action. Equipment without such a surface is left uncovered rather than read as a
+    permission to skip the test.
+
+    The procedure declares no classification. The cross-reference matrix has no row for this
+    sub-clause, so any classification here would be this recipe's invention -- which is also
+    why the permitted sample test is modelled as a substitution the gate records.
+    """
 
     label = "accessible surface foil"
     _require_own_fragment(fragment, identity, ids.TEST_ACCESSIBLE_SURFACE_FOIL, label)
     _require_shape(fragment, _FOIL_SHAPE, label)
-    figures = _figure_references(fragment, label)
 
     procedure = ProcedureRule(
         id=ids.TEST_ACCESSIBLE_SURFACE_FOIL,
         test_kind="accessible_surface_foil_placement",
-        classifications=("type_test",),
-        procedure_steps=(
-            ProcedureStep(
-                order=1,
-                text=fragment.nodes[0].raw_text,
-                source=fragment.nodes[0].source.model_copy(update={"figure": figures}),
-            ),
-        ),
+        procedure_steps=_steps(fragment),
         applicability_rule_id=FOIL_APPLICABILITY_ID,
-        # The rule itself is a clause, not a figure: only the step that places the foil cites
-        # the drawings, so only that step carries them.
         source=fragment.source,
     )
-    validate_classifications(matrix_grid(draft, label), procedure)
-    return (procedure,), (_proposal(procedure, "procedure", fragment),)
-
-
-def project_accessible_surface_foil_applicability(
-    fragment: RawClauseFragment,
-    identity: StandardIdentity,
-    _draft: object = None,
-) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
-    """Project the accessible-surface gate for the foil into a decision.
-
-    The clause states what to do where a non-conductive accessible surface covers the
-    equipment. It states nothing about equipment without one, so that case is left uncovered
-    rather than read as a permission to skip the test.
-    """
-
-    label = "accessible surface foil applicability"
-    _require_own_fragment(fragment, identity, FOIL_APPLICABILITY_ID, label)
-    _require_shape(fragment, _FOIL_APPLICABILITY_SHAPE, label)
-
     rule = DecisionRule(
         id=FOIL_APPLICABILITY_ID,
         inputs=(DecisionInput(name="non_conductive_accessible_surface_present", kind="boolean"),),
@@ -835,7 +792,10 @@ def project_accessible_surface_foil_applicability(
         exhaustive=False,
         source=fragment.source,
     )
-    return (rule,), (_proposal(rule, "decision", fragment),)
+    return (procedure, rule), (
+        _proposal(procedure, "procedure", fragment),
+        _proposal(rule, "decision", fragment),
+    )
 
 
 # --- assembled-equipment routine test exemption ---------------------------------------
@@ -897,7 +857,6 @@ CLAUSE_PROJECTORS: Mapping[str, ClauseProjector] = {
     ids.TEST_PRECONDITIONING: project_preconditioning,
     PRECONDITIONING_APPLICABILITY_ID: project_preconditioning_applicability,
     ids.TEST_ACCESSIBLE_SURFACE_FOIL: project_accessible_surface_foil,
-    FOIL_APPLICABILITY_ID: project_accessible_surface_foil_applicability,
     ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION: project_assembled_routine_exemption,
 }
 
@@ -917,7 +876,6 @@ __all__ = [
     "matrix_classifications",
     "matrix_grid",
     "project_accessible_surface_foil",
-    "project_accessible_surface_foil_applicability",
     "project_assembled_routine_exemption",
     "project_internal_spd_monitoring",
     "project_preconditioning",
