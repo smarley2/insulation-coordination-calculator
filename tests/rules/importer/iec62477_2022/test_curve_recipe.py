@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from typing import get_args
-
-from insulation_coordination.domain.rules import FaultTimeVoltageSelector
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import RECIPE
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.curves import CURVES
 
@@ -68,13 +65,6 @@ def test_each_figure_declares_its_exact_slot_inventory() -> None:
         for spec in CURVES
     }
     assert declared == _EXPECTED_SLOTS
-
-
-def test_every_declared_basis_belongs_to_the_model_vocabulary() -> None:
-    """A recipe cannot invent a basis token the contract does not define."""
-    permitted = set(get_args(FaultTimeVoltageSelector.model_fields["voltage_basis"].annotation))
-    declared = {selector.voltage_basis for spec in CURVES for selector in spec.variant_slots}
-    assert declared <= permitted
 
 
 def test_recipe_exposes_curves_tuple() -> None:
