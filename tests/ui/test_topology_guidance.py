@@ -8,21 +8,20 @@ nothing to catch it - a green suite and a broken pointer. This test extracts eve
 reference from the registered guidance and checks it against the ids the importer
 actually promises to keep stable, which is cheaper than rewriting the prose to use the
 constants directly.
+
+The extraction is the application's own :func:`referenced_rule_ids`, the same function the
+guidance dialog uses to resolve provenance. A second regex here would be a second answer to
+"which rules does this text name", and the two would drift.
 """
 
 from __future__ import annotations
 
-import re
-
+from insulation_coordination.domain.rule_provenance import referenced_rule_ids
 from insulation_coordination.rules.importer.iec62477_2022.semantic_ids import (
     REQUIRED_SEMANTIC_IDS,
 )
 from insulation_coordination.ui.topology_guidance import TopologyGuidanceId
 from insulation_coordination.ui.voltage_guidance import guidance_for
-
-#: A trailing "." ends the sentence, not the id, so the pattern requires each dotted
-#: segment to start with a letter or underscore rather than swallowing punctuation.
-_SEMANTIC_ID_PATTERN = re.compile(r"iec62477_2022\.[a-z_]+(?:\.[a-z_]+)*")
 
 
 def _guidance_text(guidance_id: TopologyGuidanceId) -> str:
@@ -47,9 +46,9 @@ def _is_known(reference: str) -> bool:
 
 def test_every_semantic_rule_id_named_in_topology_guidance_text_is_real() -> None:
     references = {
-        match
+        reference
         for guidance_id in TopologyGuidanceId
-        for match in _SEMANTIC_ID_PATTERN.findall(_guidance_text(guidance_id))
+        for reference in referenced_rule_ids(_guidance_text(guidance_id))
     }
 
     assert references, "expected at least one semantic rule id reference to check"

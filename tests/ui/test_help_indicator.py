@@ -7,15 +7,20 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QLineEdit, QToolTip
 
 from insulation_coordination.ui.help_indicator import (
+    GUIDANCE_AUTHORSHIP_NOTE,
+    NO_PACKAGE_FOR_PROVENANCE,
+    RULE_NOT_IN_PACKAGE,
     FieldStateBadge,
     GuidanceDialog,
     HelpIndicator,
 )
+from insulation_coordination.ui.topology_guidance import TopologyGuidanceId
 from insulation_coordination.ui.voltage_guidance import (
     VoltageGuidanceId,
     accessible_help_name,
     guidance_for,
 )
+from tests.fixtures.synthetic_rules import synthetic_dvc_rule_package, synthetic_rule_package
 
 
 @pytest.fixture
@@ -134,6 +139,51 @@ def test_indicator_passes_its_context_to_the_dialog(indicator, qtbot) -> None:
     dialog = indicator.open_details()
     qtbot.addWidget(dialog)
     assert "Derived from the project supply" in dialog.body_text()
+
+
+# --- source provenance: application guidance and package citation stay distinguishable ---
+
+
+def test_guidance_naming_no_rule_gets_no_provenance_section(qtbot) -> None:
+    """A voltage-stress field explains itself and cites nothing; an empty heading would lie."""
+    dialog = GuidanceDialog(
+        VoltageGuidanceId.RECURRING_PEAK, package=synthetic_dvc_rule_package()
+    )
+    qtbot.addWidget(dialog)
+    assert GUIDANCE_AUTHORSHIP_NOTE not in dialog.body_text()
+
+
+def test_a_named_rule_is_cited_from_the_active_package(qtbot) -> None:
+    dialog = GuidanceDialog(TopologyGuidanceId.DVC_AS, package=synthetic_dvc_rule_package())
+    qtbot.addWidget(dialog)
+    body = dialog.body_text()
+    assert GUIDANCE_AUTHORSHIP_NOTE in body
+    assert "iec62477_2022.dvc.voltage_limits: IEC 62477-1 2022" in body
+
+
+def test_a_named_rule_the_package_lacks_is_marked_absent_not_invented(qtbot) -> None:
+    dialog = GuidanceDialog(TopologyGuidanceId.DVC_AS, package=synthetic_rule_package())
+    qtbot.addWidget(dialog)
+    body = dialog.body_text()
+    assert f"iec62477_2022.dvc.voltage_limits: {RULE_NOT_IN_PACKAGE}" in body
+    assert "clause" not in body.rsplit(GUIDANCE_AUTHORSHIP_NOTE, 1)[-1]
+
+
+def test_without_a_package_the_guidance_says_it_cannot_cite_one(qtbot) -> None:
+    dialog = GuidanceDialog(TopologyGuidanceId.DVC_AS)
+    qtbot.addWidget(dialog)
+    body = dialog.body_text()
+    assert GUIDANCE_AUTHORSHIP_NOTE in body
+    assert NO_PACKAGE_FOR_PROVENANCE in body
+
+
+def test_the_indicator_passes_its_package_to_the_dialog(qtbot) -> None:
+    indicator = HelpIndicator(TopologyGuidanceId.DVC_AS)
+    qtbot.addWidget(indicator)
+    indicator.set_rules_package(synthetic_dvc_rule_package())
+    dialog = indicator.open_details()
+    qtbot.addWidget(dialog)
+    assert "iec62477_2022.dvc.voltage_limits: IEC 62477-1 2022" in dialog.body_text()
 
 
 @pytest.mark.parametrize(

@@ -194,12 +194,21 @@ class NetClassClassificationPanel(QWidget):
             widget.setEnabled(enabled)
 
     def set_rules_package(self, package: RulePackage | None) -> None:
-        """Record the project's active package, so the DVC guide reads from it.
+        """Record the project's active package, so the guidance here can read from it.
 
-        The panel never evaluates anything itself; it only carries the package through
-        to :class:`DvcGuideDialog` when the guide button is activated.
+        The panel never evaluates anything itself; it carries the package through to
+        :class:`DvcGuideDialog` when the guide button is activated, and to each ⓘ so that
+        the rules its guidance names can be cited from the package rather than from prose.
         """
         self._rules_package = package
+        for indicator in (
+            self._type_help,
+            self._source_help,
+            self._exposure_help,
+            self._dvc_help,
+            self._domain_help,
+        ):
+            indicator.set_rules_package(package)
 
     def _fill_combo(
         self,
@@ -298,7 +307,11 @@ class NetClassClassificationPanel(QWidget):
         self.net_class_changed.emit(new_net_class)
 
     def _on_how_to_choose_clicked(self) -> None:
-        dialog = GuidanceDialog(TopologyGuidanceId.CLASSIFICATION_OVERVIEW, parent=self)
+        dialog = GuidanceDialog(
+            TopologyGuidanceId.CLASSIFICATION_OVERVIEW,
+            parent=self,
+            package=self._rules_package,
+        )
         dialog.open()
 
     def _on_dvc_guide_clicked(self) -> None:

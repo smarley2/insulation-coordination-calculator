@@ -224,6 +224,28 @@ def test_dvc_guide_reads_the_project_s_active_rules_package(
     assert f"{rms_label}: 11 V" in dialog.body_text()
 
 
+def test_every_classification_help_control_can_cite_the_active_package(
+    panel: NetClassClassificationPanel, qtbot
+) -> None:
+    """Each ⓘ resolves the rules its guidance names against the project's own package."""
+    from tests.fixtures.synthetic_rules import synthetic_dvc_rule_package
+
+    panel.set_rules_package(synthetic_dvc_rule_package())
+    panel.set_net_class(_circuit(decisive_voltage_class=DecisiveVoltageClass.DVC_AS))
+
+    dialog = panel._dvc_help.open_details()
+    qtbot.addWidget(dialog)
+    assert "iec62477_2022.dvc.voltage_limits: IEC 62477-1 2022" in dialog.body_text()
+
+    for indicator in (
+        panel._type_help,
+        panel._source_help,
+        panel._exposure_help,
+        panel._domain_help,
+    ):
+        assert indicator._package is not None
+
+
 def test_dvc_guide_degrades_gracefully_with_no_rules_package_loaded(
     panel: NetClassClassificationPanel, qtbot
 ) -> None:

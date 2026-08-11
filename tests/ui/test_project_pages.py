@@ -58,12 +58,13 @@ def test_add_net_class_leaves_the_domain_unset_without_a_direct_source_domain(qt
     assert page.project.net_classes[0].galvanic_domain_id is None
 
 
-def test_set_rules_package_reaches_the_classification_panel(qtbot, qtbot_project):
-    """The DVC guide reads the project's active package through this path."""
+def test_set_rules_package_reaches_the_panels_that_cite_it(qtbot, qtbot_project):
+    """The DVC guide and both topology help controls read the package through this path."""
     page = qtbot_project
     package = synthetic_rule_package()
     page.set_rules_package(package)
     assert page._classification_panel._rules_package is package
+    assert page._barriers_panel._verified_help._package is package
 
 
 def test_add_net_class_assigns_the_projects_direct_source_domain(qtbot, qtbot_project):
@@ -81,6 +82,30 @@ def test_add_net_class_assigns_the_projects_direct_source_domain(qtbot, qtbot_pr
     page.add_net_class("HV")
 
     assert page.project.net_classes[0].galvanic_domain_id == direct_domain.id
+
+
+def test_a_classification_edit_leaves_every_pair_untouched(qtbot, qtbot_project):
+    """Classification is recorded, not calculated: no pair may move when a DVC changes.
+
+    Asserted through the real editing path - the dropdown, the panel's signal, and the
+    page's own update - rather than against the transformation alone, because the page is
+    where a pair-rebuilding refresh would creep in.
+    """
+    from insulation_coordination.domain.enums import DecisiveVoltageClass
+
+    page = qtbot_project
+    page.add_net_class("HV+")
+    page.add_net_class("HV-")
+    page.add_net_class("PE")
+    pairs_before = page.project.pairs
+    page._net_list.setCurrentRow(0)
+
+    combo = page._classification_panel._dvc_combo
+    with qtbot.waitSignal(page.project_changed, timeout=1000):
+        combo.setCurrentIndex(combo.findData(DecisiveVoltageClass.DVC_C))
+
+    assert page.project.net_classes[0].decisive_voltage_class is DecisiveVoltageClass.DVC_C
+    assert page.project.pairs == pairs_before
 
 
 def test_renaming_a_domain_through_the_panel_updates_the_project_and_the_dropdown(

@@ -219,6 +219,7 @@ class ProjectPage(QWidget):
             f"({package.package_sha256 or 'no digest'})"
         )
         self._classification_panel.set_rules_package(package)
+        self._barriers_panel.set_rules_package(package)
 
     def load_project(self, project: Project) -> None:
         self._project = project

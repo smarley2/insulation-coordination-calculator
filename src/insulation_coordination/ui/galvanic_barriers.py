@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 
 from insulation_coordination.domain.enums import BarrierVerificationStatus, VerificationMethod
 from insulation_coordination.domain.project import Project
+from insulation_coordination.domain.rules import RulePackage
 from insulation_coordination.domain.topology import GalvanicBarrier
 from insulation_coordination.project.topology_edits import (
     add_barrier,
@@ -166,6 +167,10 @@ class GalvanicBarriersPanel(QWidget):
         if self._project is None:
             raise RuntimeError("No project loaded")
         return self._project
+
+    def set_rules_package(self, package: RulePackage | None) -> None:
+        """Let the barrier-status guidance cite the propagation rules it names."""
+        self._verified_help.set_rules_package(package)
 
     def set_project(self, project: Project) -> None:
         self._project = project
