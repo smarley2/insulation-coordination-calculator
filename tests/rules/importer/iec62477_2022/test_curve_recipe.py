@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import get_args
+
+from insulation_coordination.domain.rules import FaultTimeVoltageSelector
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import RECIPE
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.curves import CURVES
 
@@ -28,27 +31,50 @@ def test_curve_specs_share_one_semantic_id_and_log_axes() -> None:
         assert spec.permitted_interpolations
 
 
-def test_curve_specs_declare_the_exact_eight_semantic_roles() -> None:
-    selectors = tuple(spec.variant_slots for spec in CURVES)
-    assert tuple(map(len, selectors)) == (3, 3, 2)
-    assert all(
-        selector.subject == "accessible_circuit"
-        and selector.voltage_basis == basis
-        and selector.dvc_context is not None
-        and selector.environment_context is not None
-        for slots, basis in zip(selectors[:2], ("dc", "ac_peak"), strict=True)
-        for selector in slots
-    )
-    assert tuple(selector.voltage_basis for selector in selectors[2]) == (
-        "dc",
-        "ac_unspecified",
-    )
-    assert all(
-        selector.subject == "conductive_accessible_part"
-        and selector.dvc_context is None
-        and selector.environment_context is None
-        for selector in selectors[2]
-    )
+#: The reviewed slot inventory, stated independently of the recipe so the two can
+#: disagree: (subject, voltage_basis, dvc_context, environment_context) per figure.
+_EXPECTED_SLOTS: dict[str, tuple[tuple[str, str, str | None, str | None], ...]] = {
+    "5": (
+        ("accessible_circuit", "dc", "b", "dry"),
+        ("accessible_circuit", "dc", "as", "dry"),
+        ("accessible_circuit", "dc", "as", "wet_and_saltwater_wet"),
+    ),
+    "6": (
+        ("accessible_circuit", "ac_peak", "b", "dry"),
+        ("accessible_circuit", "ac_peak", "as", "dry"),
+        ("accessible_circuit", "ac_peak", "as", "wet_and_saltwater_wet"),
+    ),
+    # Figure 7 identifies the variant as AC without specifying RMS or peak. Therefore the
+    # semantic contract uses ac_unspecified and consumers must not infer a more specific
+    # basis.
+    "7": (
+        ("conductive_accessible_part", "dc", None, None),
+        ("conductive_accessible_part", "ac_unspecified", None, None),
+    ),
+}
+
+
+def test_each_figure_declares_its_exact_slot_inventory() -> None:
+    declared = {
+        spec.figure: tuple(
+            (
+                selector.subject,
+                selector.voltage_basis,
+                selector.dvc_context,
+                selector.environment_context,
+            )
+            for selector in spec.variant_slots
+        )
+        for spec in CURVES
+    }
+    assert declared == _EXPECTED_SLOTS
+
+
+def test_every_declared_basis_belongs_to_the_model_vocabulary() -> None:
+    """A recipe cannot invent a basis token the contract does not define."""
+    permitted = set(get_args(FaultTimeVoltageSelector.model_fields["voltage_basis"].annotation))
+    declared = {selector.voltage_basis for spec in CURVES for selector in spec.variant_slots}
+    assert declared <= permitted
 
 
 def test_recipe_exposes_curves_tuple() -> None:

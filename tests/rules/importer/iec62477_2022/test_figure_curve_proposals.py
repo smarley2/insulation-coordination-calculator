@@ -198,6 +198,33 @@ def test_none_dimensions_do_not_wildcard() -> None:
     assert selection.variant is None
 
 
+@pytest.mark.parametrize("basis", ["ac_rms", "ac_peak"])
+def test_figure_7_refuses_a_more_specific_ac_basis(basis: str) -> None:
+    """Selection is exact, so the refusal needs no evaluator machinery.
+
+    Figure 7 identifies the variant as AC without specifying RMS or peak, so only its own
+    ac_unspecified selector matches. This guards selection, not comparison: it does not
+    prove a consumer cannot select ac_unspecified and then compare the returned number
+    against an RMS or peak quantity. #36 and #37 add that consumer-level guard when they
+    add engineering comparisons.
+    """
+    rule, _ = project_fault_time_voltage(
+        _figures(),
+        _variants(0, "a" * 64),
+        _variants(1, "b" * 64),
+        _variants(2, "c" * 64),
+        IDENTITY,
+    )
+    probe = FaultTimeVoltageSelector(
+        subject="conductive_accessible_part",
+        voltage_basis=basis,
+        dvc_context=None,
+        environment_context=None,
+    )
+
+    assert select_curve_variant(rule, probe).variant is None
+
+
 def test_exact_selector_evaluates_matching_variant() -> None:
     rule, _ = project_fault_time_voltage(
         _figures(),
