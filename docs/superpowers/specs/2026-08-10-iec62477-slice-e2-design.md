@@ -26,13 +26,13 @@ Measured from the maintained printing; bounding boxes are measured at implementa
 
 | Content | Clause | PDF page | Shape |
 | --- | --- | --- | --- |
-| Test cross-reference matrix | 5.2.2 | 113, 114 | 36 and 22 rows x 6 columns |
-| Working-voltage determination | referred from 4.4.7.1.2 | 142 | paragraph |
+| Test cross-reference matrix | 5.2.2 | 112, 113, 114 | 9, 36 and 22 rows x 6 columns |
+| Working-voltage determination | 5.2.3.14 | 142 | bullets |
 | Internal SPD monitoring test | 5.2.3.15 | 142 | paragraph |
-| Preconditioning of material | 5.2.3.16 | 143 | paragraph |
+| Preconditioning of material | 5.2.3.16 | 143 | numbered steps |
 | Preconditioning, general | 5.2.3.1 | 123 | paragraph |
 | Accessible insulating surface, foil | 5.2.3.4.4 | 130 | paragraph, no figures |
-| Assembled-equipment routine exemption | 5.2.3.1, 5.2.3.4 | 123, 125 | paragraph |
+| Assembled-equipment routine exemption | 5.2.3.4.4 | 130 | bullets |
 
 ## Test classification comes from the matrix, not from a table title
 
@@ -151,6 +151,11 @@ something, and treat that as the test doing its job.
 Only E2's pull request may use `Closes #34`, and only if the end-to-end passes. If it does
 not, the pull request states plainly what was demonstrated and what was not, and #34 stays
 open.
+
+As shipped, E2's pull request uses `Refs #34`. The end-to-end passes, but three contract
+items found during review are still open — #50, #52 and #53 — and each can change what an
+approved package contains. The end-to-end is rerun against their fixes before anything
+claims to close #34.
 
 ## Out of scope
 
