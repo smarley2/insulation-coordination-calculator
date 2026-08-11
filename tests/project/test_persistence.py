@@ -150,6 +150,28 @@ def test_migration_v2_to_v3_adds_direct_domain_and_classifies_every_net(
         assert untouched == original_net
 
 
+def test_migration_v2_to_v3_changes_nothing_outside_the_topology_fields_it_introduces(
+    topology_migration_project: Project,
+) -> None:
+    """Every top-level key the v2 document already had survives byte-identically.
+
+    The per-net and per-pair checks above cover the two collections the migration walks;
+    this covers the rest of the document, so a future migration step cannot quietly
+    rewrite the metadata, defaults or required-rules reference of an existing project.
+    """
+    raw = _as_schema_v2_document(topology_migration_project)
+    original = deepcopy(raw)
+
+    migrated = migrate_project_document(raw)
+
+    introduced = {"schema_version", "galvanic_domains", "galvanic_barriers", "net_classes"}
+    assert set(migrated) - set(original) == introduced - {"schema_version", "net_classes"}
+    for key, value in original.items():
+        if key in introduced:
+            continue
+        assert migrated[key] == value, f"migration changed the pre-existing key {key!r}"
+
+
 def test_migrated_classification_state_is_needs_review_not_confirmed(
     topology_migration_project: Project,
 ) -> None:

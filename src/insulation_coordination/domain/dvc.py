@@ -4,7 +4,19 @@ Table 2 and Table 3 of IEC 62477-1:2022 key their rows by decisive voltage class
 module is the one place that maps :class:`DecisiveVoltageClass` to the anonymous
 ``dvc-N`` row token the importer's projection uses (see
 ``rules/importer/recipes/iec62477_1_2022/projection.py``); nothing else in the
-application is allowed to know that mapping. Every other fact is read from the active
+application is allowed to know that mapping, and a test enforces that
+(``tests/domain/test_dvc.py``).
+
+**That mapping is provisional and blocked on issue #53.** Selecting a row by its physical
+position is not the contract this application should consume: #53 projects Table 2 and
+Table 3 to semantic selectors - a DVC designation, an environment where the source splits
+one class into more than one row, a voltage quantity - and leaves the physical
+coordinates as extraction provenance. Until that package contract exists there is nothing
+semantic to select against, and inventing a competing vocabulary here would be a second
+adapter layer to unpick later. So the positional mapping stays, isolated to this module,
+and both mappings below are replaced - not renamed - when #53 lands.
+
+Every other fact is read from the active
 :class:`~insulation_coordination.domain.rules.RulePackage` through
 :func:`~insulation_coordination.rules.evaluator.evaluate_decision` - never from a
 constant - and a missing rule, an unapproved package, or a package from the wrong
@@ -71,10 +83,15 @@ PROTECTION_MATRIX_ROW_TOKENS: Mapping[DecisiveVoltageClass, Identifier] = {
 }
 
 # PROTECTION_MATRIX_ROW_TOKENS is unconfirmed (see the comment above it), yet the guide
-# cites a source for whatever it renders - inviting trust the mapping hasn't earned. Until
-# a maintainer confirms Table 3's row order, protection_relationships withholds its result
-# instead of rendering off an unverified mapping. Flip this to True once that confirmation
-# lands; the mapping and the evaluation code beneath it are already in place.
+# cites a source for whatever it renders - inviting trust the mapping hasn't earned. So
+# protection_relationships withholds its result instead of rendering off an unverified
+# mapping.
+#
+# Do not fix this by flipping the flag: that would keep a guessed positional mapping and
+# only silence the warning about it. The fix is issue #53's semantic Table 3 selector,
+# which removes the question - a class is selected by its designation, so no row order has
+# to be guessed at all. The evaluation path below is otherwise complete and works
+# unchanged once the selector replaces the row token.
 PROTECTION_MATRIX_ROW_ORDER_CONFIRMED = False
 
 _PROTECTION_MATRIX_UNCONFIRMED_REASON = (
@@ -94,6 +111,13 @@ _NOT_EVALUATED_REASON = "No decisive voltage class has been assigned; there is n
 
 DvcQuantityStatus = Literal["value", "reference", "not_applicable", "unavailable"]
 
+#: Which kind of rule a referring cell hands the question on to. Typed rather than left
+#: for a reader to infer from the rule id, because the two are unresolved for different
+#: reasons and a consumer must be able to say which without parsing a string:
+#: ``supply_impulse`` needs project context this application resolves in issue #36, while
+#: ``fault_time_curve`` is a time-voltage behaviour that never reduces to one limit.
+DvcReferenceKind = Literal["supply_impulse", "fault_time_curve"]
+
 
 class DvcVoltageQuantity(FrozenModel):
     """One Table 2 cell for a decisive voltage class: a number, a reference, or N/A."""
@@ -103,6 +127,7 @@ class DvcVoltageQuantity(FrozenModel):
     value: DecimalValue | None = None
     unit: Identifier | None = None
     reference_rule_id: Identifier | None = None
+    reference_kind: DvcReferenceKind | None = None
     source: SourceReference | None = None
 
 
@@ -254,17 +279,22 @@ class DvcGuidanceService:
                 label=label,
                 status="reference",
                 reference_rule_id=fault_time.values[0].reference,
+                reference_kind="fault_time_curve",
                 source=fault_time.source,
             )
         impulse = _evaluate_safe(rules[f"{ids.DVC_VOLTAGE_LIMITS}.impulse_reference"], inputs)
         if impulse is not None and impulse.status == "matched":
-            # The rule carries an AC and a DC reference, and the guide has no supply to
-            # choose between them: it names the base rule, which is the one a reader can
-            # look up, and leaves the AC/DC split to whoever has a system voltage in hand.
+            # A typed deferral, not a missing feature. The cell's requirement is whatever
+            # the supply rule resolves from a system voltage and an overvoltage category,
+            # and this application resolves those in issue #36; the rule also carries an AC
+            # and a DC reference, so even choosing between them needs a supply. Naming the
+            # base rule and the reason is the whole honest answer available here - guessing
+            # a system voltage to print a number would be #36's work done wrongly.
             return DvcVoltageQuantity(
                 label=label,
                 status="reference",
                 reference_rule_id=ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC,
+                reference_kind="supply_impulse",
                 source=impulse.source,
             )
         not_applicable = _evaluate_safe(rules[f"{ids.DVC_VOLTAGE_LIMITS}.not_applicable"], inputs)
@@ -319,6 +349,7 @@ __all__ = [
     "DvcLimitSummary",
     "DvcProtectionSummary",
     "DvcQuantityStatus",
+    "DvcReferenceKind",
     "DvcVoltageQuantity",
     "ProtectionGuidance",
 ]

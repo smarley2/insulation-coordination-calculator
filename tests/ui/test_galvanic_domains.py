@@ -122,6 +122,19 @@ def test_rename_domain_preserves_the_uuid() -> None:
     assert updated.galvanic_domains[0].name == "New name"
 
 
+def test_rename_domain_leaves_pairs_and_nets_untouched() -> None:
+    """A domain's name is metadata: no pair, and no net's own fields, may move with it."""
+    domain = _domain(is_direct_source_domain=True)
+    net_a = _net(galvanic_domain_id=domain.id)
+    net_b = _net(galvanic_domain_id=domain.id)
+    project = _project(net_classes=(net_a, net_b), galvanic_domains=(domain,))
+
+    updated = rename_domain(project, domain.id, "New name")
+
+    assert updated.pairs == project.pairs
+    assert updated.net_classes == project.net_classes
+
+
 def test_rename_domain_rejects_a_duplicate_name() -> None:
     domains = (
         _domain(id=UUID(int=1), name="A", is_direct_source_domain=True),

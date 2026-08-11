@@ -7,8 +7,11 @@ package's numbers are all invented.
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
+from pathlib import Path
 
+import insulation_coordination
 from insulation_coordination.domain.dvc import (
     PROTECTION_MATRIX_ROW_ORDER_CONFIRMED,
     PROTECTION_MATRIX_ROW_TOKENS,
@@ -31,6 +34,32 @@ def _label(column: int) -> str:
     constant - the source's own headings may not be committed, so ours are free to change.
     """
     return dict(VOLTAGE_QUANTITY_COLUMN_TOKENS)[f"voltage-quantity-{column}"]
+
+
+# --- isolation guard: the positional contract lives in exactly one module ------------
+
+
+def test_no_application_module_but_domain_dvc_knows_a_positional_table_token() -> None:
+    """``dvc-N`` / ``voltage-quantity-N`` are provisional, and #53 replaces them.
+
+    Issue #53 gives Table 2 and Table 3 a semantic selector contract, after which no
+    consumer may know that a physical row means a particular class. Until it lands this
+    application still selects positionally, so the one thing worth guarding now is that
+    the knowledge stays in a single module: swapping it for the semantic selector must be
+    a one-file change, not a hunt. The importer and its recipes are exempt - there the
+    coordinates are extraction provenance, which is what they are allowed to be.
+    """
+    package_root = Path(insulation_coordination.__file__).parent
+    pattern = re.compile(r"dvc-\{?\d|voltage-quantity-\{?\d")
+
+    offenders = sorted(
+        path.relative_to(package_root).as_posix()
+        for path in package_root.rglob("*.py")
+        if not path.relative_to(package_root).as_posix().startswith("rules/importer/")
+        and pattern.search(path.read_text(encoding="utf-8"))
+    )
+
+    assert offenders == ["domain/dvc.py"]
 
 
 # --- structural guard: the row/column token mapping never silently drifts ----------
