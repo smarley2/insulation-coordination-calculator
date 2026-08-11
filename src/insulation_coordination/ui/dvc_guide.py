@@ -64,8 +64,9 @@ STRESS_BASIS_EXPLANATION = (
 #: The wet and salt-water-wet row exists in the source but has no enum member, so this
 #: sentence is the only place that says so - see domain.dvc.VOLTAGE_LIMITS_ROW_TOKENS.
 DVC_AS_CONDITION_NOTE = (
-    "These are the dry-condition limits for DVC A-s. Wet and salt-water-wet conditions "
-    "are stricter and are not shown here."
+    "These are the dry-condition limits for DVC A-s. The source distinguishes a second "
+    "set of conditions - wet and salt-water-wet - for this class; this application has "
+    "no way to select that condition and does not show it."
 )
 
 

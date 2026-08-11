@@ -56,6 +56,10 @@ class TopologyGuidanceId(StrEnum):
     EXPOSURE_LONG_OUTDOOR_LINE = "exposure_long_outdoor_line"
 
     DVC_NOT_EVALUATED = "dvc_not_evaluated"
+    # The "_topology" suffix is load-bearing, not decorative: DecisiveVoltageClass's own
+    # raw values are "dvc_as" / "dvc_b" / "dvc_c" (domain.enums), and register_guidance
+    # rejects a repeated string key across every registered id enum. An unsuffixed
+    # member here would collide the moment another registry chose the same bare value.
     DVC_AS = "dvc_as_topology"
     DVC_B = "dvc_b_topology"
     DVC_C = "dvc_c_topology"

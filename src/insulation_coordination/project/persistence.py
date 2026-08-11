@@ -70,8 +70,14 @@ def migrate_project_document(raw: dict[str, object]) -> dict[str, object]:
         if "galvanic_barriers" in document:
             raise ProjectVersionError("Project schema 2 must not contain galvanic_barriers")
         nets_field = document.get("net_classes", [])
-        nets: list[dict[str, object]] = nets_field if isinstance(nets_field, list) else []
-        if any(NET_TOPOLOGY_KEYS & net.keys() for net in nets):
+        # A hand-edited or corrupt document may carry a ``net_classes`` that is not a
+        # list at all, or a list with an entry that is not an object. Neither shape can
+        # ever be a valid schema-2 document, so the migration leaves it untouched rather
+        # than calling ``.keys()`` on it - that lets ``Project.model_validate`` reject it
+        # below with a proper ``ProjectLoadError`` instead of an ``AttributeError``.
+        nets: list[object] = nets_field if isinstance(nets_field, list) else []
+        dict_nets = [net for net in nets if isinstance(net, dict)]
+        if any(NET_TOPOLOGY_KEYS & net.keys() for net in dict_nets):
             raise ProjectVersionError("Project schema 2 net classes must not contain topology keys")
         domain_id = str(uuid4())
         document["schema_version"] = 3
@@ -85,7 +91,7 @@ def migrate_project_document(raw: dict[str, object]) -> dict[str, object]:
             }
         ]
         document["galvanic_barriers"] = []
-        for net in nets:
+        for net in dict_nets:
             net["net_type"] = NetClassType.CIRCUIT.value
             net["source_relationship"] = CircuitSourceRelationship.INTERNALLY_GENERATED.value
             net["connection_exposure"] = ConnectionExposure.INTERNAL_ONLY.value

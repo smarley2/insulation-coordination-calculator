@@ -96,6 +96,19 @@ def circuit_nets(project: Project) -> tuple[NetClass, ...]:
     return tuple(net for net in project.net_classes if net.net_type is NetClassType.CIRCUIT)
 
 
+def domain_by_id(project: Project, domain_id: UUID) -> GalvanicDomain:
+    """The domain with ``domain_id``, or a raised ``ValueError`` if none exists.
+
+    Shared by the domain and barrier editors, which both need to resolve a domain id
+    they were handed - an unknown one is always the caller's bug, never a state worth
+    degrading gracefully for.
+    """
+    domain = next((d for d in project.galvanic_domains if d.id == domain_id), None)
+    if domain is None:
+        raise ValueError("Unknown galvanic domain")
+    return domain
+
+
 def domain_for_net(project: Project, net_id: UUID) -> GalvanicDomain | None:
     """The domain a net belongs to, or ``None`` while it belongs to none.
 

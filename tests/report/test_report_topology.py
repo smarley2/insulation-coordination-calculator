@@ -197,24 +197,53 @@ def test_human_view_topology_status_is_not_fully_resolved_while_a_domain_awaits_
     assert set(view.topology_status.domains_needing_review) == {"Primary side", "Secondary side"}
 
 
+def _topology_section(tex: str) -> str:
+    """The Project Topology section's own text, bounded before the next ``\\section``."""
+    return tex.split(r"\section{Project Topology}", 1)[1].split(r"\section{", 1)[0]
+
+
 def test_latex_project_topology_section_discloses_inventory_and_evidence(report_inputs) -> None:
     project, results, groups, rules = report_inputs
     project = _with_topology(project)
     model = build_report_model(project, results, groups, rules)
 
     tex = render_latex(model)
+    topology_tex = _topology_section(tex)
 
     assert "Project Topology" in tex
-    assert "Primary side" in tex
-    assert "Secondary side" in tex
-    assert "EVID-0042" in tex
-    assert r"EVID-0042 \& report" in tex  # the evidence reference's "&" is escaped
-    assert "EVID-0042 & report" not in tex  # never passed through raw
+    assert "Primary side" in topology_tex
+    assert "Secondary side" in topology_tex
+    assert "EVID-0042" in topology_tex
+    assert r"EVID-0042 \& report" in topology_tex  # the evidence reference's "&" is escaped
+    assert "EVID-0042 & report" not in topology_tex  # never passed through raw
     # A barrier states a recorded fact, never a protection/attenuation claim (decision 5);
-    # the disclaimer itself is the only place those words may appear.
-    assert "protection or attenuation claim" in tex
-    assert tex.lower().count("protect") == 1
-    assert tex.lower().count("attenuat") == 1
+    # the disclaimer itself is the only place those words may appear - scoped to this
+    # section so an unrelated advisory or net name elsewhere can't inflate the count.
+    assert "protection or attenuation claim" in topology_tex
+    assert topology_tex.lower().count("protect") == 1
+    assert topology_tex.lower().count("attenuat") == 1
+
+
+def test_latex_topology_disclaimer_count_ignores_mentions_outside_the_section(
+    report_inputs,
+) -> None:
+    """A net description elsewhere in the report may legitimately reuse these words;
+    the topology section's own disclaimer count must not be thrown off by them."""
+    project, results, groups, rules = report_inputs
+    project = _with_topology(project)
+    noisy_net = project.net_classes[0].model_copy(
+        update={"description": "Bonded for protective earth, with no attenuation stage."}
+    )
+    project = project.model_copy(update={"net_classes": (noisy_net, project.net_classes[1])})
+    model = build_report_model(project, results, groups, rules)
+
+    tex = render_latex(model)
+    topology_tex = _topology_section(tex)
+
+    assert tex.lower().count("protect") > 1
+    assert tex.lower().count("attenuat") > 1
+    assert topology_tex.lower().count("protect") == 1
+    assert topology_tex.lower().count("attenuat") == 1
 
 
 def test_latex_states_no_domains_or_barriers_for_legacy_project(report_inputs) -> None:
@@ -223,7 +252,7 @@ def test_latex_states_no_domains_or_barriers_for_legacy_project(report_inputs) -
 
     tex = render_latex(model)
 
-    topology_tex = tex.split(r"\section{Project Topology}", 1)[1]
+    topology_tex = _topology_section(tex)
     assert "No galvanic domains are recorded" in topology_tex
     assert "No galvanic barriers are recorded" in topology_tex
     assert "HV\\_1" in topology_tex

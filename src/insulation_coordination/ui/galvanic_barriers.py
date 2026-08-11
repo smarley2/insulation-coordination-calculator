@@ -44,7 +44,11 @@ from PySide6.QtWidgets import (
 
 from insulation_coordination.domain.enums import BarrierVerificationStatus, VerificationMethod
 from insulation_coordination.domain.project import Project
-from insulation_coordination.domain.topology import GalvanicBarrier, GalvanicDomain, barrier_between
+from insulation_coordination.domain.topology import (
+    GalvanicBarrier,
+    barrier_between,
+    domain_by_id,
+)
 from insulation_coordination.ui.help_indicator import HelpIndicator
 from insulation_coordination.ui.topology_guidance import (
     TopologyGuidanceId,
@@ -52,13 +56,6 @@ from insulation_coordination.ui.topology_guidance import (
 )
 
 # --- pure project transformations ----------------------------------------------------
-
-
-def _domain_by_id(project: Project, domain_id: UUID) -> GalvanicDomain:
-    domain = next((d for d in project.galvanic_domains if d.id == domain_id), None)
-    if domain is None:
-        raise ValueError("Unknown galvanic domain")
-    return domain
 
 
 def _barrier_by_id(project: Project, barrier_id: UUID) -> GalvanicBarrier:
@@ -94,8 +91,8 @@ def add_barrier(
     A-B and B-A are the same barrier: adding a second one for a pair that already has
     one recorded is refused rather than silently replacing or duplicating it.
     """
-    _domain_by_id(project, domain_a_id)
-    _domain_by_id(project, domain_b_id)
+    domain_by_id(project, domain_a_id)
+    domain_by_id(project, domain_b_id)
     if barrier_between(project, domain_a_id, domain_b_id) is not None:
         raise ValueError("A barrier already exists between these two domains")
     barrier = GalvanicBarrier(
@@ -154,6 +151,36 @@ def unmark_verified(
     )
 
 
+def delete_barrier(project: Project, barrier_id: UUID) -> Project:
+    """Remove one barrier record, leaving every domain, net, and pair untouched.
+
+    Deleting is not a remap: unlike a domain delete, a barrier has nothing on either
+    side to reassign the record to. This exists for the barrier recorded against the
+    wrong pair - the fix there is to remove it and add the correct one, not to have no
+    way back short of deleting an entire domain.
+    """
+    _barrier_by_id(project, barrier_id)
+    barriers = tuple(b for b in project.galvanic_barriers if b.id != barrier_id)
+    return project.model_copy(update={"galvanic_barriers": barriers})
+
+
+def _describe_barrier_deletion(barrier: GalvanicBarrier, project: Project) -> str:
+    """Name the two domains and call out a lost verified-isolation record explicitly.
+
+    Mirrors ``ui.galvanic_domains._describe_preview``, which singles out a dropped
+    verified barrier the same way: that is the one status this application treats as
+    evidence, so discarding it is worth stating outright rather than leaving the user
+    to notice it is gone afterwards.
+    """
+    names_by_id = {domain.id: domain.name for domain in project.galvanic_domains}
+    domain_a = names_by_id.get(barrier.domain_a_id, "?")
+    domain_b = names_by_id.get(barrier.domain_b_id, "?")
+    lines = [f"Delete the barrier between '{domain_a}' and '{domain_b}'?"]
+    if barrier.status is BarrierVerificationStatus.VERIFIED_GALVANIC_ISOLATION:
+        lines.append("Its verified galvanic isolation record will be lost, not moved.")
+    return "\n".join(lines)
+
+
 # --- Qt widget -------------------------------------------------------------------------
 
 _COLUMN_LABELS = (
@@ -199,6 +226,10 @@ class GalvanicBarriersPanel(QWidget):
         self._add_button = QPushButton("Add…")
         self._add_button.clicked.connect(self._on_add_clicked)
         controls.addWidget(self._add_button)
+
+        self._delete_button = QPushButton("Delete…")
+        self._delete_button.clicked.connect(self._on_delete_clicked)
+        controls.addWidget(self._delete_button)
 
         self._description_edit = QLineEdit()
         self._description_edit.setPlaceholderText("Selected barrier description")
@@ -342,6 +373,9 @@ class GalvanicBarriersPanel(QWidget):
     def unmark_verified(self, barrier_id: UUID, new_status: BarrierVerificationStatus) -> None:
         self._apply(unmark_verified(self.project, barrier_id, new_status))
 
+    def delete_barrier(self, barrier_id: UUID) -> None:
+        self._apply(delete_barrier(self.project, barrier_id))
+
     def _apply(self, project: Project) -> None:
         self._project = project
         self._refresh_table()
@@ -371,6 +405,22 @@ class GalvanicBarriersPanel(QWidget):
             self.add_barrier(domain_a.id, domain_b.id)
         except ValueError as error:
             QMessageBox.warning(self, "Add Barrier", str(error))
+
+    def _on_delete_clicked(self) -> None:
+        if self._project is None:
+            return
+        barrier = self._barrier_at(self._table.currentRow())
+        if barrier is None:
+            return
+        reply = QMessageBox.question(
+            self, "Delete Barrier", _describe_barrier_deletion(barrier, self._project)
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.delete_barrier(barrier.id)
+        except ValueError as error:
+            QMessageBox.warning(self, "Delete Barrier", str(error))
 
     def _on_description_changed(self) -> None:
         barrier = self._barrier_at(self._table.currentRow())

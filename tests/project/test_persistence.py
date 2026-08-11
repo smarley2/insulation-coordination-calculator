@@ -169,10 +169,9 @@ def test_migrated_classification_state_is_needs_review_not_confirmed(
     [
         (lambda raw: raw.__setitem__("galvanic_domains", []), "galvanic_domains"),
         (lambda raw: raw.__setitem__("galvanic_barriers", []), "galvanic_barriers"),
-        (lambda raw: raw["net_classes"][0].__setitem__("net_type", "circuit"), "topology"),
     ],
 )
-def test_migration_rejects_v2_document_already_carrying_topology_keys(
+def test_migration_rejects_v2_document_already_carrying_reserved_top_level_keys(
     topology_migration_project: Project, mutate: object, match: str
 ) -> None:
     raw = _as_schema_v2_document(topology_migration_project)
@@ -180,6 +179,41 @@ def test_migration_rejects_v2_document_already_carrying_topology_keys(
 
     with pytest.raises(ProjectVersionError, match=match):
         migrate_project_document(raw)
+
+
+@pytest.mark.parametrize("key", sorted(NET_TOPOLOGY_KEYS))
+def test_migration_rejects_v2_document_whose_net_already_carries_any_topology_key(
+    topology_migration_project: Project, key: str
+) -> None:
+    """Parametrized over the whole frozenset, so a key added later is covered for free."""
+    raw = _as_schema_v2_document(topology_migration_project)
+    raw["net_classes"][0][key] = "already-set"  # type: ignore[index]
+
+    with pytest.raises(ProjectVersionError, match="topology"):
+        migrate_project_document(raw)
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"schema_version": 2, "net_classes": ["oops"]},
+        {"schema_version": 1, "net_classes": [None]},
+    ],
+)
+def test_load_rejects_schema_document_with_a_non_dict_net_class_entry(
+    tmp_path: Path, document: dict[str, object]
+) -> None:
+    """A hand-edited or corrupt document must fail as ``ProjectLoadError``, never crash.
+
+    Before the fix, the migration called ``.keys()`` on each ``net_classes`` entry
+    unconditionally, so a string or ``null`` entry raised a bare ``AttributeError`` out
+    of ``load_project`` instead of the load error every other bad document produces.
+    """
+    path = tmp_path / "corrupt.icproj"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ProjectLoadError):
+        load_project(path)
 
 
 def test_migrated_project_round_trips_without_creating_a_second_domain(

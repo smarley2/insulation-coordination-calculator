@@ -32,18 +32,11 @@ from PySide6.QtWidgets import (
 
 from insulation_coordination.domain.enums import BarrierVerificationStatus
 from insulation_coordination.domain.project import NetClass, Project
-from insulation_coordination.domain.topology import GalvanicBarrier, GalvanicDomain
+from insulation_coordination.domain.topology import GalvanicBarrier, GalvanicDomain, domain_by_id
 
 _DOMAIN_ID_ROLE = Qt.ItemDataRole.UserRole
 
 # --- pure project transformations ----------------------------------------------------
-
-
-def _domain_by_id(project: Project, domain_id: UUID) -> GalvanicDomain:
-    domain = next((d for d in project.galvanic_domains if d.id == domain_id), None)
-    if domain is None:
-        raise ValueError("Unknown galvanic domain")
-    return domain
 
 
 def _normalised(name: str) -> str:
@@ -83,7 +76,7 @@ def rename_domain(project: Project, domain_id: UUID, new_name: str) -> Project:
     new_name = new_name.strip()
     if not new_name:
         raise ValueError("Domain name must not be empty")
-    _domain_by_id(project, domain_id)
+    domain_by_id(project, domain_id)
     _requires_unique_name(project, new_name, except_id=domain_id)
     domains = tuple(
         domain.model_copy(update={"name": new_name}) if domain.id == domain_id else domain
@@ -93,7 +86,7 @@ def rename_domain(project: Project, domain_id: UUID, new_name: str) -> Project:
 
 
 def set_domain_description(project: Project, domain_id: UUID, description: str) -> Project:
-    _domain_by_id(project, domain_id)
+    domain_by_id(project, domain_id)
     domains = tuple(
         domain.model_copy(update={"description": description.strip()})
         if domain.id == domain_id
@@ -109,7 +102,7 @@ def set_direct_domain(project: Project, domain_id: UUID) -> Project:
     Both edits land in the one ``model_copy`` call, so the project is never left - even
     transiently - holding two direct source domains or none.
     """
-    _domain_by_id(project, domain_id)
+    domain_by_id(project, domain_id)
     domains = tuple(
         domain.model_copy(update={"is_direct_source_domain": domain.id == domain_id})
         for domain in project.galvanic_domains
@@ -157,13 +150,13 @@ def _resolve_replacement(
         return None
     if replacement_id == domain_id:
         raise ValueError("Replacement domain must differ from the domain being deleted")
-    return _domain_by_id(project, replacement_id)
+    return domain_by_id(project, replacement_id)
 
 
 def preview_domain_deletion(
     project: Project, domain_id: UUID, replacement_id: UUID | None
 ) -> DomainDeletionPreview:
-    domain = _domain_by_id(project, domain_id)
+    domain = domain_by_id(project, domain_id)
     replacement = _resolve_replacement(project, domain_id, replacement_id)
     barriers = referencing_barriers(project, domain_id)
 

@@ -22,7 +22,9 @@ from insulation_coordination.domain.project import (
 from insulation_coordination.domain.topology import GalvanicBarrier, GalvanicDomain
 from insulation_coordination.ui.galvanic_barriers import (
     GalvanicBarriersPanel,
+    _describe_barrier_deletion,
     add_barrier,
+    delete_barrier,
     mark_verified,
     set_barrier_description,
     unmark_verified,
@@ -249,6 +251,82 @@ def test_unmark_verified_refuses_verified_as_the_target_status() -> None:
         unmark_verified(project, barrier.id, BarrierVerificationStatus.VERIFIED_GALVANIC_ISOLATION)
 
 
+# --- delete_barrier --------------------------------------------------------------------
+
+
+def test_delete_barrier_removes_only_the_named_barrier() -> None:
+    a, b = _domain(id=UUID(int=1), is_direct_source_domain=True), _domain(id=UUID(int=2), name="B")
+    c = _domain(id=UUID(int=3), name="C")
+    kept = _barrier(domain_a_id=a.id, domain_b_id=c.id)
+    target = _barrier(domain_a_id=a.id, domain_b_id=b.id)
+    project = _project(galvanic_domains=(a, b, c), galvanic_barriers=(kept, target))
+
+    updated = delete_barrier(project, target.id)
+
+    assert updated.galvanic_barriers == (kept,)
+
+
+def test_delete_barrier_leaves_pairs_and_nets_untouched() -> None:
+    net_a, net_b = _net(name="A"), _net(name="B")
+    from insulation_coordination.project.pairs import reconcile_pairs
+
+    pairs = reconcile_pairs((net_a, net_b), ())
+    domain = _domain(is_direct_source_domain=True)
+    barrier = _barrier(domain_a_id=domain.id, domain_b_id=uuid4())
+    other = _domain(id=barrier.domain_b_id, name="B")
+    project = _project(
+        net_classes=(net_a, net_b),
+        pairs=pairs,
+        galvanic_domains=(domain, other),
+        galvanic_barriers=(barrier,),
+    )
+
+    updated = delete_barrier(project, barrier.id)
+
+    assert updated.pairs == pairs
+    assert updated.net_classes == (net_a, net_b)
+    assert updated.galvanic_domains == (domain, other)
+
+
+def test_delete_barrier_rejects_an_unknown_id() -> None:
+    project = _project()
+    with pytest.raises(ValueError, match="Unknown"):
+        delete_barrier(project, uuid4())
+
+
+# --- _describe_barrier_deletion ----------------------------------------------------------
+
+
+def test_describe_barrier_deletion_names_both_domains() -> None:
+    a = _domain(id=UUID(int=1), name="Primary", is_direct_source_domain=True)
+    b = _domain(id=UUID(int=2), name="Secondary")
+    barrier = _barrier(domain_a_id=a.id, domain_b_id=b.id)
+    project = _project(galvanic_domains=(a, b), galvanic_barriers=(barrier,))
+
+    description = _describe_barrier_deletion(barrier, project)
+
+    assert "Primary" in description
+    assert "Secondary" in description
+    assert "verified" not in description.lower()
+
+
+def test_describe_barrier_deletion_flags_a_verified_isolation_record() -> None:
+    a = _domain(id=UUID(int=1), name="Primary", is_direct_source_domain=True)
+    b = _domain(id=UUID(int=2), name="Secondary")
+    barrier = _barrier(
+        domain_a_id=a.id,
+        domain_b_id=b.id,
+        status=BarrierVerificationStatus.VERIFIED_GALVANIC_ISOLATION,
+        verification_method=VerificationMethod.TEST,
+        evidence_reference="TR-001",
+    )
+    project = _project(galvanic_domains=(a, b), galvanic_barriers=(barrier,))
+
+    description = _describe_barrier_deletion(barrier, project)
+
+    assert "verified galvanic isolation" in description.lower()
+
+
 # --- stable ids across every edit --------------------------------------------------------
 
 
@@ -387,6 +465,46 @@ def test_unchecking_verified_applies_the_chosen_state(
 
     assert panel.project.galvanic_barriers[0].status is BarrierVerificationStatus.NO_GALVANIC_ISOLATION
     assert panel.project.galvanic_barriers[0].evidence_reference is None
+
+
+def test_panel_delete_confirmed_removes_the_barrier(
+    panel: GalvanicBarriersPanel, qtbot, monkeypatch
+) -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
+    project, a, b = _two_domain_project()
+    barrier = _barrier(domain_a_id=a.id, domain_b_id=b.id)
+    project = project.model_copy(update={"galvanic_barriers": (barrier,)})
+    panel.set_project(project)
+    panel._table.setCurrentCell(0, 0)
+
+    with qtbot.waitSignal(panel.project_changed, timeout=1000) as blocker:
+        panel._on_delete_clicked()
+    (updated,) = blocker.args
+    assert updated.galvanic_barriers == ()
+    assert panel._table.rowCount() == 0
+
+
+def test_panel_delete_cancelled_leaves_the_project_untouched(
+    panel: GalvanicBarriersPanel, qtbot, monkeypatch
+) -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.No)
+    project, a, b = _two_domain_project()
+    barrier = _barrier(domain_a_id=a.id, domain_b_id=b.id)
+    project = project.model_copy(update={"galvanic_barriers": (barrier,)})
+    panel.set_project(project)
+    panel._table.setCurrentCell(0, 0)
+
+    received: list[object] = []
+    panel.project_changed.connect(received.append)
+    panel._on_delete_clicked()
+
+    assert received == []
+    assert panel.project.galvanic_barriers == (barrier,)
+    assert panel._table.rowCount() == 1
 
 
 def test_unchecking_verified_cancel_leaves_the_project_untouched(

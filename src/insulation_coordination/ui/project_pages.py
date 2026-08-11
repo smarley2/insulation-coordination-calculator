@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -57,6 +57,10 @@ from insulation_coordination.ui.voltage_guidance import VoltageGuidanceId
 
 #: Upper bound on one bulk net-class add, so a mistyped amount cannot flood the pair set.
 MAX_BULK_NET_CLASSES = 64
+
+#: The Qt item-data role the net list stores each row's net id under - named the same
+#: way ``ui.galvanic_domains._DOMAIN_ID_ROLE`` names it, rather than as a raw ``0x0100``.
+_NET_ID_ROLE = Qt.ItemDataRole.UserRole
 
 
 class ProjectPage(QWidget):
@@ -411,13 +415,13 @@ class ProjectPage(QWidget):
         and blank the panel before the next dropdown could be touched.
         """
         selected = self._net_list.currentItem()
-        selected_id = None if selected is None else selected.data(0x0100)
+        selected_id = None if selected is None else selected.data(_NET_ID_ROLE)
         self._net_list.clear()
         if self._project is None:
             return
         for net_class in self._project.net_classes:
             item = QListWidgetItem(net_class.name)
-            item.setData(0x0100, str(net_class.id))
+            item.setData(_NET_ID_ROLE, str(net_class.id))
             self._net_list.addItem(item)
         if selected_id is not None:
             restored = next(
