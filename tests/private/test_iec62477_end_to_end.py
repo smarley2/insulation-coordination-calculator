@@ -1,7 +1,7 @@
 """Issue #34's Definition of Done, demonstrated on the licensed documents.
 
 Extract all three PDFs, resolve every review item, review every curve variant, approve,
-export a ``.icrules`` archive, re-import it, query all twenty-five required semantic IDs,
+export a ``.icrules`` archive, re-import it, query all twenty-six required semantic IDs,
 and execute one representative request per consumer issue.
 
 This is the first test to round-trip a package carrying procedures and comparison-only
@@ -106,7 +106,7 @@ def test_every_required_semantic_id_is_queryable_after_a_round_trip(
     package = _round_trip(reviewed_draft, tmp_path)
     available = _rule_ids(package)
 
-    assert len(REQUIRED_SOURCE_ITEMS) == 25
+    assert len(REQUIRED_SOURCE_ITEMS) == 26
     for item in REQUIRED_SOURCE_ITEMS:
         assert any(
             _covers(candidate, item.semantic_id) for candidate in available
