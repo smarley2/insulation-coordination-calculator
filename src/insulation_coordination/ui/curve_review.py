@@ -229,10 +229,9 @@ class CurveReviewDialog(QDialog):
         selector_row = QHBoxLayout()
         selector_row.addWidget(QLabel("Curve variant:"))
         self._variant_selector = QComboBox()
-        for rule in draft.curves:
-            for variant in rule.variants:
-                self._variant_selector.addItem(variant.id, variant.id)
-        if not draft.curves and draft.curve_digitizations:
+        for label, variant_id in self._model.variant_entries:
+            self._variant_selector.addItem(label, variant_id)
+        if not self._model.variant_entries and draft.curve_digitizations:
             self._variant_selector.addItem("Blocked reconstruction — manual recovery", None)
         self._variant_selector.currentIndexChanged.connect(self._load_current_variant)
         selector_row.addWidget(self._variant_selector, 1)
@@ -279,7 +278,11 @@ class CurveReviewDialog(QDialog):
         actions.addWidget(close)
         layout.addLayout(actions)
 
-        has_variants = any(rule.variants for rule in draft.curves)
+        has_current_variant = any(
+            variant.id == self._variant_selector.currentData()
+            for rule in draft.curves
+            for variant in rule.variants
+        )
         for button in (
             self._calibration_button,
             self._trace_button,
@@ -289,8 +292,8 @@ class CurveReviewDialog(QDialog):
             self._reject_button,
         ):
             button.setEnabled(False)
-        self._review_button.setEnabled(has_variants)
-        if has_variants:
+        self._review_button.setEnabled(has_current_variant)
+        if has_current_variant:
             self._load_current_variant(0)
 
     @property
@@ -359,15 +362,17 @@ class CurveReviewDialog(QDialog):
             and any(member.id == variant.id for member in item.proposed_rule.variants)
             and item.calibration is not None
         )
-        if len(figures) != 1 or len(digitizations) != 1:
-            raise ApprovalError("curve overlay lacks unique figure calibration evidence")
-        return figures[0], digitizations[0].calibration
+        if len(figures) != 1:
+            raise ApprovalError("curve overlay lacks a unique source figure")
+        if len(digitizations) > 1:
+            raise ApprovalError("curve overlay has ambiguous calibration evidence")
+        return figures[0], digitizations[0].calibration if digitizations else None
 
     def _load_current_variant(self, _index: int) -> None:
         variant = self._current_variant()
         path = self._verified_path(variant)
         figure, calibration = self._figure_and_calibration(variant)
-        assert calibration is not None and variant.source.page is not None
+        assert variant.source.page is not None
         x0, top, x1, bottom = figure.source_bbox
         bbox = (float(x0), float(top), float(x1), float(bottom))
         with pdfplumber.open(path, password=self._pdf_passwords.get(path, "")) as pdf:
@@ -380,26 +385,27 @@ class CurveReviewDialog(QDialog):
 
         self._scene.clear()
         self._scene.addPixmap(QPixmap.fromImage(image))
-        source_width, source_height = figure.pixel_size or (
-            max(1, image.width()),
-            max(1, image.height()),
-        )
-        scale_x = image.width() / source_width
-        scale_y = image.height() / source_height
         overlay = QPainterPath()
-        for index, point in enumerate(variant.points):
-            x = (
-                float((point.x.log10() - calibration.x.intercept) / calibration.x.slope)
-                * scale_x
+        if calibration is not None:
+            source_width, source_height = figure.pixel_size or (
+                max(1, image.width()),
+                max(1, image.height()),
             )
-            y = (
-                float(-((point.y.log10() - calibration.y.intercept) / calibration.y.slope))
-                * scale_y
-            )
-            if index == 0:
-                overlay.moveTo(x, y)
-            else:
-                overlay.lineTo(x, y)
+            scale_x = image.width() / source_width
+            scale_y = image.height() / source_height
+            for index, point in enumerate(variant.points):
+                x = (
+                    float((point.x.log10() - calibration.x.intercept) / calibration.x.slope)
+                    * scale_x
+                )
+                y = (
+                    float(-((point.y.log10() - calibration.y.intercept) / calibration.y.slope))
+                    * scale_y
+                )
+                if index == 0:
+                    overlay.moveTo(x, y)
+                else:
+                    overlay.lineTo(x, y)
         self._overlay_item = self._scene.addPath(
             overlay, QPen(QColor("#e53935"), 2.0)
         )

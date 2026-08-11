@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
+from pypdf import PdfWriter
 
 from insulation_coordination.domain.rules import (
     ApprovalRecord,
@@ -28,7 +31,11 @@ from insulation_coordination.rules.importer.identify import (
     StandardIdentity,
     StandardRecipe,
 )
-from insulation_coordination.ui.curve_review import CurveReviewModel, curve_variant_label
+from insulation_coordination.ui.curve_review import (
+    CurveReviewDialog,
+    CurveReviewModel,
+    curve_variant_label,
+)
 from tests.fixtures.synthetic_rules import synthetic_rule_package
 
 
@@ -221,6 +228,98 @@ def _calibration() -> ManualPlotCalibration:
         y_min=Decimal(1),
         y_max=Decimal(100),
     )
+
+
+@pytest.fixture
+def local_manual_draft(
+    manual_draft: ImportedRuleDraft, tmp_path
+) -> tuple[ImportedRuleDraft, Path]:
+    model = CurveReviewModel(manual_draft)
+    model.set_calibration("5", _calibration(), actor="Reviewer", notes="Calibrated.")
+    model.replace_points(
+        "synthetic.curve.5.1",
+        (
+            CurvePoint(x=Decimal(1), y=Decimal(100)),
+            CurvePoint(x=Decimal(1000), y=Decimal(20)),
+        ),
+        actor="Reviewer",
+        notes="Entered synthetic points.",
+    )
+    path = tmp_path / "synthetic-curves.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=400, height=300)
+    with path.open("wb") as target:
+        writer.write(target)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    document = model.draft.manifest.source_documents[0].model_copy(
+        update={"sha256": digest}
+    )
+    return (
+        model.draft.model_copy(
+            update={
+                "manifest": model.draft.manifest.model_copy(
+                    update={"source_documents": (document,)}
+                )
+            }
+        ),
+        path,
+    )
+
+
+def test_dialog_shows_semantic_selector_text_and_stable_variant_id(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.source_loaded is True
+    assert dialog._variant_selector.currentText() == (
+        "Figure 5 — Accessible circuit · DC · DVC B · Dry "
+        "(synthetic.curve.5.1)"
+    )
+    assert dialog._variant_selector.currentData() == "synthetic.curve.5.1"
+
+
+def test_transitional_dialog_disables_retired_controls_without_model_calls(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+    before = dialog.draft
+
+    assert all(
+        not button.isEnabled()
+        for button in (
+            dialog._calibration_button,
+            dialog._trace_button,
+            dialog._breakpoint_button,
+            dialog._segment_button,
+            dialog._manual_button,
+            dialog._reject_button,
+        )
+    )
+    for callback in (
+        dialog._correct_calibration,
+        dialog._associate_trace,
+        dialog._correct_breakpoint,
+        dialog._correct_segment,
+        dialog._enter_manual_points,
+        dialog._reject_current,
+    ):
+        callback()
+
+    assert dialog.draft == before
+    assert not hasattr(CurveReviewModel, "associate_trace")
 
 
 def test_empty_manual_draft_lists_every_recipe_slot(manual_draft: ImportedRuleDraft) -> None:
