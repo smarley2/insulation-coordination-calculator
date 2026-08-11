@@ -50,7 +50,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.verification
     ProcedureStructureError,
 )
 
-#: The matrix is evidence for the procedures, not one of the twenty-five required source
+#: The matrix is evidence for the procedures, not one of the twenty-six required source
 #: items, so it deliberately has no entry in ``semantic_ids``: adding one would claim the
 #: package owes a rule for it. Its identifier still follows the same shape, because it names
 #: a raw grid a maintainer reviews.

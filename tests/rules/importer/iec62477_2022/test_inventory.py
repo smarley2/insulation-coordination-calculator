@@ -67,7 +67,7 @@ def test_every_item_this_build_does_not_defer_has_a_recipe() -> None:
     Approval refuses a draft that skipped content the recipes declare; this asserts the
     other half, that the recipes really do declare everything the inventory requires apart
     from the items explicitly deferred. When Slice E lands and empties the deferred set,
-    this covers all twenty-five.
+    this covers all twenty-six.
     """
     declared = {
         spec.semantic_id
