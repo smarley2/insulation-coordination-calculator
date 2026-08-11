@@ -384,10 +384,13 @@ Expected: `All checks passed!`
 Run:
 
 ```bash
-$env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"; uv run mypy src tests
+$env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"; uv run mypy
 ```
 
-Expected: `Success: no issues found`.
+Expected: `Success: no issues found in 80 source files`. Run `mypy` with no arguments:
+`pyproject.toml` scopes strict checking to the `insulation_coordination` package, and naming
+`tests` explicitly instead surfaces hundreds of pre-existing untyped-test errors that have
+nothing to do with this change. CI runs `uv run mypy`.
 
 - [ ] **Step 13: Commit**
 
@@ -568,10 +571,13 @@ $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"; uv run ruff check .
 Expected: `All checks passed!`
 
 ```bash
-$env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"; uv run mypy src tests
+$env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"; uv run mypy
 ```
 
-Expected: `Success: no issues found`.
+Expected: `Success: no issues found in 80 source files`. Run `mypy` with no arguments:
+`pyproject.toml` scopes strict checking to the `insulation_coordination` package, and naming
+`tests` explicitly instead surfaces hundreds of pre-existing untyped-test errors that have
+nothing to do with this change. CI runs `uv run mypy`.
 
 - [ ] **Step 3: Audit the whole diff for licensed content**
 
