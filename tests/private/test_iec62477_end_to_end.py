@@ -106,7 +106,7 @@ def test_every_required_semantic_id_is_queryable_after_a_round_trip(
     package = _round_trip(reviewed_draft, tmp_path)
     available = _rule_ids(package)
 
-    assert len(REQUIRED_SOURCE_ITEMS) == 25
+    assert len(REQUIRED_SOURCE_ITEMS) == 26
     for item in REQUIRED_SOURCE_ITEMS:
         assert any(
             _covers(candidate, item.semantic_id) for candidate in available

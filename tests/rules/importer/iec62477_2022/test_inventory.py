@@ -3,6 +3,8 @@ from insulation_coordination.rules.importer.iec62477_2022.inventory import (
     REQUIRED_SOURCE_ITEMS,
 )
 from insulation_coordination.rules.importer.iec62477_2022.semantic_ids import (
+    ALTITUDE_CLEARANCE_CORRECTION,
+    ALTITUDE_TEST_VOLTAGE_CORRECTION,
     DVC_FAULT_TIME_VOLTAGE,
     REQUIRED_SEMANTIC_IDS,
 )
@@ -80,3 +82,24 @@ def test_every_item_this_build_does_not_defer_has_a_recipe() -> None:
             for candidate in declared
         )
         assert covered, f"no recipe declares {item.semantic_id}"
+
+
+def test_annex_e_tables_are_two_required_items_with_their_own_consumers() -> None:
+    """Each Annex E table is required in its own right, independently of the recipe.
+
+    E.1 feeds clearance dimensioning in #36; E.2 feeds verification in #37. Stated here
+    rather than derived from the specs, because that is the hole the single parent item left:
+    had one table's recipe been removed, ``_covers`` would have matched the parent through
+    the surviving route and the checklist could still have reported complete.
+    """
+    items = {
+        item.semantic_id: item
+        for item in REQUIRED_SOURCE_ITEMS
+        if item.semantic_id.startswith("iec62477_2022.altitude.")
+    }
+
+    assert set(items) == {ALTITUDE_CLEARANCE_CORRECTION, ALTITUDE_TEST_VOLTAGE_CORRECTION}
+    assert items[ALTITUDE_CLEARANCE_CORRECTION].expected_table == "Table E.1"
+    assert items[ALTITUDE_CLEARANCE_CORRECTION].consumer_issue_ids == (36,)
+    assert items[ALTITUDE_TEST_VOLTAGE_CORRECTION].expected_table == "Table E.2"
+    assert items[ALTITUDE_TEST_VOLTAGE_CORRECTION].consumer_issue_ids == (37,)
