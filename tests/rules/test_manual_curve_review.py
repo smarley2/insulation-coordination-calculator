@@ -15,7 +15,11 @@ from insulation_coordination.domain.rules import (
     SourceReference,
 )
 from insulation_coordination.rules.importer import recipes as recipe_registry
-from insulation_coordination.rules.importer.approval import ApprovalError, record_correction
+from insulation_coordination.rules.importer.approval import (
+    ApprovalError,
+    approval_blockers,
+    record_correction,
+)
 from insulation_coordination.rules.importer.curves import (
     ManualPlotCalibration,
     RawFigure,
@@ -190,6 +194,7 @@ def synthetic_curve_draft(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
                 permitted_interpolations=("log_log", "constant"),
             ),
         ),
+        required_curves=("synthetic.curve",),
     )
     monkeypatch.setattr(recipe_registry, "RECIPES", (recipe,))
     figure = RawFigure(
@@ -623,3 +628,32 @@ def test_manual_review_records_the_replacement_input_origin(
         notes="Reviewed the suggested synthetic curve points.",
     )
     assert reviewed.curve_variant_reviews[0].input_origin == "automatic_suggestion"
+
+
+def test_manual_curve_reviews_clear_curve_approval_blockers(
+    two_reviewed_curve_draft: ImportedRuleDraft,
+) -> None:
+    assert not tuple(
+        item
+        for item in approval_blockers(two_reviewed_curve_draft)
+        if item.code.startswith("CURVE_")
+    )
+
+
+def test_stale_manual_calibration_blocks_curve_approval(
+    two_reviewed_curve_draft: ImportedRuleDraft,
+) -> None:
+    review = two_reviewed_curve_draft.curve_variant_reviews[0]
+    stale = two_reviewed_curve_draft.model_copy(
+        update={
+            "curve_variant_reviews": (
+                review.model_copy(update={"calibration_sha256": "f" * 64}),
+                *two_reviewed_curve_draft.curve_variant_reviews[1:],
+            )
+        }
+    )
+
+    assert any(
+        item.code == "CURVE_VARIANT_REVIEW_REQUIRED"
+        for item in approval_blockers(stale)
+    )

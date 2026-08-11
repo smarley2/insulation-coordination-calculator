@@ -425,7 +425,7 @@ def test_unsafe_breakpoint_correction_is_rejected(draft) -> None:
         )
 
 
-def test_proof_evidence_cannot_change_without_reproven_curve(draft) -> None:
+def test_proof_evidence_correction_does_not_require_a_curve_change(draft) -> None:
     digitization = draft.curve_digitizations[0]
     assert digitization.calibration is not None
     changed_calibration = digitization.calibration.model_copy(
@@ -442,13 +442,14 @@ def test_proof_evidence_cannot_change_without_reproven_curve(draft) -> None:
             )
         }
     )
-    with pytest.raises(ApprovalError, match="proof evidence"):
-        record_correction(
-            draft,
-            changed,
-            actor="Synthetic Reviewer",
-            notes="Attempt to alter proof evidence without rebuilding the curve.",
-        )
+    corrected = record_correction(
+        draft,
+        changed,
+        actor="Synthetic Reviewer",
+        notes="Correct proof evidence without rebuilding the curve.",
+    )
+
+    assert corrected.curve_digitizations[0].calibration == changed_calibration
 
 
 def test_curve_and_digitization_change_requires_fresh_current_proof(draft) -> None:

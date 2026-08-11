@@ -9,6 +9,7 @@ from insulation_coordination.domain.rules import (
     ApprovalRecord,
     DraftRulePackage,
     Expression,
+    FaultTimeVoltageVariant,
     PiecewiseCurveRule,
     RulePackage,
     RulePackageError,
@@ -47,6 +48,54 @@ def _source_matches(actual: SourceReference, expected: SourceReference) -> bool:
     )
 
 
+def _manual_curve_review_is_current(
+    draft: ImportedRuleDraft,
+    variant: FaultTimeVoltageVariant,
+) -> bool:
+    figures = tuple(
+        figure
+        for figure in draft.raw_figures
+        if _source_matches(figure.source, variant.source)
+    )
+    if len(figures) != 1:
+        return False
+    figure = figures[0]
+    calibrations = tuple(
+        calibration
+        for calibration in draft.curve_calibrations
+        if calibration.figure_artifact_sha256 == figure.artifact_sha256
+        and calibration.calibration.figure_artifact_sha256 == figure.artifact_sha256
+        and calibration.calibration_sha256 == canonical_model_sha256(calibration.calibration)
+    )
+    if len(calibrations) != 1:
+        return False
+    calibration = calibrations[0]
+    return len(
+        tuple(
+            review
+            for review in draft.curve_variant_reviews
+            if review.variant_id == variant.id
+            and review.variant_sha256 == canonical_model_sha256(variant)
+            and review.source_artifact_sha256 == variant.reviewed_artifact_sha256
+            and review.calibration_sha256 == calibration.calibration_sha256
+        )
+    ) == 1
+
+
+def _has_manual_curve_calibration(
+    draft: ImportedRuleDraft,
+    variant: FaultTimeVoltageVariant,
+) -> bool:
+    return any(
+        _source_matches(figure.source, variant.source)
+        and any(
+            calibration.figure_artifact_sha256 == figure.artifact_sha256
+            for calibration in draft.curve_calibrations
+        )
+        for figure in draft.raw_figures
+    )
+
+
 def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft) -> bool:
     if item.kind == "table":
         return any(
@@ -74,6 +123,14 @@ def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft
             for fragment in changed.raw_clause_fragments
         )
     if item.kind == "curve":
+        variants = tuple(
+            variant
+            for curve in changed.curves
+            for variant in curve.variants
+            if variant.id == item.semantic_id
+        )
+        if len(variants) == 1 and _has_manual_curve_calibration(changed, variants[0]):
+            return _manual_curve_review_is_current(changed, variants[0])
         return any(
             figure.source.page == item.source.page
             and figure.source.figure == item.source.figure
@@ -190,6 +247,17 @@ def _changed_tokens(
         f"equation:{equation_id}"
         for equation_id in sorted(set(before_equations) | set(after_equations))
         if before_equations.get(equation_id) != after_equations.get(equation_id)
+    )
+    before_calibrations = {
+        item.figure_artifact_sha256: item for item in original.curve_calibrations
+    }
+    after_calibrations = {
+        item.figure_artifact_sha256: item for item in changed.curve_calibrations
+    }
+    tokens.extend(
+        f"curve-calibration:{artifact_sha256}"
+        for artifact_sha256 in sorted(set(before_calibrations) | set(after_calibrations))
+        if before_calibrations.get(artifact_sha256) != after_calibrations.get(artifact_sha256)
     )
     return tuple(tokens)
 
@@ -568,13 +636,6 @@ def record_correction(
         original.curve_variant_rejections,
         original.manual_curve_traces,
     )
-    if (
-        changed.curve_digitizations != original.curve_digitizations
-        and changed.curves == original.curves
-    ):
-        raise ApprovalError(
-            "curve proof evidence can change only with its re-proven semantic curve"
-        )
     if not content_changed and not raw_changed and not resolve and not reopen:
         raise ApprovalError("a correction must change rule content")
     original_reviews = original.review_items
@@ -1371,34 +1432,36 @@ def approval_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
     required_curve_ids = {
         semantic_id for recipe in RECIPES for semantic_id in recipe.required_curves
     }
-    from insulation_coordination.rules.importer.review import (
-        validate_current_curve_evidence,
-    )
-
     for curve in (curve for curve in draft.curves if curve.id in required_curve_ids):
         for variant in curve.variants:
-            exact_reviews = tuple(
-                review
-                for review in draft.curve_variant_reviews
-                if review.variant_id == variant.id
-                and review.variant_sha256 == canonical_model_sha256(variant)
-                and review.source_artifact_sha256
-                == variant.reviewed_artifact_sha256
-            )
-            try:
-                validate_current_curve_evidence(draft, variant)
-                proof_current = True
-            except (ApprovalError, ValueError):
-                proof_current = False
-            if len(exact_reviews) != 1 or not proof_current:
+            if _has_manual_curve_calibration(draft, variant):
+                review_current = _manual_curve_review_is_current(draft, variant)
+            else:
+                from insulation_coordination.rules.importer.review import (
+                    validate_current_curve_evidence,
+                )
+
+                exact_reviews = tuple(
+                    review
+                    for review in draft.curve_variant_reviews
+                    if review.variant_id == variant.id
+                    and review.variant_sha256 == canonical_model_sha256(variant)
+                    and review.source_artifact_sha256
+                    == variant.reviewed_artifact_sha256
+                )
+                try:
+                    validate_current_curve_evidence(draft, variant)
+                    review_current = len(exact_reviews) == 1
+                except (ApprovalError, ValueError):
+                    review_current = False
+            if not review_current:
                 blockers.append(
                     _semantic_blocker(
                         draft,
                         code="CURVE_VARIANT_REVIEW_REQUIRED",
                         semantic_id=variant.id,
                         message=(
-                            f"curve variant {variant.id} lacks one exact review "
-                            "and current conservative proof"
+                            f"curve variant {variant.id} lacks one exact current manual review"
                         ),
                     )
                 )
