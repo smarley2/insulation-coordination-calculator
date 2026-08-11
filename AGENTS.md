@@ -36,8 +36,8 @@ Drop `-n` when debugging a single failing test — xdist hides `pdb` and reorder
 ## Running the licensed test suite
 
 `tests/private` imports the maintainer's licensed IEC PDFs. It is skipped entirely when they
-are absent, so a green public run says nothing about it. Two pieces of local setup are
-needed, and both cost real time to discover, so they are written down here.
+are absent, so a green public run says nothing about it. One piece of local setup is
+needed, so it is written down here.
 
 **The licensed PDF folder.** `tests/private/conftest.py` reads
 `ICC_PRIVATE_STANDARDS_DIR`, defaulting to `standards/` at the repository root, which is
@@ -60,8 +60,8 @@ Maintainers calibrate each plot and enter points during review.
 pass. Run it once with the timeout below; do not add timing claims without a measured licensed
 run, and avoid a second import unless that is the assertion under test.
 
-Raise the per-test timeout for licensed work; the default is 120 s and several of these
-tests legitimately exceed it:
+The default per-test timeout is 120 s. Use 900 s as a conservative allowance for a licensed
+run until a measurement supports a tighter limit:
 
 ```bash
 uv run pytest tests/private -q --timeout=900
