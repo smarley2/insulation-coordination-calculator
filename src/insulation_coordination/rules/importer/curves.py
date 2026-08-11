@@ -235,7 +235,7 @@ class RawFigure(FrozenModel):
 
 
 class ManualPlotCalibration(FrozenModel):
-    figure_artifact_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    figure_artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     left: Decimal
     top: Decimal
     right: Decimal
@@ -1241,13 +1241,25 @@ def pixel_to_source_point(
     y_fraction = (calibration.bottom - pixel_y) / (
         calibration.bottom - calibration.top
     )
-    x_log = calibration.x_min.log10() + x_fraction * (
-        calibration.x_max.log10() - calibration.x_min.log10()
-    )
-    y_log = calibration.y_min.log10() + y_fraction * (
-        calibration.y_max.log10() - calibration.y_min.log10()
-    )
-    return CurvePoint(x=_log10_to_value(x_log), y=_log10_to_value(y_log))
+    if pixel_x == calibration.left:
+        x = calibration.x_min
+    elif pixel_x == calibration.right:
+        x = calibration.x_max
+    else:
+        x_log = calibration.x_min.log10() + x_fraction * (
+            calibration.x_max.log10() - calibration.x_min.log10()
+        )
+        x = _log10_to_value(x_log)
+    if pixel_y == calibration.top:
+        y = calibration.y_max
+    elif pixel_y == calibration.bottom:
+        y = calibration.y_min
+    else:
+        y_log = calibration.y_min.log10() + y_fraction * (
+            calibration.y_max.log10() - calibration.y_min.log10()
+        )
+        y = _log10_to_value(y_log)
+    return CurvePoint(x=x, y=y)
 
 
 def source_point_to_pixel(
@@ -1263,15 +1275,27 @@ def source_point_to_pixel(
         and calibration.y_min <= point.y <= calibration.y_max
     ):
         raise ValueError("point is outside reviewed source axis bounds")
-    x_fraction = (point.x.log10() - calibration.x_min.log10()) / (
-        calibration.x_max.log10() - calibration.x_min.log10()
-    )
-    y_fraction = (point.y.log10() - calibration.y_min.log10()) / (
-        calibration.y_max.log10() - calibration.y_min.log10()
-    )
+    if point.x == calibration.x_min:
+        x = calibration.left
+    elif point.x == calibration.x_max:
+        x = calibration.right
+    else:
+        x_fraction = (point.x.log10() - calibration.x_min.log10()) / (
+            calibration.x_max.log10() - calibration.x_min.log10()
+        )
+        x = calibration.left + x_fraction * (calibration.right - calibration.left)
+    if point.y == calibration.y_min:
+        y = calibration.bottom
+    elif point.y == calibration.y_max:
+        y = calibration.top
+    else:
+        y_fraction = (point.y.log10() - calibration.y_min.log10()) / (
+            calibration.y_max.log10() - calibration.y_min.log10()
+        )
+        y = calibration.bottom - y_fraction * (calibration.bottom - calibration.top)
     return (
-        calibration.left + x_fraction * (calibration.right - calibration.left),
-        calibration.bottom - y_fraction * (calibration.bottom - calibration.top),
+        x,
+        y,
     )
 
 

@@ -40,6 +40,26 @@ def test_manual_log_calibration_round_trips_without_float() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("pixel", "source"),
+    (
+        ((Decimal("20"), Decimal("10")), (Decimal("1"), Decimal("100"))),
+        ((Decimal("320"), Decimal("10")), (Decimal("1000"), Decimal("100"))),
+        ((Decimal("20"), Decimal("210")), (Decimal("1"), Decimal("1"))),
+        ((Decimal("320"), Decimal("210")), (Decimal("1000"), Decimal("1"))),
+    ),
+)
+def test_manual_log_calibration_round_trips_plot_corners(
+    pixel: tuple[Decimal, Decimal],
+    source: tuple[Decimal, Decimal],
+) -> None:
+    calibration = _calibration()
+    point = pixel_to_source_point(*pixel, calibration)
+
+    assert (point.x, point.y) == source
+    assert source_point_to_pixel(point, calibration) == pixel
+
+
 def test_segments_are_inferred_from_adjacent_y_values() -> None:
     points = (
         CurvePoint(x=Decimal("1"), y=Decimal("100")),
@@ -65,6 +85,14 @@ def test_segments_are_inferred_from_adjacent_y_values() -> None:
 def test_manual_calibration_rejects_invalid_bounds(field: str, value: str) -> None:
     payload = _calibration().model_dump(mode="python")
     payload[field] = Decimal(value)
+    with pytest.raises(ValueError):
+        ManualPlotCalibration.model_validate(payload)
+
+
+@pytest.mark.parametrize("digest", ("a" + "0" * 64, "0" * 64 + "a"))
+def test_manual_calibration_rejects_65_character_hash_variants(digest: str) -> None:
+    payload = _calibration().model_dump(mode="python")
+    payload["figure_artifact_sha256"] = digest
     with pytest.raises(ValueError):
         ManualPlotCalibration.model_validate(payload)
 
