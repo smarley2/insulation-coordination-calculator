@@ -9,21 +9,33 @@ fixed explanation of how the underlying voltage quantities relate to each other.
 carries no IEC content of its own: every number, reference, and "not applicable" comes
 from the package, with the clause, table, and page it was read from.
 
-Like :class:`~insulation_coordination.ui.help_indicator.GuidanceDialog`, the body is a
-single word-wrapped, selectable, scrollable label behind a Close button - plain text
-that a screen reader, a browser find, or a copy-paste can reach, rather than a custom
-search feature. To look at a different class, close the dialog, change the DVC
-dropdown, and reopen it; the dialog itself does not offer a second way to pick one.
+The body is one read-only, word-wrapped, selectable document behind a Close button, with
+a search field above it: Ctrl+F focuses the field, Enter and Shift+Enter step forward and
+back through the matches, and the search runs against the text already rendered here - no
+index, no network, nothing to load. Searching a document this short earns nothing more
+elaborate than the text widget's own find. To look at a different class, close the dialog,
+change the DVC dropdown, and reopen it; the dialog itself does not offer a second way to
+pick one.
+
+Where a cell defers to another rule the guide says so in words and names the rule, rather
+than printing a number it cannot justify. The transient-impulse cell is the case that
+matters: its requirement follows from a system voltage and an overvoltage category, which
+issue #36 resolves from the project's supply. Until then this is a stated deferral, not a
+gap - see :data:`~insulation_coordination.domain.dvc.DvcReferenceKind`.
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeySequence, QShortcut, QTextCursor, QTextDocument
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
+    QHBoxLayout,
     QLabel,
-    QScrollArea,
+    QLineEdit,
+    QPushButton,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -32,9 +44,11 @@ from insulation_coordination.domain.dvc import (
     DvcGuidanceService,
     DvcLimitSummary,
     DvcProtectionSummary,
+    DvcReferenceKind,
+    DvcVoltageQuantity,
 )
 from insulation_coordination.domain.enums import DecisiveVoltageClass
-from insulation_coordination.domain.rules import SourceReference
+from insulation_coordination.domain.rule_provenance import citation
 
 _DIALOG_WIDTH = 520
 _DIALOG_HEIGHT = 480
@@ -69,18 +83,30 @@ DVC_AS_CONDITION_NOTE = (
     "no way to select that condition and does not show it."
 )
 
+#: What a referring cell says instead of a number, per kind of deferral. Both name the
+#: rule that answers the question and why this guide cannot answer it, so a reader is
+#: never left to guess whether a number is missing or genuinely does not exist here.
+_REFERENCE_TEXTS: dict[DvcReferenceKind, str] = {
+    "supply_impulse": (
+        "resolved from the applicable system-voltage and overvoltage-category rule "
+        "({rule}). No single number applies here: the requirement depends on the "
+        "project's own supply, which this guide does not read."
+    ),
+    "fault_time_curve": (
+        "resolved from the fault-time voltage rule ({rule}), which states a "
+        "time-voltage behaviour for the duration rather than one fixed limit."
+    ),
+}
 
-def _cite(source: SourceReference | None) -> str:
-    if source is None:
-        return ""
-    parts = [f"{source.standard} {source.edition}"]
-    if source.table:
-        parts.append(f"Table {source.table}")
-    if source.clause:
-        parts.append(f"clause {source.clause}")
-    if source.page is not None:
-        parts.append(f"p.{source.page}")
-    return ", ".join(parts)
+#: Shown when the search ran off the end of the document and continued from the other.
+SEARCH_WRAPPED_STATUS = "Continued from the other end of the guide."
+
+
+def _reference_text(quantity: DvcVoltageQuantity) -> str:
+    rule = quantity.reference_rule_id or "another rule in the active package"
+    if quantity.reference_kind is None:
+        return f"refers to {rule}"
+    return _REFERENCE_TEXTS[quantity.reference_kind].format(rule=rule)
 
 
 def _render_limits(summary: DvcLimitSummary) -> str:
@@ -88,12 +114,12 @@ def _render_limits(summary: DvcLimitSummary) -> str:
         return f"Voltage limits: not available from the active package. {summary.reason}"
     lines = ["Voltage limits (from the active rule package):"]
     for quantity in summary.quantities:
-        citation = _cite(quantity.source)
-        suffix = f" [{citation}]" if citation else ""
+        cited = citation(quantity.source)
+        suffix = f" [{cited}]" if cited else ""
         if quantity.status == "value":
             lines.append(f"  • {quantity.label}: {quantity.value} {quantity.unit}{suffix}")
         elif quantity.status == "reference":
-            lines.append(f"  • {quantity.label}: refers to {quantity.reference_rule_id}{suffix}")
+            lines.append(f"  • {quantity.label}: {_reference_text(quantity)}{suffix}")
         elif quantity.status == "not_applicable":
             lines.append(f"  • {quantity.label}: not applicable{suffix}")
         else:
@@ -111,8 +137,8 @@ def _render_protection(summary: DvcProtectionSummary) -> str:
         return "Protection requirements: none recorded in the active package for this class."
     lines = ["Protection requirements (from the active rule package):"]
     for item in summary.relationships:
-        citation = _cite(item.source)
-        suffix = f" [{citation}]" if citation else ""
+        cited = citation(item.source)
+        suffix = f" [{cited}]" if cited else ""
         lines.append(f"  • {item.protection_context}: {item.requirement}{suffix}")
     return "\n".join(lines)
 
@@ -140,32 +166,112 @@ class DvcGuideDialog(QDialog):
         self.setWindowTitle(f"DVC guide - {_DVC_TITLES[dvc]}")
         self.resize(_DIALOG_WIDTH, _DIALOG_HEIGHT)
 
-        self._body = QLabel(dvc_guide_body_text(service, dvc))
+        # A browser rather than a label: it scrolls and wraps the same way, but it also
+        # carries a document with a cursor, which is what makes find-and-highlight the
+        # widget's job instead of this dialog's.
+        self._body = QTextBrowser()
         self._body.setObjectName("_dvc_guide_body")
-        self._body.setWordWrap(True)
-        self._body.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-            | Qt.TextInteractionFlag.TextSelectableByKeyboard
-        )
-        self._body.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self._body.setPlainText(dvc_guide_body_text(service, dvc))
+        self._body.setLineWrapMode(QTextBrowser.LineWrapMode.WidgetWidth)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self._body)
+        self._search_field = QLineEdit()
+        self._search_field.setObjectName("_dvc_guide_search")
+        self._search_field.setPlaceholderText("Search this guide")
+        self._search_field.setAccessibleName("Search this guide")
+        self._search_field.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._search_field.returnPressed.connect(self.find_next)
+        self._search_field.textChanged.connect(self._on_search_text_changed)
+
+        self._previous_button = QPushButton("Previous")
+        self._previous_button.setAutoDefault(False)
+        self._previous_button.clicked.connect(self.find_previous)
+        self._next_button = QPushButton("Next")
+        self._next_button.setAutoDefault(False)
+        self._next_button.clicked.connect(self.find_next)
+
+        self._search_status = QLabel()
+        self._search_status.setObjectName("_dvc_guide_search_status")
+
+        search_row = QHBoxLayout()
+        search_row.addWidget(self._search_field, 1)
+        search_row.addWidget(self._previous_button)
+        search_row.addWidget(self._next_button)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        # Without this, Enter in the search field would reach the Close button as the
+        # dialog's default and shut the guide instead of finding the next match.
+        close_button = buttons.button(QDialogButtonBox.StandardButton.Close)
+        close_button.setAutoDefault(False)
+        close_button.setDefault(False)
         buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(scroll)
+        layout.addLayout(search_row)
+        layout.addWidget(self._search_status)
+        layout.addWidget(self._body)
         layout.addWidget(buttons)
 
+        # The field is first in the layout, so it is also first on the tab path; Ctrl+F and
+        # F3 exist for the reader who is already scrolling the body.
+        QShortcut(QKeySequence.StandardKey.Find, self, self.focus_search)
+        QShortcut(QKeySequence.StandardKey.FindNext, self, self.find_next)
+        QShortcut(QKeySequence.StandardKey.FindPrevious, self, self.find_previous)
+        # A dialog-level shortcut, not a key handler on the field: a shortcut is resolved
+        # before the key reaches the focus widget, so this works while the field has focus.
+        QShortcut(QKeySequence("Shift+Return"), self, self.find_previous)
+        QShortcut(QKeySequence("Shift+Enter"), self, self.find_previous)
+
     def body_text(self) -> str:
-        return self._body.text()
+        return self._body.toPlainText()
+
+    def focus_search(self) -> None:
+        """Put the caret in the search field, selecting whatever is already there."""
+        self._search_field.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self._search_field.selectAll()
+
+    def find_next(self) -> bool:
+        return self._find(backward=False)
+
+    def find_previous(self) -> bool:
+        return self._find(backward=True)
+
+    def search_status(self) -> str:
+        return self._search_status.text()
+
+    def _on_search_text_changed(self, _text: str) -> None:
+        """Clear a stale "no match" as soon as the term changes; do not search yet.
+
+        Searching on every keystroke would drag the view around while a word is still
+        being typed, and the term is short enough that Enter is no burden.
+        """
+        self._search_status.setText("")
+
+    def _find(self, *, backward: bool) -> bool:
+        term = self._search_field.text()
+        if not term:
+            self._search_status.setText("")
+            return False
+        flags = QTextDocument.FindFlag.FindBackward if backward else QTextDocument.FindFlag(0)
+        if self._body.find(term, flags):
+            self._search_status.setText("")
+            return True
+        # Nothing further in this direction. Restart from the far end and try once more,
+        # so a reader who started mid-document still sees the matches above them.
+        cursor = self._body.textCursor()
+        cursor.movePosition(
+            QTextCursor.MoveOperation.End if backward else QTextCursor.MoveOperation.Start
+        )
+        self._body.setTextCursor(cursor)
+        if self._body.find(term, flags):
+            self._search_status.setText(SEARCH_WRAPPED_STATUS)
+            return True
+        self._search_status.setText(f'No match for "{term}".')
+        return False
 
 
 __all__ = [
     "DVC_AS_CONDITION_NOTE",
+    "SEARCH_WRAPPED_STATUS",
     "STRESS_BASIS_EXPLANATION",
     "DvcGuideDialog",
     "dvc_guide_body_text",
