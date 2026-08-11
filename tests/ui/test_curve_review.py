@@ -474,6 +474,41 @@ def test_one_valid_point_stays_visible_and_draggable_in_the_preview(
     assert dialog.point_text(0) == ("1000", "1")
 
 
+@pytest.mark.parametrize(
+    "rows",
+    (
+        (("1000", "25"), ("1", "25")),
+        (("1000", "25"), ("1000", "25")),
+    ),
+)
+def test_provisional_reversed_or_duplicate_x_keeps_every_handle_inside_plot(
+    qtbot,
+    local_manual_draft: tuple[ImportedRuleDraft, Path],
+    rows: tuple[tuple[str, str], tuple[str, str]],
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+    dialog.set_point_text(0, *rows[0])
+    dialog.set_point_text(1, *rows[1])
+
+    dialog.move_handle(1, Decimal(320), Decimal(110))
+
+    assert dialog.point_handle_count == 2
+    for x, y in dialog.point_handle_positions:
+        assert Decimal(20) <= x <= Decimal(320)
+        assert Decimal(10) <= y <= Decimal(210)
+    before = dialog.draft
+    dialog.notes_edit.setText("Provisional synthetic points.")
+    dialog.save_points()
+    assert dialog.draft == before
+    assert "strictly increasing" in dialog.status_text.lower()
+
+
 def test_two_click_calibration_dialog_parses_and_saves_decimal_bounds(
     qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
 ) -> None:

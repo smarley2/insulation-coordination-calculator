@@ -437,6 +437,15 @@ class CurveReviewDialog(QDialog):
 
         return len(self._handles)
 
+    @property
+    def point_handle_positions(self) -> tuple[tuple[Decimal, Decimal], ...]:
+        """Scene positions of the preview handles, in table-row order."""
+
+        return tuple(
+            (Decimal(str(handle.pos().x())), Decimal(str(handle.pos().y())))
+            for handle in self._handles
+        )
+
     def set_overlay_visible(self, visible: bool) -> None:
         for item in (self._overlay_item, self._plot_item, *self._handles):
             if item is not None:
@@ -831,6 +840,7 @@ class CurveReviewDialog(QDialog):
             x = max(x, self._handles[index - 1].pos().x() + gap)
         if index + 1 < len(self._handles):
             x = min(x, self._handles[index + 1].pos().x() - gap)
+        x = min(max(x, left), right)
         return QPointF(x, y)
 
     def _handle_moved(self, row: int, position: QPointF) -> None:
