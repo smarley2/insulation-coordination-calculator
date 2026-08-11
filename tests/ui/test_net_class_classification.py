@@ -95,6 +95,26 @@ def test_dvc_guidance_covers_exactly_the_four_iec_classes() -> None:
     assert len(ids) == 4
 
 
+def test_obc_guidance_examples_carry_the_applicability_warning_verbatim() -> None:
+    """Wherever the OBC worked example is shown as guide content, the warning must ride
+
+    along with it - never referenced by a paraphrase that could drift from it.
+    """
+    from insulation_coordination.ui.topology_guidance import OBC_APPLICABILITY_WARNING
+
+    guidance_ids_with_obc_examples = (
+        TopologyGuidanceId.GALVANIC_DOMAIN_ASSIGNMENT,
+        TopologyGuidanceId.BARRIER_VERIFIED_GALVANIC_ISOLATION,
+        TopologyGuidanceId.BARRIER_NO_GALVANIC_ISOLATION,
+    )
+    for guidance_id in guidance_ids_with_obc_examples:
+        obc_examples = [
+            example for example in guidance_for(guidance_id).examples if "OBC" in example
+        ]
+        assert obc_examples, f"{guidance_id} has no OBC example"
+        assert all(OBC_APPLICABILITY_WARNING in example for example in obc_examples)
+
+
 def test_topology_guidance_module_does_not_touch_widgets() -> None:
     import inspect
 

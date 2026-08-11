@@ -28,6 +28,18 @@ from insulation_coordination.domain.enums import (
 )
 from insulation_coordination.ui.voltage_guidance import VoltageGuidance, register_guidance
 
+#: This application's own statement of scope for the on-board-charger (OBC) worked
+#: example (see :mod:`tests.fixtures.topology_examples`): IEC 62477-1:2022 does not cover
+#: EV/OBC equipment, so the OBC example is a topology illustration only, never a claim of
+#: compliance. Kept as one constant so every place the OBC example appears - a guidance
+#: example below, or the example project's own domain descriptions - carries the identical
+#: wording rather than a paraphrase that could drift from it.
+OBC_APPLICABILITY_WARNING = (
+    "OBC is a topology example only. IEC 62477-1:2022 excludes electric-vehicle "
+    "electrical equipment/systems; the applicable EV/OBC product standard takes "
+    "precedence."
+)
+
 
 class TopologyGuidanceId(StrEnum):
     NET_TYPE_CIRCUIT = "net_type_circuit"
@@ -147,6 +159,14 @@ register_guidance(
         examples=(
             "A DC bus rail.",
             "A PWM-switched motor phase output.",
+            (
+                "A wireless-power receiver coil and rectifier circuit, in its own galvanic "
+                "domain from the primary side."
+            ),
+            (
+                "A variable-speed drive's U/V/W motor-phase output, exposed through the "
+                "external motor cable."
+            ),
         ),
         common_mistakes=(
             "Classifying a heatsink or chassis panel as a circuit because it is conductive.",
@@ -388,6 +408,7 @@ register_guidance(
         examples=(
             "A CAN bus connector between two panels of the same machine.",
             "A local temperature-sensor cable a few metres long.",
+            "A variable-speed drive's control/fieldbus connector, local to the same installation.",
         ),
         common_mistakes=(
             (
@@ -571,6 +592,14 @@ register_guidance(
                 "A primary-side and a secondary-side circuit separated by an isolating "
                 "transformer: two different domains."
             ),
+            (
+                "A wireless charger's primary-side coil driver and its receiver-side coil "
+                "and rectifier: two domains, joined only by the coreless coupling."
+            ),
+            (
+                "An on-board charger's isolation-transformer primary and its HV battery "
+                f"output, recorded as two domains. {OBC_APPLICABILITY_WARNING}"
+            ),
         ),
         common_mistakes=(
             (
@@ -631,6 +660,10 @@ register_guidance(
                 "Two DC buses joined by a shared PE conductor, with no transformer or "
                 "opto-isolator between them."
             ),
+            (
+                "A non-isolated on-board charger's mains-referenced and battery-referenced "
+                f"sides, sharing a common return. {OBC_APPLICABILITY_WARNING}"
+            ),
         ),
         common_mistakes=(
             (
@@ -664,6 +697,14 @@ register_guidance(
             (
                 "A mains-isolation transformer verified by routine test, with the test "
                 "report referenced."
+            ),
+            (
+                "The coreless coupling between a wireless charger's primary and receiver "
+                "coils, verified by test."
+            ),
+            (
+                "An isolated on-board charger's transformer and isolated control supply, "
+                f"verified by test. {OBC_APPLICABILITY_WARNING}"
             ),
         ),
         common_mistakes=(
