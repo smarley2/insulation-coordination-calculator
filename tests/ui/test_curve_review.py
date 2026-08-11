@@ -135,8 +135,6 @@ def manual_draft(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
             Decimal(0),
             Decimal(0),
         ),
-        ocr_tokens=(),
-        traces=(),
         artifact_sha256="0" * 64,
     )
     items = tuple(

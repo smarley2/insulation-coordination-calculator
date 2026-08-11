@@ -323,7 +323,7 @@ class RulesManagerWindow(QWidget):
             tables_done and bool(equation_pending or mapping_pending)
         )
         self._review_curves_button.setEnabled(
-            bool(self._draft.curves or self._draft.curve_digitizations)
+            bool(self._draft.raw_figures)
         )
         for item in table_pending:
             flagged = sum(

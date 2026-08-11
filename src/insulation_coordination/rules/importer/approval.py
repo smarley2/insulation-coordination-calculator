@@ -90,20 +90,6 @@ def _manual_curve_review_is_current(
     ) == 1
 
 
-def _has_manual_curve_calibration(
-    draft: ImportedRuleDraft,
-    variant: FaultTimeVoltageVariant,
-) -> bool:
-    return any(
-        _source_matches(figure.source, variant.source)
-        and any(
-            calibration.figure_artifact_sha256 == figure.artifact_sha256
-            for calibration in draft.curve_calibrations
-        )
-        for figure in draft.raw_figures
-    )
-
-
 def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft) -> bool:
     if item.kind == "table":
         return any(
@@ -137,16 +123,9 @@ def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft
             for variant in curve.variants
             if variant.id == item.semantic_id
         )
-        if len(variants) == 1 and _has_manual_curve_calibration(changed, variants[0]):
-            return _manual_curve_review_is_current(changed, variants[0])
-        return any(
-            figure.source.page == item.source.page
-            and figure.source.figure == item.source.figure
-            and result.proposed_rule is not None
-            and result.conservatism is not None
-            and result.conservatism.proven
-            for figure, result in zip(changed.raw_figures, changed.curve_digitizations)
-        ) or any(review.variant_id == item.semantic_id for review in changed.curve_variant_reviews)
+        return len(variants) == 1 and _manual_curve_review_is_current(
+            changed, variants[0]
+        )
     if item.code in {"AMBIGUOUS_COMPOUND_CELL", "AMBIGUOUS_COMPONENT_FORMULA"}:
         grid_id, row_text, column_text, source_index_text = item.semantic_id.rsplit(":", 3)
         cell = next(
@@ -426,26 +405,6 @@ def _curve_reopen_evidence(
             for input in draft.manual_curve_variant_inputs
             if input.variant_id == variant_id
         ),
-        tuple(
-            result
-            for figure, result in zip(draft.raw_figures, draft.curve_digitizations)
-            if figure.artifact_sha256 == artifact_sha256
-        ),
-        tuple(
-            association
-            for association in draft.curve_trace_associations
-            if association.variant_id == variant_id
-        ),
-        tuple(
-            rejection
-            for rejection in draft.curve_variant_rejections
-            if rejection.variant_id == variant_id
-        ),
-        tuple(
-            trace
-            for trace in draft.manual_curve_traces
-            if trace.figure_artifact_sha256 == artifact_sha256
-        ),
     )
 
 
@@ -625,24 +584,16 @@ def record_correction(
         changed.raw_grids,
         changed.raw_clause_fragments,
         changed.raw_figures,
-        changed.curve_digitizations,
         changed.curve_calibrations,
         changed.manual_curve_variant_inputs,
         changed.curve_variant_reviews,
-        changed.curve_trace_associations,
-        changed.curve_variant_rejections,
-        changed.manual_curve_traces,
     ) != (
         original.raw_grids,
         original.raw_clause_fragments,
         original.raw_figures,
-        original.curve_digitizations,
         original.curve_calibrations,
         original.manual_curve_variant_inputs,
         original.curve_variant_reviews,
-        original.curve_trace_associations,
-        original.curve_variant_rejections,
-        original.manual_curve_traces,
     )
     if not content_changed and not raw_changed and not resolve and not reopen:
         raise ApprovalError("a correction must change rule content")
@@ -669,13 +620,9 @@ def record_correction(
         guidance=original.guidance,
         curves=original.curves,
         raw_figures=original.raw_figures,
-        curve_digitizations=original.curve_digitizations,
         curve_calibrations=original.curve_calibrations,
         manual_curve_variant_inputs=original.manual_curve_variant_inputs,
         curve_variant_reviews=original.curve_variant_reviews,
-        curve_trace_associations=original.curve_trace_associations,
-        curve_variant_rejections=original.curve_variant_rejections,
-        manual_curve_traces=original.manual_curve_traces,
     )
     recorded_at = datetime.now(UTC)
     resolutions = _require_valid_review_resolutions(
@@ -703,13 +650,9 @@ def record_correction(
         guidance=changed.guidance,
         curves=changed.curves,
         raw_figures=changed.raw_figures,
-        curve_digitizations=changed.curve_digitizations,
         curve_calibrations=changed.curve_calibrations,
         manual_curve_variant_inputs=changed.manual_curve_variant_inputs,
         curve_variant_reviews=changed.curve_variant_reviews,
-        curve_trace_associations=changed.curve_trace_associations,
-        curve_variant_rejections=changed.curve_variant_rejections,
-        manual_curve_traces=changed.manual_curve_traces,
     )
     audit_records = tuple(
         ApprovalRecord(
@@ -749,13 +692,9 @@ def record_correction(
         raw_grids=changed.raw_grids,
         raw_clause_fragments=changed.raw_clause_fragments,
         raw_figures=changed.raw_figures,
-        curve_digitizations=changed.curve_digitizations,
         curve_calibrations=changed.curve_calibrations,
         manual_curve_variant_inputs=changed.manual_curve_variant_inputs,
         curve_variant_reviews=changed.curve_variant_reviews,
-        curve_trace_associations=changed.curve_trace_associations,
-        curve_variant_rejections=changed.curve_variant_rejections,
-        manual_curve_traces=changed.manual_curve_traces,
         extracted_equations=changed.extracted_equations,
         semantic_proposals=semantic_proposals,
         source_identities=changed.source_identities,
@@ -864,9 +803,6 @@ def _require_logged_content(draft: DraftRulePackage) -> None:
         guidance=draft.guidance,
         curves=draft.curves,
         raw_figures=(draft.raw_figures if isinstance(draft, ImportedRuleDraft) else ()),
-        curve_digitizations=(
-            draft.curve_digitizations if isinstance(draft, ImportedRuleDraft) else ()
-        ),
         curve_calibrations=(
             draft.curve_calibrations if isinstance(draft, ImportedRuleDraft) else ()
         ),
@@ -877,15 +813,6 @@ def _require_logged_content(draft: DraftRulePackage) -> None:
         ),
         curve_variant_reviews=(
             draft.curve_variant_reviews if isinstance(draft, ImportedRuleDraft) else ()
-        ),
-        curve_trace_associations=(
-            draft.curve_trace_associations if isinstance(draft, ImportedRuleDraft) else ()
-        ),
-        curve_variant_rejections=(
-            draft.curve_variant_rejections if isinstance(draft, ImportedRuleDraft) else ()
-        ),
-        manual_curve_traces=(
-            draft.manual_curve_traces if isinstance(draft, ImportedRuleDraft) else ()
         ),
     )
     if actual != expected:
@@ -1442,27 +1369,7 @@ def approval_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
     }
     for curve in (curve for curve in draft.curves if curve.id in required_curve_ids):
         for variant in curve.variants:
-            if _has_manual_curve_calibration(draft, variant):
-                review_current = _manual_curve_review_is_current(draft, variant)
-            else:
-                from insulation_coordination.rules.importer.review import (
-                    validate_current_curve_evidence,
-                )
-
-                exact_reviews = tuple(
-                    review
-                    for review in draft.curve_variant_reviews
-                    if review.variant_id == variant.id
-                    and review.variant_sha256 == canonical_model_sha256(variant)
-                    and review.source_artifact_sha256
-                    == variant.reviewed_artifact_sha256
-                )
-                try:
-                    validate_current_curve_evidence(draft, variant)
-                    review_current = len(exact_reviews) == 1
-                except (ApprovalError, ValueError):
-                    review_current = False
-            if not review_current:
+            if not _manual_curve_review_is_current(draft, variant):
                 blockers.append(
                     _semantic_blocker(
                         draft,

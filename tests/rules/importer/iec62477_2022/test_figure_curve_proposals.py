@@ -20,11 +20,7 @@ from insulation_coordination.rules.evaluator import (
     evaluate_piecewise_curve,
     select_curve_variant,
 )
-from insulation_coordination.rules.importer.curves import (
-    ConservatismReport,
-    CurveDigitizationResult,
-    RawFigure,
-)
+from insulation_coordination.rules.importer.curves import RawFigure
 from insulation_coordination.rules.importer.extract import (
     ImportedRuleDraft,
     _extract_curve_artifacts,
@@ -62,8 +58,6 @@ def _figure(figure: str, page: int, digest: str) -> RawFigure:
         source_bbox=(Decimal(70), Decimal(120), Decimal(524), Decimal(700)),
         pixel_size=None,
         transform=(Decimal(1), Decimal(0), Decimal(0), Decimal(1), Decimal(0), Decimal(0)),
-        ocr_tokens=(),
-        traces=(),
         artifact_sha256=digest,
     )
 
@@ -350,7 +344,7 @@ def test_wrong_figure_semantic_role_blocks_projection() -> None:
         )
 
 
-def test_real_extraction_stage_projects_all_recipe_figures(
+def test_curve_import_creates_source_figures_and_manual_review_items(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "synthetic-56-pages.pdf"
@@ -362,7 +356,7 @@ def test_real_extraction_stage_projects_all_recipe_figures(
 
     artifacts = {"5": "a" * 64, "6": "b" * 64, "7": "c" * 64}
 
-    def fake_extract(_reader_page, _plumber_page, spec, _ocr, identity):
+    def fake_extract(_reader_page, _plumber_page, spec, identity):
         return _figure(spec.figure, spec.page_number, artifacts[spec.figure]).model_copy(
             update={
                 "source": SOURCE.model_copy(
@@ -377,48 +371,14 @@ def test_real_extraction_stage_projects_all_recipe_figures(
             }
         )
 
-    def fake_digitize(figure, spec, _ocr, _identity):
-        variants = tuple(
-            _variant(
-                f"{spec.figure}.{index}",
-                selector.subject,
-                selector.voltage_basis,
-                selector.dvc_context,
-                selector.environment_context,
-                figure.artifact_sha256,
-            ).model_copy(update={"source": figure.source})
-            for index, selector in enumerate(spec.variant_slots, start=1)
-        )
-        from insulation_coordination.domain.rules import PiecewiseCurveRule
-
-        return CurveDigitizationResult(
-            proposed_rule=PiecewiseCurveRule(
-                id=ids.DVC_FAULT_TIME_VOLTAGE,
-                variants=variants,
-                source=figure.source,
-            ),
-            calibration=None,
-            conservatism=ConservatismReport(
-                maximum_positive_voltage_error=Decimal(0),
-                maximum_fidelity_error_pixels=Decimal(0),
-                proven=True,
-            ),
-            blocking_review_items=(),
-        )
-
     monkeypatch.setattr(
         "insulation_coordination.rules.importer.curves.extract_raw_figure", fake_extract
     )
-    monkeypatch.setattr(
-        "insulation_coordination.rules.importer.curves.digitize_curve_figure", fake_digitize
+    figures, curves, proposals, review_items = _extract_curve_artifacts(
+        path, IDENTITY.model_copy(update={"recipe_id": "iec62477-1-2022"}), RECIPE
     )
-    figures, digitizations, curves, proposals, review_items = _extract_curve_artifacts(
-        path, IDENTITY.model_copy(update={"recipe_id": "iec62477-1-2022"}), RECIPE, object()
-    )
-    assert len(figures) == len(digitizations) == 3
-    assert len(curves) == len(proposals) == 1
-    assert curves[0].id == ids.DVC_FAULT_TIME_VOLTAGE
+    assert len(figures) == 3
+    assert curves == ()
+    assert proposals == ()
     assert len(review_items) == 8
-    assert {item.semantic_id for item in review_items} == {
-        variant.id for variant in curves[0].variants
-    }
+    assert all(item.code == "CURVE_VARIANT_REVIEW_REQUIRED" for item in review_items)

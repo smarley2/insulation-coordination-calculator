@@ -213,8 +213,6 @@ def synthetic_curve_draft(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
             Decimal(0),
             Decimal(0),
         ),
-        ocr_tokens=(),
-        traces=(),
         artifact_sha256="0" * 64,
     )
     items = tuple(
@@ -548,13 +546,9 @@ def test_reopen_rejects_an_unchanged_non_curve_review_item(
         guidance=resolved.guidance,
         curves=resolved.curves,
         raw_figures=resolved.raw_figures,
-        curve_digitizations=resolved.curve_digitizations,
         curve_calibrations=resolved.curve_calibrations,
         manual_curve_variant_inputs=resolved.manual_curve_variant_inputs,
         curve_variant_reviews=resolved.curve_variant_reviews,
-        curve_trace_associations=resolved.curve_trace_associations,
-        curve_variant_rejections=resolved.curve_variant_rejections,
-        manual_curve_traces=resolved.manual_curve_traces,
     )
     resolved = resolved.model_copy(
         update={
