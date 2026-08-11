@@ -26,13 +26,13 @@ Measured from the maintained printing; bounding boxes are measured at implementa
 
 | Content | Clause | PDF page | Shape |
 | --- | --- | --- | --- |
-| Test cross-reference matrix | 5.2.2 | 113, 114 | 36 and 22 rows x 6 columns |
-| Working-voltage determination | referred from 4.4.7.1.2 | 142 | paragraph |
+| Test cross-reference matrix | 5.2.2 | 112, 113, 114 | 9, 36 and 22 rows x 6 columns |
+| Working-voltage determination | 5.2.3.14 | 142 | bullets |
 | Internal SPD monitoring test | 5.2.3.15 | 142 | paragraph |
-| Preconditioning of material | 5.2.3.16 | 142 | paragraph |
+| Preconditioning of material | 5.2.3.16 | 143 | numbered steps |
 | Preconditioning, general | 5.2.3.1 | 123 | paragraph |
-| Accessible insulating surface, foil | 5.2.3.4.3 and 5.2.3.16 area | 130, 142 | paragraph, Figures 23 and 24 |
-| Assembled-equipment routine exemption | 5.2.3.1, 5.2.3.4 | 123, 125 | paragraph |
+| Accessible insulating surface, foil | 5.2.3.4.4 | 130 | paragraph, no figures |
+| Assembled-equipment routine exemption | 5.2.3.4.4 | 130 | bullets |
 
 ## Test classification comes from the matrix, not from a table title
 
@@ -67,15 +67,35 @@ rule.
 
 ### `iec62477_2022.test.preconditioning`
 
-Three sources must agree: the general clause, the material clause, and Table 26's own
-preconditioning row. Disagreement is a blocking review item. No precedence rule is invented
-here — if the three differ, a maintainer decides.
+Two routes under one required item, decided by the maintainer after extraction blocked on a
+genuine disagreement between the sources. The general clause names two preconditioning
+clauses and governs the electrical tests; clause 5.2.3.16 enumerates three stages and
+governs the solid-insulation and material requirements; Table 26 states no inventory of its
+own and defers to the general clause. The two gates differ legitimately, so one identifier
+cannot carry both readings:
+
+- `…preconditioning.electrical_tests`, from the general clause;
+- `…preconditioning.material`, from clause 5.2.3.16.
+
+The applicability decision selects between them, and its material rows are keyed to the
+specific requirements 5.2.3.16 names as invoking it — not to a broad "material" label, which
+would make that clause universal. Each route still blocks when its own inventory is not the
+reviewed shape, and Table 26's row must still defer rather than state an inventory.
 
 ### `iec62477_2022.test.accessible_surface_foil`
 
-Topology and procedure, including the foil geometry and placement the source states in
-prose. The two figures are retained as source references; neither is digitized, because the
-geometry is stated in the text.
+Grounded solely in clause 5.2.3.4.4, the accessible-surface rule inside the AC/DC voltage
+test: a non-conductive accessible surface is wrapped in conductive foil, the insulation test
+is performed, and the routine test may become a sample test. That substitution is modelled
+as a conditional permission on the gate, because the matrix classifies the general AC/DC
+voltage test as type and routine with no sample classification.
+
+This family carries **no** figure reference and no foil geometry. The metal foil in the
+thin-sheet mandrel clause is an unrelated requirement — a specimen foil for an
+electric-strength verification after mechanical conditioning — and belongs to the thin-sheet
+procedure, which is not one of the twenty-five required items and is not extracted. An
+earlier draft of this slice grounded the family in that clause because it is the foil the
+matrix names; the accessible-surface foil sits in a sub-clause the matrix does not list.
 
 ### `iec62477_2022.test.assembled_routine_exemption`
 
@@ -132,8 +152,14 @@ Only E2's pull request may use `Closes #34`, and only if the end-to-end passes. 
 not, the pull request states plainly what was demonstrated and what was not, and #34 stays
 open.
 
+As shipped, E2's pull request uses `Refs #34`. The end-to-end passes, but three contract
+items found during review are still open — #50, #52 and #53 — and each can change what an
+approved package contains. The end-to-end is rerun against their fixes before anything
+claims to close #34.
+
 ## Out of scope
 
 Consumer calculations in #35 to #37. IEC 62477-1:2012 behaviour. Renaming the IEC 60664-4
 identifiers that spell band figures, still an open decision. Comparing Tables 8 and 9
 against IEC 60664-1, tracked separately. Import performance.
+

@@ -103,7 +103,15 @@ def package_expectations(recipes: tuple[StandardRecipe, ...]) -> PackageExpectat
         for clause_spec in recipe.clauses:
             clause_rule_ids.add(clause_spec.semantic_id)
             raw_artifact_ids.add(clause_spec.semantic_id)
-            typed_results[clause_spec.semantic_id] = frozenset({clause_spec.semantic_id})
+            # A clause that declares routes declares all of them, exactly as a projected
+            # table does: a source stating one requirement under two gates yields a route
+            # per gate and no rule under the bare identifier, so the routes are the typed
+            # result rather than an addition to it.
+            routes = frozenset(clause_spec.projected_rule_ids)
+            projected_rule_ids |= routes
+            typed_results[clause_spec.semantic_id] = routes or frozenset(
+                {clause_spec.semantic_id}
+            )
         for curve_spec in recipe.curves:
             curve_rule_ids.add(curve_spec.semantic_id)
             raw_artifact_ids.add(curve_spec.semantic_id)

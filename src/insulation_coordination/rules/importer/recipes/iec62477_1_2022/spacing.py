@@ -433,9 +433,13 @@ _TABLE_9_PRINTED_WIRING_AXIS_MATCH = CrossStandardAxisMatchSpec(
 #: and the two compared grids are the evidence, which stays in the draft.
 #: Table F.2 has no counterpart among the approved IEC 60664-4 rules, so it is declared no
 #: check at all rather than being paired with an approximate target.
+#: A check identifier lives in its own ``crosscheck`` namespace rather than reading as a
+#: route of the rule it supports: ``inventory_report`` treats ``"<semantic id>.<route>"`` as
+#: a route of that item, so an unresolved check named after the rule would block the rule it
+#: exists to support.
 CROSS_STANDARD_CHECKS: tuple[CrossStandardCheckSpec, ...] = (
     CrossStandardCheckSpec(
-        id=f"{ids.CLEARANCE_REQUIREMENTS}.matches_part1_clearance",
+        id="iec62477-1:crosscheck:clearance:table=8",
         source_rule_id=ids.CLEARANCE_REQUIREMENTS,
         target_rule_id="iec60664-1:f2-clearance",
         source_grid_id=f"raw-{ids.CLEARANCE_REQUIREMENTS}",
@@ -452,7 +456,7 @@ CROSS_STANDARD_CHECKS: tuple[CrossStandardCheckSpec, ...] = (
         ),
     ),
     CrossStandardCheckSpec(
-        id=f"{ids.CREEPAGE_REQUIREMENTS}.printed_wiring_matches_part1_creepage",
+        id="iec62477-1:crosscheck:creepage:printed_wiring:table=9",
         source_rule_id=f"{ids.CREEPAGE_REQUIREMENTS}.printed_wiring",
         target_rule_id="iec60664-1:f5-pcb-creepage",
         source_grid_id=f"raw-{ids.CREEPAGE_REQUIREMENTS}.printed_wiring",
@@ -469,7 +473,7 @@ CROSS_STANDARD_CHECKS: tuple[CrossStandardCheckSpec, ...] = (
         ),
     ),
     CrossStandardCheckSpec(
-        id=f"{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f1_matches_part4_clearance",
+        id="iec62477-1:crosscheck:high_frequency:clearance:annex=f1",
         source_rule_id="iec62477-1:high_frequency:clearance:annex=f1",
         target_rule_id="iec60664-4:hf-clearance-table",
         source_grid_id=f"raw-{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f1",
@@ -487,7 +491,7 @@ CROSS_STANDARD_CHECKS: tuple[CrossStandardCheckSpec, ...] = (
         ),
     ),
     CrossStandardCheckSpec(
-        id=f"{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f3_matches_part4_creepage",
+        id="iec62477-1:crosscheck:high_frequency:creepage:annex=f3",
         source_rule_id="iec62477-1:high_frequency:creepage:annex=f3",
         target_rule_id="iec60664-4:hf-creepage-table",
         source_grid_id=f"raw-{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f3",

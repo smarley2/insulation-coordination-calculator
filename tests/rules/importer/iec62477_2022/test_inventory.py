@@ -49,15 +49,14 @@ def test_every_deferred_identifier_is_a_required_inventory_item() -> None:
     assert DEFERRED_SEMANTIC_IDS <= {item.semantic_id for item in REQUIRED_SOURCE_ITEMS}
 
 
-def test_only_verification_content_is_still_deferred() -> None:
-    """The deferred set only ever shrinks, and only verification content is ever in it.
+def test_nothing_is_deferred_any_more() -> None:
+    """Slice E closed the package: every required item has a recipe, so nothing is deferred.
 
-    Each Slice E task removes the identifier it delivers, so this asserts the direction of
-    travel rather than a fixed count: the five E2 items remain, and the set is empty when
-    Slice E closes.
+    While anything was deferred, completeness reported it as deferred rather than missing.
+    With the set empty, a required item without a recipe is reported as missing, which is
+    what the inventory gate refuses.
     """
-    assert all(item.startswith("iec62477_2022.test.") for item in DEFERRED_SEMANTIC_IDS)
-    assert len(DEFERRED_SEMANTIC_IDS) == 5
+    assert DEFERRED_SEMANTIC_IDS == frozenset()
 
 
 def test_every_item_this_build_does_not_defer_has_a_recipe() -> None:

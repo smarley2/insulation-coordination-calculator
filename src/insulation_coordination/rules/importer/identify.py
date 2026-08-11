@@ -510,10 +510,12 @@ class ClauseAuditSpec(FrozenModel):
     expected_bbox: tuple[float, float, float, float]
     expected_root_kind: Literal["paragraph", "bullets"]
     output_kind: Literal["decision", "procedure"]
-    #: Rules this clause projects to beyond one carrying the spec's own identifier -- for
-    #: example the guidance a source NOTE becomes. Declared so a projected route inherits
-    #: this clause's review inventory and source artifact, while an unrelated rule that
-    #: merely starts with the same identifier does not.
+    #: The rules this clause projects, when they are not exactly one carrying the spec's own
+    #: identifier -- the guidance a source NOTE becomes, or one route per gate where the
+    #: clause states a requirement other clauses also state. Declaring any route declares all
+    #: of them, so this is the clause's whole typed inventory whenever it is not empty.
+    #: Declared so a projected route inherits this clause's review inventory and source
+    #: artifact, while an unrelated rule that merely starts with the same identifier does not.
     projected_rule_ids: tuple[Identifier, ...] = ()
 
 
@@ -547,7 +549,15 @@ class CurveAuditSpec(FrozenModel):
 #: so naming their models would close an import cycle. The recipe modules that register a
 #: projector carry the precise signatures.
 type GridProjector = Callable[[Any, StandardIdentity], tuple[tuple[Any, ...], tuple[Any, ...]]]
-type ClauseProjector = GridProjector
+#: A clause projection additionally receives the reviewed draft the fragment came from. A
+#: source that states one requirement in several places -- a procedure whose classification
+#: only the test cross-reference matrix carries, a preconditioning requirement stated in two
+#: clauses and a table row -- cannot be projected from one fragment alone, and reading the
+#: sibling artifacts from the draft keeps that cross-reading inside the projection instead of
+#: spreading a second mechanism across review.
+type ClauseProjector = Callable[
+    [Any, StandardIdentity, Any], tuple[tuple[Any, ...], tuple[Any, ...]]
+]
 
 
 class StandardRecipe(FrozenModel):
@@ -587,11 +597,17 @@ class StandardRecipe(FrozenModel):
             raise ValueError("grid projector refers to an undeclared table spec")
         if set(self.clause_projectors) != clause_ids:
             raise ValueError("every clause spec needs exactly one projector")
-        if any(
-            spec.decision_route_ids and spec.semantic_id not in self.grid_projectors
-            for spec in self.tables
-        ):
-            raise ValueError("a table projecting decisions needs a grid projector")
+        for spec in self.tables:
+            if spec.semantic_id in self.grid_projectors:
+                continue
+            # Only a projection understands which reviewed text cell means what, so a text
+            # field table without one yields nothing. The registry lives here rather than on
+            # the spec, so the spec cannot check this itself -- but the recipe author is
+            # still stopped when the recipe is constructed instead of when a gate reads it.
+            if spec.text_field_table:
+                raise ValueError("a text field table needs a grid projector to read its cells")
+            if spec.decision_route_ids:
+                raise ValueError("a table projecting decisions needs a grid projector")
         return self
 
     def matches_text(self, text: str) -> bool:

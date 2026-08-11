@@ -53,8 +53,12 @@ SUPPLY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
         expected_root_kind="bullets",
         output_kind="decision",
         #: The clause's NOTEs become guidance rather than executable branches, and that
-        #: guidance is grounded in this same fragment.
-        projected_rule_ids=(f"{ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION}.guidance",),
+        #: guidance is grounded in this same fragment. A clause that declares routes declares
+        #: all of them, this one's own decision included.
+        projected_rule_ids=(
+            ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,
+            f"{ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION}.guidance",
+        ),
     ),
     ClauseAuditSpec(
         semantic_id=ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION,
@@ -219,6 +223,7 @@ _SYSTEM_VOLTAGE_BRANCHES: tuple[
 def project_system_voltage_resolution(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
+    _draft: object = None,
 ) -> tuple[tuple[DecisionRule | GuidanceRule, ...], tuple[SemanticProposal, ...]]:
     """Project the reviewed mains/non-mains system voltage clause into a decision."""
 
@@ -315,6 +320,7 @@ def _more_severe(first: str, second: str) -> str:
 def project_multiple_source_propagation(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
+    _draft: object = None,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the lettered alternatives of the two-supply clause into a decision."""
 
@@ -407,6 +413,7 @@ _COMBINED_CIRCUIT_REQUIREMENTS = ("more_severe_of_both_sides", "side_specific_fr
 def project_verified_barrier_transfer(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
+    _draft: object = None,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the isolation and no-isolation paths into a decision."""
 
@@ -506,6 +513,7 @@ _VERIFICATION_REFERENCES = ("inspection_and_dielectric_verification", "not_requi
 def project_spd_reduction_requirements(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
+    _draft: object = None,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the transient-limiter monitoring and reduction clause into a decision."""
 
@@ -680,6 +688,7 @@ def _frequency_threshold_hz(fragment: RawClauseFragment, label: str) -> Decimal:
 def project_hf_transformer_attenuation(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
+    _draft: object = None,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the isolating-transformer attenuation clause into a decision."""
 

@@ -134,6 +134,17 @@ def _curve_source_valid(source: SourceReference) -> bool:
     return bool(source.figure or _record_source_valid(source))
 
 
+def _procedure_source_valid(source: SourceReference) -> bool:
+    """A procedure locates by clause, and names a table or figure when it has one.
+
+    Table 26 and Table 30 project procedures whose locator carries both. A procedure
+    projected from a clause has no table and no figure to name, and requiring one would
+    refuse content the source states as prose -- the same reason a clause-derived decision
+    and the guidance a NOTE becomes locate by clause alone.
+    """
+    return _clause_source_valid(source)
+
+
 def _cell_source_valid(source: SourceReference) -> bool:
     return bool(
         source.clause
@@ -408,14 +419,14 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
             for decision in package.decisions
         )
         and all(
-            _record_source_valid(procedure.source)
+            _procedure_source_valid(procedure.source)
             and all(
-                _record_source_valid(step.source)
+                _procedure_source_valid(step.source)
                 for step in (*procedure.preparation_steps, *procedure.procedure_steps)
             )
             and (
                 procedure.acceptance_reference is None
-                or _record_source_valid(procedure.acceptance_reference)
+                or _procedure_source_valid(procedure.acceptance_reference)
             )
             for procedure in package.procedures
         )
