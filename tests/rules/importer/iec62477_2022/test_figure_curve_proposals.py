@@ -202,11 +202,14 @@ def test_none_dimensions_do_not_wildcard() -> None:
 def test_figure_7_refuses_a_more_specific_ac_basis(basis: str) -> None:
     """Selection is exact, so the refusal needs no evaluator machinery.
 
-    Figure 7 identifies the variant as AC without specifying RMS or peak, so only its own
-    ac_unspecified selector matches. This guards selection, not comparison: it does not
-    prove a consumer cannot select ac_unspecified and then compare the returned number
-    against an RMS or peak quantity. #36 and #37 add that consumer-level guard when they
-    add engineering comparisons.
+    Figure 7 identifies the variant as AC without specifying RMS or peak. Therefore the
+    semantic contract uses ``ac_unspecified`` and consumers must not infer a more specific
+    basis.
+
+    This guards selection, not comparison: it does not prove a consumer cannot select
+    ``ac_unspecified`` and then compare the returned number against an RMS or peak
+    quantity. #36 and #37 add that consumer-level guard when they add engineering
+    comparisons.
     """
     rule, _ = project_fault_time_voltage(
         _figures(),

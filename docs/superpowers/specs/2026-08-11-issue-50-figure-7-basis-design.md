@@ -13,9 +13,6 @@ This design replaces it with a fourth basis token, `ac_unspecified`, so the cont
 what the source states and nothing more, and so a consumer cannot obtain the curve by
 presenting an RMS or a peak quantity.
 
-Same defect class as the invented DVC designations removed in #48: a value in a contract
-that the document does not carry.
-
 ## Decision
 
 - Figure 5: `dc`
@@ -23,7 +20,7 @@ that the document does not carry.
 - Figure 7 DC variant: `dc`
 - Figure 7 AC variant: **`ac_unspecified`**
 
-Figures 5 and 6 state their basis explicitly and do not move.
+Figures 5 and 6 do not change.
 
 `ac_unspecified` rather than a plain `ac` token: a bare `ac` invites a later reader to
 supply the missing half by convention — "generic AC, therefore RMS". `ac_unspecified` makes
