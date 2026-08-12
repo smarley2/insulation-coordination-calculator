@@ -41,6 +41,7 @@ from insulation_coordination.rules.audit import (
 from insulation_coordination.rules.importer.approval import is_fully_resolved
 from insulation_coordination.rules.importer.extract import _REQUIRED_RECIPES, ImportedRuleDraft
 from insulation_coordination.rules.installation import install_rule_package
+from insulation_coordination.ui.axis_review import AxisReviewDialog, AxisReviewModel
 from insulation_coordination.ui.curve_review import CurveReviewDialog
 from insulation_coordination.ui.equation_review import EquationReviewDialog
 from insulation_coordination.ui.raw_grid_review import RawGridReviewDialog, source_pdf_paths
@@ -147,6 +148,10 @@ class RulesManagerWindow(QWidget):
         self._review_curves_button.setEnabled(False)
         self._review_curves_button.clicked.connect(self._on_review_curves_clicked)
         review_actions.addWidget(self._review_curves_button)
+        self._review_axis_selectors_button = QPushButton("Review axis selectors…")
+        self._review_axis_selectors_button.setEnabled(False)
+        self._review_axis_selectors_button.clicked.connect(self._on_review_axis_selectors_clicked)
+        review_actions.addWidget(self._review_axis_selectors_button)
         review_layout.addLayout(review_actions)
 
         self._review_approve_button = QPushButton("Approve draft and build package…")
@@ -270,6 +275,10 @@ class RulesManagerWindow(QWidget):
         return self._review_curves_button.isEnabled()
 
     @property
+    def axis_review_enabled(self) -> bool:
+        return self._review_axis_selectors_button.isEnabled()
+
+    @property
     def review_approve_enabled(self) -> bool:
         return self._review_approve_button.isEnabled()
 
@@ -304,6 +313,7 @@ class RulesManagerWindow(QWidget):
             self._review_tables_button.setEnabled(False)
             self._review_equations_button.setEnabled(False)
             self._review_curves_button.setEnabled(False)
+            self._review_axis_selectors_button.setEnabled(False)
             return
         from insulation_coordination.rules.importer.review import (
             recipe_derived_items,
@@ -323,6 +333,7 @@ class RulesManagerWindow(QWidget):
             tables_done and bool(equation_pending or mapping_pending)
         )
         self._review_curves_button.setEnabled(bool(self._draft.raw_figures))
+        self._review_axis_selectors_button.setEnabled(bool(self._draft.axis_selector_proposals))
         for item in table_pending:
             flagged = sum(
                 candidate.semantic_id.startswith(f"raw-{item.semantic_id}:")
@@ -387,6 +398,14 @@ class RulesManagerWindow(QWidget):
         )
         dialog.draft_changed.connect(self.set_draft)
         dialog.exec()
+
+    def _on_review_axis_selectors_clicked(self) -> None:
+        if self._draft is None:
+            return
+        model = AxisReviewModel(self._draft)
+        dialog = AxisReviewDialog(model)
+        dialog.exec()
+        self.set_draft(model.draft)
 
     def approve_reviewed_draft(self, approver: str, notes: str) -> None:
         """Project reviewed content, approve, and switch to the approved package.

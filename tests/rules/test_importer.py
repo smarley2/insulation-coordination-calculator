@@ -44,6 +44,7 @@ from insulation_coordination.rules.archive import load_rule_package, write_rule_
 from insulation_coordination.rules.importer import recipes as recipe_registry
 from insulation_coordination.rules.importer.approval import (
     ApprovalError,
+    _require_logged_content,
     approve_draft,
     is_fully_resolved,
     record_correction,
@@ -61,6 +62,7 @@ from insulation_coordination.rules.importer.extract import (
 )
 from insulation_coordination.rules.importer.identify import (
     AmbiguousStandardError,
+    AxisSelectorSpec,
     FormulaAuditSpec,
     MappingAuditSpec,
     PasswordRequiredError,
@@ -1082,6 +1084,45 @@ def test_review_inventory_and_locators_are_immutable(
             notes="Cannot delete inventory",
             resolve=(item,),
         )
+
+
+def test_extraction_logs_the_axis_selector_proposals_it_attaches(
+    supported_pdfs: tuple[Path, Path, Path],
+    injected_recipes: tuple[StandardRecipe, ...],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The genesis audit must cover every collection extraction attaches to its draft.
+
+    Extraction once stamped a genesis digest that omitted the axis selector proposals it
+    attached, so the very first correction of any real import refused with an unlogged
+    content change. Only a recipe that declares an axis reaches that state, and no public
+    recipe did, which is why the licensed path failed while the public suite stayed green.
+    A reviewer-supplied axis needs no keyword grammar, so this declares one without any
+    source wording.
+    """
+    part1_recipe = injected_recipes[0]
+    spec = part1_recipe.tables[0].model_copy(
+        update={
+            "axis_selectors": (
+                AxisSelectorSpec(
+                    axis="row",
+                    expected_positions=2,
+                    selector_kind="dvc_designation",
+                    reviewer_supplied=True,
+                ),
+            )
+        }
+    )
+    monkeypatch.setattr(
+        recipe_registry,
+        "RECIPES",
+        (part1_recipe.model_copy(update={"tables": (spec,)}), *injected_recipes[1:]),
+    )
+
+    draft = extract_draft(supported_pdfs)
+
+    assert draft.axis_selector_proposals
+    _require_logged_content(draft)
 
 
 def test_import_review_cannot_be_erased_by_plain_draft_conversion(

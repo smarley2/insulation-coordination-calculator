@@ -39,6 +39,7 @@ from insulation_coordination.domain.rules import (
     PiecewiseCurveRule,
     ProcedureRule,
     RuleKind,
+    RulePackageError,
     SourceReference,
     Table,
     Variable,
@@ -46,6 +47,13 @@ from insulation_coordination.domain.rules import (
 from insulation_coordination.domain.rules import Expression as RuleExpression
 from insulation_coordination.rules.archive import _canonical_json
 from insulation_coordination.rules.importer.approval import ApprovalError, record_correction
+from insulation_coordination.rules.importer.axis_selectors import (
+    AxisSelector,
+    AxisSelectorProposal,
+    AxisSelectorReview,
+    ConfirmedAxes,
+    selector_sha256,
+)
 from insulation_coordination.rules.importer.curves import (
     ManualPlotCalibration,
     RawFigure,
@@ -61,6 +69,8 @@ from insulation_coordination.rules.importer.extract import (
     RawGrid,
     RawGridCell,
     SemanticProposal,
+    axis_evidence_sha256,
+    axis_positions,
     canonical_model_sha256,
     is_recipe_derived,
 )
@@ -70,6 +80,7 @@ from insulation_coordination.rules.importer.identify import (
     MappingAuditSpec,
     StandardIdentity,
     StandardRecipe,
+    TableAuditSpec,
 )
 from insulation_coordination.rules.importer.projection import (
     project_formula,
@@ -1182,7 +1193,8 @@ def build_reviewed_draft(
             if grid_projector is None:
                 tables[table_spec.semantic_id] = project_table(identity, table_spec, grid)
                 continue
-            projected, _proposals = grid_projector(grid, identity)
+            confirmed_axes = resolve_confirmed_axis_selectors(table_spec, grid, draft)
+            projected, _proposals = grid_projector(grid, identity, confirmed_axes)
             collect(projected)
         for formula_spec in recipe.formulas:
             formulas[formula_spec.semantic_id] = project_formula(identity, formula_spec, equations)
@@ -2056,3 +2068,234 @@ def review_curve_variant(
     ):
         return mark_proposal_reviewed(changed, rule.id, actor=actor, notes=notes)
     return changed
+
+
+class AxisResolutionError(RulePackageError):
+    """A grid's reviewed axis selectors are missing, duplicated, stale or of the wrong kind."""
+
+
+def live_axis_evidence_sha256(
+    draft: ImportedRuleDraft, grid_id: str, axis: str, index: int
+) -> str | None:
+    """One axis position's evidence digest, recomputed from the draft's own live grid.
+
+    Resolves ``grid_id`` to its grid and its declaring spec the way the approval gate does.
+    Nothing re-derives ``axis_selector_proposals`` after a correction, so the digest stored on
+    a proposal is the pre-correction one: every caller that has to decide whether a review is
+    current reads the live digest through here instead. ``None`` for a grid or a spec this
+    draft cannot resolve, which no recorded digest can equal, so such a position reads as
+    unreviewed rather than as silently current.
+    """
+
+    from insulation_coordination.rules.importer.recipes import RECIPES
+
+    grid = next((item for item in draft.raw_grids if item.id == grid_id), None)
+    spec = next(
+        (
+            item
+            for recipe in RECIPES
+            for item in recipe.tables
+            if item.axis_selectors and f"raw-{item.semantic_id}" == grid_id
+        ),
+        None,
+    )
+    if grid is None or spec is None:
+        return None
+    return axis_evidence_sha256(grid, spec, axis, index)
+
+
+def axis_review_is_current(
+    review: AxisSelectorReview,
+    proposal: AxisSelectorProposal,
+    draft: ImportedRuleDraft,
+) -> bool:
+    """Whether one review is still bound to its proposal's identity and current evidence.
+
+    The resolver, the approval gate and the review UI must agree exactly on what counts as
+    current, so all three call this instead of each repeating the comparison. The evidence
+    digest is always the live one; no caller can supply a stored value. What keeps a header
+    cell out of a correction's reach is ``correctable_coordinates``, which filters to
+    ``cell.role == "data"`` -- not ``_require_safe_raw_grid_correction``, which freezes a
+    cell's raw text, role, source and coordinates but permits its value, qualifier, suffix,
+    footnotes, blank semantics and reference token on any cell, header included.
+    """
+
+    return (
+        review.grid_id == proposal.grid_id
+        and review.axis == proposal.axis
+        and review.index == proposal.index
+        and review.proposal_sha256 == proposal.proposal_sha256
+        and review.evidence_sha256
+        == live_axis_evidence_sha256(draft, proposal.grid_id, proposal.axis, proposal.index)
+    )
+
+
+def _require_distinct_selectors(
+    grid_id: str, axis: str, selectors: dict[int, AxisSelector]
+) -> None:
+    """Refuse two positions of one axis confirmed as the same selector.
+
+    ``evaluate_decision`` returns the first matcher that fits, so two positions resolving to
+    equal selectors would produce duplicate matchers and silently serve whichever comes
+    first, with no error anywhere. The old positional contract made this impossible by
+    construction; resolution must refuse it explicitly now. Keyed on ``grid_id`` rather than a
+    ``TableAuditSpec`` so ``review_axis_selector`` can run the same check against whatever
+    positions are already reviewed, without needing the live grid resolution requires.
+    """
+
+    seen: dict[str, int] = {}
+    for index in sorted(selectors):
+        digest = selector_sha256(selectors[index])
+        if digest in seen:
+            raise AxisResolutionError(
+                f"{grid_id} {axis} positions {seen[digest]} and {index} confirm the same selector"
+            )
+        seen[digest] = index
+
+
+def resolve_confirmed_axis_selectors(
+    spec: TableAuditSpec,
+    grid: RawGrid,
+    draft: ImportedRuleDraft,
+) -> ConfirmedAxes:
+    """Reviewed axis facts for one grid, or an empty result for a spec that declares none.
+
+    Resolution owns every refusal, so a projector receives either a complete context or an
+    exception. A projector never inspects review state itself.
+    """
+
+    if not spec.axis_selectors:
+        return ConfirmedAxes()
+    rows: dict[int, AxisSelector] = {}
+    columns: dict[int, AxisSelector] = {}
+    for axis_spec in spec.axis_selectors:
+        for index in axis_positions(spec, axis_spec, grid):
+            proposal = next(
+                (
+                    item
+                    for item in draft.axis_selector_proposals
+                    if item.grid_id == grid.id
+                    and item.axis == axis_spec.axis
+                    and item.index == index
+                ),
+                None,
+            )
+            if proposal is None:
+                raise AxisResolutionError(
+                    f"{grid.id} {axis_spec.axis} position {index} has no axis proposal"
+                )
+            exact = [
+                review
+                for review in draft.axis_selector_reviews
+                if axis_review_is_current(review, proposal, draft)
+            ]
+            if len(exact) != 1:
+                raise AxisResolutionError(
+                    f"{grid.id} {axis_spec.axis} position {index} needs exactly one current "
+                    f"review, found {len(exact)}"
+                )
+            confirmed = exact[0].confirmed_selector
+            if confirmed.selector_kind != axis_spec.selector_kind:
+                raise AxisResolutionError(
+                    f"{grid.id} {axis_spec.axis} position {index} confirmed a "
+                    f"{confirmed.selector_kind} selector but the axis declares "
+                    f"{axis_spec.selector_kind}"
+                )
+            target = rows if axis_spec.axis == "row" else columns
+            target[index] = confirmed
+    _require_distinct_selectors(grid.id, "row", rows)
+    _require_distinct_selectors(grid.id, "column", columns)
+    return ConfirmedAxes(rows=rows, columns=columns)
+
+
+def review_axis_selector(
+    draft: ImportedRuleDraft,
+    *,
+    grid_id: str,
+    axis: str,
+    index: int,
+    selector: AxisSelector,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Record one exact axis review: confirm, correct, or supply where nothing was proposed.
+
+    The review binds the current proposal hash and the current per-position evidence hash, so
+    a change to either drops it and re-opens review. Also refuses a selector that would
+    duplicate another position's already-confirmed selector on the same axis of the same grid,
+    using the same distinctness check resolution enforces -- so the reviewer sees the refusal
+    at the moment of the mistake rather than only once the whole axis is complete.
+    """
+
+    if not actor.strip() or not notes.strip():
+        raise ApprovalError("axis review actor and notes are required")
+    proposal = next(
+        (
+            item
+            for item in draft.axis_selector_proposals
+            if item.grid_id == grid_id and item.axis == axis and item.index == index
+        ),
+        None,
+    )
+    if proposal is None:
+        raise ValueError(f"unknown axis position: {grid_id} {axis} {index}")
+    if selector.selector_kind != proposal.selector_kind:
+        # Refused here rather than only at resolution, for the same reason the distinctness
+        # check moved: the reviewer sees the mistake at the moment of it. It also keeps every
+        # confirmed selector on a position readable as the kind its axis declares, which the
+        # review dialog relies on to pre-fill its editor.
+        raise AxisResolutionError(
+            f"{grid_id} {axis} {index} declares {proposal.selector_kind} selectors, "
+            f"not {selector.selector_kind}"
+        )
+    # The live digest, never the proposal's stored one: a correction to this position's own
+    # evidence leaves that stored value behind, and a review carrying it could never be
+    # current again -- so no review of this position could ever clear its approval blocker.
+    evidence = live_axis_evidence_sha256(draft, grid_id, proposal.axis, index)
+    if evidence is None:
+        raise AxisResolutionError(
+            f"{grid_id} {axis} {index} has no live grid and spec to read its evidence from"
+        )
+    review = AxisSelectorReview(
+        grid_id=grid_id,
+        axis=proposal.axis,
+        index=index,
+        proposal_sha256=proposal.proposal_sha256,
+        evidence_sha256=evidence,
+        confirmed_selector=selector,
+        actor=actor.strip(),
+        recorded_at=datetime.now(UTC),
+        notes=notes.strip(),
+    )
+    kept = tuple(
+        item
+        for item in draft.axis_selector_reviews
+        if not (item.grid_id == grid_id and item.axis == axis and item.index == index)
+    )
+    changed = draft.model_copy(update={"axis_selector_reviews": (*kept, review)})
+    # Only the reviews resolution would actually use reserve a selector. A stale one -- this
+    # axis has another position whose own evidence changed -- must not refuse the position
+    # that legitimately reads its selector, which nothing could then ever confirm.
+    proposals = {
+        (item.axis, item.index): item
+        for item in changed.axis_selector_proposals
+        if item.grid_id == grid_id
+    }
+    _require_distinct_selectors(
+        grid_id,
+        axis,
+        {
+            item.index: item.confirmed_selector
+            for item in changed.axis_selector_reviews
+            if item.grid_id == grid_id
+            and item.axis == axis
+            and (item.axis, item.index) in proposals
+            and axis_review_is_current(item, proposals[item.axis, item.index], changed)
+        },
+    )
+    return record_correction(
+        draft,
+        changed,
+        actor=actor,
+        notes=f"record exact axis selector review: {notes}",
+    )

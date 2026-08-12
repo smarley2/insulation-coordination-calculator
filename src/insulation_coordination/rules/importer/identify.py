@@ -23,6 +23,7 @@ from insulation_coordination.domain.rules import (
     RuleKind,
     SourceReference,
 )
+from insulation_coordination.rules.importer.axis_selectors import AxisSelector
 
 LOGGER = logging.getLogger(__name__)
 MAX_STANDARD_PDF_BYTES = 128 * 1024 * 1024
@@ -236,6 +237,60 @@ class TokenGrammarSpec(FrozenModel):
         return None
 
 
+class AxisKeywordRule(FrozenModel):
+    """Short neutral keywords that together identify one axis position's selector.
+
+    Every keyword must appear in the position's reviewed header text. Keywords are single
+    generic words: a phrase would be source wording, which must not enter this repository.
+    """
+
+    keywords: tuple[str, ...] = Field(min_length=1)
+    #: Keywords whose presence disqualifies this rule. One generic word can occur in more than
+    #: one position's header text, and a rule that matched several positions would propose
+    #: nothing at all: exactly one rule must match, or the position goes to the reviewer.
+    excluded_keywords: tuple[str, ...] = ()
+    selector: AxisSelector
+
+    @model_validator(mode="after")
+    def _keywords_are_single_words(self) -> AxisKeywordRule:
+        for keyword in (*self.keywords, *self.excluded_keywords):
+            if " " in keyword or keyword != keyword.lower() or not 0 < len(keyword) <= 12:
+                raise ValueError("an axis keyword must be one short lowercase word")
+        if set(self.keywords) & set(self.excluded_keywords):
+            raise ValueError("a keyword cannot both be required and disqualify its own rule")
+        return self
+
+
+class AxisSelectorSpec(FrozenModel):
+    """How one axis of a grid gets its reviewed semantic selectors."""
+
+    axis: Literal["row", "column"]
+    expected_positions: int = Field(ge=1)
+    #: The one selector kind every confirmed selector on this axis must carry. Resolution
+    #: refuses a confirmed selector of any other kind, so a column selector confirmed on a
+    #: row position dies at resolution rather than surfacing later as an AttributeError from
+    #: a projector's ``cast``.
+    selector_kind: Literal["dvc_designation", "table2_quantity", "protection_target"]
+    keyword_rules: tuple[AxisKeywordRule, ...] = ()
+    #: This axis has no public grammar, so extraction proposes nothing and the reviewer
+    #: supplies every selector. Used where a text grammar would require the source's header
+    #: wording in public code.
+    reviewer_supplied: bool = False
+
+    @model_validator(mode="after")
+    def _grammar_or_reviewer_but_not_both(self) -> AxisSelectorSpec:
+        if self.reviewer_supplied and self.keyword_rules:
+            raise ValueError("a reviewer-supplied axis declares no keyword rules")
+        if not self.reviewer_supplied and not self.keyword_rules:
+            raise ValueError("an axis needs keyword rules unless it is reviewer-supplied")
+        # Declared inconsistently, extraction proposes a selector of a kind this axis does not
+        # declare, and the review-time kind check then refuses the reviewer's attempt to
+        # confirm the very reading extraction proposed: the position becomes unconfirmable.
+        if any(rule.selector.selector_kind != self.selector_kind for rule in self.keyword_rules):
+            raise ValueError("a keyword rule must propose the selector kind its axis declares")
+        return self
+
+
 class TableAuditSpec(FrozenModel):
     semantic_id: Identifier
     source_table: ReferenceText
@@ -274,6 +329,9 @@ class TableAuditSpec(FrozenModel):
     blank_cells: tuple[BlankCellSpec, ...] = ()
     reference_slots: tuple[ReferenceSlotSpec, ...] = ()
     token_grammar: TokenGrammarSpec | None = None
+    #: Axes whose data positions carry reviewed semantic selectors. A spec that declares any
+    #: cannot be projected until every position of every declared axis has an exact review.
+    axis_selectors: tuple[AxisSelectorSpec, ...] = ()
     page_search_radius: int = Field(default=0, ge=0, le=5)
     interpolation: Literal["none", "linear"] = "none"
     #: Decision rule IDs this table projects to instead of a ``Table``. Declared on the
@@ -544,11 +602,14 @@ class CurveAuditSpec(FrozenModel):
 
 
 #: A recipe-declared projection from one reviewed raw artifact to typed rules, returning
-#: the projected rules and their semantic proposals. The artifact and rule types stay
-#: unannotated here on purpose: ``extract.py`` and ``clauses.py`` both import this module,
-#: so naming their models would close an import cycle. The recipe modules that register a
-#: projector carry the precise signatures.
-type GridProjector = Callable[[Any, StandardIdentity], tuple[tuple[Any, ...], tuple[Any, ...]]]
+#: the projected rules and their semantic proposals. The third parameter carries the
+#: caller's already-resolved ``ConfirmedAxes`` for the artifact's grid -- reviewed and
+#: current, or empty for a spec that declares no axis selectors -- uniformly across every
+#: registered projector, whether or not a given projector reads it yet. The artifact and
+#: rule types stay unannotated here on purpose: ``extract.py`` and ``clauses.py`` both
+#: import this module, so naming their models would close an import cycle. The recipe
+#: modules that register a projector carry the precise signatures.
+type GridProjector = Callable[[Any, StandardIdentity, Any], tuple[tuple[Any, ...], tuple[Any, ...]]]
 #: A clause projection additionally receives the reviewed draft the fragment came from. A
 #: source that states one requirement in several places -- a procedure whose classification
 #: only the test cross-reference matrix carries, a preconditioning requirement stated in two

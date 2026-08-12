@@ -20,6 +20,7 @@ from insulation_coordination.domain.rules import (
     ProcedureStep,
     SourceReference,
 )
+from insulation_coordination.rules.importer.axis_selectors import ConfirmedAxes
 from insulation_coordination.rules.importer.extract import (
     RawGrid,
     SemanticProposal,
@@ -200,6 +201,8 @@ def _condition(grid: RawGrid, row: int, column: int) -> str:
 def project_impulse_procedure(
     grid: RawGrid,
     identity: StandardIdentity,
+    # ponytail: unused here, the interface is uniform
+    confirmed_axes: ConfirmedAxes,
 ) -> tuple[tuple[ProcedureRule, ...], tuple[SemanticProposal, ...]]:
     """Project Table 26 into one reviewed procedure per variant."""
 
@@ -744,6 +747,8 @@ def _partial_discharge_applicability(
 def project_partial_discharge(
     grid: RawGrid,
     identity: StandardIdentity,
+    # ponytail: unused here, the interface is uniform
+    confirmed_axes: ConfirmedAxes,
 ) -> tuple[tuple[ProcedureRule | DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project Table 30 into one reviewed procedure and its applicability decision."""
 

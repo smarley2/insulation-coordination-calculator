@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from insulation_coordination.domain.rules import SourceReference
+from insulation_coordination.rules.importer.axis_selectors import ConfirmedAxes
 from insulation_coordination.rules.importer.extract import (
     RawGrid,
     RawGridCell,
@@ -138,7 +139,7 @@ def test_the_cells_are_reviewed_text_not_quantities() -> None:
 
 
 def test_the_projection_yields_one_procedure_per_variant() -> None:
-    rules, proposals = project_impulse_procedure(_grid(), IDENTITY)
+    rules, proposals = project_impulse_procedure(_grid(), IDENTITY, ConfirmedAxes())
     assert {rule.id for rule in rules} == set(TABLE_26.decision_route_ids)
     assert {proposal.rule_kind for proposal in proposals} == {"procedure"}
     assert len(proposals) == len(rules) == 3
@@ -149,7 +150,7 @@ def test_the_projection_yields_one_procedure_per_variant() -> None:
 
 
 def test_procedure_steps_are_numbered_consecutively_from_one() -> None:
-    rules, _proposals = project_impulse_procedure(_grid(), IDENTITY)
+    rules, _proposals = project_impulse_procedure(_grid(), IDENTITY, ConfirmedAxes())
     for rule in rules:
         assert [step.order for step in rule.procedure_steps] == list(
             range(1, len(rule.procedure_steps) + 1)
@@ -157,18 +158,18 @@ def test_procedure_steps_are_numbered_consecutively_from_one() -> None:
 
 
 def test_a_condition_stated_once_reaches_every_variant() -> None:
-    rules, _proposals = project_impulse_procedure(_grid(), IDENTITY)
+    rules, _proposals = project_impulse_procedure(_grid(), IDENTITY, ConfirmedAxes())
     assert len({rule.repetitions for rule in rules}) == 1
 
 
 def test_a_variant_specific_condition_stays_with_its_variant() -> None:
-    rules, _proposals = project_impulse_procedure(_grid(), IDENTITY)
+    rules, _proposals = project_impulse_procedure(_grid(), IDENTITY, ConfirmedAxes())
     equipment = {rule.id: tuple(step.text for step in rule.procedure_steps) for rule in rules}
     assert len({steps for steps in equipment.values()}) == 3
 
 
 def test_every_step_carries_the_row_it_came_from() -> None:
-    rules, _proposals = project_impulse_procedure(_grid(), IDENTITY)
+    rules, _proposals = project_impulse_procedure(_grid(), IDENTITY, ConfirmedAxes())
     for rule in rules:
         for step in rule.procedure_steps:
             assert step.source.row is not None
@@ -198,7 +199,7 @@ def test_a_printing_with_an_extra_subject_row_blocks() -> None:
         }
     )
     with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_PROCEDURE_STRUCTURE"):
-        project_impulse_procedure(taller, IDENTITY)
+        project_impulse_procedure(taller, IDENTITY, ConfirmedAxes())
 
 
 def test_a_variant_column_that_disappears_blocks() -> None:
@@ -212,15 +213,19 @@ def test_a_variant_column_that_disappears_blocks() -> None:
         }
     )
     with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_PROCEDURE_STRUCTURE"):
-        project_impulse_procedure(narrower, IDENTITY)
+        project_impulse_procedure(narrower, IDENTITY, ConfirmedAxes())
 
 
 def test_a_grid_from_another_document_is_refused() -> None:
     with pytest.raises(ValueError, match="does not match its identified source"):
-        project_impulse_procedure(_grid(), IDENTITY.model_copy(update={"edition": "2"}))
+        project_impulse_procedure(
+            _grid(), IDENTITY.model_copy(update={"edition": "2"}), ConfirmedAxes()
+        )
 
 
 def test_a_foreign_grid_is_refused() -> None:
     grid = _grid()
     with pytest.raises(ValueError, match="requires its own grid"):
-        project_impulse_procedure(grid.model_copy(update={"id": "raw-other"}), IDENTITY)
+        project_impulse_procedure(
+            grid.model_copy(update={"id": "raw-other"}), IDENTITY, ConfirmedAxes()
+        )

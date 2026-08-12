@@ -22,8 +22,8 @@ from insulation_coordination.rules.importer.extract import (
     ImportReviewItem,
     ImportReviewResolution,
     SemanticProposal,
-    _content_digest,
     canonical_model_sha256,
+    draft_content_digest,
 )
 from insulation_coordination.rules.importer.identify import StandardRecipe
 from insulation_coordination.rules.validation import validate_rule_package
@@ -537,69 +537,18 @@ def record_correction(
     _require_safe_equation_correction(original, changed)
     if changed.raw_figures != original.raw_figures:
         raise ApprovalError("a correction cannot rewrite extracted raw figure evidence")
-    content_changed = (
-        changed.tables,
-        changed.formulas,
-        changed.mappings,
-        changed.decisions,
-        changed.procedures,
-        changed.guidance,
-        changed.curves,
-        changed.extracted_equations,
-    ) != (
-        original.tables,
-        original.formulas,
-        original.mappings,
-        original.decisions,
-        original.procedures,
-        original.guidance,
-        original.curves,
-        original.extracted_equations,
-    )
-    raw_changed = (
-        changed.raw_grids,
-        changed.raw_clause_fragments,
-        changed.raw_figures,
-        changed.curve_calibrations,
-        changed.manual_curve_variant_inputs,
-        changed.curve_variant_reviews,
-    ) != (
-        original.raw_grids,
-        original.raw_clause_fragments,
-        original.raw_figures,
-        original.curve_calibrations,
-        original.manual_curve_variant_inputs,
-        original.curve_variant_reviews,
-    )
-    if not content_changed and not raw_changed and not resolve and not reopen:
+    # The chain this record extends is the one ``_require_logged_content`` verifies, so the
+    # link it writes has to be that same function of that same draft.
+    before = draft_content_digest(original)
+    # Also what "changed" means here: every content collection, read through the one function,
+    # so a collection nobody remembered to compare cannot pass as unchanged.
+    if before == draft_content_digest(changed) and not resolve and not reopen:
         raise ApprovalError("a correction must change rule content")
-    original_reviews = original.review_items
-    changed_reviews = changed.review_items
     corrected_mappings = tuple(
         mapping.model_copy(update={"approved": False}) for mapping in changed.mappings
     )
     semantic_proposals = _sync_semantic_proposals(original, changed)
     _require_logged_content(original)
-    before = _content_digest(
-        original.tables,
-        original.formulas,
-        original.mappings,
-        original_reviews,
-        original.raw_grids,
-        original.raw_clause_fragments,
-        original.manifest.source_documents,
-        original.source_identities,
-        original.review_resolutions,
-        original.extracted_equations,
-        decisions=original.decisions,
-        procedures=original.procedures,
-        guidance=original.guidance,
-        curves=original.curves,
-        raw_figures=original.raw_figures,
-        curve_calibrations=original.curve_calibrations,
-        manual_curve_variant_inputs=original.manual_curve_variant_inputs,
-        curve_variant_reviews=original.curve_variant_reviews,
-    )
     recorded_at = datetime.now(UTC)
     resolutions = _require_valid_review_resolutions(
         original,
@@ -610,26 +559,18 @@ def record_correction(
         notes=notes.strip(),
         recorded_at=recorded_at,
     )
-    after = _content_digest(
-        changed.tables,
-        changed.formulas,
-        corrected_mappings,
-        changed_reviews,
-        changed.raw_grids,
-        changed.raw_clause_fragments,
-        changed.manifest.source_documents,
-        changed.source_identities,
-        resolutions,
-        changed.extracted_equations,
-        decisions=changed.decisions,
-        procedures=changed.procedures,
-        guidance=changed.guidance,
-        curves=changed.curves,
-        raw_figures=changed.raw_figures,
-        curve_calibrations=changed.curve_calibrations,
-        manual_curve_variant_inputs=changed.manual_curve_variant_inputs,
-        curve_variant_reviews=changed.curve_variant_reviews,
+    corrected = changed.model_copy(
+        update={
+            "mappings": corrected_mappings,
+            "review_resolutions": resolutions,
+            "semantic_proposals": semantic_proposals,
+        }
     )
+    # The same chicken-and-egg ``extract_draft`` solves: the link this record writes must be
+    # the digest of the draft that carries the record. So digest the corrected content while
+    # the manifest is still the original's -- ``draft_content_digest`` reads only its source
+    # documents, which a correction cannot change -- then copy the new manifest in below.
+    after = draft_content_digest(corrected)
     audit_records = tuple(
         ApprovalRecord(
             action="correction",
@@ -654,27 +595,7 @@ def record_correction(
             )
         }
     )
-    return ImportedRuleDraft(
-        manifest=manifest,
-        tables=changed.tables,
-        formulas=changed.formulas,
-        mappings=corrected_mappings,
-        decisions=changed.decisions,
-        procedures=changed.procedures,
-        guidance=changed.guidance,
-        curves=changed.curves,
-        review_items=changed.review_items,
-        review_resolutions=resolutions,
-        raw_grids=changed.raw_grids,
-        raw_clause_fragments=changed.raw_clause_fragments,
-        raw_figures=changed.raw_figures,
-        curve_calibrations=changed.curve_calibrations,
-        manual_curve_variant_inputs=changed.manual_curve_variant_inputs,
-        curve_variant_reviews=changed.curve_variant_reviews,
-        extracted_equations=changed.extracted_equations,
-        semantic_proposals=semantic_proposals,
-        source_identities=changed.source_identities,
-    )
+    return corrected.model_copy(update={"manifest": manifest})
 
 
 def _require_complete_inventory(draft: DraftRulePackage) -> None:
@@ -756,36 +677,7 @@ def _require_logged_content(draft: DraftRulePackage) -> None:
         if match.group(1) != expected:
             raise ApprovalError("draft has a broken correction audit chain")
         expected = match.group(2)
-    reviews = draft.review_items if isinstance(draft, ImportedRuleDraft) else ()
-    raw_grids = draft.raw_grids if isinstance(draft, ImportedRuleDraft) else ()
-    fragments = draft.raw_clause_fragments if isinstance(draft, ImportedRuleDraft) else ()
-    actual = _content_digest(
-        draft.tables,
-        draft.formulas,
-        draft.mappings,
-        reviews,
-        raw_grids,
-        fragments,
-        draft.manifest.source_documents,
-        draft.source_identities if isinstance(draft, ImportedRuleDraft) else (),
-        draft.review_resolutions if isinstance(draft, ImportedRuleDraft) else (),
-        draft.extracted_equations if isinstance(draft, ImportedRuleDraft) else (),
-        decisions=draft.decisions,
-        procedures=draft.procedures,
-        guidance=draft.guidance,
-        curves=draft.curves,
-        raw_figures=(draft.raw_figures if isinstance(draft, ImportedRuleDraft) else ()),
-        curve_calibrations=(
-            draft.curve_calibrations if isinstance(draft, ImportedRuleDraft) else ()
-        ),
-        manual_curve_variant_inputs=(
-            draft.manual_curve_variant_inputs if isinstance(draft, ImportedRuleDraft) else ()
-        ),
-        curve_variant_reviews=(
-            draft.curve_variant_reviews if isinstance(draft, ImportedRuleDraft) else ()
-        ),
-    )
-    if actual != expected:
+    if draft_content_digest(draft) != expected:
         raise ApprovalError("draft contains an unlogged content change")
 
 
@@ -846,7 +738,13 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
                 # that, so a rule cannot drift from the grid it claims to come from. The
                 # projector comes from the recipe, so this stays free of any one standard's
                 # identifiers.
-                expected, _proposals = projector(grid, identity)
+                from insulation_coordination.rules.importer.review import (
+                    resolve_confirmed_axis_selectors,
+                )
+
+                expected, _proposals = projector(
+                    grid, identity, resolve_confirmed_axis_selectors(spec, grid, draft)
+                )
                 # Compared by identifier, not by position: one projection may return several
                 # kinds, and the draft keeps each kind in its own collection, so the order a
                 # rule appears in says nothing about whether it matches.
@@ -1342,6 +1240,34 @@ def approval_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
                         semantic_id=variant.id,
                         message=(
                             f"curve variant {variant.id} lacks one exact current manual review"
+                        ),
+                    )
+                )
+    from insulation_coordination.rules.importer.review import axis_review_is_current
+
+    for spec in (spec for recipe in RECIPES for spec in recipe.tables if spec.axis_selectors):
+        grid_id = f"raw-{spec.semantic_id}"
+        for axis_proposal in (
+            item for item in draft.axis_selector_proposals if item.grid_id == grid_id
+        ):
+            # The same comparison the resolver uses, against the same live grid, so this gate
+            # and ``resolve_confirmed_axis_selectors`` can never disagree about what counts as
+            # a current review. A grid this draft no longer carries resolves no live evidence,
+            # so every review of it reads as stale and the position blocks.
+            exact = tuple(
+                review
+                for review in draft.axis_selector_reviews
+                if axis_review_is_current(review, axis_proposal, draft)
+            )
+            if len(exact) != 1:
+                blockers.append(
+                    _semantic_blocker(
+                        draft,
+                        code="AXIS_SELECTOR_REVIEW_REQUIRED",
+                        semantic_id=spec.semantic_id,
+                        message=(
+                            f"{spec.semantic_id} {axis_proposal.axis} position "
+                            f"{axis_proposal.index} lacks one exact axis selector review"
                         ),
                     )
                 )

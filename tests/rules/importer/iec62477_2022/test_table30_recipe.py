@@ -15,6 +15,7 @@ from insulation_coordination.domain.rules import (
     ProcedureRule,
     SourceReference,
 )
+from insulation_coordination.rules.importer.axis_selectors import ConfirmedAxes
 from insulation_coordination.rules.importer.extract import (
     RawGrid,
     RawGridCell,
@@ -123,7 +124,7 @@ def test_the_declared_route_is_on_the_spec() -> None:
 
 
 def test_applicability_is_a_separate_rule_from_the_procedure() -> None:
-    rules, proposals = project_partial_discharge(_synthetic_grid(), IDENTITY)
+    rules, proposals = project_partial_discharge(_synthetic_grid(), IDENTITY, ConfirmedAxes())
     assert {type(rule).__name__ for rule in rules} == {"ProcedureRule", "DecisionRule"}
     assert {rule.id for rule in rules} == {
         ids.TEST_PARTIAL_DISCHARGE,
@@ -134,7 +135,7 @@ def test_applicability_is_a_separate_rule_from_the_procedure() -> None:
 
 
 def test_the_procedure_carries_every_declared_row() -> None:
-    rules, _proposals = project_partial_discharge(_synthetic_grid(), IDENTITY)
+    rules, _proposals = project_partial_discharge(_synthetic_grid(), IDENTITY, ConfirmedAxes())
     procedure = next(rule for rule in rules if isinstance(rule, ProcedureRule))
     assert [step.order for step in procedure.procedure_steps] == list(
         range(1, len(procedure.procedure_steps) + 1)
@@ -154,7 +155,7 @@ def test_the_procedure_carries_every_declared_row() -> None:
 def test_one_declared_condition_yields_exactly_one_step() -> None:
     """One source condition is one action, so no row may spread over several steps."""
 
-    rules, _proposals = project_partial_discharge(_synthetic_grid(), IDENTITY)
+    rules, _proposals = project_partial_discharge(_synthetic_grid(), IDENTITY, ConfirmedAxes())
     procedure = next(rule for rule in rules if isinstance(rule, ProcedureRule))
     steps = (*procedure.preparation_steps, *procedure.procedure_steps)
     rows = [step.source.row for step in steps]
@@ -171,7 +172,7 @@ def test_a_condition_longer_than_the_reference_cap_is_still_one_step() -> None:
 
     long_enough = MAX_REFERENCE_TEXT_LENGTH + 100
     rules, _proposals = project_partial_discharge(
-        _synthetic_grid(condition_length=long_enough), IDENTITY
+        _synthetic_grid(condition_length=long_enough), IDENTITY, ConfirmedAxes()
     )
     procedure = next(rule for rule in rules if isinstance(rule, ProcedureRule))
     steps = (*procedure.preparation_steps, *procedure.procedure_steps)
@@ -181,14 +182,14 @@ def test_a_condition_longer_than_the_reference_cap_is_still_one_step() -> None:
 
 
 def test_the_procedure_points_at_its_applicability_rule() -> None:
-    rules, _proposals = project_partial_discharge(_synthetic_grid(), IDENTITY)
+    rules, _proposals = project_partial_discharge(_synthetic_grid(), IDENTITY, ConfirmedAxes())
     procedure = next(rule for rule in rules if isinstance(rule, ProcedureRule))
     assert procedure.applicability_rule_id == f"{ids.TEST_PARTIAL_DISCHARGE}.applicability"
     assert procedure.test_kind == "partial_discharge"
 
 
 def test_a_missing_engineering_input_is_not_reported_as_not_required() -> None:
-    rules, _proposals = project_partial_discharge(_synthetic_grid(), IDENTITY)
+    rules, _proposals = project_partial_discharge(_synthetic_grid(), IDENTITY, ConfirmedAxes())
     decision = next(rule for rule in rules if isinstance(rule, DecisionRule))
     outcomes = {
         value.categorical
@@ -203,7 +204,7 @@ def test_a_missing_engineering_input_is_not_reported_as_not_required() -> None:
 
 def test_a_grid_with_an_undeclared_subject_row_blocks() -> None:
     with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_PROCEDURE_STRUCTURE"):
-        project_partial_discharge(_synthetic_grid(undeclared_row=True), IDENTITY)
+        project_partial_discharge(_synthetic_grid(undeclared_row=True), IDENTITY, ConfirmedAxes())
 
 
 def test_a_grid_of_the_wrong_shape_blocks() -> None:
@@ -215,10 +216,12 @@ def test_a_grid_of_the_wrong_shape_blocks() -> None:
         }
     )
     with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_PROCEDURE_STRUCTURE"):
-        project_partial_discharge(narrower, IDENTITY)
+        project_partial_discharge(narrower, IDENTITY, ConfirmedAxes())
 
 
 def test_a_foreign_grid_is_refused() -> None:
     grid = _synthetic_grid()
     with pytest.raises(ValueError, match="requires its own grid"):
-        project_partial_discharge(grid.model_copy(update={"id": "raw-other"}), IDENTITY)
+        project_partial_discharge(
+            grid.model_copy(update={"id": "raw-other"}), IDENTITY, ConfirmedAxes()
+        )
