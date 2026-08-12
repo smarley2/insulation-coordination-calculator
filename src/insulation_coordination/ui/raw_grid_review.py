@@ -95,12 +95,8 @@ class RawGridReviewDialog(QDialog):
         self.resize(1180, 700)
         self._draft = draft
         self._actor = actor
-        self._corrections: dict[
-            str, dict[tuple[int, int] | tuple[int, int, int], Decimal]
-        ] = {}
-        self._association_corrections: dict[
-            str, dict[tuple[int, int, int], str]
-        ] = {}
+        self._corrections: dict[str, dict[tuple[int, int] | tuple[int, int, int], Decimal]] = {}
+        self._association_corrections: dict[str, dict[tuple[int, int, int], str]] = {}
         self._formula_corrections: dict[str, dict[tuple[int, int, int], str]] = {}
         self._selected_component_id: str | None = None
         self._selected_source_index: int | None = None
@@ -168,9 +164,7 @@ class RawGridReviewDialog(QDialog):
         association_row.addWidget(QLabel("Reviewed component association:"))
         self._association_selector = QComboBox()
         self._association_selector.setEnabled(False)
-        self._association_selector.currentIndexChanged.connect(
-            self._association_changed
-        )
+        self._association_selector.currentIndexChanged.connect(self._association_changed)
         association_row.addWidget(self._association_selector, 1)
         self._apply_association_button = QPushButton("Apply association")
         self._apply_association_button.setEnabled(False)
@@ -512,9 +506,7 @@ class RawGridReviewDialog(QDialog):
             key, component.component_id
         )
         self._selected_source_index = component.source_index
-        value = self._corrections.get(grid.id, {}).get(
-            key, component.value
-        )
+        value = self._corrections.get(grid.id, {}).get(key, component.value)
         self._value_edit.setEnabled(True)
         self._apply_button.setEnabled(True)
         self._value_edit.setText("" if value is None else str(value))
@@ -522,9 +514,7 @@ class RawGridReviewDialog(QDialog):
         self._association_selector.clear()
         for component_id in cell.compound_component_ids:
             self._association_selector.addItem(component_id, component_id)
-        selected_association = self._association_selector.findData(
-            self._selected_component_id
-        )
+        selected_association = self._association_selector.findData(self._selected_component_id)
         self._association_selector.setCurrentIndex(max(0, selected_association))
         self._association_selector.blockSignals(False)
         self._association_selector.setEnabled(True)
@@ -562,9 +552,9 @@ class RawGridReviewDialog(QDialog):
         preserve_existing: bool = True,
     ) -> None:
         if component_id is None:
-            component_id = self._association_corrections.get(
-                self._current_grid_id(), {}
-            ).get(key, self._selected_component_id)
+            component_id = self._association_corrections.get(self._current_grid_id(), {}).get(
+                key, self._selected_component_id
+            )
         allowed = tuple(
             formula_id
             for route_component_id, formula_id in cell.allowed_component_formula_ids
@@ -606,9 +596,7 @@ class RawGridReviewDialog(QDialog):
         if not component_id:
             return
         key = (row, column, self._selected_source_index)
-        cell = next(
-            cell for cell in grid.cells if (cell.row, cell.column) == (row, column)
-        )
+        cell = next(cell for cell in grid.cells if (cell.row, cell.column) == (row, column))
         allowed = {
             formula_id
             for route_component_id, formula_id in cell.allowed_component_formula_ids
@@ -631,9 +619,7 @@ class RawGridReviewDialog(QDialog):
         item = self._components_table.item(self._components_table.currentRow(), 0)
         if item is not None:
             item.setText(component_id)
-        formula_item = self._components_table.item(
-            self._components_table.currentRow(), 3
-        )
+        formula_item = self._components_table.item(self._components_table.currentRow(), 3)
         if formula_item is not None:
             formula_item.setText(formula_id or "none")
         self._load_formula_candidates(cell, key)

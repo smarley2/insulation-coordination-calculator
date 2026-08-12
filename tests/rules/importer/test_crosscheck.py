@@ -60,8 +60,10 @@ def _spec(cell_map: tuple[tuple[str, str], ...] = ()) -> CrossStandardCheckSpec:
     pairs = cell_map or tuple((identifier, identifier) for identifier in CELL_IDS)
     return CrossStandardCheckSpec(
         id="synthetic-check",
-        source_rule_id="raw-source",
-        target_rule_id="raw-target",
+        source_rule_id="synthetic-this-standard-route",
+        target_rule_id="synthetic-target-standard-formula",
+        source_grid_id="raw-source",
+        target_grid_id="raw-target",
         family="synthetic",
         cell_map=pairs,
         source_data_cell_ids=tuple(source_id for source_id, _target in pairs),
@@ -81,7 +83,12 @@ def test_equal_grids_yield_one_unapproved_mapping_and_no_review_item() -> None:
     assert items == ()
     assert mapping is not None
     assert mapping.approved is False
-    assert (mapping.source_rule_id, mapping.target_rule_id) == ("raw-source", "raw-target")
+    # The mapping routes this standard's semantic route to the other standard's approved
+    # formula; the grids it compared stay evidence.
+    assert (mapping.source_rule_id, mapping.target_rule_id) == (
+        "synthetic-this-standard-route",
+        "synthetic-target-standard-formula",
+    )
 
 
 def test_a_difference_in_printed_form_alone_is_not_a_divergence() -> None:
@@ -144,8 +151,10 @@ def test_a_cell_map_that_omits_a_source_data_cell_is_rejected() -> None:
     with pytest.raises(ValueError, match="cover every source data cell"):
         CrossStandardCheckSpec(
             id="partial",
-            source_rule_id="raw-source",
-            target_rule_id="raw-target",
+            source_rule_id="synthetic-target-standard-rule",
+            target_rule_id="synthetic-this-standard-rule",
+            source_grid_id="raw-source",
+            target_grid_id="raw-target",
             family="synthetic",
             cell_map=(("0/first", "0/first"),),
             source_data_cell_ids=CELL_IDS,
@@ -173,7 +182,9 @@ def _axis_grid(
             logical_column=names[column_index],
             value=Decimal(text) if text.strip().replace(".", "").isdigit() else None,
             parse_status=(
-                "numeric" if text.strip().replace(".", "").isdigit() else "blank"
+                "numeric"
+                if text.strip().replace(".", "").isdigit()
+                else "blank"
                 if not text.strip()
                 else "text"
             ),
@@ -205,8 +216,10 @@ def _axis_spec(**overrides: object) -> CrossStandardCheckSpec:
     fields.update(overrides)
     return CrossStandardCheckSpec(
         id="synthetic-axis-check",
-        source_rule_id="raw-source",
-        target_rule_id="raw-target",
+        source_rule_id="synthetic-this-standard-route",
+        target_rule_id="synthetic-target-standard-formula",
+        source_grid_id="raw-source",
+        target_grid_id="raw-target",
         family="synthetic",
         axis_match=CrossStandardAxisMatchSpec.model_validate(fields),
         source=SOURCE,
@@ -374,8 +387,10 @@ def test_a_check_declaring_both_pairing_kinds_is_rejected() -> None:
     with pytest.raises(ValueError, match="either an explicit cell map or an axis match"):
         CrossStandardCheckSpec(
             id="both",
-            source_rule_id="raw-source",
-            target_rule_id="raw-target",
+            source_rule_id="synthetic-this-standard-route",
+            target_rule_id="synthetic-target-standard-formula",
+            source_grid_id="raw-source",
+            target_grid_id="raw-target",
             family="synthetic",
             cell_map=(("0/first", "0/first"),),
             source_data_cell_ids=("0/first",),
@@ -392,8 +407,10 @@ def test_a_check_declaring_no_pairing_at_all_is_rejected() -> None:
     with pytest.raises(ValueError, match="either an explicit cell map or an axis match"):
         CrossStandardCheckSpec(
             id="neither",
-            source_rule_id="raw-source",
-            target_rule_id="raw-target",
+            source_rule_id="synthetic-this-standard-route",
+            target_rule_id="synthetic-target-standard-formula",
+            source_grid_id="raw-source",
+            target_grid_id="raw-target",
             family="synthetic",
             source=SOURCE,
         )
@@ -442,8 +459,10 @@ def test_a_cell_map_that_repeats_a_source_cell_is_rejected() -> None:
     with pytest.raises(ValueError, match="must not repeat a source cell"):
         CrossStandardCheckSpec(
             id="repeated",
-            source_rule_id="raw-source",
-            target_rule_id="raw-target",
+            source_rule_id="synthetic-target-standard-rule",
+            target_rule_id="synthetic-this-standard-rule",
+            source_grid_id="raw-source",
+            target_grid_id="raw-target",
             family="synthetic",
             cell_map=(("0/first", "0/first"), ("0/first", "1/first")),
             source_data_cell_ids=("0/first",),

@@ -23,6 +23,7 @@ from insulation_coordination.domain.rules import (
     RuleKind,
     SourceReference,
 )
+from insulation_coordination.rules.importer.axis_selectors import AxisSelector
 
 LOGGER = logging.getLogger(__name__)
 MAX_STANDARD_PDF_BYTES = 128 * 1024 * 1024
@@ -236,6 +237,60 @@ class TokenGrammarSpec(FrozenModel):
         return None
 
 
+class AxisKeywordRule(FrozenModel):
+    """Short neutral keywords that together identify one axis position's selector.
+
+    Every keyword must appear in the position's reviewed header text. Keywords are single
+    generic words: a phrase would be source wording, which must not enter this repository.
+    """
+
+    keywords: tuple[str, ...] = Field(min_length=1)
+    #: Keywords whose presence disqualifies this rule. One generic word can occur in more than
+    #: one position's header text, and a rule that matched several positions would propose
+    #: nothing at all: exactly one rule must match, or the position goes to the reviewer.
+    excluded_keywords: tuple[str, ...] = ()
+    selector: AxisSelector
+
+    @model_validator(mode="after")
+    def _keywords_are_single_words(self) -> AxisKeywordRule:
+        for keyword in (*self.keywords, *self.excluded_keywords):
+            if " " in keyword or keyword != keyword.lower() or not 0 < len(keyword) <= 12:
+                raise ValueError("an axis keyword must be one short lowercase word")
+        if set(self.keywords) & set(self.excluded_keywords):
+            raise ValueError("a keyword cannot both be required and disqualify its own rule")
+        return self
+
+
+class AxisSelectorSpec(FrozenModel):
+    """How one axis of a grid gets its reviewed semantic selectors."""
+
+    axis: Literal["row", "column"]
+    expected_positions: int = Field(ge=1)
+    #: The one selector kind every confirmed selector on this axis must carry. Resolution
+    #: refuses a confirmed selector of any other kind, so a column selector confirmed on a
+    #: row position dies at resolution rather than surfacing later as an AttributeError from
+    #: a projector's ``cast``.
+    selector_kind: Literal["dvc_designation", "table2_quantity", "protection_target"]
+    keyword_rules: tuple[AxisKeywordRule, ...] = ()
+    #: This axis has no public grammar, so extraction proposes nothing and the reviewer
+    #: supplies every selector. Used where a text grammar would require the source's header
+    #: wording in public code.
+    reviewer_supplied: bool = False
+
+    @model_validator(mode="after")
+    def _grammar_or_reviewer_but_not_both(self) -> AxisSelectorSpec:
+        if self.reviewer_supplied and self.keyword_rules:
+            raise ValueError("a reviewer-supplied axis declares no keyword rules")
+        if not self.reviewer_supplied and not self.keyword_rules:
+            raise ValueError("an axis needs keyword rules unless it is reviewer-supplied")
+        # Declared inconsistently, extraction proposes a selector of a kind this axis does not
+        # declare, and the review-time kind check then refuses the reviewer's attempt to
+        # confirm the very reading extraction proposed: the position becomes unconfirmable.
+        if any(rule.selector.selector_kind != self.selector_kind for rule in self.keyword_rules):
+            raise ValueError("a keyword rule must propose the selector kind its axis declares")
+        return self
+
+
 class TableAuditSpec(FrozenModel):
     semantic_id: Identifier
     source_table: ReferenceText
@@ -274,6 +329,9 @@ class TableAuditSpec(FrozenModel):
     blank_cells: tuple[BlankCellSpec, ...] = ()
     reference_slots: tuple[ReferenceSlotSpec, ...] = ()
     token_grammar: TokenGrammarSpec | None = None
+    #: Axes whose data positions carry reviewed semantic selectors. A spec that declares any
+    #: cannot be projected until every position of every declared axis has an exact review.
+    axis_selectors: tuple[AxisSelectorSpec, ...] = ()
     page_search_radius: int = Field(default=0, ge=0, le=5)
     interpolation: Literal["none", "linear"] = "none"
     #: Decision rule IDs this table projects to instead of a ``Table``. Declared on the
@@ -285,11 +343,20 @@ class TableAuditSpec(FrozenModel):
     #: table needs the numbers present to prove or refute equivalence, while the rule the
     #: calculator executes stays the one already approved from the other standard.
     comparison_only: bool = False
+    #: This grid's data cells are reviewed text, not quantities: the source states a
+    #: procedure as a table of subjects and conditions. Its cells are therefore not flagged
+    #: for numeric retyping -- there is no number to retype -- and the rule projected from
+    #: the grid is what a maintainer reviews, exactly as a clause fragment's projected rule
+    #: is. Only the projection understands which row means what, so a spec that sets this
+    #: must also register a grid projector.
+    text_field_table: bool = False
 
     @model_validator(mode="after")
     def _comparison_only_projects_nothing(self) -> TableAuditSpec:
         if self.comparison_only and self.decision_route_ids:
             raise ValueError("a comparison-only table cannot declare decision routes")
+        if self.comparison_only and self.text_field_table:
+            raise ValueError("a table is either comparison evidence or a text field table")
         return self
 
     @model_validator(mode="after")
@@ -436,8 +503,17 @@ class CrossStandardCheckSpec(FrozenModel):
     """
 
     id: Identifier
+    #: The route the resulting mapping records, and the rule it resolves to -- the same
+    #: shape ``MappingAuditSpec`` declares, not the raw grids compared to prove the claim.
+    #: The source is a semantic route of this standard, unique per check; the target is the
+    #: already-approved formula of the other standard that satisfies it, and several checks
+    #: may share one target.
     source_rule_id: Identifier
     target_rule_id: Identifier
+    #: The raw grids whose cells prove the claim. They live in the draft as evidence and
+    #: never enter the approved package.
+    source_grid_id: Identifier
+    target_grid_id: Identifier
     family: Identifier
     #: ``(source cell id, target cell id)`` pairs, where a cell id is
     #: ``"<logical_row>/<logical_column>"`` as the raw grid records data cells.
@@ -492,10 +568,12 @@ class ClauseAuditSpec(FrozenModel):
     expected_bbox: tuple[float, float, float, float]
     expected_root_kind: Literal["paragraph", "bullets"]
     output_kind: Literal["decision", "procedure"]
-    #: Rules this clause projects to beyond one carrying the spec's own identifier -- for
-    #: example the guidance a source NOTE becomes. Declared so a projected route inherits
-    #: this clause's review inventory and source artifact, while an unrelated rule that
-    #: merely starts with the same identifier does not.
+    #: The rules this clause projects, when they are not exactly one carrying the spec's own
+    #: identifier -- the guidance a source NOTE becomes, or one route per gate where the
+    #: clause states a requirement other clauses also state. Declaring any route declares all
+    #: of them, so this is the clause's whole typed inventory whenever it is not empty.
+    #: Declared so a projected route inherits this clause's review inventory and source
+    #: artifact, while an unrelated rule that merely starts with the same identifier does not.
     projected_rule_ids: tuple[Identifier, ...] = ()
 
 
@@ -524,12 +602,23 @@ class CurveAuditSpec(FrozenModel):
 
 
 #: A recipe-declared projection from one reviewed raw artifact to typed rules, returning
-#: the projected rules and their semantic proposals. The artifact and rule types stay
-#: unannotated here on purpose: ``extract.py`` and ``clauses.py`` both import this module,
-#: so naming their models would close an import cycle. The recipe modules that register a
-#: projector carry the precise signatures.
-type GridProjector = Callable[[Any, StandardIdentity], tuple[tuple[Any, ...], tuple[Any, ...]]]
-type ClauseProjector = GridProjector
+#: the projected rules and their semantic proposals. The third parameter carries the
+#: caller's already-resolved ``ConfirmedAxes`` for the artifact's grid -- reviewed and
+#: current, or empty for a spec that declares no axis selectors -- uniformly across every
+#: registered projector, whether or not a given projector reads it yet. The artifact and
+#: rule types stay unannotated here on purpose: ``extract.py`` and ``clauses.py`` both
+#: import this module, so naming their models would close an import cycle. The recipe
+#: modules that register a projector carry the precise signatures.
+type GridProjector = Callable[[Any, StandardIdentity, Any], tuple[tuple[Any, ...], tuple[Any, ...]]]
+#: A clause projection additionally receives the reviewed draft the fragment came from. A
+#: source that states one requirement in several places -- a procedure whose classification
+#: only the test cross-reference matrix carries, a preconditioning requirement stated in two
+#: clauses and a table row -- cannot be projected from one fragment alone, and reading the
+#: sibling artifacts from the draft keeps that cross-reading inside the projection instead of
+#: spreading a second mechanism across review.
+type ClauseProjector = Callable[
+    [Any, StandardIdentity, Any], tuple[tuple[Any, ...], tuple[Any, ...]]
+]
 
 
 class StandardRecipe(FrozenModel):
@@ -569,11 +658,17 @@ class StandardRecipe(FrozenModel):
             raise ValueError("grid projector refers to an undeclared table spec")
         if set(self.clause_projectors) != clause_ids:
             raise ValueError("every clause spec needs exactly one projector")
-        if any(
-            spec.decision_route_ids and spec.semantic_id not in self.grid_projectors
-            for spec in self.tables
-        ):
-            raise ValueError("a table projecting decisions needs a grid projector")
+        for spec in self.tables:
+            if spec.semantic_id in self.grid_projectors:
+                continue
+            # Only a projection understands which reviewed text cell means what, so a text
+            # field table without one yields nothing. The registry lives here rather than on
+            # the spec, so the spec cannot check this itself -- but the recipe author is
+            # still stopped when the recipe is constructed instead of when a gate reads it.
+            if spec.text_field_table:
+                raise ValueError("a text field table needs a grid projector to read its cells")
+            if spec.decision_route_ids:
+                raise ValueError("a table projecting decisions needs a grid projector")
         return self
 
     def matches_text(self, text: str) -> bool:

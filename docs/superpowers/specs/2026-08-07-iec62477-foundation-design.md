@@ -84,17 +84,20 @@ All changes land in `src/insulation_coordination/domain/rules.py`.
 ```python
 DecisionValueKind = Literal["categorical", "numeric", "boolean"]
 
+
 class DecisionInput(FrozenModel):
     name: Identifier
     kind: DecisionValueKind
     unit: Identifier | None = None
     allowed_values: tuple[Identifier, ...] = ()
 
+
 class DecisionOutput(FrozenModel):
     name: Identifier
     kind: DecisionValueKind | Literal["reference"]
     unit: Identifier | None = None
     allowed_values: tuple[Identifier, ...] = ()
+
 
 class Matcher(FrozenModel):
     input: Identifier
@@ -105,6 +108,7 @@ class Matcher(FrozenModel):
     minimum_inclusive: bool = True
     maximum_inclusive: bool = True
 
+
 class DecisionValue(FrozenModel):
     name: Identifier
     categorical: Identifier | None = None
@@ -113,11 +117,13 @@ class DecisionValue(FrozenModel):
     reference: Identifier | None = None
     unit: Identifier | None = None
 
+
 class DecisionRow(FrozenModel):
     matchers: tuple[Matcher, ...]
     values: tuple[DecisionValue, ...]
     source: SourceReference
     notes: NotesText = ""
+
 
 class DecisionRule(FrozenModel):
     id: Identifier
@@ -154,6 +160,7 @@ class ProcedureStep(FrozenModel):
     text: ReferenceText
     source: SourceReference
 
+
 class ProcedureRule(FrozenModel):
     id: Identifier
     test_kind: Identifier
@@ -168,6 +175,7 @@ class ProcedureRule(FrozenModel):
     applicability_rule_id: Identifier | None = None
     applicability: ApplicabilityText = ""
     source: SourceReference
+
 
 class GuidanceRule(FrozenModel):
     id: Identifier
@@ -252,6 +260,7 @@ class DecisionResult(FrozenModel):
     values: tuple[DecisionValue, ...] = ()
     missing_inputs: tuple[Identifier, ...] = ()
     source: SourceReference | None = None
+
 
 def evaluate_decision(
     rule: DecisionRule,

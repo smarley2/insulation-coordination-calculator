@@ -18,9 +18,9 @@ from insulation_coordination.domain.enums import (
 )
 from insulation_coordination.domain.project import Project
 
-PROJECT_SCHEMA_VERSION = 3
+PROJECT_SCHEMA_VERSION = 4
 
-# Net-level keys the version 2 -> 3 migration adds. A version-2 document must not carry any of
+# Net-level keys the version 3 -> 4 migration adds. A version-3 document must not carry any of
 # these yet - their presence means the document was already migrated (or hand-edited), and the
 # migration must refuse it rather than silently overwrite a real classification.
 NET_TOPOLOGY_KEYS = frozenset(
@@ -58,29 +58,39 @@ def migrate_project_document(raw: dict[str, object]) -> dict[str, object]:
             f"Project schema {version} is newer than supported version {PROJECT_SCHEMA_VERSION}"
         )
     document = deepcopy(raw)
+    declared = version
     if version == 1:
         if "group_splits" in document:
             raise ProjectVersionError("Project schema 1 must not contain group_splits")
-        document["schema_version"] = 2
         document["group_splits"] = []
         version = 2
     if version == 2:
+        if "circuit_diagram" in document:
+            raise ProjectVersionError(f"Project schema {declared} must not contain circuit_diagram")
+        document["circuit_diagram"] = None
+        version = 3
+    if version == 3:
         if "galvanic_domains" in document:
-            raise ProjectVersionError("Project schema 2 must not contain galvanic_domains")
+            raise ProjectVersionError(
+                f"Project schema {declared} must not contain galvanic_domains"
+            )
         if "galvanic_barriers" in document:
-            raise ProjectVersionError("Project schema 2 must not contain galvanic_barriers")
+            raise ProjectVersionError(
+                f"Project schema {declared} must not contain galvanic_barriers"
+            )
         nets_field = document.get("net_classes", [])
         # A hand-edited or corrupt document may carry a ``net_classes`` that is not a
         # list at all, or a list with an entry that is not an object. Neither shape can
-        # ever be a valid schema-2 document, so the migration leaves it untouched rather
+        # ever be a valid schema-3 document, so the migration leaves it untouched rather
         # than calling ``.keys()`` on it - that lets ``Project.model_validate`` reject it
         # below with a proper ``ProjectLoadError`` instead of an ``AttributeError``.
         nets: list[object] = nets_field if isinstance(nets_field, list) else []
         dict_nets = [net for net in nets if isinstance(net, dict)]
         if any(NET_TOPOLOGY_KEYS & net.keys() for net in dict_nets):
-            raise ProjectVersionError("Project schema 2 net classes must not contain topology keys")
+            raise ProjectVersionError(
+                f"Project schema {declared} net classes must not contain topology keys"
+            )
         domain_id = str(uuid4())
-        document["schema_version"] = 3
         document["galvanic_domains"] = [
             {
                 "id": domain_id,
@@ -98,9 +108,10 @@ def migrate_project_document(raw: dict[str, object]) -> dict[str, object]:
             net["decisive_voltage_class"] = DecisiveVoltageClass.NOT_EVALUATED.value
             net["galvanic_domain_id"] = domain_id
             net["classification_review_state"] = ReviewState.NEEDS_REVIEW.value
-        version = 3
+        version = 4
     if version != PROJECT_SCHEMA_VERSION:
-        raise ProjectVersionError(f"Project schema {version} is unsupported")
+        raise ProjectVersionError(f"Project schema {declared} is unsupported")
+    document["schema_version"] = PROJECT_SCHEMA_VERSION
     return document
 
 

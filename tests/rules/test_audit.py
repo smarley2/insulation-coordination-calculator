@@ -129,18 +129,17 @@ def test_validation_requires_typed_curve_source_links(
     report = validate_rule_package(invalid)
 
     assert report.is_valid is False
-    assert next(
-        result for result in report.results if result.code == "source_references"
-    ).passed is False
+    assert (
+        next(result for result in report.results if result.code == "source_references").passed
+        is False
+    )
 
 
 def test_figure_derived_curve_accepts_a_figure_only_locator(
     synthetic_package: RulePackage,
 ) -> None:
     curve = synthetic_package.curves[0]
-    source = curve.source.model_copy(
-        update={"clause": None, "table": None, "figure": "SF-1"}
-    )
+    source = curve.source.model_copy(update={"clause": None, "table": None, "figure": "SF-1"})
     package = synthetic_package.model_copy(
         update={
             "curves": (
@@ -195,9 +194,7 @@ def test_audit_inventory_includes_nodes_nested_under_power_base(
     with_power = synthetic_package.model_copy(
         update={
             "formulas": (
-                formula.model_copy(
-                    update={"expression": Power(base=nested_variable, numerator=2)}
-                ),
+                formula.model_copy(update={"expression": Power(base=nested_variable, numerator=2)}),
             )
         }
     )
@@ -684,13 +681,55 @@ def test_clause_derived_decision_accepts_a_clause_only_locator(
                     update={
                         "source": source,
                         "rows": tuple(
-                            row.model_copy(update={"source": source})
-                            for row in decision.rows
+                            row.model_copy(update={"source": source}) for row in decision.rows
                         ),
                     }
                 ),
             )
         }
+    )
+
+    assert _result(validate_rule_package(package), "source_references").passed is True
+
+
+def test_clause_derived_procedure_accepts_a_clause_only_locator(
+    synthetic_package: RulePackage,
+) -> None:
+    """A test procedure the source states as prose names no table and no figure.
+
+    Slice E2 projects five such procedures. Requiring a table locator refused the whole
+    package at approval, minutes into a licensed run, while every clause fragment behind it
+    had been reviewed.
+    """
+    procedure = synthetic_package.procedures[0]
+    source = procedure.source.model_copy(update={"table": None, "figure": None})
+    package = synthetic_package.model_copy(
+        update={
+            "procedures": (
+                procedure.model_copy(
+                    update={
+                        "source": source,
+                        "procedure_steps": tuple(
+                            step.model_copy(update={"source": source})
+                            for step in procedure.procedure_steps
+                        ),
+                        "acceptance_reference": None,
+                    }
+                ),
+            )
+        }
+    )
+
+    assert _result(validate_rule_package(package), "source_references").passed is True
+
+
+def test_clause_derived_guidance_accepts_a_clause_only_locator(
+    synthetic_package: RulePackage,
+) -> None:
+    guidance = synthetic_package.guidance[0]
+    source = guidance.source.model_copy(update={"table": None, "figure": None})
+    package = synthetic_package.model_copy(
+        update={"guidance": (guidance.model_copy(update={"source": source}),)}
     )
 
     assert _result(validate_rule_package(package), "source_references").passed is True

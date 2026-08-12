@@ -1,0 +1,734 @@
+# The task brief specifies these exact Decimal string literals.
+# ruff: noqa: FURB157
+
+from datetime import UTC, datetime
+from decimal import Decimal
+
+import pytest
+
+from insulation_coordination.domain.rules import (
+    ApprovalRecord,
+    CurvePoint,
+    FaultTimeVoltageSelector,
+    SourceDocument,
+    SourceGeometryReference,
+    SourceReference,
+)
+from insulation_coordination.rules.importer import recipes as recipe_registry
+from insulation_coordination.rules.importer.approval import (
+    ApprovalError,
+    _review_resolution_exists,
+    approval_blockers,
+    record_correction,
+)
+from insulation_coordination.rules.importer.curves import (
+    ManualPlotCalibration,
+    RawFigure,
+    infer_curve_segments,
+    source_point_to_pixel,
+)
+from insulation_coordination.rules.importer.extract import (
+    IMPORTER_VERSION,
+    CurveVariantReview,
+    ImportedRuleDraft,
+    ImportReviewItem,
+    ImportReviewResolution,
+    _content_digest,
+    canonical_model_sha256,
+)
+from insulation_coordination.rules.importer.identify import (
+    CurveAuditSpec,
+    StandardIdentity,
+    StandardRecipe,
+)
+from insulation_coordination.rules.importer.review import (
+    replace_manual_curve_variant,
+    review_curve_variant,
+    set_manual_curve_calibration,
+)
+from tests.fixtures.synthetic_rules import synthetic_rule_package
+
+_DISPLAY_RECTANGLE = (Decimal("20"), Decimal("10"), Decimal("320"), Decimal("210"))
+
+
+def _calibration() -> ManualPlotCalibration:
+    return ManualPlotCalibration(
+        figure_artifact_sha256="0" * 64,
+        x_min=Decimal("1"),
+        x_max=Decimal("1000"),
+        y_min=Decimal("1"),
+        y_max=Decimal("100"),
+    )
+
+
+def test_manual_log_mapping_places_a_decade_midpoint_without_float() -> None:
+    point = CurvePoint(x=Decimal("10"), y=Decimal("10"))
+
+    assert source_point_to_pixel(point, _calibration(), _DISPLAY_RECTANGLE) == (
+        Decimal("120"),
+        Decimal("110"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "pixel"),
+    (
+        ((Decimal("1"), Decimal("100")), (Decimal("20"), Decimal("10"))),
+        ((Decimal("1000"), Decimal("100")), (Decimal("320"), Decimal("10"))),
+        ((Decimal("1"), Decimal("1")), (Decimal("20"), Decimal("210"))),
+        ((Decimal("1000"), Decimal("1")), (Decimal("320"), Decimal("210"))),
+    ),
+)
+def test_manual_log_mapping_pins_every_axis_corner(
+    source: tuple[Decimal, Decimal],
+    pixel: tuple[Decimal, Decimal],
+) -> None:
+    point = CurvePoint(x=source[0], y=source[1])
+
+    assert source_point_to_pixel(point, _calibration(), _DISPLAY_RECTANGLE) == pixel
+
+
+def test_segments_are_inferred_from_adjacent_y_values() -> None:
+    points = (
+        CurvePoint(x=Decimal("1"), y=Decimal("100")),
+        CurvePoint(x=Decimal("10"), y=Decimal("100")),
+        CurvePoint(x=Decimal("100"), y=Decimal("20")),
+        CurvePoint(x=Decimal("1000"), y=Decimal("20")),
+    )
+
+    assert tuple(
+        (segment.start, segment.end, segment.segment_type, segment.interpolation)
+        for segment in infer_curve_segments(points)
+    ) == (
+        (0, 1, "plateau", "constant"),
+        (1, 2, "continuous", "log_log"),
+        (2, 3, "plateau", "constant"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("x_min", "0"), ("y_min", "0"), ("x_max", "1"), ("y_max", "1")),
+)
+def test_manual_calibration_rejects_invalid_bounds(field: str, value: str) -> None:
+    payload = _calibration().model_dump(mode="python")
+    payload[field] = Decimal(value)
+    with pytest.raises(ValueError):
+        ManualPlotCalibration.model_validate(payload)
+
+
+@pytest.mark.parametrize("digest", ("a" + "0" * 64, "0" * 64 + "a"))
+def test_manual_calibration_rejects_65_character_hash_variants(digest: str) -> None:
+    payload = _calibration().model_dump(mode="python")
+    payload["figure_artifact_sha256"] = digest
+    with pytest.raises(ValueError):
+        ManualPlotCalibration.model_validate(payload)
+
+
+def test_mapping_rejects_a_point_outside_the_reviewed_axis_bounds() -> None:
+    point = CurvePoint(x=Decimal("1001"), y=Decimal("10"))
+
+    with pytest.raises(ValueError, match="outside reviewed source axis bounds"):
+        source_point_to_pixel(point, _calibration(), _DISPLAY_RECTANGLE)
+
+
+def test_mapping_rejects_an_unordered_display_rectangle() -> None:
+    point = CurvePoint(x=Decimal("10"), y=Decimal("10"))
+    rectangle = (Decimal("320"), Decimal("10"), Decimal("20"), Decimal("210"))
+
+    with pytest.raises(ValueError, match="display rectangle must be ordered"):
+        source_point_to_pixel(point, _calibration(), rectangle)
+
+
+@pytest.fixture
+def synthetic_curve_draft(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
+    identity = StandardIdentity(
+        standard="SYNTHETIC",
+        edition="1",
+        sha256="1" * 64,
+        page_count=1,
+        recipe_id="synthetic-curves",
+    )
+    source = SourceReference(
+        document_id=identity.recipe_id,
+        standard=identity.standard,
+        edition=identity.edition,
+        page=1,
+        figure="5",
+    )
+    recipe = StandardRecipe(
+        id=identity.recipe_id,
+        standard=identity.standard,
+        edition=identity.edition,
+        identity_claim_pattern="",
+        expected_page_count=1,
+        metadata_identity_fields=(),
+        metadata_identity_anchors=(),
+        identity_anchors=(),
+        tables=(),
+        formulas=(),
+        mappings=(),
+        curves=(
+            CurveAuditSpec(
+                semantic_id="synthetic.curve",
+                figure="5",
+                page_number=1,
+                expected_bbox=(0.0, 0.0, 400.0, 300.0),
+                x_quantity_kind="duration",
+                x_unit="s",
+                x_source_unit="ms",
+                y_quantity_kind="voltage",
+                y_unit="V",
+                x_scale="log10",
+                y_scale="log10",
+                variant_slots=(
+                    FaultTimeVoltageSelector(
+                        subject="conductive_accessible_part",
+                        voltage_basis="dc",
+                        dvc_context=None,
+                        environment_context=None,
+                    ),
+                    FaultTimeVoltageSelector(
+                        subject="conductive_accessible_part",
+                        voltage_basis="ac_unspecified",
+                        dvc_context=None,
+                        environment_context=None,
+                    ),
+                ),
+                permitted_segment_types=("continuous", "plateau"),
+                permitted_interpolations=("log_log", "constant"),
+            ),
+        ),
+        required_curves=("synthetic.curve",),
+    )
+    monkeypatch.setattr(recipe_registry, "RECIPES", (recipe,))
+    figure = RawFigure(
+        source=source,
+        source_mode="vector_path",
+        source_bbox=(Decimal(0), Decimal(0), Decimal(400), Decimal(300)),
+        pixel_size=None,
+        transform=(
+            Decimal(1),
+            Decimal(0),
+            Decimal(0),
+            Decimal(1),
+            Decimal(0),
+            Decimal(0),
+        ),
+        artifact_sha256="0" * 64,
+    )
+    items = tuple(
+        ImportReviewItem(
+            code=f"SYNTHETIC_CURVE_REVIEW_{index}",
+            semantic_id=f"synthetic.curve.5.{index}",
+            kind="curve",
+            source=source.model_copy(
+                update={"geometry": SourceGeometryReference(artifact_sha256="0" * 64)}
+            ),
+            expected_contract="Synthetic curve review.",
+        )
+        for index in (1, 2)
+    )
+    package = synthetic_rule_package()
+    draft = ImportedRuleDraft(
+        manifest=package.manifest.model_copy(
+            update={
+                "approved": False,
+                "compatible": False,
+                "source_documents": (
+                    SourceDocument(
+                        id=identity.recipe_id,
+                        standard=identity.standard,
+                        edition=identity.edition,
+                        sha256=identity.sha256,
+                    ),
+                ),
+                "approval_records": (),
+            }
+        ),
+        tables=(),
+        formulas=(),
+        mappings=(),
+        review_items=items,
+        raw_grids=(),
+        raw_figures=(figure,),
+        source_identities=(identity,),
+    )
+    digest = _content_digest(
+        draft.tables,
+        draft.formulas,
+        draft.mappings,
+        draft.review_items,
+        draft.raw_grids,
+        draft.raw_clause_fragments,
+        draft.manifest.source_documents,
+        draft.source_identities,
+        raw_figures=draft.raw_figures,
+    )
+    recorded_at = datetime(2026, 8, 11, tzinfo=UTC)
+    return draft.model_copy(
+        update={
+            "manifest": draft.manifest.model_copy(
+                update={
+                    "approval_records": (
+                        ApprovalRecord(
+                            action="extraction",
+                            actor=f"icc-importer/{IMPORTER_VERSION}",
+                            recorded_at=recorded_at,
+                            notes=f"identity:{identity.recipe_id}",
+                        ),
+                        ApprovalRecord(
+                            action="extraction",
+                            actor=f"icc-importer/{IMPORTER_VERSION}",
+                            recorded_at=recorded_at,
+                            notes=f"layout:{identity.recipe_id}",
+                        ),
+                        ApprovalRecord(
+                            action="extraction",
+                            actor=f"icc-importer/{IMPORTER_VERSION}",
+                            recorded_at=recorded_at,
+                            notes=f"content:{digest}",
+                        ),
+                    )
+                }
+            )
+        }
+    )
+
+
+def test_manual_variant_replacement_uses_recipe_slot_identity(
+    synthetic_curve_draft: ImportedRuleDraft,
+) -> None:
+    calibrated = set_manual_curve_calibration(
+        synthetic_curve_draft,
+        figure="5",
+        calibration=_calibration(),
+        actor="Reviewer",
+        notes="Marked synthetic plot rectangle.",
+    )
+    changed = replace_manual_curve_variant(
+        calibrated,
+        variant_id="synthetic.curve.5.1",
+        source_points=(
+            CurvePoint(x=Decimal("1"), y=Decimal("100")),
+            CurvePoint(x=Decimal("10"), y=Decimal("100")),
+            CurvePoint(x=Decimal("100"), y=Decimal("20")),
+            CurvePoint(x=Decimal("1000"), y=Decimal("20")),
+        ),
+        actor="Reviewer",
+        notes="Entered synthetic curve points.",
+        input_origin="empty",
+    )
+
+    variant = next(variant for rule in changed.curves for variant in rule.variants)
+    assert variant.id == "synthetic.curve.5.1"
+    assert tuple(segment.interpolation for segment in variant.segments) == (
+        "constant",
+        "log_log",
+        "constant",
+    )
+    assert not changed.curve_variant_reviews
+
+
+@pytest.fixture
+def reviewed_curve_draft(synthetic_curve_draft: ImportedRuleDraft) -> ImportedRuleDraft:
+    calibrated = set_manual_curve_calibration(
+        synthetic_curve_draft,
+        figure="5",
+        calibration=_calibration(),
+        actor="Reviewer",
+        notes="Marked synthetic plot rectangle.",
+    )
+    replaced = replace_manual_curve_variant(
+        calibrated,
+        variant_id="synthetic.curve.5.1",
+        source_points=(
+            CurvePoint(x=Decimal("1"), y=Decimal("100")),
+            CurvePoint(x=Decimal("1000"), y=Decimal("20")),
+        ),
+        actor="Reviewer",
+        notes="Entered synthetic curve points.",
+        input_origin="empty",
+    )
+    return review_curve_variant(
+        replaced,
+        "synthetic.curve.5.1",
+        actor="Reviewer",
+        notes="Reviewed synthetic curve points.",
+    )
+
+
+def test_calibration_change_invalidates_all_figure_reviews(
+    reviewed_curve_draft: ImportedRuleDraft,
+) -> None:
+    changed = set_manual_curve_calibration(
+        reviewed_curve_draft,
+        figure="5",
+        calibration=_calibration().model_copy(update={"y_max": Decimal("200")}),
+        actor="Reviewer",
+        notes="Corrected synthetic plot corner.",
+    )
+
+    assert not tuple(
+        review
+        for review in changed.curve_variant_reviews
+        if review.variant_id.startswith("synthetic.curve.5.")
+    )
+
+
+def test_source_duration_converts_once_to_rule_unit(
+    synthetic_curve_draft: ImportedRuleDraft,
+) -> None:
+    calibrated = set_manual_curve_calibration(
+        synthetic_curve_draft,
+        figure="5",
+        calibration=_calibration(),
+        actor="Reviewer",
+        notes="Marked synthetic plot rectangle.",
+    )
+    changed = replace_manual_curve_variant(
+        calibrated,
+        variant_id="synthetic.curve.5.1",
+        source_points=(
+            CurvePoint(x=Decimal("1"), y=Decimal("100")),
+            CurvePoint(x=Decimal("1000"), y=Decimal("20")),
+        ),
+        actor="Reviewer",
+        notes="Entered synthetic curve points.",
+        input_origin="empty",
+    )
+
+    variant = changed.curves[0].variants[0]
+    assert variant.points[0].x == Decimal("0.001")
+    assert variant.points[-1].x == Decimal("1")
+
+
+@pytest.mark.parametrize(
+    "source_points",
+    (
+        (
+            CurvePoint(x=Decimal("10"), y=Decimal("100")),
+            CurvePoint(x=Decimal("1000"), y=Decimal("20")),
+        ),
+        (
+            CurvePoint(x=Decimal("1"), y=Decimal("100")),
+            CurvePoint(x=Decimal("100"), y=Decimal("20")),
+        ),
+    ),
+)
+def test_manual_variant_replacement_requires_full_reviewed_x_domain(
+    synthetic_curve_draft: ImportedRuleDraft,
+    source_points: tuple[CurvePoint, ...],
+) -> None:
+    calibrated = set_manual_curve_calibration(
+        synthetic_curve_draft,
+        figure="5",
+        calibration=_calibration(),
+        actor="Reviewer",
+        notes="Marked synthetic plot rectangle.",
+    )
+
+    with pytest.raises(ApprovalError, match="full reviewed X-axis domain"):
+        replace_manual_curve_variant(
+            calibrated,
+            variant_id="synthetic.curve.5.1",
+            source_points=source_points,
+            actor="Reviewer",
+            notes="Entered incomplete synthetic curve points.",
+            input_origin="empty",
+        )
+
+
+@pytest.fixture
+def two_reviewed_curve_draft(synthetic_curve_draft: ImportedRuleDraft) -> ImportedRuleDraft:
+    calibrated = set_manual_curve_calibration(
+        synthetic_curve_draft,
+        figure="5",
+        calibration=_calibration(),
+        actor="Reviewer",
+        notes="Marked synthetic plot rectangle.",
+    )
+    for variant_id, points in (
+        (
+            "synthetic.curve.5.1",
+            (
+                CurvePoint(x=Decimal("1"), y=Decimal("100")),
+                CurvePoint(x=Decimal("1000"), y=Decimal("20")),
+            ),
+        ),
+        (
+            "synthetic.curve.5.2",
+            (
+                CurvePoint(x=Decimal("1"), y=Decimal("80")),
+                CurvePoint(x=Decimal("1000"), y=Decimal("10")),
+            ),
+        ),
+    ):
+        calibrated = replace_manual_curve_variant(
+            calibrated,
+            variant_id=variant_id,
+            source_points=points,
+            actor="Reviewer",
+            notes="Entered synthetic curve points.",
+            input_origin="empty",
+        )
+    for variant_id in ("synthetic.curve.5.1", "synthetic.curve.5.2"):
+        calibrated = review_curve_variant(
+            calibrated,
+            variant_id,
+            actor="Reviewer",
+            notes="Reviewed synthetic curve points.",
+        )
+    return calibrated
+
+
+def test_calibration_edit_reopens_every_affected_curve_review(
+    two_reviewed_curve_draft: ImportedRuleDraft,
+) -> None:
+    changed = set_manual_curve_calibration(
+        two_reviewed_curve_draft,
+        figure="5",
+        calibration=_calibration().model_copy(update={"y_max": Decimal("200")}),
+        actor="Reviewer",
+        notes="Corrected synthetic plot corner.",
+    )
+
+    assert not changed.curve_variant_reviews
+    assert not changed.review_resolutions
+    for variant_id in ("synthetic.curve.5.1", "synthetic.curve.5.2"):
+        changed = review_curve_variant(
+            changed,
+            variant_id,
+            actor="Reviewer",
+            notes="Reviewed after calibration correction.",
+        )
+    assert {review.variant_id for review in changed.curve_variant_reviews} == {
+        "synthetic.curve.5.1",
+        "synthetic.curve.5.2",
+    }
+
+
+def test_point_replacement_reopens_only_its_curve_review(
+    two_reviewed_curve_draft: ImportedRuleDraft,
+) -> None:
+    changed = replace_manual_curve_variant(
+        two_reviewed_curve_draft,
+        variant_id="synthetic.curve.5.1",
+        source_points=(
+            CurvePoint(x=Decimal("1"), y=Decimal("90")),
+            CurvePoint(x=Decimal("1000"), y=Decimal("20")),
+        ),
+        actor="Reviewer",
+        notes="Corrected synthetic curve points.",
+        input_origin="empty",
+    )
+
+    assert {review.variant_id for review in changed.curve_variant_reviews} == {
+        "synthetic.curve.5.2"
+    }
+    assert {
+        item.semantic_id
+        for item in changed.review_items
+        if item.sha256
+        in {resolution.review_item_sha256 for resolution in changed.review_resolutions}
+    } == {"synthetic.curve.5.2"}
+    reviewed = review_curve_variant(
+        changed,
+        "synthetic.curve.5.1",
+        actor="Reviewer",
+        notes="Reviewed corrected synthetic curve points.",
+    )
+    assert {review.variant_id for review in reviewed.curve_variant_reviews} == {
+        "synthetic.curve.5.1",
+        "synthetic.curve.5.2",
+    }
+
+
+@pytest.mark.parametrize("kind", ("table", "formula"))
+def test_reopen_rejects_an_unchanged_non_curve_review_item(
+    synthetic_curve_draft: ImportedRuleDraft,
+    kind: str,
+) -> None:
+    item = ImportReviewItem(
+        code=f"SYNTHETIC_{kind.upper()}_REVIEW",
+        semantic_id=f"synthetic.{kind}",
+        kind=kind,  # type: ignore[arg-type]
+        source=synthetic_curve_draft.raw_figures[0].source,
+        expected_contract="Synthetic unrelated review.",
+    )
+    resolved = synthetic_curve_draft.model_copy(
+        update={
+            "review_items": (*synthetic_curve_draft.review_items, item),
+            "review_resolutions": (
+                ImportReviewResolution(
+                    review_item_sha256=item.sha256,
+                    actor="Reviewer",
+                    recorded_at=datetime(2026, 8, 11, tzinfo=UTC),
+                    notes="Resolved synthetic unrelated review.",
+                ),
+            ),
+        }
+    )
+    digest = _content_digest(
+        resolved.tables,
+        resolved.formulas,
+        resolved.mappings,
+        resolved.review_items,
+        resolved.raw_grids,
+        resolved.raw_clause_fragments,
+        resolved.manifest.source_documents,
+        resolved.source_identities,
+        resolved.review_resolutions,
+        resolved.extracted_equations,
+        decisions=resolved.decisions,
+        procedures=resolved.procedures,
+        guidance=resolved.guidance,
+        curves=resolved.curves,
+        raw_figures=resolved.raw_figures,
+        curve_calibrations=resolved.curve_calibrations,
+        manual_curve_variant_inputs=resolved.manual_curve_variant_inputs,
+        curve_variant_reviews=resolved.curve_variant_reviews,
+    )
+    resolved = resolved.model_copy(
+        update={
+            "manifest": resolved.manifest.model_copy(
+                update={
+                    "approval_records": tuple(
+                        record.model_copy(update={"notes": f"content:{digest}"})
+                        if record.action == "extraction"
+                        and record.actor == f"icc-importer/{IMPORTER_VERSION}"
+                        and record.notes.startswith("content:")
+                        else record
+                        for record in resolved.manifest.approval_records
+                    )
+                }
+            )
+        }
+    )
+
+    with pytest.raises(ApprovalError, match="curve"):
+        record_correction(
+            resolved,
+            resolved,
+            actor="Reviewer",
+            notes="Attempted unrelated reopen.",
+            reopen=(item,),
+        )
+
+
+def test_reopen_rejects_curve_review_without_changed_evidence(
+    two_reviewed_curve_draft: ImportedRuleDraft,
+) -> None:
+    item = next(
+        item
+        for item in two_reviewed_curve_draft.review_items
+        if item.semantic_id == "synthetic.curve.5.1"
+    )
+
+    with pytest.raises(ApprovalError, match="curve"):
+        record_correction(
+            two_reviewed_curve_draft,
+            two_reviewed_curve_draft,
+            actor="Reviewer",
+            notes="Attempted evidence-free curve reopen.",
+            reopen=(item,),
+        )
+
+
+def test_manual_review_records_the_replacement_input_origin(
+    synthetic_curve_draft: ImportedRuleDraft,
+) -> None:
+    calibrated = set_manual_curve_calibration(
+        synthetic_curve_draft,
+        figure="5",
+        calibration=_calibration(),
+        actor="Reviewer",
+        notes="Marked synthetic plot rectangle.",
+    )
+    replaced = replace_manual_curve_variant(
+        calibrated,
+        variant_id="synthetic.curve.5.1",
+        source_points=(
+            CurvePoint(x=Decimal("1"), y=Decimal("100")),
+            CurvePoint(x=Decimal("1000"), y=Decimal("20")),
+        ),
+        actor="Reviewer",
+        notes="Accepted automatic suggestion as a starting point.",
+        input_origin="automatic_suggestion",
+    )
+
+    reviewed = review_curve_variant(
+        replaced,
+        "synthetic.curve.5.1",
+        actor="Reviewer",
+        notes="Reviewed the suggested synthetic curve points.",
+    )
+    assert reviewed.curve_variant_reviews[0].input_origin == "automatic_suggestion"
+
+
+def test_manual_curve_reviews_clear_curve_approval_blockers(
+    two_reviewed_curve_draft: ImportedRuleDraft,
+) -> None:
+    assert not tuple(
+        item
+        for item in approval_blockers(two_reviewed_curve_draft)
+        if item.code.startswith("CURVE_")
+    )
+
+
+def test_stale_manual_calibration_blocks_curve_approval(
+    two_reviewed_curve_draft: ImportedRuleDraft,
+) -> None:
+    review = two_reviewed_curve_draft.curve_variant_reviews[0]
+    stale = two_reviewed_curve_draft.model_copy(
+        update={
+            "curve_variant_reviews": (
+                review.model_copy(update={"calibration_sha256": "f" * 64}),
+                *two_reviewed_curve_draft.curve_variant_reviews[1:],
+            )
+        }
+    )
+
+    assert any(item.code == "CURVE_VARIANT_REVIEW_REQUIRED" for item in approval_blockers(stale))
+
+
+def test_tampered_manual_provenance_blocks_approval_and_resolution(
+    two_reviewed_curve_draft: ImportedRuleDraft,
+) -> None:
+    rule = two_reviewed_curve_draft.curves[0]
+    variant = rule.variants[0]
+    tampered_variant = variant.model_copy(update={"reviewed_artifact_sha256": "f" * 64})
+    review = next(
+        review
+        for review in two_reviewed_curve_draft.curve_variant_reviews
+        if review.variant_id == variant.id
+    )
+    tampered_review = CurveVariantReview(
+        variant_id=tampered_variant.id,
+        variant_sha256=canonical_model_sha256(tampered_variant),
+        source_artifact_sha256=tampered_variant.reviewed_artifact_sha256,
+        calibration_sha256=review.calibration_sha256,
+        input_origin=review.input_origin,
+        actor=review.actor,
+        recorded_at=review.recorded_at,
+        notes=review.notes,
+    )
+    tampered = two_reviewed_curve_draft.model_copy(
+        update={
+            "curves": (rule.model_copy(update={"variants": (tampered_variant, rule.variants[1])}),),
+            "curve_variant_reviews": (
+                tampered_review,
+                *(
+                    item
+                    for item in two_reviewed_curve_draft.curve_variant_reviews
+                    if item.variant_id != variant.id
+                ),
+            ),
+        }
+    )
+    item = next(item for item in tampered.review_items if item.semantic_id == tampered_variant.id)
+
+    assert _review_resolution_exists(item, tampered) is False
+    assert any(
+        blocker.code == "CURVE_VARIANT_REVIEW_REQUIRED" for blocker in approval_blockers(tampered)
+    )

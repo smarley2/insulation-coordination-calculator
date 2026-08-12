@@ -68,9 +68,7 @@ def test_normalization_preserves_hash_spans_and_merges_wrapped_lines(clause_page
     fragment = extract_clause_fragment(clause_page, synthetic_clause_spec(), IDENTITY)
     normalized = normalize_clause_fragment(fragment)
     assert normalized.raw_sha256 == fragment.raw_sha256
-    assert [node.order for node in normalized.nodes] == list(
-        range(len(normalized.nodes))
-    )
+    assert [node.order for node in normalized.nodes] == list(range(len(normalized.nodes)))
     # The second bullet wraps across two physical lines; normalization merges them.
     assert len(normalized.nodes) == 2
     assert "wrapped" in normalized.nodes[1].raw_text
@@ -109,23 +107,21 @@ def test_wrapped_paragraph_becomes_one_node_and_extracts_figure_references(tmp_p
         fragment = extract_clause_fragment(pdf.pages[2], spec, IDENTITY)
     assert len(fragment.nodes) == 1
     assert fragment.nodes[0].kind == "paragraph"
-    assert {
-        token.normalized for token in fragment.tokens if token.kind == "reference"
-    } == {"figure-5", "figure-6", "figure-7"}
+    assert {token.normalized for token in fragment.tokens if token.kind == "reference"} == {
+        "figure-5",
+        "figure-6",
+        "figure-7",
+    }
 
 
 def test_wrong_bbox_blocks_extraction(clause_page) -> None:
-    spec = synthetic_clause_spec().model_copy(
-        update={"expected_bbox": (70.0, 100.0, 524.0, 200.0)}
-    )
+    spec = synthetic_clause_spec().model_copy(update={"expected_bbox": (70.0, 100.0, 524.0, 200.0)})
     with pytest.raises(ExtractionError, match="clause structure"):
         extract_clause_fragment(clause_page, spec, IDENTITY)
 
 
 def test_empty_bbox_blocks_extraction(clause_page) -> None:
-    spec = synthetic_clause_spec().model_copy(
-        update={"expected_bbox": (70.0, 750.0, 524.0, 760.0)}
-    )
+    spec = synthetic_clause_spec().model_copy(update={"expected_bbox": (70.0, 750.0, 524.0, 760.0)})
     with pytest.raises(ExtractionError, match="clause structure"):
         extract_clause_fragment(clause_page, spec, IDENTITY)
 

@@ -9,20 +9,22 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Literal, NamedTuple, cast
 
-from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import (
     DecisionInput,
     DecisionOutput,
     DecisionRow,
     DecisionRule,
     DecisionValue,
-    FaultTimeVoltageVariant,
     Identifier,
     Matcher,
-    PiecewiseCurveRule,
     SourceReference,
 )
-from insulation_coordination.rules.importer.curves import RawFigure
+from insulation_coordination.rules.importer.axis_selectors import (
+    ConfirmedAxes,
+    DvcDesignationSelector,
+    ProtectionTargetSelector,
+    Table2QuantitySelector,
+)
 from insulation_coordination.rules.importer.extract import (
     RawGrid,
     RawGridCell,
@@ -77,9 +79,7 @@ def _outcomes(grid: RawGrid) -> tuple[_Outcome, ...]:
             ):
                 raise ValueError("Table 2 outcome has incomplete typed provenance")
             if cell.reference_token is not None:
-                expected_kind = _REFERENCE_TARGET_KINDS.get(
-                    cell.reference_token.target_rule_id
-                )
+                expected_kind = _REFERENCE_TARGET_KINDS.get(cell.reference_token.target_rule_id)
                 if expected_kind != cell.reference_token.target_kind:
                     raise ValueError("Table 2 semantic reference has an invalid target kind")
                 outcomes.append(
@@ -100,73 +100,91 @@ def _outcomes(grid: RawGrid) -> tuple[_Outcome, ...]:
     return tuple(outcomes)
 
 
-def _dvc(row: int) -> str:
-    assert TABLE_2.data_row_start is not None
-    return f"dvc-{row - TABLE_2.data_row_start + 1}"
+def _table_2_inputs(grid: RawGrid, axes: ConfirmedAxes) -> tuple[DecisionInput, ...]:
+    """Runtime inputs from the reviewed selectors, never from a physical coordinate."""
 
-
-def _quantity(column: int) -> str:
-    assert TABLE_2.data_column_start is not None
-    return f"voltage-quantity-{column - TABLE_2.data_column_start + 1}"
-
-
-def _table_2_inputs(grid: RawGrid) -> tuple[DecisionInput, ...]:
+    rows = tuple(cast(DvcDesignationSelector, item) for item in axes.rows.values())
+    columns = tuple(cast(Table2QuantitySelector, item) for item in axes.columns.values())
     return (
         DecisionInput(
             name="dvc",
             kind="categorical",
-            allowed_values=tuple(f"dvc-{index}" for index in range(1, 5)),
+            allowed_values=tuple(sorted({item.designation for item in rows})),
         ),
         DecisionInput(
-            name="voltage_quantity",
+            name="environment",
             kind="categorical",
-            allowed_values=tuple(f"voltage-quantity-{index}" for index in range(1, 6)),
+            allowed_values=tuple(sorted({item.environment for item in rows})),
+        ),
+        DecisionInput(
+            name="operating_context",
+            kind="categorical",
+            allowed_values=tuple(sorted({item.operating_context for item in columns})),
+        ),
+        DecisionInput(
+            name="quantity",
+            kind="categorical",
+            allowed_values=tuple(sorted({item.quantity for item in columns})),
+        ),
+        DecisionInput(
+            name="basis",
+            kind="categorical",
+            allowed_values=tuple(sorted({item.basis for item in columns})),
         ),
         DecisionInput(name="unit", kind="categorical", allowed_values=(grid.target_unit,)),
     )
 
 
-def _matchers(outcome: _Outcome, unit: str) -> tuple[Matcher, ...]:
+def _matchers(outcome: _Outcome, unit: str, axes: ConfirmedAxes) -> tuple[Matcher, ...]:
+    row = cast(DvcDesignationSelector, axes.row(outcome.row))
+    column = cast(Table2QuantitySelector, axes.column(outcome.column))
     return (
-        Matcher(input="dvc", op="equals", values=(_dvc(outcome.row),)),
-        Matcher(input="voltage_quantity", op="equals", values=(_quantity(outcome.column),)),
+        Matcher(input="dvc", op="equals", values=(row.designation,)),
+        Matcher(input="environment", op="equals", values=(row.environment,)),
+        Matcher(input="operating_context", op="equals", values=(column.operating_context,)),
+        Matcher(input="quantity", op="equals", values=(column.quantity,)),
+        Matcher(input="basis", op="equals", values=(column.basis,)),
         Matcher(input="unit", op="equals", values=(unit,)),
     )
 
 
-def _numeric_rule(grid: RawGrid, outcomes: tuple[_Outcome, ...]) -> DecisionRule:
+def _numeric_rule(
+    grid: RawGrid, outcomes: tuple[_Outcome, ...], axes: ConfirmedAxes
+) -> DecisionRule:
     output = DecisionOutput(name="voltage_limit", kind="numeric", unit=grid.target_unit)
     return DecisionRule(
         id=ids.DVC_VOLTAGE_LIMITS,
-        inputs=_table_2_inputs(grid),
+        inputs=_table_2_inputs(grid, axes),
         outputs=(output,),
         rows=tuple(
-        DecisionRow(
-            matchers=_matchers(outcome, grid.target_unit),
-            values=(
-                DecisionValue(
-                    name=output.name,
-                    numeric=cast(Decimal, outcome.value),
-                    unit=grid.target_unit,
+            DecisionRow(
+                matchers=_matchers(outcome, grid.target_unit, axes),
+                values=(
+                    DecisionValue(
+                        name=output.name,
+                        numeric=cast(Decimal, outcome.value),
+                        unit=grid.target_unit,
+                    ),
                 ),
-            ),
-            source=outcome.source,
-        )
-        for outcome in outcomes
+                source=outcome.source,
+            )
+            for outcome in outcomes
         ),
         exhaustive=False,
         source=grid.source,
     )
 
 
-def _curve_reference_rule(grid: RawGrid, outcomes: tuple[_Outcome, ...]) -> DecisionRule:
+def _curve_reference_rule(
+    grid: RawGrid, outcomes: tuple[_Outcome, ...], axes: ConfirmedAxes
+) -> DecisionRule:
     return DecisionRule(
         id=f"{ids.DVC_VOLTAGE_LIMITS}.fault_time_reference",
-        inputs=_table_2_inputs(grid),
+        inputs=_table_2_inputs(grid, axes),
         outputs=(DecisionOutput(name="fault_time_voltage", kind="reference"),),
         rows=tuple(
             DecisionRow(
-                matchers=_matchers(outcome, grid.target_unit),
+                matchers=_matchers(outcome, grid.target_unit, axes),
                 values=(
                     DecisionValue(
                         name="fault_time_voltage",
@@ -182,17 +200,19 @@ def _curve_reference_rule(grid: RawGrid, outcomes: tuple[_Outcome, ...]) -> Deci
     )
 
 
-def _impulse_reference_rule(grid: RawGrid, outcomes: tuple[_Outcome, ...]) -> DecisionRule:
+def _impulse_reference_rule(
+    grid: RawGrid, outcomes: tuple[_Outcome, ...], axes: ConfirmedAxes
+) -> DecisionRule:
     return DecisionRule(
         id=f"{ids.DVC_VOLTAGE_LIMITS}.impulse_reference",
-        inputs=_table_2_inputs(grid),
+        inputs=_table_2_inputs(grid, axes),
         outputs=(
             DecisionOutput(name="ac_reference", kind="reference"),
             DecisionOutput(name="dc_reference", kind="reference"),
         ),
         rows=tuple(
             DecisionRow(
-                matchers=_matchers(outcome, grid.target_unit),
+                matchers=_matchers(outcome, grid.target_unit, axes),
                 values=(
                     DecisionValue(
                         name="ac_reference",
@@ -212,14 +232,16 @@ def _impulse_reference_rule(grid: RawGrid, outcomes: tuple[_Outcome, ...]) -> De
     )
 
 
-def _not_applicable_rule(grid: RawGrid, outcomes: tuple[_Outcome, ...]) -> DecisionRule:
+def _not_applicable_rule(
+    grid: RawGrid, outcomes: tuple[_Outcome, ...], axes: ConfirmedAxes
+) -> DecisionRule:
     return DecisionRule(
         id=f"{ids.DVC_VOLTAGE_LIMITS}.not_applicable",
-        inputs=_table_2_inputs(grid),
+        inputs=_table_2_inputs(grid, axes),
         outputs=(DecisionOutput(name="applicable", kind="boolean"),),
         rows=tuple(
             DecisionRow(
-                matchers=_matchers(outcome, grid.target_unit),
+                matchers=_matchers(outcome, grid.target_unit, axes),
                 values=(DecisionValue(name="applicable", boolean=False),),
                 source=outcome.source,
             )
@@ -233,6 +255,7 @@ def _not_applicable_rule(grid: RawGrid, outcomes: tuple[_Outcome, ...]) -> Decis
 def project_dvc_voltage_limits(
     grid: RawGrid,
     identity: StandardIdentity,
+    confirmed_axes: ConfirmedAxes,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project a complete reviewed Table 2 grid into proposed typed decisions."""
 
@@ -240,20 +263,24 @@ def project_dvc_voltage_limits(
         raise ValueError("Table 2 projection requires the DVC voltage-limit grid")
     if grid.source.standard != identity.standard or grid.source.edition != identity.edition:
         raise ValueError("Table 2 grid does not match its identified source")
+    if (
+        len(confirmed_axes.rows) != TABLE_2.expected_data_rows
+        or len(confirmed_axes.columns) != TABLE_2.expected_data_columns
+    ):
+        raise ValueError("Table 2 projection needs every reviewed axis selector")
     structured = apply_table_structure(grid, TABLE_2)
     outcomes = _outcomes(structured)
     numeric = tuple(item for item in outcomes if item.kind == "numeric")
     curve = tuple(item for item in outcomes if item.value == ids.DVC_FAULT_TIME_VOLTAGE)
     impulse = tuple(
-        item for item in outcomes
-        if item.value == ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC
+        item for item in outcomes if item.value == ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC
     )
     not_applicable = tuple(item for item in outcomes if item.kind == "not_applicable")
     rules = (
-        _numeric_rule(structured, numeric),
-        _curve_reference_rule(structured, curve),
-        _impulse_reference_rule(structured, impulse),
-        _not_applicable_rule(structured, not_applicable),
+        _numeric_rule(structured, numeric, confirmed_axes),
+        _curve_reference_rule(structured, curve, confirmed_axes),
+        _impulse_reference_rule(structured, impulse, confirmed_axes),
+        _not_applicable_rule(structured, not_applicable, confirmed_axes),
     )
     artifact_sha256 = canonical_model_sha256(structured)
     proposals = tuple(
@@ -269,18 +296,9 @@ def project_dvc_voltage_limits(
     return rules, proposals
 
 
-class ProtectionOutcome(FrozenModel):
-    """One reviewed Table 3 data cell as a typed protection outcome."""
-
-    dvc: Identifier
-    protection_context: Identifier
-    requirement: Literal["none", "basic_protection", "enhanced_protection"]
-    source: SourceReference
-
-
 class _ProtectionCell(NamedTuple):
-    logical_row: int
-    logical_column: Identifier
+    physical_row: int
+    physical_column: int
     requirement: Identifier
     source: SourceReference
 
@@ -309,8 +327,6 @@ def _protection_cells(grid: RawGrid) -> tuple[_ProtectionCell, ...]:
             )
         ):
             raise ValueError("Table 3 outcome has incomplete typed provenance")
-        assert cell.logical_row is not None
-        assert cell.logical_column is not None
         token = _protection_token(cell)
         if cell.value is not None or token is None:
             raise ValueError(
@@ -318,8 +334,8 @@ def _protection_cells(grid: RawGrid) -> tuple[_ProtectionCell, ...]:
             )
         cells.append(
             _ProtectionCell(
-                cell.logical_row,
-                cell.logical_column,
+                cell.row,
+                cell.column,
                 token,
                 cell.source,
             )
@@ -338,33 +354,42 @@ def _protection_token(cell: RawGridCell) -> Identifier | None:
 def _protection_rule(
     grid: RawGrid,
     cells: tuple[_ProtectionCell, ...],
+    axes: ConfirmedAxes,
 ) -> DecisionRule:
-    dvcs = tuple(f"dvc-{row + 1}" for row in range(TABLE_3.expected_data_rows))
-    contexts = tuple(column.semantic_id for column in TABLE_3.columns if column.role == "data")
-    outcomes = tuple(
-        ProtectionOutcome(
-            dvc=dvcs[cell.logical_row],
-            protection_context=cell.logical_column,
-            requirement=cast(
-                Literal["none", "basic_protection", "enhanced_protection"],
-                cell.requirement,
-            ),
-            source=cell.source,
-        )
-        for cell in cells
-    )
+    rows = tuple(cast(DvcDesignationSelector, item) for item in axes.rows.values())
+    columns = tuple(cast(ProtectionTargetSelector, item) for item in axes.columns.values())
     return DecisionRule(
         id=ids.DVC_PROTECTION_MATRIX,
         inputs=(
             DecisionInput(
                 name="dvc",
                 kind="categorical",
-                allowed_values=dvcs,
+                allowed_values=tuple(sorted({item.designation for item in rows})),
             ),
             DecisionInput(
-                name="protection_context",
+                name="target",
                 kind="categorical",
-                allowed_values=contexts,
+                allowed_values=tuple(sorted({item.target for item in columns})),
+            ),
+            DecisionInput(
+                name="pe_relationship",
+                kind="categorical",
+                allowed_values=tuple(sorted({item.pe_relationship for item in columns})),
+            ),
+            DecisionInput(
+                name="access_context",
+                kind="categorical",
+                allowed_values=tuple(sorted({item.access_context for item in columns})),
+            ),
+            DecisionInput(
+                name="person_scope",
+                kind="categorical",
+                allowed_values=tuple(sorted({item.person_scope for item in columns})),
+            ),
+            DecisionInput(
+                name="adjacent_dvc",
+                kind="categorical",
+                allowed_values=tuple(sorted({item.adjacent_dvc for item in columns})),
             ),
         ),
         outputs=(
@@ -376,36 +401,39 @@ def _protection_rule(
         ),
         rows=tuple(
             DecisionRow(
-                matchers=(
-                    Matcher(
-                        input="dvc",
-                        op="equals",
-                        values=(outcome.dvc,),
-                    ),
-                    Matcher(
-                        input="protection_context",
-                        op="equals",
-                        values=(outcome.protection_context,),
-                    ),
-                ),
+                matchers=_protection_matchers(cell, axes),
                 values=(
-                    DecisionValue(
-                        name="protection_requirement",
-                        categorical=outcome.requirement,
-                    ),
+                    DecisionValue(name="protection_requirement", categorical=cell.requirement),
                 ),
-                source=outcome.source,
+                source=cell.source,
             )
-            for outcome in outcomes
+            for cell in cells
         ),
-        exhaustive=True,
+        # Forced, not chosen: exhaustive requires a row per combination of the six declared
+        # vocabularies, and that cartesian product dwarfs the reviewed combinations. Coverage
+        # of every reviewed combination is asserted by test instead.
+        exhaustive=False,
         source=grid.source,
+    )
+
+
+def _protection_matchers(cell: _ProtectionCell, axes: ConfirmedAxes) -> tuple[Matcher, ...]:
+    row = cast(DvcDesignationSelector, axes.row(cell.physical_row))
+    column = cast(ProtectionTargetSelector, axes.column(cell.physical_column))
+    return (
+        Matcher(input="dvc", op="equals", values=(row.designation,)),
+        Matcher(input="target", op="equals", values=(column.target,)),
+        Matcher(input="pe_relationship", op="equals", values=(column.pe_relationship,)),
+        Matcher(input="access_context", op="equals", values=(column.access_context,)),
+        Matcher(input="person_scope", op="equals", values=(column.person_scope,)),
+        Matcher(input="adjacent_dvc", op="equals", values=(column.adjacent_dvc,)),
     )
 
 
 def project_dvc_protection_matrix(
     grid: RawGrid,
     identity: StandardIdentity,
+    confirmed_axes: ConfirmedAxes,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project a complete reviewed Table 3 grid into proposed typed decisions."""
 
@@ -413,6 +441,11 @@ def project_dvc_protection_matrix(
         raise ValueError("Table 3 projection requires the DVC protection matrix grid")
     if grid.source.standard != identity.standard or grid.source.edition != identity.edition:
         raise ValueError("Table 3 grid does not match its identified source")
+    if (
+        len(confirmed_axes.rows) != TABLE_3.expected_data_rows
+        or len(confirmed_axes.columns) != TABLE_3.expected_data_columns
+    ):
+        raise ValueError("Table 3 projection needs every reviewed axis selector")
     structured = apply_table_structure(grid, TABLE_3)
     expected = {
         (row, column.semantic_id)
@@ -421,14 +454,12 @@ def project_dvc_protection_matrix(
         if column.role == "data"
     }
     present = {
-        (cell.logical_row, cell.logical_column)
-        for cell in structured.cells
-        if cell.role == "data"
+        (cell.logical_row, cell.logical_column) for cell in structured.cells if cell.role == "data"
     }
     if present != expected:
         raise ValueError("Table 3 has incomplete Cartesian coverage")
     cells = _protection_cells(structured)
-    rules = (_protection_rule(structured, cells),)
+    rules = (_protection_rule(structured, cells, confirmed_axes),)
     artifact_sha256 = canonical_model_sha256(structured)
     proposals = tuple(
         SemanticProposal(
@@ -444,81 +475,6 @@ def project_dvc_protection_matrix(
 
 
 __all__ = [
-    "ProtectionOutcome",
     "project_dvc_protection_matrix",
     "project_dvc_voltage_limits",
-    "project_fault_time_voltage",
 ]
-
-
-def project_fault_time_voltage(
-    figures: tuple[RawFigure, ...],
-    figure5_variants: tuple[FaultTimeVoltageVariant, ...],
-    figure6_variants: tuple[FaultTimeVoltageVariant, ...],
-    figure7_variants: tuple[FaultTimeVoltageVariant, ...],
-    identity: StandardIdentity,
-) -> tuple[PiecewiseCurveRule, tuple[SemanticProposal, ...]]:
-    """Associate reviewed Figure 5–7 variants into one proposed curve rule.
-
-    Figure order is fixed (5, 6, 7) and each figure must be present exactly once;
-    every variant keeps its exact four-dimension selector. The aggregate proposal's
-    artifact hash covers the ordered figure artifact digests, so any figure change
-    resets the review.
-    """
-
-    if len(figures) != 3 or any(
-        not isinstance(figure, RawFigure) for figure in figures
-    ):
-        raise ValueError("Figure 5, 6, and 7 artifacts are required exactly once")
-    pages = tuple(figure.source.page for figure in figures)
-    if pages != (54, 55, 56):
-        raise ValueError(f"Figure pages must be 54, 55, 56 in order, got {pages}")
-    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.curves import CURVES
-
-    member_groups = (figure5_variants, figure6_variants, figure7_variants)
-    expected_groups = tuple(spec.variant_slots for spec in CURVES)
-    if tuple(tuple(variant.selector for variant in members) for members in member_groups) != (
-        expected_groups
-    ):
-        raise ValueError("Figure 5, 6, and 7 require their exact reviewed variant inventory")
-    variants = (*figure5_variants, *figure6_variants, *figure7_variants)
-    selectors = tuple(variant.selector for variant in variants)
-    if len(set(selectors)) != len(selectors):
-        raise ValueError("curve variant selectors must be exact and unique")
-    for figure_number, figure, members in zip(
-        (5, 6, 7),
-        figures,
-        (figure5_variants, figure6_variants, figure7_variants),
-        strict=True,
-    ):
-        for variant in members:
-            if (
-                variant.reviewed_artifact_sha256 != figure.artifact_sha256
-                or variant.source.document_id != figure.source.document_id
-                or variant.source.page != figure.source.page
-                or variant.source.figure != figure.source.figure
-            ):
-                raise ValueError(
-                    f"Figure {figure_number} variant is not linked to its source artifact"
-                )
-    for figure in figures:
-        if figure.source.standard != identity.standard or figure.source.edition != identity.edition:
-            raise ValueError("figure artifact does not match its identified source")
-    rule = PiecewiseCurveRule(
-        id=ids.DVC_FAULT_TIME_VOLTAGE,
-        variants=variants,
-        source=figures[0].source.model_copy(update={"figure": "5-7"}),
-    )
-    from insulation_coordination.rules.importer.review import _aggregate_artifact_pairs
-
-    aggregate = _aggregate_artifact_pairs(
-        tuple((variant.id, variant.reviewed_artifact_sha256) for variant in variants)
-    )
-    proposal = SemanticProposal(
-        semantic_id=rule.id,
-        rule_kind="curve",
-        state="proposed",
-        rule_sha256=canonical_model_sha256(rule),
-        source_artifact_sha256=aggregate,
-    )
-    return rule, (proposal,)

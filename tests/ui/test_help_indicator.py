@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QLabel, QLineEdit, QToolTip
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import QFocusEvent
+from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QToolTip
 
 from insulation_coordination.ui.help_indicator import (
     GUIDANCE_AUTHORSHIP_NOTE,
@@ -39,21 +40,24 @@ def test_hover_shows_the_short_text(indicator) -> None:
 
 
 def test_keyboard_focus_shows_the_same_short_text(indicator, monkeypatch) -> None:
-    # Showing the only widget in a window already focused it; start from unfocused.
-    indicator.clearFocus()
     shown: list[str] = []
     monkeypatch.setattr(
         QToolTip, "showText", staticmethod(lambda point, text, *args: shown.append(text))
     )
-    indicator.setFocus(Qt.FocusReason.TabFocusReason)
+    QApplication.sendEvent(
+        indicator,
+        QFocusEvent(QEvent.Type.FocusIn, Qt.FocusReason.TabFocusReason),
+    )
     assert shown == [guidance_for(VoltageGuidanceId.RECURRING_PEAK).short_text]
 
 
 def test_focus_out_hides_the_tooltip(indicator, monkeypatch) -> None:
     hidden: list[bool] = []
     monkeypatch.setattr(QToolTip, "hideText", staticmethod(lambda: hidden.append(True)))
-    indicator.setFocus(Qt.FocusReason.TabFocusReason)
-    indicator.clearFocus()
+    QApplication.sendEvent(
+        indicator,
+        QFocusEvent(QEvent.Type.FocusOut, Qt.FocusReason.TabFocusReason),
+    )
     assert hidden == [True]
 
 
@@ -146,9 +150,7 @@ def test_indicator_passes_its_context_to_the_dialog(indicator, qtbot) -> None:
 
 def test_guidance_naming_no_rule_gets_no_provenance_section(qtbot) -> None:
     """A voltage-stress field explains itself and cites nothing; an empty heading would lie."""
-    dialog = GuidanceDialog(
-        VoltageGuidanceId.RECURRING_PEAK, package=synthetic_dvc_rule_package()
-    )
+    dialog = GuidanceDialog(VoltageGuidanceId.RECURRING_PEAK, package=synthetic_dvc_rule_package())
     qtbot.addWidget(dialog)
     assert GUIDANCE_AUTHORSHIP_NOTE not in dialog.body_text()
 

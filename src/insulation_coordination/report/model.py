@@ -7,10 +7,11 @@ import json
 import re
 from decimal import Decimal
 from enum import StrEnum
+from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
-from pydantic import ValidationError, field_validator
+from pydantic import Field, ValidationError, field_validator
 
 from insulation_coordination.calculation.clearance import CandidateOmission, DistanceCandidate
 from insulation_coordination.calculation.engine import (
@@ -49,6 +50,10 @@ from insulation_coordination.domain.topology import (
     topology_completion,
 )
 from insulation_coordination.domain.trace import Quantity, TraceStep
+from insulation_coordination.project.image_attachments import (
+    ImageAttachmentError,
+    stage_report_image,
+)
 from insulation_coordination.project.resolver import resolve_effective_case
 from insulation_coordination.rules.validation import validate_rule_package
 
@@ -190,6 +195,23 @@ class ExcludedPair(FrozenModel):
     notes: str | None
 
 
+class ReportImage(FrozenModel):
+    """One image already staged next to the document that will include it.
+
+    The renderer never sees a user path: ``staged_filename`` is derived from the
+    content hash and constrained to characters that are safe in a LaTeX
+    ``\\includegraphics`` argument.
+    """
+
+    role: str
+    staged_filename: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    caption: str
+    source_note: str
+    width_px: int = Field(gt=0)
+    height_px: int = Field(gt=0)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class ReportModel(FrozenModel):
     project_id: str
     project_sha256: str
@@ -209,6 +231,7 @@ class ReportModel(FrozenModel):
     domains_needing_review: tuple[UUID, ...] = ()
     matrix_rows: tuple[MatrixRow, ...]
     excluded_pairs: tuple[ExcludedPair, ...] = ()
+    circuit_diagram: ReportImage | None = None
     groups: tuple[ReportGroup, ...]
     warnings: tuple[CalculationWarning, ...]
     verification_requirements: tuple[VerificationRequirement, ...]
@@ -220,8 +243,15 @@ def build_report_model(
     results: tuple[PairResult, ...],
     groups: tuple[CalculationGroup, ...],
     rules: RulePackage,
+    *,
+    image_directory: Path | None = None,
 ) -> ReportModel:
-    """Build a detached, deterministic report snapshot or reject stale inputs."""
+    """Build a detached, deterministic report snapshot or reject stale inputs.
+
+    ``image_directory`` is the directory the document will be written to. A
+    project carrying a circuit diagram needs one: the image is staged there
+    before rendering so the template only ever names a local file.
+    """
     package_sha256 = rules.package_sha256
     if package_sha256 is None:
         raise ReportBuildError("rules package has no validated SHA-256 identity")
@@ -256,7 +286,9 @@ def build_report_model(
     )
     project_pair_ids = tuple(str(pair.id) for pair in project.pairs if not pair.is_excluded)
     if not project_pair_ids:
-        raise ReportBuildError("every pair is excluded from the analysis; there is nothing to report")
+        raise ReportBuildError(
+            "every pair is excluded from the analysis; there is nothing to report"
+        )
     result_pair_ids = tuple(str(result.pair_id) for result in results)
     if len(result_pair_ids) != len(set(result_pair_ids)):
         raise ReportBuildError("duplicate pair result")
@@ -321,6 +353,7 @@ def build_report_model(
     )
     ordered_results = tuple(authoritative_by_pair[pair_id] for pair_id in project_pair_ids)
     return ReportModel(
+        circuit_diagram=_staged_circuit_diagram(project, image_directory),
         project_id=str(project.id),
         project_sha256=_project_hash(project),
         project_title=project.metadata.title,
@@ -329,9 +362,7 @@ def build_report_model(
         calculation_engine_version=CALCULATION_ENGINE_VERSION,
         defaults=project.defaults.model_copy(deep=True),
         net_classes=tuple(net.model_copy(deep=True) for net in project.net_classes),
-        galvanic_domains=tuple(
-            domain.model_copy(deep=True) for domain in project.galvanic_domains
-        ),
+        galvanic_domains=tuple(domain.model_copy(deep=True) for domain in project.galvanic_domains),
         galvanic_barriers=tuple(
             barrier.model_copy(deep=True) for barrier in project.galvanic_barriers
         ),
@@ -371,6 +402,32 @@ def build_report_model(
             ),
             notes=rules.manifest.notes,
         ),
+    )
+
+
+def _staged_circuit_diagram(project: Project, directory: Path | None) -> ReportImage | None:
+    """Write the attached diagram next to the document, or block the report.
+
+    An attached image is never silently dropped: a report that cannot carry it
+    is not a report of this project.
+    """
+    attachment = project.circuit_diagram
+    if attachment is None:
+        return None
+    if directory is None:
+        raise ReportBuildError("the project circuit diagram needs a directory to stage into")
+    try:
+        staged = stage_report_image(attachment, directory)
+    except ImageAttachmentError as error:
+        raise ReportBuildError(f"the circuit diagram could not be staged: {error}") from error
+    return ReportImage(
+        role=attachment.role,
+        staged_filename=staged.name,
+        caption=attachment.caption,
+        source_note=attachment.source_note,
+        width_px=attachment.width_px,
+        height_px=attachment.height_px,
+        sha256=attachment.sha256,
     )
 
 

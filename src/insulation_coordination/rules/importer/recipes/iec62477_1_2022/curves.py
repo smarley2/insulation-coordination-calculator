@@ -58,9 +58,12 @@ _SELECTORS = {
             dvc_context=None,
             environment_context=None,
         ),
+        # Figure 7 identifies the variant as AC without specifying RMS or peak. Therefore
+        # the semantic contract uses ac_unspecified and consumers must not infer a more
+        # specific basis.
         FaultTimeVoltageSelector(
             subject="conductive_accessible_part",
-            voltage_basis="ac_peak",
+            voltage_basis="ac_unspecified",
             dvc_context=None,
             environment_context=None,
         ),

@@ -27,6 +27,7 @@ from insulation_coordination.rules.archive import (
     migrate_rule_package,
     write_rule_package,
 )
+from insulation_coordination.rules.evaluator import evaluate_piecewise_curve
 from insulation_coordination.rules.importer.extract import IMPORTER_VERSION
 
 
@@ -41,6 +42,11 @@ def test_approved_package_loads_without_source_pdfs(
     assert loaded.manifest.approved is True
     assert loaded.package_sha256 == digest
     assert digest == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert loaded.curves == synthetic_package.curves
+    variant = loaded.curves[0].variants[0]
+    result = evaluate_piecewise_curve(loaded.curves[0], variant.selector, variant.points[0].x)
+    assert result.value is not None
+    assert result.value == variant.points[0].y
 
 
 def test_unknown_formula_operator_is_rejected(package_dict: dict[str, object]) -> None:
@@ -240,7 +246,7 @@ def test_load_rejects_malformed_checksum_set_and_unsupported_schema(
 
 def test_current_rule_trust_versions_require_semantic_pcb_packages() -> None:
     assert RULE_SCHEMA_VERSION == 4
-    assert IMPORTER_VERSION == "iec-pdf-4"
+    assert IMPORTER_VERSION == "iec-pdf-5"
 
 
 def test_legacy_schema_tells_maintainer_to_regenerate_from_pdfs(

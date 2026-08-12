@@ -268,7 +268,9 @@ class GalvanicBarriersPanel(QWidget):
         verification_method: VerificationMethod | None,
         evidence_reference: str,
     ) -> None:
-        self._apply(mark_verified(self.project, barrier_id, verification_method, evidence_reference))
+        self._apply(
+            mark_verified(self.project, barrier_id, verification_method, evidence_reference)
+        )
 
     def unmark_verified(self, barrier_id: UUID, new_status: BarrierVerificationStatus) -> None:
         self._apply(unmark_verified(self.project, barrier_id, new_status))
@@ -288,9 +290,7 @@ class GalvanicBarriersPanel(QWidget):
             return
         domains = self._project.galvanic_domains
         if len(domains) < 2:
-            QMessageBox.warning(
-                self, "Add Barrier", "At least two galvanic domains are required."
-            )
+            QMessageBox.warning(self, "Add Barrier", "At least two galvanic domains are required.")
             return
         names = [domain.name for domain in domains]
         name_a, ok = QInputDialog.getItem(self, "Add Barrier", "Domain A:", names, 0, False)
@@ -356,9 +356,7 @@ class GalvanicBarriersPanel(QWidget):
             return
         if checked:
             try:
-                self.mark_verified(
-                    barrier.id, self._current_method(), self._evidence_edit.text()
-                )
+                self.mark_verified(barrier.id, self._current_method(), self._evidence_edit.text())
             except ValueError as error:
                 QMessageBox.warning(self, "Verified Galvanic Isolation", str(error))
                 self._populate_fields(self._barrier_at(self._table.currentRow()))
@@ -369,9 +367,7 @@ class GalvanicBarriersPanel(QWidget):
             return
         self.unmark_verified(barrier.id, choice)
 
-    def _ask_unverified_state(
-        self, barrier: GalvanicBarrier
-    ) -> BarrierVerificationStatus | None:
+    def _ask_unverified_state(self, barrier: GalvanicBarrier) -> BarrierVerificationStatus | None:
         """Ask which state now holds; never silently pick one. ``None`` means cancelled."""
         box = QMessageBox(self)
         box.setWindowTitle("Unselect Verified Isolation")

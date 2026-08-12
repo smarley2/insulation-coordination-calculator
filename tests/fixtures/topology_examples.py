@@ -124,7 +124,9 @@ def _domain(seed: int, name: str, *, direct: bool = False) -> GalvanicDomain:
     )
 
 
-def _verified_barrier(seed: int, domain_a: UUID, domain_b: UUID, description: str, evidence: str) -> GalvanicBarrier:
+def _verified_barrier(
+    seed: int, domain_a: UUID, domain_b: UUID, description: str, evidence: str
+) -> GalvanicBarrier:
     return GalvanicBarrier(
         id=_uuid(seed),
         domain_a_id=domain_a,
@@ -136,7 +138,9 @@ def _verified_barrier(seed: int, domain_a: UUID, domain_b: UUID, description: st
     )
 
 
-def _unverified_barrier(seed: int, domain_a: UUID, domain_b: UUID, description: str) -> GalvanicBarrier:
+def _unverified_barrier(
+    seed: int, domain_a: UUID, domain_b: UUID, description: str
+) -> GalvanicBarrier:
     return GalvanicBarrier(
         id=_uuid(seed),
         domain_a_id=domain_a,
@@ -160,7 +164,9 @@ def _applicable_voltages(peak: Decimal) -> PairVoltages:
     return PairVoltages(
         long_term_rms_v=PairVoltage.applicable(peak),
         steady_state_peak_v=PairVoltage.applicable(peak),
-        recurring_peak_v=PairVoltage.not_applicable("No recurring peak recorded for this topology example."),
+        recurring_peak_v=PairVoltage.not_applicable(
+            "No recurring peak recorded for this topology example."
+        ),
         temporary_overvoltage_peak_v=PairVoltage.not_applicable(
             "No temporary overvoltage recorded for this topology example."
         ),
@@ -198,7 +204,9 @@ def _build_pairs(
     return reconcile_pairs(net_classes, tuple(pairs))
 
 
-def _override_pair(pairs: tuple[PairCase, ...], net_a: UUID, net_b: UUID, **overrides: object) -> tuple[PairCase, ...]:
+def _override_pair(
+    pairs: tuple[PairCase, ...], net_a: UUID, net_b: UUID, **overrides: object
+) -> tuple[PairCase, ...]:
     key = canonical_pair_key(net_a, net_b)
     return tuple(pair.model_copy(update=overrides) if pair.key == key else pair for pair in pairs)
 
@@ -256,9 +264,19 @@ def wireless_charging_project(required_rules: RulePackageReference | None = None
         domain_id=receiver_domain.id,
     )
     pe_enclosure = _non_circuit(15, "PE Enclosure", NetClassType.PE_BONDED_CONDUCTIVE_PART)
-    accessible_cover = _non_circuit(16, "Accessible Polymer Cover", NetClassType.ACCESSIBLE_INSULATING_SURFACE)
+    accessible_cover = _non_circuit(
+        16, "Accessible Polymer Cover", NetClassType.ACCESSIBLE_INSULATING_SURFACE
+    )
 
-    net_classes = (ac_input, dc_link, resonant_node, receiver_coil, battery_output, pe_enclosure, accessible_cover)
+    net_classes = (
+        ac_input,
+        dc_link,
+        resonant_node,
+        receiver_coil,
+        battery_output,
+        pe_enclosure,
+        accessible_cover,
+    )
     barrier = _verified_barrier(
         50,
         primary_domain.id,
@@ -352,7 +370,9 @@ def _obc_nets(
     )
 
 
-def _obc_applicable(nets: tuple[NetClass, ...]) -> dict[frozenset[UUID], tuple[InsulationType, Decimal, Decimal]]:
+def _obc_applicable(
+    nets: tuple[NetClass, ...],
+) -> dict[frozenset[UUID], tuple[InsulationType, Decimal, Decimal]]:
     ac_input, _pfc_link, transformer_primary, hv_battery, lv_can, chassis = nets
     return {
         frozenset((ac_input.id, chassis.id)): _KNOWN_GOOD[1],

@@ -54,6 +54,7 @@ def test_imported_package_is_usable_without_pdfs(
 
 def test_rules_manager_exposes_draft_extraction(qtbot, rules_manager):
     assert rules_manager._extract_draft_button.isEnabled()
+    assert rules_manager._review_curves_button.text() == "Review manual curves…"
 
 
 def test_draft_identity_shows_all_three_required_standards(
@@ -143,8 +144,7 @@ def test_audit_tree_counts_and_lists_curves(
 ) -> None:
     rules_manager.set_package(synthetic_rule_package)
     sections = {
-        rules_manager._tree.topLevelItem(index).text(0):
-        rules_manager._tree.topLevelItem(index)
+        rules_manager._tree.topLevelItem(index).text(0): rules_manager._tree.topLevelItem(index)
         for index in range(rules_manager._tree.topLevelItemCount())
     }
 

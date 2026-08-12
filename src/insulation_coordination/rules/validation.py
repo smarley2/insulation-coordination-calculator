@@ -134,6 +134,17 @@ def _curve_source_valid(source: SourceReference) -> bool:
     return bool(source.figure or _record_source_valid(source))
 
 
+def _procedure_source_valid(source: SourceReference) -> bool:
+    """A procedure locates by clause, and names a table or figure when it has one.
+
+    Table 26 and Table 30 project procedures whose locator carries both. A procedure
+    projected from a clause has no table and no figure to name, and requiring one would
+    refuse content the source states as prose -- the same reason a clause-derived decision
+    and the guidance a NOTE becomes locate by clause alone.
+    """
+    return _clause_source_valid(source)
+
+
 def _cell_source_valid(source: SourceReference) -> bool:
     return bool(
         source.clause
@@ -268,25 +279,26 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
     is_iec_import = package.manifest.importer_version.startswith("iec-pdf-")
     trusted_iec_package = is_iec_import and package.manifest.approved
     if trusted_iec_package:
-        from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
+        # Imported inside the trusted-package branch: the importer package pulls in the
+        # recipes, which must not be imported while this module is still loading.
+        from insulation_coordination.rules.importer.expectations import package_expectations
         from insulation_coordination.rules.importer.recipes import RECIPES
 
-        decision_projected_tables = {
-            ids.DVC_VOLTAGE_LIMITS,
-            ids.DVC_PROTECTION_MATRIX,
-        }
-        expected_table_ids = {
-            spec.semantic_id
-            for recipe in RECIPES
-            for spec in recipe.tables
-            if spec.semantic_id not in decision_projected_tables
-        }
-        expected_formula_ids = {spec.semantic_id for recipe in RECIPES for spec in recipe.formulas}
-        expected_mapping_ids = {spec.id for recipe in RECIPES for spec in recipe.mappings}
+        # The one derivation the approval gates use, so a spec kind cannot mean one thing at
+        # approval and another here: a spec with a registered grid projector yields a rule of
+        # another kind, and a comparison-only spec yields evidence for a cross-standard
+        # check, so neither contributes a table of its own. A mapping a cross-standard
+        # comparison proved is permitted beside the declared family rather than required.
+        expectations = package_expectations(RECIPES)
+        expected_table_ids = set(expectations.table_rule_ids)
+        expected_formula_ids = set(expectations.formula_ids)
+        expected_mapping_ids = set(expectations.declared_mapping_ids)
+        proven_mapping_ids = set(expectations.proven_mapping_ids)
     else:
         expected_table_ids = set(table_ids)
         expected_formula_ids = set(formula_ids)
         expected_mapping_ids = set(mapping_ids)
+        proven_mapping_ids = set()
     legacy_ids = (*table_ids, *formula_ids, *mapping_ids)
     rule_ids = (*decision_ids, *procedure_ids, *guidance_ids)
     identifiers = (*legacy_ids, *rule_ids, *curve_ids)
@@ -326,8 +338,7 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         for rule in rules:
             semantic_targets.setdefault(rule.id, []).append(kind)
     semantic_references_resolve = all(
-        len(semantic_targets.get(reference, ())) == 1
-        for reference in decision_references
+        len(semantic_targets.get(reference, ())) == 1 for reference in decision_references
     )
     rule_references_valid = (
         set(procedure_references) <= set(rule_ids) and semantic_references_resolve
@@ -407,18 +418,21 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
             for decision in package.decisions
         )
         and all(
-            _record_source_valid(procedure.source)
+            _procedure_source_valid(procedure.source)
             and all(
-                _record_source_valid(step.source)
+                _procedure_source_valid(step.source)
                 for step in (*procedure.preparation_steps, *procedure.procedure_steps)
             )
             and (
                 procedure.acceptance_reference is None
-                or _record_source_valid(procedure.acceptance_reference)
+                or _procedure_source_valid(procedure.acceptance_reference)
             )
             for procedure in package.procedures
         )
-        and all(_record_source_valid(guidance.source) for guidance in package.guidance)
+        # Guidance carries a clause's notes across, so it locates like a clause-derived
+        # decision: a clause is required and a table or figure is not, because the prose it
+        # preserves need not sit in either.
+        and all(_clause_source_valid(guidance.source) for guidance in package.guidance)
         and all(
             _curve_source_valid(curve.source)
             and all(_curve_source_valid(variant.source) for variant in curve.variants)
@@ -428,11 +442,14 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
     from insulation_coordination.rules.audit import _source_references
 
     source_document_links_valid = all(
-        len(matches := tuple(
-            document
-            for document in package.manifest.source_documents
-            if document.id == owned.reference.document_id
-        )) == 1
+        len(
+            matches := tuple(
+                document
+                for document in package.manifest.source_documents
+                if document.id == owned.reference.document_id
+            )
+        )
+        == 1
         and matches[0].standard == owned.reference.standard
         and matches[0].edition == owned.reference.edition
         for owned in _source_references(package)
@@ -454,7 +471,7 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
             or (
                 set(table_ids) == expected_table_ids
                 and set(formula_ids) == expected_formula_ids
-                and set(mapping_ids) == expected_mapping_ids
+                and set(mapping_ids) - proven_mapping_ids == expected_mapping_ids
             ),
             "IEC package contains the complete PCB Annex G/H source inventory",
         ),

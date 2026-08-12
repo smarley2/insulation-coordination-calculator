@@ -77,7 +77,9 @@ def test_citation_names_only_the_locating_fields_it_has() -> None:
         page=7,
     )
 
-    assert citation(source) == "IEC 62477-1 2022, Table synthetic-table, clause synthetic-clause, p.7"
+    assert (
+        citation(source) == "IEC 62477-1 2022, Table synthetic-table, clause synthetic-clause, p.7"
+    )
 
 
 def test_citation_of_nothing_is_empty() -> None:

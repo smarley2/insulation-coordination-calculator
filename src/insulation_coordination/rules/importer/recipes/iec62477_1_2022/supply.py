@@ -53,8 +53,12 @@ SUPPLY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
         expected_root_kind="bullets",
         output_kind="decision",
         #: The clause's NOTEs become guidance rather than executable branches, and that
-        #: guidance is grounded in this same fragment.
-        projected_rule_ids=(f"{ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION}.guidance",),
+        #: guidance is grounded in this same fragment. A clause that declares routes declares
+        #: all of them, this one's own decision included.
+        projected_rule_ids=(
+            ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,
+            f"{ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION}.guidance",
+        ),
     ),
     ClauseAuditSpec(
         semantic_id=ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION,
@@ -110,10 +114,7 @@ def _require_own_fragment(
 ) -> None:
     if fragment.id != f"raw-{semantic_id}":
         raise ValueError(f"{label} projection requires its own fragment")
-    if (
-        fragment.source.standard != identity.standard
-        or fragment.source.edition != identity.edition
-    ):
+    if fragment.source.standard != identity.standard or fragment.source.edition != identity.edition:
         raise ValueError(f"{label} fragment does not match its identified source")
 
 
@@ -195,30 +196,85 @@ _SYSTEM_VOLTAGE_BRANCHES: tuple[
     ],
     ...,
 ] = (
-    (("mains",), ("three_phase_star",), ("tn", "tt"), ("direct",), _CALCULATION_PURPOSES,
-     "phase_to_earth_rms"),
-    (("mains",), ("three_phase_delta",), ("tn", "tt"), ("direct",), _CALCULATION_PURPOSES,
-     "phase_to_phase_rms"),
-    (("mains",), ("three_phase_it",), ("it",), ("direct",), ("impulse",),
-     "phase_to_artificial_neutral_rms"),
-    (("mains",), ("three_phase_it",), ("it",), ("direct",), ("temporary_overvoltage",),
-     "phase_to_phase_rms"),
-    (("mains",), ("single_phase_it",), ("it",), ("direct",), _CALCULATION_PURPOSES,
-     "phase_to_phase_rms"),
-    (("mains",), None, ("tn", "tt", "it"), ("rectified_dc",), _CALCULATION_PURPOSES,
-     "pre_rectifier_ac_rms"),
-    (("mains",), None, ("tn", "tt", "it"), ("series_rectifier_bridges",), ("impulse",),
-     "pre_rectifier_ac_rms"),
-    (("mains",), None, None, ("isolated_secondary",), _CALCULATION_PURPOSES,
-     "not_derived_from_mains_supply"),
-    (("non_mains",), None, ("unspecified",), ("direct",), _CALCULATION_PURPOSES,
-     "phase_to_phase_rms"),
+    (
+        ("mains",),
+        ("three_phase_star",),
+        ("tn", "tt"),
+        ("direct",),
+        _CALCULATION_PURPOSES,
+        "phase_to_earth_rms",
+    ),
+    (
+        ("mains",),
+        ("three_phase_delta",),
+        ("tn", "tt"),
+        ("direct",),
+        _CALCULATION_PURPOSES,
+        "phase_to_phase_rms",
+    ),
+    (
+        ("mains",),
+        ("three_phase_it",),
+        ("it",),
+        ("direct",),
+        ("impulse",),
+        "phase_to_artificial_neutral_rms",
+    ),
+    (
+        ("mains",),
+        ("three_phase_it",),
+        ("it",),
+        ("direct",),
+        ("temporary_overvoltage",),
+        "phase_to_phase_rms",
+    ),
+    (
+        ("mains",),
+        ("single_phase_it",),
+        ("it",),
+        ("direct",),
+        _CALCULATION_PURPOSES,
+        "phase_to_phase_rms",
+    ),
+    (
+        ("mains",),
+        None,
+        ("tn", "tt", "it"),
+        ("rectified_dc",),
+        _CALCULATION_PURPOSES,
+        "pre_rectifier_ac_rms",
+    ),
+    (
+        ("mains",),
+        None,
+        ("tn", "tt", "it"),
+        ("series_rectifier_bridges",),
+        ("impulse",),
+        "pre_rectifier_ac_rms",
+    ),
+    (
+        ("mains",),
+        None,
+        None,
+        ("isolated_secondary",),
+        _CALCULATION_PURPOSES,
+        "not_derived_from_mains_supply",
+    ),
+    (
+        ("non_mains",),
+        None,
+        ("unspecified",),
+        ("direct",),
+        _CALCULATION_PURPOSES,
+        "phase_to_phase_rms",
+    ),
 )
 
 
 def project_system_voltage_resolution(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
+    _draft: object = None,
 ) -> tuple[tuple[DecisionRule | GuidanceRule, ...], tuple[SemanticProposal, ...]]:
     """Project the reviewed mains/non-mains system voltage clause into a decision."""
 
@@ -230,9 +286,7 @@ def project_system_voltage_resolution(
         id=ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,
         inputs=(
             DecisionInput(name="supply_kind", kind="categorical", allowed_values=_SUPPLY_KINDS),
-            DecisionInput(
-                name="phase_system", kind="categorical", allowed_values=_PHASE_SYSTEMS
-            ),
+            DecisionInput(name="phase_system", kind="categorical", allowed_values=_PHASE_SYSTEMS),
             DecisionInput(
                 name="earthing_arrangement",
                 kind="categorical",
@@ -315,6 +369,7 @@ def _more_severe(first: str, second: str) -> str:
 def project_multiple_source_propagation(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
+    _draft: object = None,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the lettered alternatives of the two-supply clause into a decision."""
 
@@ -343,15 +398,11 @@ def project_multiple_source_propagation(
                                 op="equals",
                                 values=(non_mains_category,),
                             ),
-                            Matcher(
-                                input="galvanic_isolation_present", op="equals", boolean=True
-                            ),
+                            Matcher(input="galvanic_isolation_present", op="equals", boolean=True),
                         ),
                         values=(
                             DecisionValue(name="source_requirement", categorical=own),
-                            DecisionValue(
-                                name="transferred_requirement", categorical=transferred
-                            ),
+                            DecisionValue(name="transferred_requirement", categorical=transferred),
                             DecisionValue(
                                 name="governing_requirement",
                                 categorical=_more_severe(own, transferred),
@@ -379,9 +430,7 @@ def project_multiple_source_propagation(
             DecisionInput(name="galvanic_isolation_present", kind="boolean"),
         ),
         outputs=tuple(
-            DecisionOutput(
-                name=name, kind="categorical", allowed_values=_OVERVOLTAGE_CATEGORIES
-            )
+            DecisionOutput(name=name, kind="categorical", allowed_values=_OVERVOLTAGE_CATEGORIES)
             for name in (
                 "source_requirement",
                 "transferred_requirement",
@@ -407,6 +456,7 @@ _COMBINED_CIRCUIT_REQUIREMENTS = ("more_severe_of_both_sides", "side_specific_fr
 def project_verified_barrier_transfer(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
+    _draft: object = None,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the isolation and no-isolation paths into a decision."""
 
@@ -427,16 +477,12 @@ def project_verified_barrier_transfer(
             matchers=(
                 Matcher(input="galvanic_isolation_verified", op="equals", boolean=verified),
                 _matcher("isolation_evidence_kind", evidence),
-                Matcher(
-                    input="downstream_connection_kind", op="equals", values=(connection,)
-                ),
+                Matcher(input="downstream_connection_kind", op="equals", values=(connection,)),
             ),
             values=(
                 DecisionValue(name="transfer_permitted", boolean=permitted),
                 DecisionValue(name="combined_circuit_requirement", categorical=requirement),
-                DecisionValue(
-                    name="propagates_to_connected_circuits", boolean=propagates
-                ),
+                DecisionValue(name="propagates_to_connected_circuits", boolean=propagates),
             ),
             source=fragment.nodes[0].source,
         )
@@ -506,6 +552,7 @@ _VERIFICATION_REFERENCES = ("inspection_and_dielectric_verification", "not_requi
 def project_spd_reduction_requirements(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
+    _draft: object = None,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the transient-limiter monitoring and reduction clause into a decision."""
 
@@ -526,9 +573,7 @@ def project_spd_reduction_requirements(
         floor: bool,
     ) -> DecisionRow:
         matchers = [
-            Matcher(
-                input="part_of_category_reduction", op="equals", boolean=part_of_reduction
-            ),
+            Matcher(input="part_of_category_reduction", op="equals", boolean=part_of_reduction),
             # The source requires monitoring for an internal and a qualifying external
             # device alike, so placement is declared but does not discriminate.
             Matcher(input="device_placement", op="any"),
@@ -649,8 +694,11 @@ def project_spd_reduction_requirements(
 
 # --- high-frequency isolating transformer ------------------------------------------
 
-#: DVC designations. Designations only; no source value or wording.
-_DVC_DESIGNATIONS = ("dvc_a", "dvc_as", "dvc_b", "dvc_c", "dvc_d")
+#: DVC designations. Designations only; no source value or wording. The document defines
+#: exactly these three (3.19, 3.20, 3.21) and Table 2 and Table 3 name no others; there is
+#: no DVC A and no DVC D. Table 2 splits DVC As into a wet and a dry row, which changes the
+#: voltage limits, not the designation.
+_DVC_DESIGNATIONS = ("dvc_as", "dvc_b", "dvc_c")
 #: The clause's own DVC gate.
 _HF_TRANSFORMER_DVC_GATE = ("dvc_as", "dvc_b")
 _ATTENUATION_EVIDENCE_KINDS = ("none", "test", "simulation", "calculation")
@@ -680,6 +728,7 @@ def _frequency_threshold_hz(fragment: RawClauseFragment, label: str) -> Decimal:
 def project_hf_transformer_attenuation(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
+    _draft: object = None,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the isolating-transformer attenuation clause into a decision."""
 
@@ -697,9 +746,7 @@ def project_hf_transformer_attenuation(
         return DecisionRow(
             matchers=(
                 _matcher("circuit_dvc", _HF_TRANSFORMER_DVC_GATE),
-                Matcher(
-                    input="transformer_frequency_hz", op="range", minimum=threshold_hz
-                ),
+                Matcher(input="transformer_frequency_hz", op="range", minimum=threshold_hz),
                 Matcher(input="isolation_provided", op="equals", boolean=True),
                 _matcher("attenuation_evidence_kind", evidence),
             ),
@@ -713,9 +760,7 @@ def project_hf_transformer_attenuation(
     rule = DecisionRule(
         id=ids.SUPPLY_HF_TRANSFORMER_ATTENUATION,
         inputs=(
-            DecisionInput(
-                name="circuit_dvc", kind="categorical", allowed_values=_DVC_DESIGNATIONS
-            ),
+            DecisionInput(name="circuit_dvc", kind="categorical", allowed_values=_DVC_DESIGNATIONS),
             DecisionInput(name="transformer_frequency_hz", kind="numeric", unit="Hz"),
             DecisionInput(name="isolation_provided", kind="boolean"),
             DecisionInput(

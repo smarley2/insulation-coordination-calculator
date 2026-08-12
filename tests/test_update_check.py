@@ -34,7 +34,9 @@ def _raising(error: Exception) -> Callable[[urllib.request.Request], IO[bytes]]:
 def test_newer_published_tag_is_an_update() -> None:
     status = check_for_update(
         "0.1.0",
-        opener=_opener({"tag_name": "v0.2.0", "html_url": "https://github.com/x/y/releases/tag/v0.2.0"}),
+        opener=_opener(
+            {"tag_name": "v0.2.0", "html_url": "https://github.com/x/y/releases/tag/v0.2.0"}
+        ),
     )
     assert status.update_available is True
     assert status.latest_version == "0.2.0"

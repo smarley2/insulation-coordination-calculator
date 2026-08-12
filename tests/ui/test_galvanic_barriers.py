@@ -406,7 +406,9 @@ def test_panel_mark_verified_emits_project_changed(panel: GalvanicBarriersPanel,
     with qtbot.waitSignal(panel.project_changed, timeout=1000) as blocker:
         panel.mark_verified(barrier.id, VerificationMethod.TEST, "TR-001")
     (updated,) = blocker.args
-    assert updated.galvanic_barriers[0].status is BarrierVerificationStatus.VERIFIED_GALVANIC_ISOLATION
+    assert (
+        updated.galvanic_barriers[0].status is BarrierVerificationStatus.VERIFIED_GALVANIC_ISOLATION
+    )
 
 
 def test_panel_selecting_a_row_shows_its_fields(panel: GalvanicBarriersPanel) -> None:
@@ -460,12 +462,16 @@ def test_unchecking_verified_applies_the_chosen_state(
     panel.set_project(project)
     panel._table.setCurrentCell(0, 0)
     monkeypatch.setattr(
-        panel, "_ask_unverified_state", lambda barrier: BarrierVerificationStatus.NO_GALVANIC_ISOLATION
+        panel,
+        "_ask_unverified_state",
+        lambda barrier: BarrierVerificationStatus.NO_GALVANIC_ISOLATION,
     )
 
     panel._verified_checkbox.setChecked(False)
 
-    assert panel.project.galvanic_barriers[0].status is BarrierVerificationStatus.NO_GALVANIC_ISOLATION
+    assert (
+        panel.project.galvanic_barriers[0].status is BarrierVerificationStatus.NO_GALVANIC_ISOLATION
+    )
     assert panel.project.galvanic_barriers[0].evidence_reference is None
 
 
@@ -474,7 +480,9 @@ def test_panel_delete_confirmed_removes_the_barrier(
 ) -> None:
     from PySide6.QtWidgets import QMessageBox
 
-    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes
+    )
     project, a, b = _two_domain_project()
     barrier = _barrier(domain_a_id=a.id, domain_b_id=b.id)
     project = project.model_copy(update={"galvanic_barriers": (barrier,)})
@@ -493,7 +501,9 @@ def test_panel_delete_cancelled_leaves_the_project_untouched(
 ) -> None:
     from PySide6.QtWidgets import QMessageBox
 
-    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.No)
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.No
+    )
     project, a, b = _two_domain_project()
     barrier = _barrier(domain_a_id=a.id, domain_b_id=b.id)
     project = project.model_copy(update={"galvanic_barriers": (barrier,)})
@@ -530,5 +540,8 @@ def test_unchecking_verified_cancel_leaves_the_project_untouched(
     panel._verified_checkbox.setChecked(False)
 
     assert received == []
-    assert panel.project.galvanic_barriers[0].status is BarrierVerificationStatus.VERIFIED_GALVANIC_ISOLATION
+    assert (
+        panel.project.galvanic_barriers[0].status
+        is BarrierVerificationStatus.VERIFIED_GALVANIC_ISOLATION
+    )
     assert panel._verified_checkbox.isChecked() is True

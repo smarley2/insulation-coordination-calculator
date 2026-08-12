@@ -1082,9 +1082,7 @@ def synthetic_dvc_rule_package(*, edition: str = EDITION) -> RulePackage:
             DecisionRow(
                 matchers=matchers(dvc, quantity),
                 values=(
-                    DecisionValue(
-                        name="fault_time_voltage", reference=ids.DVC_FAULT_TIME_VOLTAGE
-                    ),
+                    DecisionValue(name="fault_time_voltage", reference=ids.DVC_FAULT_TIME_VOLTAGE),
                 ),
                 source=cell_source(dvc, quantity),
             )

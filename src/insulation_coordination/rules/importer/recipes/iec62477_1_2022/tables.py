@@ -1,6 +1,12 @@
 from typing import Literal
 
+from insulation_coordination.rules.importer.axis_selectors import (
+    DvcDesignationSelector,
+    Table2QuantitySelector,
+)
 from insulation_coordination.rules.importer.identify import (
+    AxisKeywordRule,
+    AxisSelectorSpec,
     BlankCellSpec,
     CompoundQuantitySpec,
     FormulaAuditSpec,
@@ -17,6 +23,9 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.annex_f impo
 )
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.spacing import (
     SPACING_TABLES,
+)
+from insulation_coordination.rules.importer.recipes.iec62477_1_2022.verification import (
+    VERIFICATION_TABLES,
 )
 
 ColumnRole = Literal["axis", "data", "context"]
@@ -81,6 +90,82 @@ TABLE_2 = TableAuditSpec(
         f"{ids.DVC_VOLTAGE_LIMITS}.fault_time_reference",
         f"{ids.DVC_VOLTAGE_LIMITS}.impulse_reference",
         f"{ids.DVC_VOLTAGE_LIMITS}.not_applicable",
+    ),
+    axis_selectors=(
+        AxisSelectorSpec(
+            axis="row",
+            expected_positions=4,
+            selector_kind="dvc_designation",
+            keyword_rules=(
+                AxisKeywordRule(
+                    keywords=("as", "dry"),
+                    selector=DvcDesignationSelector(designation="dvc_as", environment="dry"),
+                ),
+                AxisKeywordRule(
+                    keywords=("as", "wet"),
+                    selector=DvcDesignationSelector(
+                        designation="dvc_as", environment="wet_and_saltwater_wet"
+                    ),
+                ),
+                AxisKeywordRule(
+                    keywords=("b",),
+                    selector=DvcDesignationSelector(
+                        designation="dvc_b", environment="not_applicable"
+                    ),
+                ),
+                AxisKeywordRule(
+                    keywords=("c",),
+                    selector=DvcDesignationSelector(
+                        designation="dvc_c", environment="not_applicable"
+                    ),
+                ),
+            ),
+        ),
+        AxisSelectorSpec(
+            axis="column",
+            expected_positions=5,
+            selector_kind="table2_quantity",
+            keyword_rules=(
+                AxisKeywordRule(
+                    keywords=("rms",),
+                    selector=Table2QuantitySelector(
+                        operating_context="normal", quantity="working_voltage", basis="ac_rms"
+                    ),
+                ),
+                # The bare peak keyword also occurs in two other columns' header text, so
+                # without these exclusions three rules would match three positions each and
+                # every one of them would propose nothing. Verified against the source.
+                AxisKeywordRule(
+                    keywords=("peak",),
+                    excluded_keywords=("impulse", "fault"),
+                    selector=Table2QuantitySelector(
+                        operating_context="normal", quantity="working_voltage", basis="ac_peak"
+                    ),
+                ),
+                AxisKeywordRule(
+                    keywords=("mean",),
+                    selector=Table2QuantitySelector(
+                        operating_context="normal", quantity="working_voltage", basis="dc_mean"
+                    ),
+                ),
+                AxisKeywordRule(
+                    keywords=("impulse",),
+                    selector=Table2QuantitySelector(
+                        operating_context="normal",
+                        quantity="impulse_withstand",
+                        basis="not_applicable",
+                    ),
+                ),
+                AxisKeywordRule(
+                    keywords=("fault",),
+                    selector=Table2QuantitySelector(
+                        operating_context="single_fault_or_abnormal",
+                        quantity="fault_voltage",
+                        basis="ac_peak_or_dc",
+                    ),
+                ),
+            ),
+        ),
     ),
 )
 
@@ -305,8 +390,13 @@ TABLE_3 = TableAuditSpec(
     expected_raw_columns=7,
     expected_bbox=(71.0, 265.3, 524.3, 744.2),
     data_strategy="rectangle",
-    data_row_start=None,
-    data_column_start=None,
+    #: Unused by the legacy rectangle path -- Table 3 declares ``segments`` and has its own
+    #: registered grid projector, so extraction never reaches ``_legacy_data_logical``.
+    #: ``data_row_start`` is not set: row axis positions now come from the segment's
+    #: ``data_rows`` (non-contiguous, see below), and the column axis is reviewer-supplied so
+    #: it never reads a row header limit either. ``data_column_start`` stays: the row axis's
+    #: header text is read from the cells left of it (see ``_axis_header_text``).
+    data_column_start=1,
     expected_data_rows=3,
     expected_data_columns=6,
     row_axis_id="dvc",
@@ -360,6 +450,42 @@ TABLE_3 = TableAuditSpec(
         match="prefix",
     ),
     decision_route_ids=(ids.DVC_PROTECTION_MATRIX,),
+    axis_selectors=(
+        AxisSelectorSpec(
+            axis="row",
+            expected_positions=3,
+            selector_kind="dvc_designation",
+            keyword_rules=(
+                AxisKeywordRule(
+                    keywords=("as",),
+                    selector=DvcDesignationSelector(
+                        designation="dvc_as", environment="not_applicable"
+                    ),
+                ),
+                AxisKeywordRule(
+                    keywords=("b",),
+                    selector=DvcDesignationSelector(
+                        designation="dvc_b", environment="not_applicable"
+                    ),
+                ),
+                AxisKeywordRule(
+                    keywords=("c",),
+                    selector=DvcDesignationSelector(
+                        designation="dvc_c", environment="not_applicable"
+                    ),
+                ),
+            ),
+        ),
+        # No public grammar: a text grammar for this axis would require the source's header
+        # hierarchy wording, which must not enter this repository. The reviewer supplies all
+        # six protection-target selectors, and approval blocks until they do.
+        AxisSelectorSpec(
+            axis="column",
+            expected_positions=6,
+            selector_kind="protection_target",
+            reviewer_supplied=True,
+        ),
+    ),
 )
 
 TABLES: tuple[TableAuditSpec, ...] = (
@@ -370,11 +496,11 @@ TABLES: tuple[TableAuditSpec, ...] = (
     _TOV_AC,
     _TOV_DC,
     TableAuditSpec(
-        semantic_id=f"{ids.ALTITUDE_TEST_VOLTAGE_CORRECTION}.e1",
+        semantic_id=ids.ALTITUDE_CLEARANCE_CORRECTION,
         source_table="E.1",
         title_anchor="Table E.1",
         page_number=193,
-        clause="Annex E",
+        clause="E.1",
         target_unit="1",
         interpolation="none",
         page_search_radius=2,
@@ -412,11 +538,11 @@ TABLES: tuple[TableAuditSpec, ...] = (
         ),
     ),
     TableAuditSpec(
-        semantic_id=f"{ids.ALTITUDE_TEST_VOLTAGE_CORRECTION}.e2",
+        semantic_id=ids.ALTITUDE_TEST_VOLTAGE_CORRECTION,
         source_table="E.2",
         title_anchor="Table E.2",
         page_number=194,
-        clause="Annex E",
+        clause="E.2",
         target_unit="kV",
         interpolation="none",
         page_search_radius=2,
@@ -452,6 +578,7 @@ TABLES: tuple[TableAuditSpec, ...] = (
     ),
     *SPACING_TABLES,
     *ANNEX_F_TABLES,
+    *VERIFICATION_TABLES,
 )
 
 FORMULAS: tuple[FormulaAuditSpec, ...] = (

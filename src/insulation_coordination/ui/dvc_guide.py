@@ -129,10 +129,7 @@ def _render_limits(summary: DvcLimitSummary) -> str:
 
 def _render_protection(summary: DvcProtectionSummary) -> str:
     if not summary.available:
-        return (
-            "Protection requirements: not available from the active package. "
-            f"{summary.reason}"
-        )
+        return f"Protection requirements: not available from the active package. {summary.reason}"
     if not summary.relationships:
         return "Protection requirements: none recorded in the active package for this class."
     lines = ["Protection requirements (from the active rule package):"]

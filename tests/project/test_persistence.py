@@ -27,6 +27,7 @@ from insulation_coordination.domain.project import (
 )
 from insulation_coordination.project.persistence import (
     NET_TOPOLOGY_KEYS,
+    PROJECT_SCHEMA_VERSION,
     ProjectLoadError,
     ProjectSaveError,
     ProjectVersionError,
@@ -34,6 +35,7 @@ from insulation_coordination.project.persistence import (
     migrate_project_document,
     save_project_atomic,
 )
+from tests.fixtures.images import attachment_from, png_bytes
 
 
 @pytest.fixture
@@ -103,8 +105,8 @@ def topology_migration_project() -> Project:
     )
 
 
-def _as_schema_v2_document(project: Project) -> dict[str, object]:
-    document: dict[str, object] = {"schema_version": 2, **project.model_dump(mode="json")}
+def _without_topology_fields(document: dict[str, object]) -> dict[str, object]:
+    """Strip everything the version 3 -> 4 migration introduces, in place."""
     document.pop("galvanic_domains", None)
     document.pop("galvanic_barriers", None)
     for net in document["net_classes"]:  # type: ignore[union-attr]
@@ -113,16 +115,20 @@ def _as_schema_v2_document(project: Project) -> dict[str, object]:
     return document
 
 
-def test_migration_v2_to_v3_adds_direct_domain_and_classifies_every_net(
+def _as_schema_v3_document(project: Project) -> dict[str, object]:
+    return _without_topology_fields({"schema_version": 3, **project.model_dump(mode="json")})
+
+
+def test_migration_v3_to_v4_adds_direct_domain_and_classifies_every_net(
     topology_migration_project: Project,
 ) -> None:
-    raw = _as_schema_v2_document(topology_migration_project)
+    raw = _as_schema_v3_document(topology_migration_project)
     original_pairs = deepcopy(raw["pairs"])
     original_nets = deepcopy(raw["net_classes"])
 
     migrated = migrate_project_document(raw)
 
-    assert migrated["schema_version"] == 3
+    assert migrated["schema_version"] == PROJECT_SCHEMA_VERSION
     assert migrated["pairs"] == original_pairs
     assert migrated["galvanic_barriers"] == []
 
@@ -150,16 +156,16 @@ def test_migration_v2_to_v3_adds_direct_domain_and_classifies_every_net(
         assert untouched == original_net
 
 
-def test_migration_v2_to_v3_changes_nothing_outside_the_topology_fields_it_introduces(
+def test_migration_v3_to_v4_changes_nothing_outside_the_topology_fields_it_introduces(
     topology_migration_project: Project,
 ) -> None:
-    """Every top-level key the v2 document already had survives byte-identically.
+    """Every top-level key the v3 document already had survives byte-identically.
 
     The per-net and per-pair checks above cover the two collections the migration walks;
     this covers the rest of the document, so a future migration step cannot quietly
     rewrite the metadata, defaults or required-rules reference of an existing project.
     """
-    raw = _as_schema_v2_document(topology_migration_project)
+    raw = _as_schema_v3_document(topology_migration_project)
     original = deepcopy(raw)
 
     migrated = migrate_project_document(raw)
@@ -175,7 +181,7 @@ def test_migration_v2_to_v3_changes_nothing_outside_the_topology_fields_it_intro
 def test_migrated_classification_state_is_needs_review_not_confirmed(
     topology_migration_project: Project,
 ) -> None:
-    raw = _as_schema_v2_document(topology_migration_project)
+    raw = _as_schema_v3_document(topology_migration_project)
 
     migrated = migrate_project_document(raw)
 
@@ -193,10 +199,10 @@ def test_migrated_classification_state_is_needs_review_not_confirmed(
         (lambda raw: raw.__setitem__("galvanic_barriers", []), "galvanic_barriers"),
     ],
 )
-def test_migration_rejects_v2_document_already_carrying_reserved_top_level_keys(
+def test_migration_rejects_v3_document_already_carrying_reserved_top_level_keys(
     topology_migration_project: Project, mutate: object, match: str
 ) -> None:
-    raw = _as_schema_v2_document(topology_migration_project)
+    raw = _as_schema_v3_document(topology_migration_project)
     mutate(raw)  # type: ignore[operator]
 
     with pytest.raises(ProjectVersionError, match=match):
@@ -204,11 +210,11 @@ def test_migration_rejects_v2_document_already_carrying_reserved_top_level_keys(
 
 
 @pytest.mark.parametrize("key", sorted(NET_TOPOLOGY_KEYS))
-def test_migration_rejects_v2_document_whose_net_already_carries_any_topology_key(
+def test_migration_rejects_v3_document_whose_net_already_carries_any_topology_key(
     topology_migration_project: Project, key: str
 ) -> None:
     """Parametrized over the whole frozenset, so a key added later is covered for free."""
-    raw = _as_schema_v2_document(topology_migration_project)
+    raw = _as_schema_v3_document(topology_migration_project)
     raw["net_classes"][0][key] = "already-set"  # type: ignore[index]
 
     with pytest.raises(ProjectVersionError, match="topology"):
@@ -241,7 +247,7 @@ def test_load_rejects_schema_document_with_a_non_dict_net_class_entry(
 def test_migrated_project_round_trips_without_creating_a_second_domain(
     topology_migration_project: Project, tmp_path: Path
 ) -> None:
-    raw = _as_schema_v2_document(topology_migration_project)
+    raw = _as_schema_v3_document(topology_migration_project)
     path = tmp_path / "legacy.icproj"
     path.write_text(json.dumps(raw), encoding="utf-8")
 
@@ -253,15 +259,16 @@ def test_migrated_project_round_trips_without_creating_a_second_domain(
     assert len(second_load.galvanic_domains) == 1
     assert second_load.galvanic_domains[0].id == first_load.galvanic_domains[0].id
     saved = json.loads(path.read_text(encoding="utf-8"))
-    assert saved["schema_version"] == 3
+    assert saved["schema_version"] == PROJECT_SCHEMA_VERSION
     assert len(saved["galvanic_domains"]) == 1
 
 
-def test_schema_v1_document_loads_through_both_migration_steps(
+def test_schema_v1_document_loads_through_every_migration_step(
     topology_migration_project: Project, tmp_path: Path
 ) -> None:
-    document = _as_schema_v2_document(topology_migration_project)
+    document = _as_schema_v3_document(topology_migration_project)
     document.pop("group_splits", None)
+    document.pop("circuit_diagram", None)
     document["schema_version"] = 1
     path = tmp_path / "legacy-v1.icproj"
     path.write_text(json.dumps(document), encoding="utf-8")
@@ -313,7 +320,7 @@ def test_failed_replace_preserves_previous_file(
     assert list(tmp_path.glob("*.tmp")) == [unrelated]
 
 
-def test_migration_chains_v1_through_v2_to_v3_without_mutating_source() -> None:
+def test_migration_chains_v1_through_v3_to_v4_without_mutating_source() -> None:
     raw: dict[str, object] = {"schema_version": 1, "sentinel": True}
     original = deepcopy(raw)
 
@@ -321,9 +328,10 @@ def test_migration_chains_v1_through_v2_to_v3_without_mutating_source() -> None:
 
     domain = migrated["galvanic_domains"][0]  # type: ignore[index]
     assert migrated == {
-        "schema_version": 3,
+        "schema_version": 4,
         "sentinel": True,
         "group_splits": [],
+        "circuit_diagram": None,
         "galvanic_domains": [domain],
         "galvanic_barriers": [],
     }
@@ -336,7 +344,7 @@ def test_migration_chains_v1_through_v2_to_v3_without_mutating_source() -> None:
 
 def test_future_schema_is_rejected() -> None:
     with pytest.raises(ProjectVersionError, match="newer"):
-        migrate_project_document({"schema_version": 4})
+        migrate_project_document({"schema_version": PROJECT_SCHEMA_VERSION + 1})
 
 
 def test_unsupported_older_schema_is_rejected() -> None:
@@ -346,7 +354,7 @@ def test_unsupported_older_schema_is_rejected() -> None:
 
 def test_load_rejects_future_schema_without_changing_file(tmp_path: Path) -> None:
     path = tmp_path / "future.icproj"
-    original = json.dumps({"schema_version": 4})
+    original = json.dumps({"schema_version": PROJECT_SCHEMA_VERSION + 1})
     path.write_text(original, encoding="utf-8")
 
     with pytest.raises(ProjectVersionError, match="newer"):
@@ -355,11 +363,12 @@ def test_load_rejects_future_schema_without_changing_file(tmp_path: Path) -> Non
     assert path.read_text(encoding="utf-8") == original
 
 
-def test_schema_v1_loads_with_empty_group_splits_and_save_writes_current_schema(
+def test_schema_v1_loads_with_empty_group_splits_and_save_writes_the_current_schema(
     sample_project: Project, tmp_path: Path
 ) -> None:
     old_document = {"schema_version": 1, **sample_project.model_dump(mode="json")}
     old_document.pop("group_splits", None)
+    old_document.pop("circuit_diagram", None)
     old_document.pop("galvanic_domains", None)
     old_document.pop("galvanic_barriers", None)
     for net in old_document["net_classes"]:
@@ -373,10 +382,70 @@ def test_schema_v1_loads_with_empty_group_splits_and_save_writes_current_schema(
     saved = json.loads(path.read_text(encoding="utf-8"))
 
     assert loaded.group_splits == ()
+    assert loaded.circuit_diagram is None
     assert len(loaded.galvanic_domains) == 1
     assert loaded.galvanic_domains[0].is_direct_source_domain is True
-    assert saved["schema_version"] == 3
+    assert saved["schema_version"] == PROJECT_SCHEMA_VERSION
     assert saved["group_splits"] == []
+    assert saved["circuit_diagram"] is None
+
+
+def test_schema_v2_loads_without_a_circuit_diagram(sample_project: Project, tmp_path: Path) -> None:
+    document = _without_topology_fields(
+        {"schema_version": 2, **sample_project.model_dump(mode="json")}
+    )
+    document.pop("circuit_diagram", None)
+    path = tmp_path / "v2.icproj"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    assert load_project(path).circuit_diagram is None
+
+
+def test_schema_v2_with_a_circuit_diagram_is_rejected(
+    sample_project: Project, tmp_path: Path
+) -> None:
+    document = {"schema_version": 2, **sample_project.model_dump(mode="json")}
+    document["circuit_diagram"] = None
+    original = json.dumps(document)
+    path = tmp_path / "mislabeled-v2.icproj"
+    path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ProjectVersionError, match="circuit_diagram"):
+        load_project(path)
+
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_circuit_diagram_survives_save_and_load_unchanged(
+    sample_project: Project, tmp_path: Path
+) -> None:
+    attachment = attachment_from(png_bytes(), caption="Main topology", source_note="EDA export")
+    project = sample_project.model_copy(update={"circuit_diagram": attachment})
+    path = tmp_path / "diagram.icproj"
+
+    save_project_atomic(path, project)
+    loaded = load_project(path)
+
+    assert loaded.circuit_diagram == attachment
+    assert loaded.circuit_diagram is not None
+    assert loaded.circuit_diagram.decoded_bytes() == attachment.decoded_bytes()
+    assert loaded.circuit_diagram.sha256 == attachment.sha256
+
+
+@pytest.mark.parametrize("field", ["sha256", "data_base64"])
+def test_corrupted_attachment_payload_is_rejected_on_load(
+    sample_project: Project, tmp_path: Path, field: str
+) -> None:
+    attachment = attachment_from(png_bytes())
+    project = sample_project.model_copy(update={"circuit_diagram": attachment})
+    path = tmp_path / "diagram.icproj"
+    save_project_atomic(path, project)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["circuit_diagram"][field] = "f" * 64 if field == "sha256" else "!not base64!"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ProjectLoadError, match="SHA-256|base64"):
+        load_project(path)
 
 
 def test_schema_v1_with_mislabeled_group_splits_is_rejected_without_rewriting_source(

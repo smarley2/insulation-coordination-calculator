@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insulation_coordination.domain.attachments import ProjectImageAttachment
 from insulation_coordination.domain.enums import (
     ConstructionType,
     FieldCondition,
@@ -41,6 +42,7 @@ from insulation_coordination.project.persistence import (
     load_project,
     save_project_atomic,
 )
+from insulation_coordination.ui.circuit_diagram import CircuitDiagramBox
 from insulation_coordination.ui.galvanic_barriers import GalvanicBarriersPanel
 from insulation_coordination.ui.galvanic_domains import GalvanicDomainsPanel
 from insulation_coordination.ui.help_indicator import HelpIndicator, labelled
@@ -153,6 +155,10 @@ class ProjectPage(QWidget):
         project_columns.addWidget(meta_group, 1)
         project_columns.addWidget(defaults_group, 1)
         layout.addLayout(project_columns)
+
+        self._diagram_box = CircuitDiagramBox()
+        self._diagram_box.attachment_changed.connect(self._on_diagram_changed)
+        layout.addWidget(self._diagram_box)
 
         rules_layout = QHBoxLayout()
         rules_layout.addWidget(QLabel("Rules package:"))
@@ -286,6 +292,7 @@ class ProjectPage(QWidget):
             widget.blockSignals(False)
         for combo in (self._impulse_combo, self._pollution_combo, self._cti_combo):
             combo.blockSignals(False)
+        self._diagram_box.set_attachment(project.circuit_diagram)
         rules = project.required_rules
         if rules is None:
             self._rules_label.setText("(none)")
@@ -376,6 +383,11 @@ class ProjectPage(QWidget):
         del net_classes[index]
         pairs = reconcile_pairs(tuple(net_classes), self._project.pairs)
         self._update_project(net_classes=tuple(net_classes), pairs=pairs)
+
+    def _on_diagram_changed(self, attachment: ProjectImageAttachment | None) -> None:
+        if self._project is None:
+            return
+        self._update_project(circuit_diagram=attachment)
 
     def _update_project(self, **updates: object) -> None:
         self._apply_project(self._project.model_copy(update=updates))  # type: ignore[union-attr]

@@ -233,9 +233,7 @@ def remap_and_delete_domain(
     )
 
 
-def _remap_barrier(
-    barrier: GalvanicBarrier, old_id: UUID, new_id: UUID | None
-) -> GalvanicBarrier:
+def _remap_barrier(barrier: GalvanicBarrier, old_id: UUID, new_id: UUID | None) -> GalvanicBarrier:
     if new_id is None:
         raise AssertionError("a remapped barrier always has a replacement domain")
     if barrier.domain_a_id == old_id:

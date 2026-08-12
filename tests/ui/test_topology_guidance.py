@@ -27,8 +27,13 @@ from insulation_coordination.ui.voltage_guidance import guidance_for
 def _guidance_text(guidance_id: TopologyGuidanceId) -> str:
     guidance = guidance_for(guidance_id)
     return "\n".join(
-        (guidance.title, guidance.short_text, guidance.detailed_text, *guidance.examples,
-         *guidance.common_mistakes)
+        (
+            guidance.title,
+            guidance.short_text,
+            guidance.detailed_text,
+            *guidance.examples,
+            *guidance.common_mistakes,
+        )
     )
 
 

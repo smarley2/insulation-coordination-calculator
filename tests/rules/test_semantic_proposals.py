@@ -341,8 +341,7 @@ def test_rule_metadata_is_not_accepted_as_a_source_artifact() -> None:
     draft = draft.model_copy(
         update={
             "review_items": tuple(
-                no_artifact if item.sha256 == member_sha256 else item
-                for item in draft.review_items
+                no_artifact if item.sha256 == member_sha256 else item for item in draft.review_items
             ),
             "review_resolutions": tuple(
                 resolution if item.review_item_sha256 == member_sha256 else item
@@ -458,14 +457,10 @@ def test_approval_blockers_are_the_single_manual_and_semantic_gate() -> None:
     stale_draft = reviewed.model_copy(
         update={"semantic_proposals": (stale, *reviewed.semantic_proposals[1:])}
     )
-    assert any(
-        "stale" in item.expected_contract for item in approval_blockers(stale_draft)
-    )
+    assert any("stale" in item.expected_contract for item in approval_blockers(stale_draft))
 
     missing = reviewed.model_copy(update={"semantic_proposals": reviewed.semantic_proposals[:-1]})
-    assert any(
-        item.code == "SEMANTIC_PROPOSAL_MISSING" for item in approval_blockers(missing)
-    )
+    assert any(item.code == "SEMANTIC_PROPOSAL_MISSING" for item in approval_blockers(missing))
 
     duplicate_resolution = reviewed.model_copy(
         update={

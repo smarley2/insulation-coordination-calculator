@@ -250,9 +250,7 @@ class DvcGuidanceService:
                     source=result.source,
                 )
             )
-        return DvcProtectionSummary(
-            dvc=dvc, available=True, relationships=tuple(relationships)
-        )
+        return DvcProtectionSummary(dvc=dvc, available=True, relationships=tuple(relationships))
 
     def _quantity(
         self,

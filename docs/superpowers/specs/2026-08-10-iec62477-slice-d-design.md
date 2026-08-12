@@ -75,11 +75,12 @@ call sites:
 ```python
 class CrossStandardCheckSpec(FrozenModel):
     id: Identifier
-    source_rule_id: Identifier      # the IEC 62477-1 grid
-    target_rule_id: Identifier      # the already-reviewed rule in the same draft
+    source_rule_id: Identifier  # the IEC 62477-1 grid
+    target_rule_id: Identifier  # the already-reviewed rule in the same draft
     family: Identifier
-    cell_map: tuple[tuple[Identifier, Identifier], ...]   # source cell -> target cell
+    cell_map: tuple[tuple[Identifier, Identifier], ...]  # source cell -> target cell
     source: SourceReference
+
 
 def compare_across_standards(
     draft: ImportedRuleDraft, spec: CrossStandardCheckSpec
@@ -206,14 +207,21 @@ This slice moves that knowledge to the recipe. `StandardRecipe` gains two mappin
 `TableAuditSpec` gains one field:
 
 ```python
-GridProjector = Callable[[RawGrid, StandardIdentity], tuple[tuple[RuleObject, ...], tuple[SemanticProposal, ...]]]
-ClauseProjector = Callable[[RawClauseFragment, StandardIdentity], tuple[tuple[RuleObject, ...], tuple[SemanticProposal, ...]]]
+GridProjector = Callable[
+    [RawGrid, StandardIdentity], tuple[tuple[RuleObject, ...], tuple[SemanticProposal, ...]]
+]
+ClauseProjector = Callable[
+    [RawClauseFragment, StandardIdentity],
+    tuple[tuple[RuleObject, ...], tuple[SemanticProposal, ...]],
+]
+
 
 class StandardRecipe(FrozenModel):
     ...
     grid_projectors: Mapping[Identifier, GridProjector] = {}
     clause_projectors: Mapping[Identifier, ClauseProjector] = {}
     cross_standard_checks: tuple[CrossStandardCheckSpec, ...] = ()
+
 
 class TableAuditSpec(FrozenModel):
     ...
@@ -244,6 +252,7 @@ class InventoryStatus(FrozenModel):
     typed: bool
     approved: bool
     deferred: bool
+
 
 def inventory_report(draft: ImportedRuleDraft) -> tuple[InventoryStatus, ...]: ...
 ```

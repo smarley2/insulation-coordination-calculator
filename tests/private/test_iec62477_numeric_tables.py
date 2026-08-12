@@ -8,7 +8,7 @@ from insulation_coordination.rules.importer.approval import (
     _require_consistent_shared_source_cells,
 )
 from insulation_coordination.rules.importer.crosscheck import compare_across_standards
-from insulation_coordination.rules.importer.extract import _REQUIRED_RECIPES, extract_draft
+from insulation_coordination.rules.importer.extract import extract_draft
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.spacing import (
     CROSS_STANDARD_CHECKS,
@@ -20,9 +20,11 @@ from insulation_coordination.rules.importer.review import (
 pytestmark = pytest.mark.private_standard
 
 
-@pytest.fixture(scope="module")
-def draft(supplied_standards: dict[str, Path]):
-    return extract_draft(tuple(supplied_standards[recipe] for recipe in sorted(_REQUIRED_RECIPES)))
+@pytest.fixture
+def draft(extracted_draft):
+    """The shared import from ``conftest``; every review step returns a new draft."""
+
+    return extracted_draft
 
 
 def test_manifest_lists_three_distinct_source_documents(draft) -> None:
@@ -40,8 +42,8 @@ def test_table_seven_and_the_altitude_tables_are_extracted(draft) -> None:
     assert f"raw-{ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC}.dc" in grid_ids
     assert f"raw-{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.ac" in grid_ids
     assert f"raw-{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.dc" in grid_ids
-    assert f"raw-{ids.ALTITUDE_TEST_VOLTAGE_CORRECTION}.e1" in grid_ids
-    assert f"raw-{ids.ALTITUDE_TEST_VOLTAGE_CORRECTION}.e2" in grid_ids
+    assert f"raw-{ids.ALTITUDE_CLEARANCE_CORRECTION}" in grid_ids
+    assert f"raw-{ids.ALTITUDE_TEST_VOLTAGE_CORRECTION}" in grid_ids
 
 
 def test_every_62477_cell_carries_full_provenance(draft) -> None:
@@ -74,10 +76,10 @@ def test_the_two_table_seven_grids_hold_different_data(draft) -> None:
     assert impulse_data != tov_data
 
 
-def test_extraction_is_reproducible(supplied_standards: dict[str, Path], draft) -> None:
-    repeated = extract_draft(
-        tuple(supplied_standards[recipe] for recipe in sorted(_REQUIRED_RECIPES))
-    )
+def test_extraction_is_reproducible(supplied_paths: tuple[Path, ...], draft) -> None:
+    """A second, independent import: comparing two runs is the assertion here."""
+
+    repeated = extract_draft(supplied_paths)
     assert repeated.checksums == draft.checksums
 
 
@@ -94,7 +96,7 @@ def test_tables_eight_and_nine_agree_with_the_part_one_grids(draft) -> None:
     checks = tuple(
         check
         for check in CROSS_STANDARD_CHECKS
-        if check.target_rule_id.startswith("raw-iec60664-1-")
+        if check.target_grid_id.startswith("raw-iec60664-1-")
     )
     assert len(checks) == 2
     for check in checks:

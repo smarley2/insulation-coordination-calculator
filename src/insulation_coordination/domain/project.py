@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from pydantic import Field, field_validator, model_validator
 
+from insulation_coordination.domain.attachments import ProjectImageAttachment
 from insulation_coordination.domain.enums import (
     Applicability,
     CircuitSourceRelationship,
@@ -246,6 +247,7 @@ class Project(FrozenModel):
     net_classes: tuple[NetClass, ...]
     pairs: tuple[PairCase, ...]
     group_splits: tuple[GroupSplit, ...] = ()
+    circuit_diagram: ProjectImageAttachment | None = None
     galvanic_domains: tuple[GalvanicDomain, ...] = ()
     galvanic_barriers: tuple[GalvanicBarrier, ...] = ()
 

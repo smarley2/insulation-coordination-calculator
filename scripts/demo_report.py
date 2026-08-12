@@ -52,7 +52,7 @@ def main() -> int:
         for pair in project.pairs
     )
     groups = group_results(results, project.group_splits)
-    model = build_report_model(project, results, groups, rules)
+    model = build_report_model(project, results, groups, rules, image_directory=out)
 
     tex = out / "demo-report.tex"
     tex.write_text(render_latex(model), encoding="utf-8")

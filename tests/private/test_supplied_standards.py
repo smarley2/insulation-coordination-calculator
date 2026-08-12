@@ -36,11 +36,9 @@ from insulation_coordination.rules.importer.identify import (
     StandardIdentificationError,
     identify_standard,
 )
-from insulation_coordination.rules.importer.review import (
-    draft_review_digest,
-    review_curve_variant,
-)
+from insulation_coordination.rules.importer.review import draft_review_digest
 from insulation_coordination.rules.validation import validate_rule_package
+from tests.private.test_iec62477_curves import _complete_manual_curve_review
 from tests.private.test_iec62477_dvc_tables import _review_all_c2_proposals
 
 pytestmark = pytest.mark.private_standard
@@ -56,17 +54,16 @@ def _golden_digest_path() -> Path:
     return private_rules / "supplied-standards-draft.sha256"
 
 
-def _approve_supplied_package(paths: tuple[Path, ...]) -> RulePackage:
-    reviewed = _review_all_c2_proposals(extract_draft(paths))
-    for variant in tuple(
-        variant for curve in reviewed.curves for variant in curve.variants
-    ):
-        reviewed = review_curve_variant(
-            reviewed,
-            variant.id,
-            actor="Private fixture reviewer",
-            notes="Verified curve against supplied PDF",
-        )
+def _approve_supplied_package(reviewed) -> RulePackage:
+    """Approve an already-reviewed draft: the review pass is shared by fixture.
+
+    A curve variant does not exist until it is manually entered, so the calibration and
+    the point entry both have to run before the variant can be reviewed.  The helper
+    beside the manual-review lifecycle tests owns that sequence, and its inputs are local
+    placeholders rather than values read off the licensed figure.
+    """
+
+    reviewed = _complete_manual_curve_review(reviewed)
     assert is_fully_resolved(reviewed)
     return approve_draft(
         reviewed,
@@ -144,6 +141,9 @@ def test_supplied_standards_match_human_reviewed_draft(
     assert {item.code for item in draft.review_items} <= {
         "AMBIGUOUS_COMPONENT_FORMULA",
         "AMBIGUOUS_COMPOUND_CELL",
+        # A proven cross-standard equivalence still needs a maintainer's sign-off before it
+        # becomes an approved mapping.
+        "CROSS_STANDARD_EQUIVALENCE_REVIEW_REQUIRED",
         "CURVE_VARIANT_REVIEW_REQUIRED",
         "MANUAL_CLAUSE_DEFINITION_REQUIRED",
         "MANUAL_TABLE_DEFINITION_REQUIRED",
@@ -231,9 +231,9 @@ def test_supplied_standards_match_human_reviewed_draft(
 @pytest.mark.timeout(300)
 def test_supplied_standards_approve_and_calculate_pcb_annex_gh(
     tmp_path: Path,
-    supplied_standards: dict[str, Path],
+    reviewed_draft,
 ) -> None:
-    approved = _approve_supplied_package(_paths(supplied_standards))
+    approved = _approve_supplied_package(reviewed_draft)
     archive = tmp_path / "reviewed.icrules"
     write_rule_package(archive, approved)
     rules = load_rule_package(archive)

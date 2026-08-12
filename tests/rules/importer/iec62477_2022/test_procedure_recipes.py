@@ -1,0 +1,500 @@
+"""Synthetic IEC 62477-1 test-procedure clause projections. No IEC content.
+
+Every fragment here is written by hand: neutral placeholder step text and the clause
+references the recipe declares. The bounding boxes and node shapes the recipe carries are
+proven against the licensed document by the licensed suite, not here.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from insulation_coordination.domain.rules import DecisionRule, ProcedureRule, SourceReference
+from insulation_coordination.rules.evaluator import DecisionResult, evaluate_decision
+from insulation_coordination.rules.importer.clauses import (
+    ClauseNode,
+    RawClauseFragment,
+)
+from insulation_coordination.rules.importer.extract import (
+    ImportedRuleDraft,
+    RawGrid,
+    RawGridCell,
+    RawGridSegment,
+    canonical_model_sha256,
+)
+from insulation_coordination.rules.importer.identify import StandardIdentity
+from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
+from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import RECIPE as IEC_RECIPE
+from insulation_coordination.rules.importer.recipes.iec62477_1_2022.procedures import (
+    CLASSIFICATION_COLUMNS,
+    CLASSIFICATION_MATRIX_ID,
+    FOIL_APPLICABILITY_ID,
+    MATERIAL_PRECONDITIONING_INVOCATIONS,
+    PRECONDITIONING_APPLICABILITY_ID,
+    PRECONDITIONING_ELECTRICAL_ID,
+    PRECONDITIONING_MATERIAL_CONTEXTS,
+    PRECONDITIONING_MATERIAL_ID,
+    PROCEDURE_CLAUSES,
+    REQUIREMENT_CLAUSE_COLUMN,
+    TEST_CLAUSE_COLUMN,
+    project_accessible_surface_foil,
+    project_assembled_routine_exemption,
+    project_internal_spd_monitoring,
+    project_preconditioning,
+    project_preconditioning_applicability,
+    project_working_voltage_determination,
+)
+from insulation_coordination.rules.importer.recipes.iec62477_1_2022.verification import (
+    FIELD_ROWS,
+    VARIANT_COLUMNS,
+    ProcedureStructureError,
+)
+from tests.fixtures.synthetic_rules import synthetic_rule_package
+
+IDENTITY = StandardIdentity(
+    standard="SYNTHETIC",
+    edition="1",
+    sha256="7" * 64,
+    page_count=200,
+    recipe_id="synthetic-procedures",
+)
+SOURCE = SourceReference(
+    document_id="synthetic-procedures",
+    standard="SYNTHETIC",
+    edition="1",
+    page=142,
+)
+#: The clause reference each projection's fragment carries, and the classification the
+#: matrix marks for it. Clause references are structural identifiers, not source content.
+CLAUSE_OF = {
+    ids.TEST_WORKING_VOLTAGE_DETERMINATION: "5.2.3.14",
+    ids.TEST_INTERNAL_SPD_MONITORING: "5.2.3.15",
+    ids.TEST_PRECONDITIONING: "5.2.3.16",
+    PRECONDITIONING_APPLICABILITY_ID: "5.2.3.1",
+    ids.TEST_ACCESSIBLE_SURFACE_FOIL: "5.2.3.4.4",
+    ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION: "5.2.3.4.4",
+}
+
+
+def _fragment(
+    semantic_id: str,
+    node_count: int,
+    kind: str = "bullet",
+    texts: tuple[str, ...] = (),
+) -> RawClauseFragment:
+    source = SOURCE.model_copy(update={"clause": CLAUSE_OF[semantic_id]})
+    nodes = tuple(
+        ClauseNode(
+            order=order,
+            kind=kind,  # type: ignore[arg-type]
+            raw_text=(
+                texts[order]
+                if order < len(texts)
+                else f"perform the declared condition {order + 1}"
+            ),
+            source=source,
+        )
+        for order in range(node_count)
+    )
+    fragment = RawClauseFragment(
+        id=f"raw-{semantic_id}",
+        raw_sha256="0" * 64,
+        nodes=nodes,
+        tokens=(),
+        source=source,
+    )
+    return fragment.model_copy(update={"raw_sha256": canonical_model_sha256(fragment)})
+
+
+def _matrix_grid(
+    marks: dict[str, tuple[str, ...]],
+    invocations: tuple[str, ...] = MATERIAL_PRECONDITIONING_INVOCATIONS,
+) -> RawGrid:
+    """A matrix grid marking the given classifications for the given test clauses.
+
+    Its requirement column carries the requirements that invoke the material preconditioning
+    clause, because the gate reads them from here.
+    """
+
+    columns = (
+        *(f"{name}_mark" for name, _column in CLASSIFICATION_COLUMNS),
+        TEST_CLAUSE_COLUMN,
+        REQUIREMENT_CLAUSE_COLUMN,
+    )
+    material_clause = CLAUSE_OF[ids.TEST_PRECONDITIONING]
+    cells: list[RawGridCell] = []
+    for row, (clause, marked) in enumerate(marks.items()):
+        for index, column in enumerate(columns):
+            if column == TEST_CLAUSE_COLUMN:
+                text = clause
+            elif column == REQUIREMENT_CLAUSE_COLUMN:
+                text = ", ".join(invocations) if clause == material_clause else ""
+            else:
+                text = "M" if column[:-5] in marked else ""
+            cells.append(
+                RawGridCell(
+                    row=row,
+                    column=index,
+                    raw_text=text,
+                    role="data" if text else "blank",
+                    logical_row=row,
+                    logical_column=column,
+                    parse_status="text" if text else "blank",
+                    source=SOURCE,
+                )
+            )
+    return RawGrid(
+        id=f"raw-{CLASSIFICATION_MATRIX_ID}",
+        rows=len(marks),
+        columns=len(columns),
+        target_unit="1",
+        segments=(
+            RawGridSegment(page_number=113, row_start=0, row_count=len(marks), source=SOURCE),
+        ),
+        cells=tuple(cells),
+        source=SOURCE,
+    )
+
+
+def _draft(*grids: RawGrid, fragments: tuple[RawClauseFragment, ...] = ()) -> ImportedRuleDraft:
+    package = synthetic_rule_package()
+    return ImportedRuleDraft(
+        manifest=package.manifest.model_copy(
+            update={
+                "approved": False,
+                "compatible": False,
+                "source_documents": (),
+                "approval_records": (),
+            }
+        ),
+        tables=(),
+        formulas=(),
+        mappings=(),
+        raw_grids=grids,
+        raw_clause_fragments=fragments,
+        source_identities=(IDENTITY,),
+    )
+
+
+def _agreeing_matrix(
+    invocations: tuple[str, ...] = MATERIAL_PRECONDITIONING_INVOCATIONS,
+) -> RawGrid:
+    return _matrix_grid({clause: ("type_test",) for clause in CLAUSE_OF.values()}, invocations)
+
+
+def test_the_recipe_registers_a_projector_for_every_procedure_clause() -> None:
+    declared = {spec.semantic_id for spec in PROCEDURE_CLAUSES}
+
+    assert declared <= set(IEC_RECIPE.clause_projectors)
+    assert declared <= {spec.semantic_id for spec in IEC_RECIPE.clauses}
+
+
+def test_working_voltage_outputs_name_a_measurement_not_a_formula() -> None:
+    """The clause names measurement conditions and states no arithmetic, so none is built."""
+    rules, _proposals = project_working_voltage_determination(
+        _fragment(ids.TEST_WORKING_VOLTAGE_DETERMINATION, 3),
+        IDENTITY,
+        _draft(_agreeing_matrix()),
+    )
+
+    assert not any(getattr(rule, "expression", None) for rule in rules)
+    procedure = next(rule for rule in rules if isinstance(rule, ProcedureRule))
+    assert len(procedure.procedure_steps) == 3
+    assert procedure.classifications == ("type_test",)
+
+
+def test_working_voltage_blocks_on_a_node_count_the_recipe_does_not_declare() -> None:
+    with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_PROCEDURE_STRUCTURE"):
+        project_working_voltage_determination(
+            _fragment(ids.TEST_WORKING_VOLTAGE_DETERMINATION, 2),
+            IDENTITY,
+            _draft(_agreeing_matrix()),
+        )
+
+
+def test_internal_spd_monitoring_references_the_supply_decision_rather_than_restating_it() -> None:
+    rules, _proposals = project_internal_spd_monitoring(
+        _fragment(ids.TEST_INTERNAL_SPD_MONITORING, 1, kind="paragraph"),
+        IDENTITY,
+        _draft(_agreeing_matrix()),
+    )
+
+    procedure = next(rule for rule in rules if isinstance(rule, ProcedureRule))
+    assert procedure.applicability_rule_id == ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS
+    assert procedure.applicability == ""
+
+
+def test_each_procedure_classification_matches_the_matrix() -> None:
+    """Every projection checks what it declares against the matrix, and blocks on a clash."""
+    contradicting = _matrix_grid({clause: ("routine_test",) for clause in CLAUSE_OF.values()})
+
+    with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_TEST_CLASSIFICATION"):
+        project_working_voltage_determination(
+            _fragment(ids.TEST_WORKING_VOLTAGE_DETERMINATION, 3), IDENTITY, _draft(contradicting)
+        )
+    with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_TEST_CLASSIFICATION"):
+        project_internal_spd_monitoring(
+            _fragment(ids.TEST_INTERNAL_SPD_MONITORING, 1, kind="paragraph"),
+            IDENTITY,
+            _draft(contradicting),
+        )
+
+
+def test_a_procedure_cannot_be_projected_without_the_matrix_to_check_it() -> None:
+    with pytest.raises(ProcedureStructureError, match="classification_matrix is absent"):
+        project_working_voltage_determination(
+            _fragment(ids.TEST_WORKING_VOLTAGE_DETERMINATION, 3), IDENTITY, _draft()
+        )
+
+
+#: The Table 26 row and column that carry the preconditioning statement, read from the
+#: maintained recipe so the fixture cannot drift away from what the projection reads.
+_PRECONDITIONING_ROW = next(row for row, field in FIELD_ROWS if field == "preconditioning")
+_PRECONDITIONING_COLUMN = VARIANT_COLUMNS[0][1]
+
+
+def _general_fragment(step_clauses: tuple[str, ...]) -> RawClauseFragment:
+    """The general clause's paragraph, naming the preconditioning clauses it requires."""
+
+    named = " and ".join(step_clauses)
+    return _fragment(
+        PRECONDITIONING_APPLICABILITY_ID,
+        1,
+        kind="paragraph",
+        texts=(f"preconditioning according to {named} is required before the test",),
+    )
+
+
+def _table_26_grid(*, defers: bool = True) -> RawGrid:
+    text = (
+        "preconditioned once according to 5.2.3.1"
+        if defers
+        else "preconditioned once according to 5.2.6.3.1"
+    )
+    cell = RawGridCell(
+        row=_PRECONDITIONING_ROW,
+        column=_PRECONDITIONING_COLUMN,
+        raw_text=text,
+        role="data",
+        logical_row=_PRECONDITIONING_ROW,
+        logical_column="condition_insulation_basic",
+        parse_status="text",
+        source=SOURCE,
+    )
+    return RawGrid(
+        id=f"raw-{ids.TEST_IMPULSE_PROCEDURE}",
+        rows=_PRECONDITIONING_ROW + 1,
+        columns=_PRECONDITIONING_COLUMN + 1,
+        target_unit="1",
+        segments=(
+            RawGridSegment(
+                page_number=124,
+                row_start=0,
+                row_count=_PRECONDITIONING_ROW + 1,
+                source=SOURCE,
+            ),
+        ),
+        cells=(cell,),
+        source=SOURCE,
+    )
+
+
+def _preconditioning_draft(
+    *,
+    general_steps: tuple[str, ...] = ("5.2.6.3.1", "5.2.6.3.2", "5.2.6.3.3"),
+    defers: bool = True,
+    invocations: tuple[str, ...] = MATERIAL_PRECONDITIONING_INVOCATIONS,
+) -> ImportedRuleDraft:
+    return _draft(
+        _agreeing_matrix(invocations),
+        _table_26_grid(defers=defers),
+        fragments=(_general_fragment(general_steps),),
+    )
+
+
+def test_the_material_clause_yields_the_material_route() -> None:
+    """The material clause's own three steps, under the route the maintainer decided on."""
+    rules, proposals = project_preconditioning(
+        _fragment(ids.TEST_PRECONDITIONING, 3), IDENTITY, _preconditioning_draft()
+    )
+
+    assert len(rules) == 1
+    assert rules[0].id == PRECONDITIONING_MATERIAL_ID
+    assert len(rules[0].procedure_steps) == 3
+    assert rules[0].applicability_rule_id == PRECONDITIONING_APPLICABILITY_ID
+    assert rules[0].classifications == ("type_test",)
+    assert [proposal.semantic_id for proposal in proposals] == [PRECONDITIONING_MATERIAL_ID]
+
+
+def test_the_general_clause_yields_the_gate_and_the_electrical_route() -> None:
+    """Two gates, two routes: the electrical route carries what the general clause names."""
+    rules, proposals = project_preconditioning_applicability(
+        _general_fragment(("5.2.6.3.1", "5.2.6.3.2")), IDENTITY, _preconditioning_draft()
+    )
+    procedure = next(rule for rule in rules if isinstance(rule, ProcedureRule))
+
+    assert procedure.id == PRECONDITIONING_ELECTRICAL_ID
+    assert len(procedure.procedure_steps) == 2
+    assert procedure.applicability_rule_id == PRECONDITIONING_APPLICABILITY_ID
+    # The matrix has no row for the general clause, so the route claims no classification.
+    assert procedure.classifications == ()
+    assert {proposal.semantic_id for proposal in proposals} == {
+        PRECONDITIONING_APPLICABILITY_ID,
+        PRECONDITIONING_ELECTRICAL_ID,
+    }
+
+
+def test_a_clause_inventory_that_is_not_the_reviewed_shape_still_blocks() -> None:
+    """The block was never "the two clauses differ" -- it is "no precedence rule is invented"."""
+    with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_PRECONDITIONING_SOURCES"):
+        project_preconditioning_applicability(
+            _general_fragment(("5.2.6.3.1",)), IDENTITY, _preconditioning_draft()
+        )
+    with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_PROCEDURE_STRUCTURE"):
+        project_preconditioning(
+            _fragment(ids.TEST_PRECONDITIONING, 2), IDENTITY, _preconditioning_draft()
+        )
+
+
+def test_a_table_row_that_states_its_own_inventory_blocks() -> None:
+    """Table 26's row is a deferral. A printing that spelled its own steps is a third source."""
+    with pytest.raises(ProcedureStructureError, match="does not defer to clause"):
+        project_preconditioning(
+            _fragment(ids.TEST_PRECONDITIONING, 3),
+            IDENTITY,
+            _preconditioning_draft(defers=False),
+        )
+
+
+def test_preconditioning_blocks_when_a_source_it_must_read_is_absent() -> None:
+    with pytest.raises(ProcedureStructureError, match="is absent from the draft"):
+        project_preconditioning(
+            _fragment(ids.TEST_PRECONDITIONING, 3), IDENTITY, _draft(_agreeing_matrix())
+        )
+
+
+def test_the_preconditioning_gate_selects_the_route_for_the_test_context() -> None:
+    rules, _proposals = project_preconditioning_applicability(
+        _general_fragment(("5.2.6.3.1", "5.2.6.3.2")), IDENTITY, _preconditioning_draft()
+    )
+    rule = next(item for item in rules if isinstance(item, DecisionRule))
+
+    assert rule.id == PRECONDITIONING_APPLICABILITY_ID
+    assert rule.exhaustive is False
+    electrical = evaluate_decision(
+        rule, {"test_context": "electrical_test", "test_purpose": "type_test"}
+    )
+    material = evaluate_decision(
+        rule,
+        {"test_context": PRECONDITIONING_MATERIAL_CONTEXTS[0], "test_purpose": "type_test"},
+    )
+    exempt = evaluate_decision(
+        rule, {"test_context": "electrical_test", "test_purpose": "acceptance_criteria"}
+    )
+
+    assert _values(electrical) == {
+        "preconditioning_required": True,
+        "preconditioning_procedure_rule_id": PRECONDITIONING_ELECTRICAL_ID,
+    }
+    assert _values(material) == {
+        "preconditioning_required": True,
+        "preconditioning_procedure_rule_id": PRECONDITIONING_MATERIAL_ID,
+    }
+    assert _values(exempt)["preconditioning_required"] is False
+
+
+def test_the_material_route_is_gated_on_the_requirements_that_invoke_it() -> None:
+    """The material clause applies when a named requirement calls for it, not to material work."""
+    rules, _proposals = project_preconditioning_applicability(
+        _general_fragment(("5.2.6.3.1", "5.2.6.3.2")), IDENTITY, _preconditioning_draft()
+    )
+    rule = next(item for item in rules if isinstance(item, DecisionRule))
+    contexts = next(item for item in rule.inputs if item.name == "test_context").allowed_values
+
+    assert set(contexts) == {"electrical_test", *PRECONDITIONING_MATERIAL_CONTEXTS}
+    assert len(PRECONDITIONING_MATERIAL_CONTEXTS) == len(MATERIAL_PRECONDITIONING_INVOCATIONS)
+    for context in PRECONDITIONING_MATERIAL_CONTEXTS:
+        selected = evaluate_decision(rule, {"test_context": context, "test_purpose": "type_test"})
+        assert _values(selected) == {
+            "preconditioning_required": True,
+            "preconditioning_procedure_rule_id": PRECONDITIONING_MATERIAL_ID,
+        }
+
+
+def test_the_gate_blocks_when_the_matrix_invokes_the_material_clause_differently() -> None:
+    with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_PRECONDITIONING_SOURCES"):
+        project_preconditioning_applicability(
+            _general_fragment(("5.2.6.3.1", "5.2.6.3.2")),
+            IDENTITY,
+            _preconditioning_draft(invocations=MATERIAL_PRECONDITIONING_INVOCATIONS[:1]),
+        )
+
+
+def _values(result: DecisionResult) -> dict[str, object]:
+    return {
+        value.name: value.boolean if value.boolean is not None else value.categorical
+        for value in result.values
+    }
+
+
+def _foil_fragment() -> RawClauseFragment:
+    return _fragment(ids.TEST_ACCESSIBLE_SURFACE_FOIL, 1, kind="paragraph")
+
+
+def test_the_foil_family_is_grounded_in_the_voltage_test_clause_alone() -> None:
+    """One paragraph of the voltage test states the gate and the action, and nothing else."""
+    rules, proposals = project_accessible_surface_foil(_foil_fragment(), IDENTITY)
+    procedure = next(rule for rule in rules if isinstance(rule, ProcedureRule))
+
+    assert procedure.source.clause == "5.2.3.4.4"
+    assert procedure.applicability_rule_id == FOIL_APPLICABILITY_ID
+    assert len(procedure.procedure_steps) == 1
+    # The mandrel test's figures belong to the thin-sheet procedure, not to this family.
+    assert procedure.source.figure is None
+    assert all(step.source.figure is None for step in procedure.procedure_steps)
+    # The matrix has no row for this sub-clause, so the procedure claims no classification.
+    assert procedure.classifications == ()
+    assert {proposal.semantic_id for proposal in proposals} == {
+        ids.TEST_ACCESSIBLE_SURFACE_FOIL,
+        FOIL_APPLICABILITY_ID,
+    }
+
+
+def test_the_foil_gate_records_a_substitution_rather_than_a_classification() -> None:
+    """The matrix marks no sample test for the surrounding test, so no rule claims one."""
+    rules, _proposals = project_accessible_surface_foil(_foil_fragment(), IDENTITY)
+    rule = next(item for item in rules if isinstance(item, DecisionRule))
+
+    assert rule.id == FOIL_APPLICABILITY_ID
+    assert rule.exhaustive is False
+    assert len(rule.rows) == 1
+    unsupported = evaluate_decision(rule, {"non_conductive_accessible_surface_present": False})
+    assert unsupported.status == "no_match"
+    assert unsupported.values == ()
+
+
+def test_the_exemption_never_defaults_to_exempt() -> None:
+    rules, _proposals = project_assembled_routine_exemption(
+        _fragment(ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION, 3), IDENTITY
+    )
+    rule = rules[0]
+
+    assert rule.exhaustive is False
+    granted: dict[str, object] = {item.name: True for item in rule.inputs}
+    exempt = evaluate_decision(rule, granted)
+    assert exempt.status == "matched"
+    assert [(value.name, value.boolean) for value in exempt.values] == [
+        ("assembled_routine_test_exempt", True)
+    ]
+    for condition in granted:
+        withheld = {**granted, condition: False}
+        assert evaluate_decision(rule, withheld).status == "no_match"
+
+
+def test_a_projection_refuses_a_fragment_that_is_not_its_own() -> None:
+    with pytest.raises(ValueError, match="requires its own fragment"):
+        project_internal_spd_monitoring(
+            _fragment(ids.TEST_WORKING_VOLTAGE_DETERMINATION, 3),
+            IDENTITY,
+            _draft(_agreeing_matrix()),
+        )

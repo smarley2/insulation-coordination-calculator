@@ -14,10 +14,14 @@ from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.quantities import DecimalValue
 
 RULE_SCHEMA_VERSION = 4
-IEC_IMPORTER_VERSION = "iec-pdf-4"
+IEC_IMPORTER_VERSION = "iec-pdf-5"
 MAX_IDENTIFIER_LENGTH = 160
 MAX_REFERENCE_TEXT_LENGTH = 500
 MAX_NOTES_LENGTH = 2_000
+#: A procedure step carries one reviewed source condition, which runs longer than the short
+#: references ``ReferenceText`` sizes. Its own cap keeps one condition one step instead of
+#: splitting it across steps a consumer would read as separate actions.
+MAX_PROCEDURE_STEP_LENGTH = 2_000
 MAX_LATEX_LENGTH = 4_000
 MAX_APPLICABILITY_LENGTH = 1_000
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -31,6 +35,10 @@ ReferenceText = Annotated[
     Field(min_length=1, max_length=MAX_REFERENCE_TEXT_LENGTH, pattern=r"\S"),
 ]
 NotesText = Annotated[str, Field(max_length=MAX_NOTES_LENGTH)]
+ProcedureStepText = Annotated[
+    str,
+    Field(min_length=1, max_length=MAX_PROCEDURE_STEP_LENGTH, pattern=r"\S"),
+]
 LatexText = Annotated[str, Field(max_length=MAX_LATEX_LENGTH)]
 ApplicabilityText = Annotated[str, Field(max_length=MAX_APPLICABILITY_LENGTH)]
 RuleKind = TypingLiteral[
@@ -418,8 +426,20 @@ class CurveSegment(FrozenModel):
 
 
 class FaultTimeVoltageSelector(FrozenModel):
+    """Which curve variant a fault-time voltage question is asking about.
+
+    ``voltage_basis`` names the quantity the source draws its curve against.
+    ``ac_unspecified`` means the source identifies the variant as AC without specifying
+    RMS or peak: it is a source-contract identity, never a wildcard. A consumer whose own
+    engineering quantity is RMS or peak submits ``ac_rms`` or ``ac_peak`` and must not
+    coerce that input to ``ac_unspecified`` in order to obtain a curve.
+
+    Nobody may narrow ``ac_unspecified`` to a more specific basis without new explicit
+    normative evidence stating that basis for the figure in question.
+    """
+
     subject: TypingLiteral["accessible_circuit", "conductive_accessible_part"]
-    voltage_basis: TypingLiteral["ac_rms", "ac_peak", "dc"]
+    voltage_basis: TypingLiteral["ac_rms", "ac_peak", "ac_unspecified", "dc"]
     dvc_context: Identifier | None
     environment_context: Identifier | None
 
@@ -486,10 +506,7 @@ class FaultTimeVoltageVariant(FrozenModel):
                 point.y <= 0 for point in endpoints
             ):
                 raise ValueError("Logarithmic y interpolation needs positive coordinates")
-            if (
-                segment.segment_type == "plateau"
-                and endpoints[0].y != endpoints[1].y
-            ):
+            if segment.segment_type == "plateau" and endpoints[0].y != endpoints[1].y:
                 raise ValueError("A plateau segment needs equal endpoint voltage")
         return self
 
@@ -670,7 +687,9 @@ class DecisionRule(FrozenModel):
                     raise ValueError("An in matcher cannot target a boolean input")
                 if matcher.op == "equals" and declared.kind == "boolean":
                     if matcher.boolean is None:
-                        raise ValueError("An equals matcher needs a boolean value for a boolean input")
+                        raise ValueError(
+                            "An equals matcher needs a boolean value for a boolean input"
+                        )
                 elif matcher.op in ("equals", "in") and declared.kind != "categorical":
                     raise ValueError(
                         f"A {matcher.op} matcher needs a categorical input, got {declared.kind}"
@@ -744,7 +763,7 @@ def _row_admits(row: DecisionRow, assignment: dict[str, str | bool]) -> bool:
 
 class ProcedureStep(FrozenModel):
     order: int = Field(ge=1, strict=True)
-    text: ReferenceText
+    text: ProcedureStepText
     source: SourceReference
 
 

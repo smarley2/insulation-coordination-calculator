@@ -655,9 +655,7 @@ def test_recalculate_skips_pairs_whose_every_stress_is_na(qtbot, pair_page, monk
     excluded, calculated = page.project.pairs[0], page.project.pairs[1]
     _exclude_pair(page, excluded)
     captured: list[object] = []
-    monkeypatch.setattr(
-        QMessageBox, "critical", staticmethod(lambda *args: captured.append(args))
-    )
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *args: captured.append(args)))
 
     page.recalculate()
 
@@ -813,9 +811,7 @@ def test_every_pair_override_reaches_the_effective_case(
     assert resolved.value == wanted
     assert resolved.provenance is Provenance.PAIR_OVERRIDE
 
-    neighbour = resolve_effective_case(
-        page.project.defaults, page.project.pair_by_id(untouched.id)
-    )
+    neighbour = resolve_effective_case(page.project.defaults, page.project.pair_by_id(untouched.id))
     assert getattr(neighbour, field).provenance is Provenance.PROJECT_DEFAULT
 
 

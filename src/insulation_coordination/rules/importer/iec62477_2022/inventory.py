@@ -50,26 +50,13 @@ def _item(
     )
 
 
-#: Required items whose extraction recipes are not written yet, so completeness reports
-#: them as deferred instead of missing and approval does not block a package on work that
-#: has not started. These are Issue #34's Slice E content -- Tables 26 to 30 and the
-#: remaining verification procedures. The set is expected to be empty when Slice E closes,
-#: and a test asserts every member is a required inventory item so it cannot hide a
-#: identifier that does not exist.
-DEFERRED_SEMANTIC_IDS: frozenset[str] = frozenset(
-    {
-        ids.TEST_IMPULSE_PROCEDURE,
-        ids.TEST_IMPULSE_SELECTION,
-        ids.TEST_MAINS_DIELECTRIC_VALUES,
-        ids.TEST_NON_MAINS_DIELECTRIC_VALUES,
-        ids.TEST_PARTIAL_DISCHARGE,
-        ids.TEST_WORKING_VOLTAGE_DETERMINATION,
-        ids.TEST_INTERNAL_SPD_MONITORING,
-        ids.TEST_PRECONDITIONING,
-        ids.TEST_ACCESSIBLE_SURFACE_FOIL,
-        ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION,
-    }
-)
+#: Required items whose extraction recipes are not written yet, so completeness reports them
+#: as deferred instead of missing and approval does not block a package on work that has not
+#: started. Empty since Slice E closed: every required item now has a recipe, so completeness
+#: reports a missing item as missing. The mechanism stays because it is how the next standard
+#: is landed a slice at a time, and a test asserts every member is a required inventory item
+#: so it cannot hide an identifier that does not exist.
+DEFERRED_SEMANTIC_IDS: frozenset[str] = frozenset()
 
 REQUIRED_SOURCE_ITEMS: tuple[RequiredSourceItem, ...] = (
     _item(ids.DVC_VOLTAGE_LIMITS, "decision", (35, 37), table="Table 2"),
@@ -85,12 +72,9 @@ REQUIRED_SOURCE_ITEMS: tuple[RequiredSourceItem, ...] = (
     _item(ids.SUPPLY_HF_TRANSFORMER_ATTENUATION, "decision", (36,)),
     _item(ids.CLEARANCE_REQUIREMENTS, "table", (36,), table="Table 8"),
     _item(ids.CREEPAGE_REQUIREMENTS, "table", (36,), table="Table 9"),
-    _item(
-        ids.ALTITUDE_TEST_VOLTAGE_CORRECTION, "table", (36, 37), table="Table E.1"
-    ),
-    _item(
-        ids.HIGH_FREQUENCY_APPLICABILITY, "decision", (36, 37), clause="Annex F"
-    ),
+    _item(ids.ALTITUDE_CLEARANCE_CORRECTION, "table", (36,), table="Table E.1"),
+    _item(ids.ALTITUDE_TEST_VOLTAGE_CORRECTION, "table", (37,), table="Table E.2"),
+    _item(ids.HIGH_FREQUENCY_APPLICABILITY, "decision", (36, 37), clause="Annex F"),
     _item(ids.TEST_IMPULSE_PROCEDURE, "procedure", (37,), table="Table 26"),
     _item(ids.TEST_IMPULSE_SELECTION, "decision", (37,), table="Table 27"),
     _item(ids.TEST_MAINS_DIELECTRIC_VALUES, "table", (37,), table="Table 28"),

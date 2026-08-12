@@ -55,9 +55,7 @@ def _reference_decision(curve_id, source):
         outputs=(DecisionOutput(name="target", kind="reference"),),
         rows=(
             DecisionRow(
-                matchers=(
-                    Matcher(input="synthetic_case", op="equals", values=("curve",)),
-                ),
+                matchers=(Matcher(input="synthetic_case", op="equals", values=("curve",)),),
                 values=(DecisionValue(name="target", reference=curve_id),),
                 source=source,
             ),
@@ -130,9 +128,7 @@ def _with_slice_c_review_inventory(imported: ImportedRuleDraft) -> ImportedRuleD
             semantic_id=semantic_id,
             kind="semantic",
             source=source.model_copy(
-                update={
-                    "geometry": SourceGeometryReference(artifact_sha256=artifact_sha256)
-                }
+                update={"geometry": SourceGeometryReference(artifact_sha256=artifact_sha256)}
             ),
             expected_contract=f"synthetic:{semantic_id}",
         )
@@ -178,8 +174,7 @@ def _with_slice_c_review_inventory(imported: ImportedRuleDraft) -> ImportedRuleD
                 update={
                     "approval_records": tuple(
                         record.model_copy(update={"notes": f"content:{digest}"})
-                        if record.action == "extraction"
-                        and record.notes.startswith("content:")
+                        if record.action == "extraction" and record.notes.startswith("content:")
                         else record
                         for record in changed.manifest.approval_records
                     )
@@ -208,9 +203,7 @@ def test_curve_reference_resolves_round_trips_and_evaluates(tmp_path) -> None:
     reloaded = load_rule_package(path)
     assert reloaded.curves == package.curves
     variant = reloaded.curves[0].variants[0]
-    result = evaluate_piecewise_curve(
-        reloaded.curves[0], variant.selector, Decimal(27)
-    )
+    result = evaluate_piecewise_curve(reloaded.curves[0], variant.selector, Decimal(27))
     assert result.status == "matched"
 
 
@@ -225,9 +218,7 @@ def test_reviewed_synthetic_draft_approves_reference_and_curve_round_trip(
     source = reviewed.tables[0].source
     fixture_curve = synthetic_rule_package().curves[0]
     variant = fixture_curve.variants[0].model_copy(update={"source": source})
-    curve = fixture_curve.model_copy(
-        update={"source": source, "variants": (variant,)}
-    )
+    curve = fixture_curve.model_copy(update={"source": source, "variants": (variant,)})
     decision = _reference_decision(curve.id, source)
     changed = reviewed.model_copy(
         update={
@@ -259,15 +250,12 @@ def test_reviewed_synthetic_draft_approves_reference_and_curve_round_trip(
     write_rule_package(archive, approved)
     reloaded = load_rule_package(archive)
 
-    assert next(
-        value.reference
-        for row in reloaded.decisions[-1].rows
-        for value in row.values
-    ) == curve.id
-    assert reloaded.curves[-1] == approved.curves[-1]
-    result = evaluate_piecewise_curve(
-        reloaded.curves[-1], variant.selector, Decimal(27)
+    assert (
+        next(value.reference for row in reloaded.decisions[-1].rows for value in row.values)
+        == curve.id
     )
+    assert reloaded.curves[-1] == approved.curves[-1]
+    result = evaluate_piecewise_curve(reloaded.curves[-1], variant.selector, Decimal(27))
     assert result.status == "matched"
 
 
@@ -280,24 +268,23 @@ def test_missing_or_ambiguous_semantic_reference_fails_exact_resolution() -> Non
                 decision.rows[0].model_copy(
                     update={
                         "values": (
-                            decision.rows[0].values[0].model_copy(
-                                update={"reference": "synthetic-missing"}
-                            ),
+                            decision.rows[0]
+                            .values[0]
+                            .model_copy(update={"reference": "synthetic-missing"}),
                         )
                     }
                 ),
             )
         }
     )
-    duplicate_formula = package.formulas[0].model_copy(
-        update={"id": package.curves[0].id}
-    )
-    ambiguous = package.model_copy(
-        update={"formulas": (*package.formulas, duplicate_formula)}
-    )
+    duplicate_formula = package.formulas[0].model_copy(update={"id": package.curves[0].id})
+    ambiguous = package.model_copy(update={"formulas": (*package.formulas, duplicate_formula)})
 
-    assert _result(
-        package.model_copy(update={"decisions": (*package.decisions[:-1], dangling)}),
-        "SEMANTIC_REFERENCES_RESOLVE",
-    ).passed is False
+    assert (
+        _result(
+            package.model_copy(update={"decisions": (*package.decisions[:-1], dangling)}),
+            "SEMANTIC_REFERENCES_RESOLVE",
+        ).passed
+        is False
+    )
     assert _result(ambiguous, "SEMANTIC_REFERENCES_RESOLVE").passed is False

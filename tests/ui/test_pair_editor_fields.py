@@ -143,14 +143,8 @@ def test_clear_defaultable_overrides_returns_to_project_defaults(qtbot):
 
 def test_not_applicable_buttons_share_voltage_rows(editor):
     assert editor._rms_na_button.parentWidget() is editor._rms_edit.parentWidget()
-    assert (
-        editor._steady_na_button.parentWidget()
-        is editor._steady_peak_edit.parentWidget()
-    )
-    assert (
-        editor._recurring_na_button.parentWidget()
-        is editor._recurring_peak_edit.parentWidget()
-    )
+    assert editor._steady_na_button.parentWidget() is editor._steady_peak_edit.parentWidget()
+    assert editor._recurring_na_button.parentWidget() is editor._recurring_peak_edit.parentWidget()
     assert editor._to_na_button.parentWidget() is editor._to_peak_edit.parentWidget()
 
 

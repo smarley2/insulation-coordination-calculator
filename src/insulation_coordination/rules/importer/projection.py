@@ -61,6 +61,8 @@ def _projected_value(
         return cell.value
     component = _projected_component(cell, column)
     return None if component is None else component.value
+
+
 from insulation_coordination.rules.importer.identify import (
     FormulaAuditSpec,
     MappingAuditSpec,

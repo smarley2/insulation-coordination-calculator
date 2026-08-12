@@ -173,8 +173,36 @@ _TABLE_9_BBOX = (71.3, 112.6, 524.3, 775.9)
 _TABLE_9_HEADER_ROWS = (0, 2, 3, 4, 5, 6, 7, 8, 9, 11)
 #: One grid row per printed working voltage.
 _TABLE_9_DATA_ROWS = (
-    13, 15, 17, 19, 21, 23, 25, 27, 29, 32, 34, 38, 40, 42, 43, 45, 49, 51, 54, 57, 59,
-    61, 63, 65, 67, 69, 71, 73, 75, 77,
+    13,
+    15,
+    17,
+    19,
+    21,
+    23,
+    25,
+    27,
+    29,
+    32,
+    34,
+    38,
+    40,
+    42,
+    43,
+    45,
+    49,
+    51,
+    54,
+    57,
+    59,
+    61,
+    63,
+    65,
+    67,
+    69,
+    71,
+    73,
+    75,
+    77,
 )
 #: The printed-wiring columns carry values only over the lower part of the axis. Above
 #: that, one row holds a footnote marker in place of a value and the remaining rows are
@@ -428,13 +456,22 @@ _TABLE_9_PRINTED_WIRING_AXIS_MATCH = CrossStandardAxisMatchSpec(
 #: and the package already carries that standard's reviewed clearance and creepage rules.
 #: These checks prove the reproduction agrees cell for cell before a mapping is recorded;
 #: any divergence blocks approval and leaves both rules standing for a maintainer to judge.
+#: Each mapping routes an IEC 62477-1 semantic route to the approved IEC 60664-4 formula
+#: that satisfies it -- the same shape every declared mapping has, route in, formula out --
+#: and the two compared grids are the evidence, which stays in the draft.
 #: Table F.2 has no counterpart among the approved IEC 60664-4 rules, so it is declared no
 #: check at all rather than being paired with an approximate target.
+#: A check identifier lives in its own ``crosscheck`` namespace rather than reading as a
+#: route of the rule it supports: ``inventory_report`` treats ``"<semantic id>.<route>"`` as
+#: a route of that item, so an unresolved check named after the rule would block the rule it
+#: exists to support.
 CROSS_STANDARD_CHECKS: tuple[CrossStandardCheckSpec, ...] = (
     CrossStandardCheckSpec(
-        id=f"{ids.CLEARANCE_REQUIREMENTS}.matches_part1_clearance",
-        source_rule_id=f"raw-{ids.CLEARANCE_REQUIREMENTS}",
-        target_rule_id="raw-iec60664-1-f2",
+        id="iec62477-1:crosscheck:clearance:table=8",
+        source_rule_id=ids.CLEARANCE_REQUIREMENTS,
+        target_rule_id="iec60664-1:f2-clearance",
+        source_grid_id=f"raw-{ids.CLEARANCE_REQUIREMENTS}",
+        target_grid_id="raw-iec60664-1-f2",
         family="clearance",
         axis_match=_TABLE_8_AXIS_MATCH,
         source=SourceReference(
@@ -447,9 +484,11 @@ CROSS_STANDARD_CHECKS: tuple[CrossStandardCheckSpec, ...] = (
         ),
     ),
     CrossStandardCheckSpec(
-        id=f"{ids.CREEPAGE_REQUIREMENTS}.printed_wiring_matches_part1_creepage",
-        source_rule_id=f"raw-{ids.CREEPAGE_REQUIREMENTS}.printed_wiring",
-        target_rule_id="raw-iec60664-1-f5",
+        id="iec62477-1:crosscheck:creepage:printed_wiring:table=9",
+        source_rule_id=f"{ids.CREEPAGE_REQUIREMENTS}.printed_wiring",
+        target_rule_id="iec60664-1:f5-pcb-creepage",
+        source_grid_id=f"raw-{ids.CREEPAGE_REQUIREMENTS}.printed_wiring",
+        target_grid_id="raw-iec60664-1-f5",
         family="creepage",
         axis_match=_TABLE_9_PRINTED_WIRING_AXIS_MATCH,
         source=SourceReference(
@@ -462,9 +501,11 @@ CROSS_STANDARD_CHECKS: tuple[CrossStandardCheckSpec, ...] = (
         ),
     ),
     CrossStandardCheckSpec(
-        id=f"{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f1_matches_part4_clearance",
-        source_rule_id=f"raw-{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f1",
-        target_rule_id="raw-iec60664-4-table-1",
+        id="iec62477-1:crosscheck:high_frequency:clearance:annex=f1",
+        source_rule_id="iec62477-1:high_frequency:clearance:annex=f1",
+        target_rule_id="iec60664-4:hf-clearance-table",
+        source_grid_id=f"raw-{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f1",
+        target_grid_id="raw-iec60664-4-table-1",
         family="high-frequency-clearance",
         cell_map=_ANNEX_F1_CELL_MAP,
         source_data_cell_ids=_ANNEX_F1_SOURCE_CELLS,
@@ -478,9 +519,11 @@ CROSS_STANDARD_CHECKS: tuple[CrossStandardCheckSpec, ...] = (
         ),
     ),
     CrossStandardCheckSpec(
-        id=f"{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f3_matches_part4_creepage",
-        source_rule_id=f"raw-{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f3",
-        target_rule_id="raw-iec60664-4-table-2",
+        id="iec62477-1:crosscheck:high_frequency:creepage:annex=f3",
+        source_rule_id="iec62477-1:high_frequency:creepage:annex=f3",
+        target_rule_id="iec60664-4:hf-creepage-table",
+        source_grid_id=f"raw-{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f3",
+        target_grid_id="raw-iec60664-4-table-2",
         family="high-frequency-creepage",
         cell_map=_ANNEX_F3_CELL_MAP,
         source_data_cell_ids=_ANNEX_F3_SOURCE_CELLS,

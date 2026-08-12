@@ -99,7 +99,9 @@ def test_add_domain_rejects_a_blank_name() -> None:
 
 
 def test_add_domain_rejects_a_duplicate_name_after_whitespace_and_case_normalisation() -> None:
-    project = _project(galvanic_domains=(_domain(name="Primary side", is_direct_source_domain=True),))
+    project = _project(
+        galvanic_domains=(_domain(name="Primary side", is_direct_source_domain=True),)
+    )
     with pytest.raises(ValueError, match="already exists"):
         add_domain(project, "  PRIMARY SIDE  ")
 
@@ -208,9 +210,7 @@ def test_referencing_nets_returns_only_nets_pointing_at_the_domain() -> None:
     net_in = _net(galvanic_domain_id=domain.id)
     net_out = _net(galvanic_domain_id=other.id)
     net_unset = _net(galvanic_domain_id=None)
-    project = _project(
-        net_classes=(net_in, net_out, net_unset), galvanic_domains=(domain, other)
-    )
+    project = _project(net_classes=(net_in, net_out, net_unset), galvanic_domains=(domain, other))
     assert referencing_nets(project, domain.id) == (net_in,)
 
 
@@ -303,9 +303,7 @@ def test_preview_remaps_a_barrier_that_does_not_collide() -> None:
     replacement = _domain(id=UUID(int=2), name="B")
     third = _domain(id=UUID(int=3), name="C")
     barrier = _barrier(domain_a_id=domain.id, domain_b_id=third.id)
-    project = _project(
-        galvanic_domains=(domain, replacement, third), galvanic_barriers=(barrier,)
-    )
+    project = _project(galvanic_domains=(domain, replacement, third), galvanic_barriers=(barrier,))
 
     preview = preview_domain_deletion(project, domain.id, replacement.id)
 
@@ -426,9 +424,7 @@ def test_remap_and_delete_moves_a_non_colliding_barrier_to_the_replacement() -> 
     replacement = _domain(id=UUID(int=2), name="B")
     third = _domain(id=UUID(int=3), name="C")
     barrier = _barrier(domain_a_id=domain.id, domain_b_id=third.id)
-    project = _project(
-        galvanic_domains=(domain, replacement, third), galvanic_barriers=(barrier,)
-    )
+    project = _project(galvanic_domains=(domain, replacement, third), galvanic_barriers=(barrier,))
 
     updated = remap_and_delete_domain(project, domain.id, replacement.id)
 

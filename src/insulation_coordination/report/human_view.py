@@ -149,9 +149,7 @@ class HumanReportView:
 def build_human_report_view(model: ReportModel) -> HumanReportView:
     """Derive display-only report data without weakening report validation."""
     headers = tuple(net.name for net in model.net_classes)
-    excluded = frozenset(
-        frozenset((pair.net_a, pair.net_b)) for pair in model.excluded_pairs
-    )
+    excluded = frozenset(frozenset((pair.net_a, pair.net_b)) for pair in model.excluded_pairs)
     common_values: list[HumanValue] = []
     matrices: list[HumanMatrix] = []
     default_specs: tuple[tuple[str, str, str, Callable[[MatrixRow], str]], ...] = (
@@ -341,8 +339,7 @@ def _human_topology_status(
             net_names.get(net_id, str(net_id)) for net_id in topology.nets_needing_review
         ),
         circuit_nets_without_domain=tuple(
-            net_names.get(net_id, str(net_id))
-            for net_id in topology.circuit_nets_without_domain
+            net_names.get(net_id, str(net_id)) for net_id in topology.circuit_nets_without_domain
         ),
         circuit_nets_with_unevaluated_dvc=tuple(
             net_names.get(net_id, str(net_id))

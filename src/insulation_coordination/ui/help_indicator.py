@@ -108,9 +108,7 @@ RULE_NOT_IN_PACKAGE = "not carried by the active rule package"
 NO_PACKAGE_FOR_PROVENANCE = "No rule package is loaded, so no source can be cited for it."
 
 
-def _body_text(
-    guidance_id: StrEnum, context: str, package: RulePackage | None = None
-) -> str:
+def _body_text(guidance_id: StrEnum, context: str, package: RulePackage | None = None) -> str:
     guidance = guidance_for(guidance_id)
     sections = [guidance.detailed_text]
     if guidance.examples:
@@ -137,8 +135,7 @@ def _provenance_section(guidance: VoltageGuidance, package: RulePackage | None) 
     if package is None:
         return f"{GUIDANCE_AUTHORSHIP_NOTE} {NO_PACKAGE_FOR_PROVENANCE}"
     heading = (
-        f"{GUIDANCE_AUTHORSHIP_NOTE} The rules it names are read from the active rule "
-        "package, at:"
+        f"{GUIDANCE_AUTHORSHIP_NOTE} The rules it names are read from the active rule package, at:"
     )
     lines = [heading]
     for entry in named:
@@ -148,9 +145,7 @@ def _provenance_section(guidance: VoltageGuidance, package: RulePackage | None) 
 
 def _guidance_text(guidance: VoltageGuidance) -> str:
     """Every part of an entry a rule id can be named in, as one searchable block."""
-    return "\n".join(
-        (guidance.detailed_text, *guidance.examples, *guidance.common_mistakes)
-    )
+    return "\n".join((guidance.detailed_text, *guidance.examples, *guidance.common_mistakes))
 
 
 def _bullets(heading: str, lines: tuple[str, ...]) -> str:

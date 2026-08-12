@@ -143,7 +143,7 @@ class VerificationMethod(StrEnum):
 ```python
 class GalvanicDomain(FrozenModel):
     id: UUID
-    name: str          # min_length=1
+    name: str  # min_length=1
     description: str = ""
     is_direct_source_domain: bool = False
     review_state: ReviewState = ReviewState.NEEDS_REVIEW
@@ -174,7 +174,9 @@ class GalvanicBarrier(FrozenModel):
 
 ```python
 net_type: NetClassType = NetClassType.CIRCUIT
-source_relationship: CircuitSourceRelationship | None = CircuitSourceRelationship.INTERNALLY_GENERATED
+source_relationship: CircuitSourceRelationship | None = (
+    CircuitSourceRelationship.INTERNALLY_GENERATED
+)
 connection_exposure: ConnectionExposure | None = ConnectionExposure.INTERNAL_ONLY
 decisive_voltage_class: DecisiveVoltageClass | None = DecisiveVoltageClass.NOT_EVALUATED
 galvanic_domain_id: UUID | None = None
@@ -348,7 +350,9 @@ A service reads DVC facts from the **active approved package** and never from a 
 ```python
 class DvcGuidanceService:
     def limits(self, dvc: DecisiveVoltageClass) -> DvcLimitSummary: ...
-    def protection_relationships(self, dvc: DecisiveVoltageClass) -> tuple[ProtectionGuidance, ...]: ...
+    def protection_relationships(
+        self, dvc: DecisiveVoltageClass
+    ) -> tuple[ProtectionGuidance, ...]: ...
 ```
 
 It queries `iec62477_2022.dvc.voltage_limits`, `iec62477_2022.dvc.protection_matrix`, and

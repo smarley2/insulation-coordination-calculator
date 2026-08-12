@@ -9,6 +9,7 @@ from insulation_coordination.domain.rules import (
     ApprovalRecord,
     DraftRulePackage,
     Expression,
+    FaultTimeVoltageVariant,
     PiecewiseCurveRule,
     RulePackage,
     RulePackageError,
@@ -21,8 +22,8 @@ from insulation_coordination.rules.importer.extract import (
     ImportReviewItem,
     ImportReviewResolution,
     SemanticProposal,
-    _content_digest,
     canonical_model_sha256,
+    draft_content_digest,
 )
 from insulation_coordination.rules.importer.identify import StandardRecipe
 from insulation_coordination.rules.validation import validate_rule_package
@@ -44,6 +45,49 @@ def _source_matches(actual: SourceReference, expected: SourceReference) -> bool:
     return all(
         getattr(actual, field) == getattr(expected, field)
         for field in ("document_id", "standard", "edition", "page", "clause", "table", "figure")
+    )
+
+
+def _manual_curve_review_is_current(
+    draft: ImportedRuleDraft,
+    variant: FaultTimeVoltageVariant,
+) -> bool:
+    figures = tuple(
+        figure for figure in draft.raw_figures if _source_matches(figure.source, variant.source)
+    )
+    if len(figures) != 1:
+        return False
+    figure = figures[0]
+    calibrations = tuple(
+        calibration
+        for calibration in draft.curve_calibrations
+        if calibration.figure_artifact_sha256 == figure.artifact_sha256
+        and calibration.calibration.figure_artifact_sha256 == figure.artifact_sha256
+        and calibration.calibration_sha256 == canonical_model_sha256(calibration.calibration)
+    )
+    if len(calibrations) != 1:
+        return False
+    calibration = calibrations[0]
+    from insulation_coordination.rules.importer.review import (
+        _manual_reviewed_artifact_sha256,
+    )
+
+    if variant.reviewed_artifact_sha256 != _manual_reviewed_artifact_sha256(
+        figure, calibration.calibration_sha256
+    ):
+        return False
+    return (
+        len(
+            tuple(
+                review
+                for review in draft.curve_variant_reviews
+                if review.variant_id == variant.id
+                and review.variant_sha256 == canonical_model_sha256(variant)
+                and review.source_artifact_sha256 == variant.reviewed_artifact_sha256
+                and review.calibration_sha256 == calibration.calibration_sha256
+            )
+        )
+        == 1
     )
 
 
@@ -74,14 +118,13 @@ def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft
             for fragment in changed.raw_clause_fragments
         )
     if item.kind == "curve":
-        return any(
-            figure.source.page == item.source.page
-            and figure.source.figure == item.source.figure
-            and result.proposed_rule is not None
-            and result.conservatism is not None
-            and result.conservatism.proven
-            for figure, result in zip(changed.raw_figures, changed.curve_digitizations)
+        variants = tuple(
+            variant
+            for curve in changed.curves
+            for variant in curve.variants
+            if variant.id == item.semantic_id
         )
+        return len(variants) == 1 and _manual_curve_review_is_current(changed, variants[0])
     if item.code in {"AMBIGUOUS_COMPOUND_CELL", "AMBIGUOUS_COMPONENT_FORMULA"}:
         grid_id, row_text, column_text, source_index_text = item.semantic_id.rsplit(":", 3)
         cell = next(
@@ -99,11 +142,7 @@ def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft
             return False
         source_index = int(source_index_text)
         component = next(
-            (
-                component
-                for component in cell.components
-                if component.source_index == source_index
-            ),
+            (component for component in cell.components if component.source_index == source_index),
             None,
         )
         if component is None or component.component_id is None:
@@ -138,9 +177,7 @@ def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft
         if f"{grid.id}:{cell.row}:{cell.column}" == item.semantic_id
         and _source_matches(cell.source, item.source)
     )
-    return any(
-        cell.value is not None and cell.parse_status == "numeric" for cell in cells
-    )
+    return any(cell.value is not None and cell.parse_status == "numeric" for cell in cells)
 
 
 def _recipes() -> tuple[StandardRecipe, ...]:
@@ -191,6 +228,15 @@ def _changed_tokens(
         for equation_id in sorted(set(before_equations) | set(after_equations))
         if before_equations.get(equation_id) != after_equations.get(equation_id)
     )
+    before_calibrations = {
+        item.figure_artifact_sha256: item for item in original.curve_calibrations
+    }
+    after_calibrations = {item.figure_artifact_sha256: item for item in changed.curve_calibrations}
+    tokens.extend(
+        f"curve-calibration:{artifact_sha256}"
+        for artifact_sha256 in sorted(set(before_calibrations) | set(after_calibrations))
+        if before_calibrations.get(artifact_sha256) != after_calibrations.get(artifact_sha256)
+    )
     return tuple(tokens)
 
 
@@ -240,12 +286,8 @@ def _require_safe_raw_grid_correction(
                 != after_cell.allowed_component_formula_ids
             ):
                 raise ApprovalError("a correction cannot rewrite component formula routes")
-            before_components = {
-                part.source_index: part for part in before_cell.components
-            }
-            after_components = {
-                part.source_index: part for part in after_cell.components
-            }
+            before_components = {part.source_index: part for part in before_cell.components}
+            after_components = {part.source_index: part for part in after_cell.components}
             if (
                 len(before_components) != len(before_cell.components)
                 or len(after_components) != len(after_cell.components)
@@ -282,9 +324,7 @@ def _require_safe_raw_grid_correction(
                     continue
                 allowed = {
                     formula_id
-                    for component_id, formula_id in (
-                        after_cell.allowed_component_formula_ids
-                    )
+                    for component_id, formula_id in (after_cell.allowed_component_formula_ids)
                     if component_id == component.component_id
                 }
                 exact = (
@@ -298,9 +338,7 @@ def _require_safe_raw_grid_correction(
                     else not after_candidates
                 )
                 if not exact:
-                    raise ApprovalError(
-                        "a correction must select one exact formula candidate"
-                    )
+                    raise ApprovalError("a correction must select one exact formula candidate")
 
 
 def _require_safe_equation_correction(
@@ -319,31 +357,78 @@ def _require_safe_equation_correction(
         raise ApprovalError("a correction cannot rewrite extracted equation text or source")
 
 
+def _curve_reopen_evidence(
+    draft: ImportedRuleDraft,
+    variant_id: str,
+) -> tuple[object, ...]:
+    variants = tuple(
+        variant for curve in draft.curves for variant in curve.variants if variant.id == variant_id
+    )
+    if len(variants) != 1:
+        raise ApprovalError("curve review reopening requires one exact curve variant")
+    variant = variants[0]
+    figures = tuple(
+        figure for figure in draft.raw_figures if _source_matches(figure.source, variant.source)
+    )
+    if len(figures) != 1:
+        raise ApprovalError("curve review reopening requires one exact source figure")
+    artifact_sha256 = figures[0].artifact_sha256
+    return (
+        variant,
+        tuple(
+            calibration
+            for calibration in draft.curve_calibrations
+            if calibration.figure_artifact_sha256 == artifact_sha256
+        ),
+        tuple(
+            input for input in draft.manual_curve_variant_inputs if input.variant_id == variant_id
+        ),
+    )
+
+
 def _require_valid_review_resolutions(
     original: ImportedRuleDraft,
     changed: ImportedRuleDraft,
     resolve: tuple[ImportReviewItem, ...],
+    reopen: tuple[ImportReviewItem, ...],
     *,
     actor: str,
     notes: str,
     recorded_at: datetime,
 ) -> tuple[ImportReviewResolution, ...]:
     inventory = {item.sha256: item for item in original.review_items}
+    reopened = {item.sha256 for item in reopen}
     existing = {resolution.review_item_sha256 for resolution in original.review_resolutions}
     requested = {item.sha256 for item in resolve}
     if (
         len(inventory) != len(original.review_items)
         or len(requested) != len(resolve)
+        or len(reopened) != len(reopen)
         or not requested <= set(inventory)
+        or not reopened <= set(inventory)
         or any(inventory.get(item.sha256) != item for item in resolve)
+        or any(inventory.get(item.sha256) != item for item in reopen)
+        or not reopened <= existing
     ):
         raise ApprovalError("manual review resolution does not match original inventory")
-    if requested & existing:
+    if requested & (existing - reopened):
         raise ApprovalError("manual review item is already resolved")
+    if any(item.kind != "curve" for item in reopen):
+        raise ApprovalError("only changed curve review evidence can be reopened")
+    if any(
+        _curve_reopen_evidence(original, item.semantic_id)
+        == _curve_reopen_evidence(changed, item.semantic_id)
+        for item in reopen
+    ):
+        raise ApprovalError("curve review reopening requires changed curve evidence")
     if any(not _review_resolution_exists(item, changed) for item in resolve):
         raise ApprovalError("manual review resolution lacks matching typed content")
     return (
-        *original.review_resolutions,
+        *(
+            resolution
+            for resolution in original.review_resolutions
+            if resolution.review_item_sha256 not in reopened
+        ),
         *(
             ImportReviewResolution(
                 review_item_sha256=item.sha256,
@@ -408,9 +493,7 @@ def _sync_semantic_proposals(
             source_artifact_sha256="0" * 64,
             review_item_sha256s=(),
         )
-        review_hashes = tuple(
-            item.sha256 for item in _required_review_items(changed, probe)
-        )
+        review_hashes = tuple(item.sha256 for item in _required_review_items(changed, probe))
         probe = probe.model_copy(update={"review_item_sha256s": review_hashes})
         source_sha256 = _current_source_artifact_sha256(changed, probe)
         unchanged = (
@@ -434,6 +517,7 @@ def record_correction(
     actor: str,
     notes: str,
     resolve: tuple[ImportReviewItem, ...] = (),
+    reopen: tuple[ImportReviewItem, ...] = (),
 ) -> ImportedRuleDraft:
     """Return corrected content with immutable item and content audits appended."""
 
@@ -453,113 +537,40 @@ def record_correction(
     _require_safe_equation_correction(original, changed)
     if changed.raw_figures != original.raw_figures:
         raise ApprovalError("a correction cannot rewrite extracted raw figure evidence")
-    content_changed = (
-        changed.tables,
-        changed.formulas,
-        changed.mappings,
-        changed.decisions,
-        changed.procedures,
-        changed.guidance,
-        changed.curves,
-        changed.extracted_equations,
-    ) != (
-        original.tables,
-        original.formulas,
-        original.mappings,
-        original.decisions,
-        original.procedures,
-        original.guidance,
-        original.curves,
-        original.extracted_equations,
-    )
-    raw_changed = (
-        changed.raw_grids,
-        changed.raw_clause_fragments,
-        changed.raw_figures,
-        changed.curve_digitizations,
-        changed.curve_variant_reviews,
-        changed.curve_trace_associations,
-        changed.curve_variant_rejections,
-        changed.manual_curve_traces,
-    ) != (
-        original.raw_grids,
-        original.raw_clause_fragments,
-        original.raw_figures,
-        original.curve_digitizations,
-        original.curve_variant_reviews,
-        original.curve_trace_associations,
-        original.curve_variant_rejections,
-        original.manual_curve_traces,
-    )
-    if (
-        changed.curve_digitizations != original.curve_digitizations
-        and changed.curves == original.curves
-    ):
-        raise ApprovalError(
-            "curve proof evidence can change only with its re-proven semantic curve"
-        )
-    if not content_changed and not raw_changed and not resolve:
+    # The chain this record extends is the one ``_require_logged_content`` verifies, so the
+    # link it writes has to be that same function of that same draft.
+    before = draft_content_digest(original)
+    # Also what "changed" means here: every content collection, read through the one function,
+    # so a collection nobody remembered to compare cannot pass as unchanged.
+    if before == draft_content_digest(changed) and not resolve and not reopen:
         raise ApprovalError("a correction must change rule content")
-    original_reviews = original.review_items
-    changed_reviews = changed.review_items
     corrected_mappings = tuple(
         mapping.model_copy(update={"approved": False}) for mapping in changed.mappings
     )
     semantic_proposals = _sync_semantic_proposals(original, changed)
     _require_logged_content(original)
-    before = _content_digest(
-        original.tables,
-        original.formulas,
-        original.mappings,
-        original_reviews,
-        original.raw_grids,
-        original.raw_clause_fragments,
-        original.manifest.source_documents,
-        original.source_identities,
-        original.review_resolutions,
-        original.extracted_equations,
-        decisions=original.decisions,
-        procedures=original.procedures,
-        guidance=original.guidance,
-        curves=original.curves,
-        raw_figures=original.raw_figures,
-        curve_digitizations=original.curve_digitizations,
-        curve_variant_reviews=original.curve_variant_reviews,
-        curve_trace_associations=original.curve_trace_associations,
-        curve_variant_rejections=original.curve_variant_rejections,
-        manual_curve_traces=original.manual_curve_traces,
-    )
     recorded_at = datetime.now(UTC)
     resolutions = _require_valid_review_resolutions(
         original,
         changed,
         resolve,
+        reopen,
         actor=actor.strip(),
         notes=notes.strip(),
         recorded_at=recorded_at,
     )
-    after = _content_digest(
-        changed.tables,
-        changed.formulas,
-        corrected_mappings,
-        changed_reviews,
-        changed.raw_grids,
-        changed.raw_clause_fragments,
-        changed.manifest.source_documents,
-        changed.source_identities,
-        resolutions,
-        changed.extracted_equations,
-        decisions=changed.decisions,
-        procedures=changed.procedures,
-        guidance=changed.guidance,
-        curves=changed.curves,
-        raw_figures=changed.raw_figures,
-        curve_digitizations=changed.curve_digitizations,
-        curve_variant_reviews=changed.curve_variant_reviews,
-        curve_trace_associations=changed.curve_trace_associations,
-        curve_variant_rejections=changed.curve_variant_rejections,
-        manual_curve_traces=changed.manual_curve_traces,
+    corrected = changed.model_copy(
+        update={
+            "mappings": corrected_mappings,
+            "review_resolutions": resolutions,
+            "semantic_proposals": semantic_proposals,
+        }
     )
+    # The same chicken-and-egg ``extract_draft`` solves: the link this record writes must be
+    # the digest of the draft that carries the record. So digest the corrected content while
+    # the manifest is still the original's -- ``draft_content_digest`` reads only its source
+    # documents, which a correction cannot change -- then copy the new manifest in below.
+    after = draft_content_digest(corrected)
     audit_records = tuple(
         ApprovalRecord(
             action="correction",
@@ -584,29 +595,7 @@ def record_correction(
             )
         }
     )
-    return ImportedRuleDraft(
-        manifest=manifest,
-        tables=changed.tables,
-        formulas=changed.formulas,
-        mappings=corrected_mappings,
-        decisions=changed.decisions,
-        procedures=changed.procedures,
-        guidance=changed.guidance,
-        curves=changed.curves,
-        review_items=changed.review_items,
-        review_resolutions=resolutions,
-        raw_grids=changed.raw_grids,
-        raw_clause_fragments=changed.raw_clause_fragments,
-        raw_figures=changed.raw_figures,
-        curve_digitizations=changed.curve_digitizations,
-        curve_variant_reviews=changed.curve_variant_reviews,
-        curve_trace_associations=changed.curve_trace_associations,
-        curve_variant_rejections=changed.curve_variant_rejections,
-        manual_curve_traces=changed.manual_curve_traces,
-        extracted_equations=changed.extracted_equations,
-        semantic_proposals=semantic_proposals,
-        source_identities=changed.source_identities,
-    )
+    return corrected.model_copy(update={"manifest": manifest})
 
 
 def _require_complete_inventory(draft: DraftRulePackage) -> None:
@@ -658,9 +647,7 @@ def _require_complete_audit(draft: DraftRulePackage) -> None:
     required.update(f"curve:{rule.id}" for rule in draft.curves)
     if isinstance(draft, ImportedRuleDraft):
         required.update(f"equation:{equation.id}" for equation in draft.extracted_equations)
-        required.update(
-            f"raw-clause:{fragment.id}" for fragment in draft.raw_clause_fragments
-        )
+        required.update(f"raw-clause:{fragment.id}" for fragment in draft.raw_clause_fragments)
     missing = required - audited
     if missing:
         raise ApprovalError("draft has incomplete extraction, table, formula, or mapping audits")
@@ -690,44 +677,7 @@ def _require_logged_content(draft: DraftRulePackage) -> None:
         if match.group(1) != expected:
             raise ApprovalError("draft has a broken correction audit chain")
         expected = match.group(2)
-    reviews = draft.review_items if isinstance(draft, ImportedRuleDraft) else ()
-    raw_grids = draft.raw_grids if isinstance(draft, ImportedRuleDraft) else ()
-    fragments = (
-        draft.raw_clause_fragments if isinstance(draft, ImportedRuleDraft) else ()
-    )
-    actual = _content_digest(
-        draft.tables,
-        draft.formulas,
-        draft.mappings,
-        reviews,
-        raw_grids,
-        fragments,
-        draft.manifest.source_documents,
-        draft.source_identities if isinstance(draft, ImportedRuleDraft) else (),
-        draft.review_resolutions if isinstance(draft, ImportedRuleDraft) else (),
-        draft.extracted_equations if isinstance(draft, ImportedRuleDraft) else (),
-        decisions=draft.decisions,
-        procedures=draft.procedures,
-        guidance=draft.guidance,
-        curves=draft.curves,
-        raw_figures=(draft.raw_figures if isinstance(draft, ImportedRuleDraft) else ()),
-            curve_digitizations=(
-                draft.curve_digitizations if isinstance(draft, ImportedRuleDraft) else ()
-            ),
-            curve_variant_reviews=(
-                draft.curve_variant_reviews if isinstance(draft, ImportedRuleDraft) else ()
-            ),
-            curve_trace_associations=(
-                draft.curve_trace_associations if isinstance(draft, ImportedRuleDraft) else ()
-            ),
-            curve_variant_rejections=(
-                draft.curve_variant_rejections if isinstance(draft, ImportedRuleDraft) else ()
-            ),
-            manual_curve_traces=(
-                draft.manual_curve_traces if isinstance(draft, ImportedRuleDraft) else ()
-            ),
-    )
-    if actual != expected:
+    if draft_content_digest(draft) != expected:
         raise ApprovalError("draft contains an unlogged content change")
 
 
@@ -735,37 +685,41 @@ def _require_compatibility_mapping(draft: DraftRulePackage) -> None:
     routes = tuple(mapping.source_rule_id for mapping in draft.mappings)
     if len(routes) != len(set(routes)):
         raise ApprovalError("compatibility mappings are ambiguous")
+    from insulation_coordination.rules.importer.expectations import package_expectations
     from insulation_coordination.rules.importer.recipes import RECIPES
 
-    required = {spec.semantic_route for recipe in RECIPES for spec in recipe.mappings}
-    if set(routes) != required or len(routes) != len(required):
+    # Two kinds of mapping reach a package. A declared mapping states a route the recipe
+    # asserts up front, and that family must be exactly complete. A cross-standard mapping
+    # exists only where a comparison proved two grids equal, so it is permitted rather than
+    # required here: a divergent comparison already refuses during review, and the inventory
+    # gate is what reports content a draft never carried.
+    expectations = package_expectations(RECIPES)
+    required = expectations.declared_mapping_routes
+    declared = set(routes) - expectations.proven_mapping_routes
+    if declared != required or len(declared) != len(required):
         raise ApprovalError("exact compatibility mapping family is incomplete")
 
 
 def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
-    from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
+    from insulation_coordination.rules.importer.expectations import package_expectations
     from insulation_coordination.rules.importer.recipes import RECIPES
-    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
-        project_dvc_protection_matrix,
-        project_dvc_voltage_limits,
-    )
 
-    table_specs = tuple(spec for recipe in RECIPES for spec in recipe.tables)
-    custom_table_ids = {ids.DVC_VOLTAGE_LIMITS, ids.DVC_PROTECTION_MATRIX}
-    typed_table_specs = tuple(
-        spec for spec in table_specs if spec.semantic_id not in custom_table_ids
-    )
-    formula_specs = tuple(spec for recipe in RECIPES for spec in recipe.formulas)
-    mapping_specs = tuple(spec for recipe in RECIPES for spec in recipe.mappings)
+    # A spec yields a ``Table`` only when nothing else claims its grid: a spec with a
+    # registered projector yields rules of another kind, and a comparison-only spec yields
+    # evidence for a cross-standard check and no rule at all. That classification lives in
+    # ``package_expectations``, which the inventory and validation gates read as well.
+    expectations = package_expectations(RECIPES)
     tables = {table.id: table for table in draft.tables}
     formulas = {formula.id: formula for formula in draft.formulas}
     mappings = {mapping.id: mapping for mapping in draft.mappings}
     grids = {grid.id: grid for grid in draft.raw_grids}
     if (
-        set(tables) != {spec.semantic_id for spec in typed_table_specs}
-        or set(formulas) != {spec.semantic_id for spec in formula_specs}
-        or set(mappings) != {spec.id for spec in mapping_specs}
-        or set(grids) != {f"raw-{spec.semantic_id}" for spec in table_specs}
+        set(tables) != expectations.table_rule_ids
+        or set(formulas) != expectations.formula_ids
+        # A proven cross-standard mapping is permitted beside the declared family, exactly as
+        # ``_require_compatibility_mapping`` permits it.
+        or set(mappings) - expectations.proven_mapping_ids != expectations.declared_mapping_ids
+        or set(grids) != expectations.raw_grid_ids
     ):
         raise ApprovalError("reviewed content sets do not match exact recipe semantics")
     recipes_by_id = {recipe.id: recipe for recipe in RECIPES}
@@ -774,19 +728,39 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
         identity = identities_by_recipe[recipe_id]
         for spec in recipe.tables:
             grid = grids[f"raw-{spec.semantic_id}"]
-            if spec.semantic_id in custom_table_ids:
-                expected, _proposals = (
-                    project_dvc_voltage_limits(grid, identity)
-                    if spec.semantic_id == ids.DVC_VOLTAGE_LIMITS
-                    else project_dvc_protection_matrix(grid, identity)
+            if spec.comparison_only:
+                # Evidence for a cross-standard check. The grid must exist, which the set
+                # comparison above already required, and it becomes no rule to re-derive.
+                continue
+            projector = recipe.grid_projectors.get(spec.semantic_id)
+            if projector is not None:
+                # Re-project from the reviewed grid and require the draft to hold exactly
+                # that, so a rule cannot drift from the grid it claims to come from. The
+                # projector comes from the recipe, so this stays free of any one standard's
+                # identifiers.
+                from insulation_coordination.rules.importer.review import (
+                    resolve_confirmed_axis_selectors,
                 )
-                actual = tuple(
-                    rule for rule in draft.decisions if rule.id in {item.id for item in expected}
+
+                expected, _proposals = projector(
+                    grid, identity, resolve_confirmed_axis_selectors(spec, grid, draft)
                 )
-                if actual != expected:
-                    raise ApprovalError(
-                        "reviewed decision does not correspond to its raw recipe grid"
-                    )
+                # Compared by identifier, not by position: one projection may return several
+                # kinds, and the draft keeps each kind in its own collection, so the order a
+                # rule appears in says nothing about whether it matches.
+                expected_by_id = {rule.id: rule for rule in expected}
+                actual_by_id: dict[str, object] = {}
+                for decision in draft.decisions:
+                    if decision.id in expected_by_id:
+                        actual_by_id[decision.id] = decision
+                for procedure in draft.procedures:
+                    if procedure.id in expected_by_id:
+                        actual_by_id[procedure.id] = procedure
+                for guidance_rule in draft.guidance:
+                    if guidance_rule.id in expected_by_id:
+                        actual_by_id[guidance_rule.id] = guidance_rule
+                if actual_by_id != expected_by_id:
+                    raise ApprovalError("reviewed rule does not correspond to its raw recipe grid")
                 continue
             table = tables[spec.semantic_id]
             expected_source = SourceReference(
@@ -849,13 +823,11 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
                                     (
                                         component
                                         for component in raw.components
-                                        if component.component_id
-                                        == column.projected_component_id
+                                        if component.component_id == column.projected_component_id
                                     ),
                                     None,
                                 )
-                                if raw is not None
-                                and column.projected_component_id is not None
+                                if raw is not None and column.projected_component_id is not None
                                 else raw
                             )
                         if selected is not None and selected.value is not None:
@@ -1070,8 +1042,7 @@ def _require_source_genesis(draft: ImportedRuleDraft) -> None:
         or any(
             identity.standard != recipe.standard
             or identity.edition != recipe.edition
-            or identity.page_count
-            not in (recipe.expected_page_count, *recipe.accepted_page_counts)
+            or identity.page_count not in (recipe.expected_page_count, *recipe.accepted_page_counts)
             for identity, recipe in zip(
                 draft.source_identities,
                 expected,
@@ -1160,7 +1131,9 @@ def approval_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
         or len(resolution_hashes) != len(resolved)
         or not resolved <= set(inventory_hashes)
     ):
-        semantic_id = draft.review_items[0].semantic_id if draft.review_items else draft.manifest.version
+        semantic_id = (
+            draft.review_items[0].semantic_id if draft.review_items else draft.manifest.version
+        )
         blockers.append(
             _semantic_blocker(
                 draft,
@@ -1237,9 +1210,7 @@ def approval_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
                 draft,
                 code="CURVE_REQUIRED",
                 semantic_id=semantic_id,
-                message=(
-                    f"required curve {semantic_id} has no reviewed variants in the draft"
-                ),
+                message=(f"required curve {semantic_id} has no reviewed variants in the draft"),
             )
         )
     for semantic_id in incomplete_required_curve_variants(draft):
@@ -1259,34 +1230,44 @@ def approval_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
     required_curve_ids = {
         semantic_id for recipe in RECIPES for semantic_id in recipe.required_curves
     }
-    from insulation_coordination.rules.importer.review import (
-        validate_current_curve_evidence,
-    )
-
     for curve in (curve for curve in draft.curves if curve.id in required_curve_ids):
         for variant in curve.variants:
-            exact_reviews = tuple(
-                review
-                for review in draft.curve_variant_reviews
-                if review.variant_id == variant.id
-                and review.variant_sha256 == canonical_model_sha256(variant)
-                and review.source_artifact_sha256
-                == variant.reviewed_artifact_sha256
-            )
-            try:
-                validate_current_curve_evidence(draft, variant)
-                proof_current = True
-            except (ApprovalError, ValueError):
-                proof_current = False
-            if len(exact_reviews) != 1 or not proof_current:
+            if not _manual_curve_review_is_current(draft, variant):
                 blockers.append(
                     _semantic_blocker(
                         draft,
                         code="CURVE_VARIANT_REVIEW_REQUIRED",
                         semantic_id=variant.id,
                         message=(
-                            f"curve variant {variant.id} lacks one exact review "
-                            "and current conservative proof"
+                            f"curve variant {variant.id} lacks one exact current manual review"
+                        ),
+                    )
+                )
+    from insulation_coordination.rules.importer.review import axis_review_is_current
+
+    for spec in (spec for recipe in RECIPES for spec in recipe.tables if spec.axis_selectors):
+        grid_id = f"raw-{spec.semantic_id}"
+        for axis_proposal in (
+            item for item in draft.axis_selector_proposals if item.grid_id == grid_id
+        ):
+            # The same comparison the resolver uses, against the same live grid, so this gate
+            # and ``resolve_confirmed_axis_selectors`` can never disagree about what counts as
+            # a current review. A grid this draft no longer carries resolves no live evidence,
+            # so every review of it reads as stale and the position blocks.
+            exact = tuple(
+                review
+                for review in draft.axis_selector_reviews
+                if axis_review_is_current(review, axis_proposal, draft)
+            )
+            if len(exact) != 1:
+                blockers.append(
+                    _semantic_blocker(
+                        draft,
+                        code="AXIS_SELECTOR_REVIEW_REQUIRED",
+                        semantic_id=spec.semantic_id,
+                        message=(
+                            f"{spec.semantic_id} {axis_proposal.axis} position "
+                            f"{axis_proposal.index} lacks one exact axis selector review"
                         ),
                     )
                 )
@@ -1337,12 +1318,8 @@ def missing_required_curves(draft: ImportedRuleDraft) -> tuple[str, ...]:
     from insulation_coordination.rules.importer.recipes import RECIPES
 
     present = {curve.id for curve in draft.curves}
-    required = {
-        semantic_id for recipe in RECIPES for semantic_id in recipe.required_curves
-    }
-    return tuple(
-        semantic_id for semantic_id in sorted(required) if semantic_id not in present
-    )
+    required = {semantic_id for recipe in RECIPES for semantic_id in recipe.required_curves}
+    return tuple(semantic_id for semantic_id in sorted(required) if semantic_id not in present)
 
 
 def is_fully_resolved(draft: ImportedRuleDraft) -> bool:

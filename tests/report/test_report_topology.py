@@ -170,7 +170,9 @@ def test_human_view_names_domain_pairs_without_barrier_and_unevaluated_barriers(
 ) -> None:
     project, results, groups, rules = report_inputs
     project = _with_topology(project, barrier_status=BarrierVerificationStatus.NOT_EVALUATED)
-    third = GalvanicDomain(id=_TERTIARY_ID, name="Tertiary side", review_state=ReviewState.USER_CONFIRMED)
+    third = GalvanicDomain(
+        id=_TERTIARY_ID, name="Tertiary side", review_state=ReviewState.USER_CONFIRMED
+    )
     project = project.model_copy(update={"galvanic_domains": (*project.galvanic_domains, third)})
     model = build_report_model(project, results, groups, rules)
 

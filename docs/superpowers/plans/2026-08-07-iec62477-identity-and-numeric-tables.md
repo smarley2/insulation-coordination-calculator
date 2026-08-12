@@ -178,12 +178,14 @@ Add a method to `StandardRecipe` so the caller can distinguish a wrong edition f
 unrelated document:
 
 ```python
-    def detected_claims(self, *, first_page_text: str, metadata: dict[str, str]) -> set[tuple[str, str]]:
-        return {
-            (standard.strip(), edition)
-            for value in (*metadata.values(), first_page_text)
-            for standard, edition in re.findall(self.identity_claim_pattern, value)
-        }
+def detected_claims(
+    self, *, first_page_text: str, metadata: dict[str, str]
+) -> set[tuple[str, str]]:
+    return {
+        (standard.strip(), edition)
+        for value in (*metadata.values(), first_page_text)
+        for standard, edition in re.findall(self.identity_claim_pattern, value)
+    }
 ```
 
 In `identify_standard`, before raising `UnsupportedStandardError` for no match:
@@ -202,7 +204,7 @@ Note the regex must now capture the full standard name, not just its part number
 both existing recipes declare:
 
 ```python
-    identity_claim_pattern=r"(?i)(IEC\s*60664-[14]).{0,24}?\b((?:19|20)\d{2})\b",
+identity_claim_pattern = (r"(?i)(IEC\s*60664-[14]).{0,24}?\b((?:19|20)\d{2})\b",)
 ```
 
 - [ ] **Step 4: Export the new error**
@@ -337,7 +339,7 @@ In `src/insulation_coordination/rules/importer/identify.py`, add to both
 and carry it through `_legacy_segment` in `extract.py`:
 
 ```python
-        page_search_radius=spec.page_search_radius,
+page_search_radius = (spec.page_search_radius,)
 ```
 
 - [ ] **Step 4: Add the window search**
@@ -489,7 +491,7 @@ In `src/insulation_coordination/rules/importer/projection.py`, replace both hard
 with:
 
 ```python
-        interpolation=spec.interpolation,
+interpolation = (spec.interpolation,)
 ```
 
 Do the same in `_table_from_spec` in
@@ -608,9 +610,7 @@ def test_the_two_table_seven_specs_read_disjoint_source_columns() -> None:
             ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE,
         )
     )
-    impulse_data = {
-        column.source_column for column in impulse.columns if column.role == "data"
-    }
+    impulse_data = {column.source_column for column in impulse.columns if column.role == "data"}
     tov_data = {column.source_column for column in tov.columns if column.role == "data"}
     assert impulse_data and tov_data
     assert impulse_data.isdisjoint(tov_data)
@@ -629,7 +629,9 @@ def test_every_62477_table_searches_a_page_window() -> None:
 
 def test_altitude_tables_share_one_semantic_family() -> None:
     altitude = [
-        spec for spec in RECIPE.tables if spec.semantic_id.startswith(ids.ALTITUDE_TEST_VOLTAGE_CORRECTION)
+        spec
+        for spec in RECIPE.tables
+        if spec.semantic_id.startswith(ids.ALTITUDE_TEST_VOLTAGE_CORRECTION)
     ]
     assert len(altitude) == 2
 

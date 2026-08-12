@@ -19,11 +19,9 @@ from insulation_coordination.rules.importer.approval import approve_draft
 from insulation_coordination.rules.importer.extract import (
     _REQUIRED_RECIPES,
     canonical_model_sha256,
-    extract_draft,
 )
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
-from insulation_coordination.rules.importer.review import review_curve_variant
-from tests.private.test_iec62477_dvc_tables import _review_all_c2_proposals
+from tests.private.test_iec62477_curves import _complete_manual_curve_review
 
 pytestmark = pytest.mark.private_standard
 
@@ -32,23 +30,17 @@ def _paths(supplied_standards: dict[str, Path]) -> tuple[Path, ...]:
     return tuple(supplied_standards[recipe] for recipe in sorted(_REQUIRED_RECIPES))
 
 
-def _approved_slice_c(supplied_standards: dict[str, Path]):
-    reviewed = _review_all_c2_proposals(extract_draft(_paths(supplied_standards)))
-    variant_ids = tuple(
-        variant.id
-        for curve in reviewed.curves
-        if curve.id == ids.DVC_FAULT_TIME_VOLTAGE
-        for variant in curve.variants
-    )
-    for variant_id in variant_ids:
-        reviewed = review_curve_variant(
-            reviewed,
-            variant_id,
-            actor="Private fixture reviewer",
-            notes="Verified curve against supplied PDF",
-        )
+def _approved_slice_c(reviewed):
+    """Approve an already-reviewed draft: the review pass is shared by fixture.
+
+    A curve variant does not exist until it is manually entered, so the calibration and
+    the point entry both have to run before the variant can be reviewed.  The helper
+    beside the manual-review lifecycle tests owns that sequence, and its inputs are local
+    placeholders rather than values read off the licensed figure.
+    """
+
     return approve_draft(
-        reviewed,
+        _complete_manual_curve_review(reviewed),
         approver="Private fixture reviewer",
         notes="Approved reviewed Slice C package",
     )
@@ -56,9 +48,9 @@ def _approved_slice_c(supplied_standards: dict[str, Path]):
 
 def test_reviewed_slice_c_round_trips_and_every_selector_evaluates(
     tmp_path: Path,
-    supplied_standards: dict[str, Path],
+    reviewed_draft,
 ) -> None:
-    package = _approved_slice_c(supplied_standards)
+    package = _approved_slice_c(reviewed_draft)
     archive = tmp_path / "reviewed-slice-c.icrules"
     write_rule_package(archive, package)
     reloaded = load_rule_package(archive)
@@ -76,10 +68,8 @@ def test_reviewed_slice_c_round_trips_and_every_selector_evaluates(
         assert result.status == "matched"
 
 
-def test_table_2_references_resolve_to_single_slice_c_targets(
-    supplied_standards: dict[str, Path],
-) -> None:
-    package = _approved_slice_c(supplied_standards)
+def test_table_2_references_resolve_to_single_slice_c_targets(reviewed_draft) -> None:
+    package = _approved_slice_c(reviewed_draft)
     references = {
         value.reference
         for decision in package.decisions

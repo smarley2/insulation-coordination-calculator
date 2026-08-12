@@ -22,6 +22,10 @@ SUPPLY_HF_TRANSFORMER_ATTENUATION = "iec62477_2022.supply.hf_transformer_attenua
 
 CLEARANCE_REQUIREMENTS = "iec62477_2022.clearance.requirements"
 CREEPAGE_REQUIREMENTS = "iec62477_2022.creepage.requirements"
+#: Annex E's two tables do two different jobs and get one identifier each (#52): E.1's factor
+#: corrects clearances for dimensioning, E.2's values correct test voltages for the altitude
+#: of the testing laboratory. Neither is a route of the other, so neither carries a suffix.
+ALTITUDE_CLEARANCE_CORRECTION = "iec62477_2022.altitude.clearance_correction"
 ALTITUDE_TEST_VOLTAGE_CORRECTION = "iec62477_2022.altitude.test_voltage_correction"
 HIGH_FREQUENCY_APPLICABILITY = "iec62477_2022.high_frequency.applicability"
 
@@ -51,6 +55,7 @@ REQUIRED_SEMANTIC_IDS: frozenset[str] = frozenset(
         SUPPLY_HF_TRANSFORMER_ATTENUATION,
         CLEARANCE_REQUIREMENTS,
         CREEPAGE_REQUIREMENTS,
+        ALTITUDE_CLEARANCE_CORRECTION,
         ALTITUDE_TEST_VOLTAGE_CORRECTION,
         HIGH_FREQUENCY_APPLICABILITY,
         TEST_IMPULSE_PROCEDURE,
