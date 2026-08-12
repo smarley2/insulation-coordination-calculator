@@ -572,6 +572,10 @@ class CurveReviewDialog(QDialog):
         self._set_table_text(row, 1, "")
         self._syncing = False
         self.point_table.setCurrentCell(row, 0)
+        self.point_table.setFocus()
+        item = self.point_table.item(row, 0)
+        if item is not None:
+            self.point_table.editItem(item)
 
     def remove_point(self) -> None:
         row = self.point_table.currentRow()
@@ -669,7 +673,7 @@ class CurveReviewDialog(QDialog):
             return
         if calibration is None:
             self._status.setText(
-                "A current manual calibration is required before accepting this variant."
+                "Apply this figure's axis bounds before accepting this variant."
             )
             return
         if not self._store_points():
@@ -991,7 +995,7 @@ class CurveReviewDialog(QDialog):
             and item.calibration_sha256 == canonical_model_sha256(item.calibration)
         )
         if calibration is None or len(calibrations) != 1:
-            return "A current manual calibration is required before accepting this variant."
+            return "Apply this figure's axis bounds before accepting this variant."
         try:
             visible_points = self._table_points()
         except ValueError:

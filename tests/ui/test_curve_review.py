@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 from pypdf import PdfWriter
-from PySide6.QtWidgets import QPushButton
+from PySide6.QtWidgets import QAbstractItemView, QPushButton
 
 from insulation_coordination.domain.rules import (
     ApprovalRecord,
@@ -769,7 +769,7 @@ def test_accept_reports_table_errors_without_recording_a_review(
     assert "full reviewed x-axis domain" in dialog.status_text.lower()
 
 
-def test_accept_requires_a_current_manual_calibration(
+def test_accept_requires_applied_axis_bounds(
     qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
 ) -> None:
     draft, path = local_manual_draft
@@ -786,7 +786,31 @@ def test_accept_requires_a_current_manual_calibration(
 
     assert dialog.draft == before
     assert not dialog.draft.curve_variant_reviews
-    assert "current manual calibration" in dialog.status_text.lower()
+    assert dialog.point_table.rowCount() == 2
+    assert "apply this figure's axis bounds" in dialog.status_text.lower()
+
+
+def test_add_point_opens_the_new_row_for_typing(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+
+    dialog.add_point()
+
+    row = dialog.point_table.rowCount() - 1
+    assert (dialog.point_table.currentRow(), dialog.point_table.currentColumn()) == (
+        row,
+        0,
+    )
+    assert dialog.point_table.state() == QAbstractItemView.State.EditingState
 
 
 def test_one_valid_row_plots_one_point(
