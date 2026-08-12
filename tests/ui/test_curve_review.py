@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 from pypdf import PdfWriter
-from PySide6.QtCore import QPointF, Qt, QTimer
-from PySide6.QtWidgets import QApplication, QDialog, QLineEdit, QPushButton
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtWidgets import QPushButton
 
 from insulation_coordination.domain.rules import (
     ApprovalRecord,
@@ -236,28 +236,29 @@ def _calibration() -> ManualPlotCalibration:
     )
 
 
-def _submit_calibration_dialog(
+def _set_bounds_fields(
+    dialog: CurveReviewDialog, values: tuple[str, str, str, str]
+) -> None:
+    for field, value in zip(
+        (dialog.x_min_edit, dialog.x_max_edit, dialog.y_min_edit, dialog.y_max_edit),
+        values,
+        strict=True,
+    ):
+        field.setText(value)
+
+
+def _submit_two_click_calibration(
     qtbot,
     dialog: CurveReviewDialog,
     values: tuple[str, str, str, str],
 ) -> None:
-    """Drive the real two-click and modal bounds-entry path."""
+    """Drive the real bounds-field entry plus two-click rectangle path."""
 
     dialog.notes_edit.setText("Reviewed synthetic plot.")
+    _set_bounds_fields(dialog, values)
     dialog.begin_calibration()
     first = dialog._view.mapFromScene(QPointF(20, 10))
     qtbot.mouseClick(dialog._view.viewport(), Qt.MouseButton.LeftButton, pos=first)
-
-    def fill_bounds() -> None:
-        active = QApplication.activeModalWidget()
-        assert isinstance(active, QDialog)
-        fields = active.findChildren(QLineEdit)
-        assert len(fields) == 4
-        for field, value in zip(fields, values, strict=True):
-            field.setText(value)
-        active.accept()
-
-    QTimer.singleShot(0, fill_bounds)
     second = dialog._view.mapFromScene(QPointF(320, 210))
     qtbot.mouseClick(dialog._view.viewport(), Qt.MouseButton.LeftButton, pos=second)
 
@@ -355,9 +356,11 @@ def test_dialog_exposes_manual_controls_without_retired_reconstruction_actions(
     assert "Accessible circuit" in dialog.current_variant_label
     assert dialog.point_table.columnCount() == 2
     assert dialog.point_table.horizontalHeaderItem(0).text() == "X (ms)"
-    assert dialog.calibration_button.text() == "Set plot and axes…"
-    assert dialog.save_points_button.text() == "Save points"
+    assert dialog.mark_rectangle_button.text() == "Mark plot rectangle"
+    assert dialog.apply_calibration_button.text() == "Apply calibration"
     assert dialog.accept_variant_button.text() == "Accept variant"
+    assert not hasattr(dialog, "save_points_button")
+    assert not hasattr(dialog, "calibration_button")
     assert not hasattr(dialog, "_trace_button")
     assert not hasattr(dialog, "_breakpoint_button")
     assert not hasattr(dialog, "_segment_button")
@@ -368,12 +371,13 @@ def _assert_source_failure_blocks_mutation(dialog: CurveReviewDialog) -> None:
     assert dialog.source_loaded is False
     assert "source unavailable" in dialog.status_text.lower()
     assert dialog.point_table.isEnabled() is False
+    assert dialog._bounds_box.isEnabled() is False
     buttons = {button.text(): button for button in dialog.findChildren(QPushButton)}
     for label in (
         "Add point",
         "Remove point",
-        "Set plot and axes…",
-        "Save points",
+        "Mark plot rectangle",
+        "Apply calibration",
         "Accept variant",
     ):
         assert buttons[label].isEnabled() is False
@@ -463,21 +467,8 @@ def test_source_block_cancels_active_calibration_and_prevents_late_mutation(
 
     dialog._load_current_variant(dialog._variant_selector.currentIndex())
 
-    def accept_bounds_if_open() -> None:
-        active = QApplication.activeModalWidget()
-        if not isinstance(active, QDialog):
-            return
-        for field, value in zip(
-            active.findChildren(QLineEdit),
-            ("1", "1000", "1", "100"),
-            strict=True,
-        ):
-            field.setText(value)
-        active.accept()
-
-    QTimer.singleShot(0, accept_bounds_if_open)
     dialog._record_calibration_corner(QPointF(300, 190))
-    QApplication.processEvents()
+    dialog.apply_calibration()
     dialog.set_plot_and_axes(
         QPointF(30, 20),
         QPointF(300, 190),
@@ -751,7 +742,28 @@ def test_save_rejects_points_that_do_not_cover_the_reviewed_x_domain(
     assert "full reviewed x-axis domain" in dialog.status_text.lower()
 
 
-def test_accept_rejects_unsaved_visible_table_changes(
+def test_accept_stores_the_visible_table_before_recording_the_review(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+    dialog.notes_edit.setText("Reviewed synthetic curve.")
+    dialog.set_point_text(1, "1000", "25")
+
+    dialog.accept_variant()
+
+    assert dialog.status_text == "Variant manually reviewed."
+    variant = dialog.draft.curves[0].variants[0]
+    assert variant.points[-1] == CurvePoint(x=Decimal(1), y=Decimal(25))
+    assert dialog.draft.curve_variant_reviews[0].variant_id == "synthetic.curve.5.1"
+
+
+def test_accept_reports_table_errors_without_recording_a_review(
     qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
 ) -> None:
     draft, path = local_manual_draft
@@ -769,7 +781,7 @@ def test_accept_rejects_unsaved_visible_table_changes(
 
     assert dialog.draft == before
     assert not dialog.draft.curve_variant_reviews
-    assert "save points" in dialog.status_text.lower()
+    assert "full reviewed x-axis domain" in dialog.status_text.lower()
 
 
 def test_accept_requires_a_current_manual_calibration(
@@ -846,7 +858,7 @@ def test_provisional_reversed_or_duplicate_x_keeps_every_handle_inside_plot(
     assert "strictly increasing" in dialog.status_text.lower()
 
 
-def test_two_click_calibration_dialog_parses_and_saves_decimal_bounds(
+def test_two_click_rectangle_saves_the_bounds_from_the_axis_fields(
     qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
 ) -> None:
     draft, path = local_manual_draft
@@ -857,7 +869,7 @@ def test_two_click_calibration_dialog_parses_and_saves_decimal_bounds(
     )
     qtbot.addWidget(dialog)
 
-    _submit_calibration_dialog(qtbot, dialog, ("1", "1000", "1", "100"))
+    _submit_two_click_calibration(qtbot, dialog, ("1", "1000", "1", "100"))
 
     assert dialog.status_text == "Plot calibration saved."
     calibration = dialog.draft.curve_calibrations[0].calibration
@@ -886,10 +898,89 @@ def test_invalid_two_click_calibration_leaves_the_draft_unchanged(
     qtbot.addWidget(dialog)
     before = dialog.draft
 
-    _submit_calibration_dialog(qtbot, dialog, values)
+    _submit_two_click_calibration(qtbot, dialog, values)
 
     assert dialog.draft == before
     assert "valid decimal axis bounds" in dialog.status_text.lower()
+
+
+def test_axis_bound_fields_prefill_from_the_saved_calibration(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+
+    assert (dialog.x_min_edit.text(), dialog.x_max_edit.text()) == ("1", "1000")
+    assert (dialog.y_min_edit.text(), dialog.y_max_edit.text()) == ("1", "100")
+
+
+def test_apply_calibration_reuses_the_saved_rectangle_when_only_bounds_change(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+    dialog.notes_edit.setText("Corrected synthetic axis bounds.")
+    dialog.y_max_edit.setText("200")
+
+    dialog.apply_calibration()
+
+    assert dialog.status_text == "Plot calibration saved."
+    calibration = dialog.draft.curve_calibrations[0].calibration
+    assert calibration.y_max == Decimal(200)
+    assert (calibration.left, calibration.top) == (Decimal(20), Decimal(10))
+    assert (calibration.right, calibration.bottom) == (Decimal(320), Decimal(210))
+
+
+def test_apply_calibration_without_any_rectangle_reports_the_missing_step(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft.model_copy(update={"curve_calibrations": ()}),
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+    dialog.notes_edit.setText("Attempted synthetic calibration.")
+    _set_bounds_fields(dialog, ("1", "1000", "1", "100"))
+    before = dialog.draft
+
+    dialog.apply_calibration()
+
+    assert dialog.draft == before
+    assert "mark the plot rectangle" in dialog.status_text.lower()
+
+
+def test_point_plot_previews_visible_points_inside_the_axis_bounds(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+    dialog.point_plot.resize(300, 200)
+
+    assert len(dialog.point_plot.vertices) == 2
+
+    dialog.add_point()
+    dialog.set_point_text(2, "100", "50")
+    assert len(dialog.point_plot.vertices) == 3
+
+    dialog.set_point_text(2, "100", "500")
+    assert len(dialog.point_plot.vertices) == 2
 
 
 def test_scene_calibration_uses_two_click_positions_and_decimal_bounds(
