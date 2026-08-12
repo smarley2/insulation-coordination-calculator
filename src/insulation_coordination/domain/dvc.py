@@ -1,31 +1,32 @@
 """Reads decisive-voltage-class (DVC) facts from the active rule package.
 
-Table 2 and Table 3 of IEC 62477-1:2022 key their rows by decisive voltage class. This
-module is the one place that maps :class:`DecisiveVoltageClass` to the anonymous
-``dvc-N`` row token the importer's projection uses (see
-``rules/importer/recipes/iec62477_1_2022/projection.py``); nothing else in the
-application is allowed to know that mapping, and a test enforces that
-(``tests/domain/test_dvc.py``).
+Table 2 and Table 3 of IEC 62477-1:2022 both key their rows by decisive voltage class and
+their columns by a reviewed semantic selector (see
+``rules/importer/recipes/iec62477_1_2022/projection.py``). This module resolves both against
+that contract and nothing else: a class is selected by its own designation - a
+:class:`DecisiveVoltageClass` member's value *is* the designation the package declares, so
+there is no mapping table to keep - and a column by the quantity, basis, operating context
+or protection target it carries. No physical row or column coordinate appears here, or
+anywhere else in this application; those are extraction provenance, and a test enforces it.
 
-**That mapping is provisional and blocked on issue #53.** Selecting a row by its physical
-position is not the contract this application should consume: #53 projects Table 2 and
-Table 3 to semantic selectors - a DVC designation, an environment where the source splits
-one class into more than one row, a voltage quantity - and leaves the physical
-coordinates as extraction provenance. Until that package contract exists there is nothing
-semantic to select against, and inventing a competing vocabulary here would be a second
-adapter layer to unpick later. So the positional mapping stays, isolated to this module,
-and both mappings below are replaced - not renamed - when #53 lands.
-
-Every other fact is read from the active
+Every fact is read from the active
 :class:`~insulation_coordination.domain.rules.RulePackage` through
 :func:`~insulation_coordination.rules.evaluator.evaluate_decision` - never from a
-constant - and a missing rule, an unapproved package, or a package from the wrong
-edition degrades to a stated reason rather than a guess or a crash.
+constant - and a missing rule, an unapproved package, a package from the wrong edition, or
+a package whose rule does not carry the class at all degrades to a stated reason rather
+than a guess or a crash.
+
+Neither table is an exhaustive rule. Table 3 stopped being one when its single positional
+context became six structured dimensions, whose combinations vastly outnumber the columns a
+reviewer confirmed. A combination no reviewed column carries answers ``no_match``, and this
+module reads that as "not a cell of the table" and omits it. It never becomes a rendered
+requirement, a zero, or reported missing data.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from itertools import product
 from typing import Literal
 
 from insulation_coordination.domain.enums import DecisiveVoltageClass
@@ -45,60 +46,65 @@ from insulation_coordination.rules.evaluator import (
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.iec62477_2022.inventory import EDITION, STANDARD
 
-# Maintainer confirmed 2026-08-11: Table 2 has four data rows, in this order - DVC A-s
-# under wet and salt-water-wet conditions, DVC A-s dry, DVC B, DVC C - and the
-# projection's row token for data row N is f"dvc-{N}". Per the maintainer's ruling,
-# DecisiveVoltageClass.DVC_AS shows the dry row (dvc-2); the wet/salt-water-wet row
-# exists in the source but has no enum member of its own, so nothing in this
-# application can read it. The one place that says so in prose is
-# insulation_coordination.ui.dvc_guide.
-VOLTAGE_LIMITS_ROW_TOKENS: Mapping[DecisiveVoltageClass, Identifier] = {
-    DecisiveVoltageClass.DVC_AS: "dvc-2",
-    DecisiveVoltageClass.DVC_B: "dvc-3",
-    DecisiveVoltageClass.DVC_C: "dvc-4",
-}
+#: The value every selector dimension takes where it does not apply to a column.
+NOT_APPLICABLE = "not_applicable"
 
-# Maintainer confirmed 2026-08-11 which quantity each of Table 2's five data columns
-# holds, and the projection's column token for data column N is f"voltage-quantity-{N}".
-# The labels below are this application's own wording for those quantities, never the
-# source's column headings: a heading is licensed text and may not be committed to this
-# public repository, so each one describes the quantity in our words instead.
-VOLTAGE_QUANTITY_COLUMN_TOKENS: tuple[tuple[Identifier, str], ...] = (
-    ("voltage-quantity-1", "continuous AC working voltage, RMS"),
-    ("voltage-quantity-2", "continuous AC working voltage, peak"),
-    ("voltage-quantity-3", "continuous DC working voltage, mean"),
-    ("voltage-quantity-4", "withstand level for a transient impulse"),
-    ("voltage-quantity-5", "limit while a fault or abnormal operation persists"),
+#: Environments this application reads for a class, in the order it tries them. A
+#: designation the package does not split by environment answers under
+#: :data:`NOT_APPLICABLE`; one it does split answers under its dry reading. Maintainer's
+#: ruling 2026-08-11: a wet or salt-water-wet reading has no
+#: :class:`DecisiveVoltageClass` member of its own, so nothing in this application can
+#: select it and nothing here does. The one place that says so in prose to a reader is
+#: :mod:`insulation_coordination.ui.dvc_guide`.
+READ_ENVIRONMENTS: tuple[str, ...] = (NOT_APPLICABLE, "dry")
+
+#: Table 2's column dimensions, in the order this application enumerates and labels them.
+VOLTAGE_QUANTITY_DIMENSIONS: tuple[str, ...] = ("quantity", "basis", "operating_context")
+
+#: Table 3's column dimensions, in the same role.
+PROTECTION_TARGET_DIMENSIONS: tuple[str, ...] = (
+    "target",
+    "pe_relationship",
+    "access_context",
+    "person_scope",
+    "adjacent_dvc",
 )
 
-# Assumption, not a maintainer confirmation: Table 3 has three data rows
-# (TABLE_3.expected_data_rows == 3), one per decisive voltage class, and this mapping
-# assumes they follow the same A-s / B / C order Table 2 uses. That order has not been
-# verified against the source and should be confirmed before it is relied on beyond
-# this guide.
-PROTECTION_MATRIX_ROW_TOKENS: Mapping[DecisiveVoltageClass, Identifier] = {
-    DecisiveVoltageClass.DVC_AS: "dvc-1",
-    DecisiveVoltageClass.DVC_B: "dvc-2",
-    DecisiveVoltageClass.DVC_C: "dvc-3",
+#: Every selector token either DVC table's reviewed columns can carry, in this
+#: application's own words. One constant, so no consumer invents a second vocabulary and so
+#: nothing here can drift towards the source's own column headings: each entry only spells
+#: out a token that already exists in
+#: :mod:`insulation_coordination.rules.importer.axis_selectors`, adding no reading of its
+#: own. A token this map does not know still renders - as the token with its underscores
+#: opened out - so a package that widens a vocabulary stays legible instead of going blank.
+SELECTOR_TOKEN_LABELS: Mapping[str, str] = {
+    "dvc_as": "DVC A-s",
+    "dvc_b": "DVC B",
+    "dvc_c": "DVC C",
+    "dry": "dry",
+    "wet_and_saltwater_wet": "wet and salt-water-wet",
+    "normal": "normal operation",
+    "single_fault_or_abnormal": "single fault or abnormal operation",
+    "working_voltage": "working voltage",
+    "impulse_withstand": "impulse withstand",
+    "fault_voltage": "fault voltage",
+    "ac_rms": "AC RMS",
+    "ac_peak": "AC peak",
+    "dc_mean": "DC mean",
+    "ac_peak_or_dc": "AC peak or DC",
+    "accessible_part": "accessible part",
+    "adjacent_circuit": "adjacent circuit",
+    "connected_to_pe": "connected to PE",
+    "not_connected_to_pe": "not connected to PE",
+    "general_access": "general access",
+    "service_or_restricted_access": "service or restricted access",
+    "ordinary_or_skilled": "ordinary or skilled persons",
+    "skilled_only": "skilled persons only",
 }
 
-# PROTECTION_MATRIX_ROW_TOKENS is unconfirmed (see the comment above it), yet the guide
-# cites a source for whatever it renders - inviting trust the mapping hasn't earned. So
-# protection_relationships withholds its result instead of rendering off an unverified
-# mapping.
-#
-# Do not fix this by flipping the flag: that would keep a guessed positional mapping and
-# only silence the warning about it. The fix is issue #53's semantic Table 3 selector,
-# which removes the question - a class is selected by its designation, so no row order has
-# to be guessed at all. The evaluation path below is otherwise complete and works
-# unchanged once the selector replaces the row token.
-PROTECTION_MATRIX_ROW_ORDER_CONFIRMED = False
-
-_PROTECTION_MATRIX_UNCONFIRMED_REASON = (
-    f"The decisive-voltage-class-to-row mapping {ids.DVC_PROTECTION_MATRIX} depends on "
-    "has not been confirmed against the source, so this section is withheld rather "
-    "than shown."
-)
+#: How one column's words are joined. A constant so a consumer can split a label apart
+#: again rather than pinning the punctuation in a second place.
+LABEL_SEPARATOR = ", "
 
 _VOLTAGE_LIMITS_RULE_IDS: tuple[Identifier, ...] = (
     ids.DVC_VOLTAGE_LIMITS,
@@ -109,7 +115,7 @@ _VOLTAGE_LIMITS_RULE_IDS: tuple[Identifier, ...] = (
 
 _NOT_EVALUATED_REASON = "No decisive voltage class has been assigned; there is nothing to show."
 
-DvcQuantityStatus = Literal["value", "reference", "not_applicable", "unavailable"]
+DvcQuantityStatus = Literal["value", "reference", "not_applicable"]
 
 #: Which kind of rule a referring cell hands the question on to. Typed rather than left
 #: for a reader to infer from the rule id, because the two are unresolved for different
@@ -117,6 +123,23 @@ DvcQuantityStatus = Literal["value", "reference", "not_applicable", "unavailable
 #: ``supply_impulse`` needs project context this application resolves in issue #36, while
 #: ``fault_time_curve`` is a time-voltage behaviour that never reduces to one limit.
 DvcReferenceKind = Literal["supply_impulse", "fault_time_curve"]
+
+
+def selector_label(*tokens: str) -> str:
+    """This application's own words for one reviewed column, from its selector tokens.
+
+    A :data:`NOT_APPLICABLE` dimension is dropped: a dimension that does not apply to a
+    column is not part of what that column is.
+    """
+    words = [
+        SELECTOR_TOKEN_LABELS.get(token, token.replace("_", " "))
+        for token in tokens
+        if token != NOT_APPLICABLE
+    ]
+    # ponytail: both tables declare one dimension that is never not_applicable, so the
+    # empty case is unreachable today. The fallback is here so a widened vocabulary cannot
+    # render a cell as a bare colon.
+    return LABEL_SEPARATOR.join(words) or "unqualified"
 
 
 class DvcVoltageQuantity(FrozenModel):
@@ -141,9 +164,9 @@ class DvcLimitSummary(FrozenModel):
 
 
 class ProtectionGuidance(FrozenModel):
-    """One Table 3 cell: the protection requirement for one protection context."""
+    """One Table 3 cell: the protection requirement for one reviewed protection target."""
 
-    protection_context: Identifier
+    label: str
     requirement: Literal["none", "basic_protection", "enhanced_protection"]
     source: SourceReference
 
@@ -186,23 +209,34 @@ class DvcGuidanceService:
             if not _from_expected_edition(rule):
                 return DvcLimitSummary(dvc=dvc, available=False, reason=_edition_reason(rule))
             rules[rule_id] = rule
+        base = rules[ids.DVC_VOLTAGE_LIMITS]
         try:
-            unit = _declared_unit(rules[ids.DVC_VOLTAGE_LIMITS])
-        except (StopIteration, IndexError):
+            unit = _declared(base, "unit")[0]
+            designations = _declared(base, "dvc")
+            declared_environments = _declared(base, "environment")
+            columns = _columns(base, VOLTAGE_QUANTITY_DIMENSIONS)
+        except LookupError:
             return DvcLimitSummary(
-                dvc=dvc,
-                available=False,
-                reason=(
-                    f"The active package's {ids.DVC_VOLTAGE_LIMITS} rule does not "
-                    "declare a unit as expected."
-                ),
+                dvc=dvc, available=False, reason=_selector_reason(ids.DVC_VOLTAGE_LIMITS)
             )
-        row = VOLTAGE_LIMITS_ROW_TOKENS[dvc]
-        quantities = tuple(
-            self._quantity(rules, row, column, label, unit)
-            for column, label in VOLTAGE_QUANTITY_COLUMN_TOKENS
+        if dvc.value not in designations:
+            return DvcLimitSummary(
+                dvc=dvc, available=False, reason=_designation_reason(ids.DVC_VOLTAGE_LIMITS, dvc)
+            )
+        for environment in READ_ENVIRONMENTS:
+            if environment not in declared_environments:
+                continue
+            quantities = []
+            for label, selector in columns:
+                inputs = {"dvc": dvc.value, "environment": environment, "unit": unit, **selector}
+                quantity = self._quantity(rules, label, inputs)
+                if quantity is not None:
+                    quantities.append(quantity)
+            if quantities:
+                return DvcLimitSummary(dvc=dvc, available=True, quantities=tuple(quantities))
+        return DvcLimitSummary(
+            dvc=dvc, available=False, reason=_no_cell_reason(ids.DVC_VOLTAGE_LIMITS, dvc)
         )
-        return DvcLimitSummary(dvc=dvc, available=True, quantities=quantities)
 
     def protection_relationships(self, dvc: DecisiveVoltageClass) -> DvcProtectionSummary:
         if dvc is DecisiveVoltageClass.NOT_EVALUATED:
@@ -219,25 +253,25 @@ class DvcGuidanceService:
             )
         if not _from_expected_edition(rule):
             return DvcProtectionSummary(dvc=dvc, available=False, reason=_edition_reason(rule))
-        if not PROTECTION_MATRIX_ROW_ORDER_CONFIRMED:
-            return DvcProtectionSummary(
-                dvc=dvc, available=False, reason=_PROTECTION_MATRIX_UNCONFIRMED_REASON
-            )
-        row = PROTECTION_MATRIX_ROW_TOKENS[dvc]
         try:
-            context_input = next(item for item in rule.inputs if item.name == "protection_context")
-        except StopIteration:
+            designations = _declared(rule, "dvc")
+            columns = _columns(rule, PROTECTION_TARGET_DIMENSIONS)
+        except LookupError:
             return DvcProtectionSummary(
-                dvc=dvc,
-                available=False,
-                reason=(
-                    f"The active package's {ids.DVC_PROTECTION_MATRIX} rule does not "
-                    "declare protection contexts as expected."
-                ),
+                dvc=dvc, available=False, reason=_selector_reason(ids.DVC_PROTECTION_MATRIX)
+            )
+        if dvc.value not in designations:
+            return DvcProtectionSummary(
+                dvc=dvc, available=False, reason=_designation_reason(ids.DVC_PROTECTION_MATRIX, dvc)
             )
         relationships = []
-        for context in context_input.allowed_values:
-            result = _evaluate_safe(rule, {"dvc": row, "protection_context": context})
+        for label, selector in columns:
+            result = _evaluate_safe(rule, {"dvc": dvc.value, **selector})
+            # no_match is the ordinary answer here, not a failure. Table 3 stopped being an
+            # exhaustive rule when its one positional context became six structured
+            # dimensions, so most combinations of the declared vocabularies are combinations
+            # no reviewed column carries. Such a combination is not a cell of the table, so
+            # it is omitted - never rendered as a requirement of its own.
             if result is None or result.status != "matched":
                 continue
             value = result.values[0]
@@ -245,7 +279,7 @@ class DvcGuidanceService:
                 continue
             relationships.append(
                 ProtectionGuidance(
-                    protection_context=context,
+                    label=label,
                     requirement=value.categorical,  # type: ignore[arg-type]
                     source=result.source,
                 )
@@ -255,12 +289,9 @@ class DvcGuidanceService:
     def _quantity(
         self,
         rules: Mapping[Identifier, DecisionRule],
-        row: str,
-        column: str,
         label: str,
-        unit: str,
-    ) -> DvcVoltageQuantity:
-        inputs = {"dvc": row, "voltage_quantity": column, "unit": unit}
+        inputs: dict[str, str],
+    ) -> DvcVoltageQuantity | None:
         numeric = _evaluate_safe(rules[ids.DVC_VOLTAGE_LIMITS], inputs)
         if numeric is not None and numeric.status == "matched":
             value = numeric.values[0]
@@ -300,7 +331,11 @@ class DvcGuidanceService:
             return DvcVoltageQuantity(
                 label=label, status="not_applicable", source=not_applicable.source
             )
-        return DvcVoltageQuantity(label=label, status="unavailable")
+        # No route matched, so no reviewed column carries this combination for this class.
+        # That is not missing data to report: under the semantic contract the combination
+        # simply is not a cell. Omitting it is what keeps the guide from listing the whole
+        # cartesian product of the declared vocabularies as gaps.
+        return None
 
     def _decision(self, rule_id: Identifier) -> DecisionRule | None:
         if self._package is None:
@@ -315,6 +350,31 @@ class DvcGuidanceService:
         return None
 
 
+def _declared(rule: DecisionRule, name: str) -> tuple[str, ...]:
+    """The values the rule declares for one input, or ``LookupError`` if it declares none."""
+    for item in rule.inputs:
+        if item.name == name:
+            return item.allowed_values
+    raise LookupError(name)
+
+
+def _columns(
+    rule: DecisionRule, dimensions: tuple[str, ...]
+) -> tuple[tuple[str, dict[str, str]], ...]:
+    """Every combination of the dimensions the rule declares, labelled in our own words.
+
+    Built from the declared vocabularies rather than from the rule's rows, because a
+    consumer resolves a rule through the evaluator and the evaluator answers one complete
+    combination of declared inputs at a time. Most combinations answer ``no_match``; the
+    caller drops those.
+    """
+    values = [_declared(rule, name) for name in dimensions]
+    return tuple(
+        (selector_label(*combination), dict(zip(dimensions, combination, strict=True)))
+        for combination in product(*values)
+    )
+
+
 def _from_expected_edition(rule: DecisionRule) -> bool:
     return rule.source.standard == STANDARD and rule.source.edition == EDITION
 
@@ -326,12 +386,32 @@ def _edition_reason(rule: DecisionRule) -> str:
     )
 
 
-def _declared_unit(rule: DecisionRule) -> str:
-    unit_input = next(item for item in rule.inputs if item.name == "unit")
-    return unit_input.allowed_values[0]
+def _selector_reason(rule_id: Identifier) -> str:
+    return (
+        f"The active package's {rule_id} rule does not declare the selector inputs this "
+        "application resolves it by."
+    )
+
+
+def _designation_reason(rule_id: Identifier, dvc: DecisiveVoltageClass) -> str:
+    return (
+        f"The active package's {rule_id} rule does not carry {selector_label(dvc.value)}, "
+        "so there is nothing to show for this class."
+    )
+
+
+def _no_cell_reason(rule_id: Identifier, dvc: DecisiveVoltageClass) -> str:
+    return (
+        f"The active package's {rule_id} rule carries no reviewed cell for "
+        f"{selector_label(dvc.value)} in any environment this application reads."
+    )
 
 
 def _evaluate_safe(rule: DecisionRule, inputs: dict[str, str]) -> DecisionResult | None:
+    # ponytail: defensive only, now that every query is built from the rule's own declared
+    # vocabularies - an unmatched combination answers no_match rather than raising. What is
+    # left is a malformed package: a dimension declared numeric or boolean, which no string
+    # can satisfy. Degrading that to "not a cell" keeps one bad rule out of the whole guide.
     try:
         return evaluate_decision(rule, inputs)
     except EvaluationError:
@@ -339,10 +419,12 @@ def _evaluate_safe(rule: DecisionRule, inputs: dict[str, str]) -> DecisionResult
 
 
 __all__ = [
-    "PROTECTION_MATRIX_ROW_ORDER_CONFIRMED",
-    "PROTECTION_MATRIX_ROW_TOKENS",
-    "VOLTAGE_LIMITS_ROW_TOKENS",
-    "VOLTAGE_QUANTITY_COLUMN_TOKENS",
+    "LABEL_SEPARATOR",
+    "NOT_APPLICABLE",
+    "PROTECTION_TARGET_DIMENSIONS",
+    "READ_ENVIRONMENTS",
+    "SELECTOR_TOKEN_LABELS",
+    "VOLTAGE_QUANTITY_DIMENSIONS",
     "DvcGuidanceService",
     "DvcLimitSummary",
     "DvcProtectionSummary",
@@ -350,4 +432,5 @@ __all__ = [
     "DvcReferenceKind",
     "DvcVoltageQuantity",
     "ProtectionGuidance",
+    "selector_label",
 ]

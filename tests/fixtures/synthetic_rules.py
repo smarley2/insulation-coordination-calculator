@@ -1,8 +1,10 @@
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
+from insulation_coordination.domain.dvc import PROTECTION_TARGET_DIMENSIONS
 from insulation_coordination.domain.rules import (
     RULE_SCHEMA_VERSION,
     Add,
@@ -1003,12 +1005,24 @@ def synthetic_hf_rule_package() -> RulePackage:
 
 
 def synthetic_dvc_rule_package(*, edition: str = EDITION) -> RulePackage:
-    """A DVC-only package in the same positional shape as the real Table 2/3 projection.
+    """A DVC-only package in the semantic shape the real Table 2/3 projection produces.
+
+    Shape only. The reviewed selectors a real package carries are licensed content and are
+    not reproduced here: this fixture invents its own smaller axes out of the public
+    selector vocabulary, so it exercises the adapter's contract without stating the
+    source's own reading of any row or column. Four Table 2 columns and two Table 3
+    columns, chosen to cover every route the adapter can take, and every numeric cell is
+    an invented placeholder.
+
+    Two things the adapter has to handle are built in deliberately. ``dvc_c`` is split by
+    environment while ``dvc_as`` and ``dvc_b`` are not, so both entries of
+    ``READ_ENVIRONMENTS`` are exercised and the wet reading carries different numbers from
+    the dry one. And the protection matrix is not exhaustive, so almost every combination
+    of its declared vocabularies answers ``no_match``.
 
     ``edition`` lets a test build a package that carries the right semantic IDs but the
     wrong source edition, to exercise the "wrong-edition package is refused" path without
-    needing a second, differently-shaped fixture. No IEC value appears here; every
-    numeric cell is an invented placeholder.
+    needing a second, differently-shaped fixture.
     """
     reference = SourceReference(
         document_id="synthetic-dvc-source",
@@ -1024,38 +1038,57 @@ def synthetic_dvc_rule_package(*, edition: str = EDITION) -> RulePackage:
     def cell_source(row: str, column: str) -> SourceReference:
         return reference.model_copy(update={"row": row, "column": column})
 
-    dvc_input = DecisionInput(
-        name="dvc",
-        kind="categorical",
-        allowed_values=tuple(f"dvc-{index}" for index in range(1, 5)),
-    )
-    quantity_input = DecisionInput(
-        name="voltage_quantity",
-        kind="categorical",
-        allowed_values=tuple(f"voltage-quantity-{index}" for index in range(1, 6)),
-    )
-    unit_input = DecisionInput(name="unit", kind="categorical", allowed_values=("V",))
-    table_2_inputs = (dvc_input, quantity_input, unit_input)
+    # (designation, environment) - the fixture's own invented row axis.
+    dvc_as_row = ("dvc_as", "not_applicable")
+    dvc_b_row = ("dvc_b", "not_applicable")
+    dvc_c_dry_row = ("dvc_c", "dry")
+    dvc_c_wet_row = ("dvc_c", "wet_and_saltwater_wet")
+    table_2_rows = (dvc_as_row, dvc_b_row, dvc_c_dry_row, dvc_c_wet_row)
 
-    def matchers(dvc: str, quantity: str) -> tuple[Matcher, ...]:
+    # (quantity, basis, operating_context) - the fixture's own invented column axis.
+    rms_column = ("working_voltage", "ac_rms", "normal")
+    mean_column = ("working_voltage", "dc_mean", "normal")
+    impulse_column = ("impulse_withstand", "ac_peak_or_dc", "normal")
+    fault_column = ("fault_voltage", "not_applicable", "single_fault_or_abnormal")
+    table_2_columns = (rms_column, mean_column, impulse_column, fault_column)
+
+    def categorical(name: str, values: Iterable[str]) -> DecisionInput:
+        return DecisionInput(
+            name=name, kind="categorical", allowed_values=tuple(sorted(set(values)))
+        )
+
+    table_2_inputs = (
+        categorical("dvc", (row[0] for row in table_2_rows)),
+        categorical("environment", (row[1] for row in table_2_rows)),
+        categorical("quantity", (column[0] for column in table_2_columns)),
+        categorical("basis", (column[1] for column in table_2_columns)),
+        categorical("operating_context", (column[2] for column in table_2_columns)),
+        DecisionInput(name="unit", kind="categorical", allowed_values=("V",)),
+    )
+
+    def matchers(row: tuple[str, str], column: tuple[str, str, str]) -> tuple[Matcher, ...]:
         return (
-            Matcher(input="dvc", op="equals", values=(dvc,)),
-            Matcher(input="voltage_quantity", op="equals", values=(quantity,)),
+            Matcher(input="dvc", op="equals", values=(row[0],)),
+            Matcher(input="environment", op="equals", values=(row[1],)),
+            Matcher(input="quantity", op="equals", values=(column[0],)),
+            Matcher(input="basis", op="equals", values=(column[1],)),
+            Matcher(input="operating_context", op="equals", values=(column[2],)),
             Matcher(input="unit", op="equals", values=("V",)),
         )
 
+    def cell_of(row: tuple[str, ...], column: tuple[str, ...]) -> SourceReference:
+        return cell_source("/".join(row), "/".join(column))
+
     numeric_cells = (
-        # DVC A-s dry (dvc-2): every normal-operation quantity is a plain number.
-        ("dvc-2", "voltage-quantity-1", Decimal(11)),
-        ("dvc-2", "voltage-quantity-2", Decimal(22)),
-        ("dvc-2", "voltage-quantity-3", Decimal(33)),
-        ("dvc-2", "voltage-quantity-4", Decimal(44)),
-        # DVC B (dvc-3): the normal-operation limits are numbers; impulse is not (below).
-        ("dvc-3", "voltage-quantity-1", Decimal(55)),
-        ("dvc-3", "voltage-quantity-2", Decimal(66)),
-        ("dvc-3", "voltage-quantity-3", Decimal(77)),
-        # DVC C (dvc-4): only one column populated, to exercise a partly covered row.
-        ("dvc-4", "voltage-quantity-1", Decimal(88)),
+        (dvc_as_row, rms_column, Decimal(11)),
+        (dvc_as_row, mean_column, Decimal(22)),
+        (dvc_as_row, impulse_column, Decimal(33)),
+        (dvc_b_row, rms_column, Decimal(55)),
+        (dvc_b_row, mean_column, Decimal(66)),
+        # DVC C is split by environment here, and only the dry reading may ever be shown.
+        (dvc_c_dry_row, rms_column, Decimal(88)),
+        (dvc_c_wet_row, rms_column, Decimal(99)),
+        (dvc_c_wet_row, mean_column, Decimal(100)),
     )
     voltage_limits = DecisionRule(
         id=ids.DVC_VOLTAGE_LIMITS,
@@ -1063,36 +1096,36 @@ def synthetic_dvc_rule_package(*, edition: str = EDITION) -> RulePackage:
         outputs=(DecisionOutput(name="voltage_limit", kind="numeric", unit="V"),),
         rows=tuple(
             DecisionRow(
-                matchers=matchers(dvc, quantity),
+                matchers=matchers(row, column),
                 values=(DecisionValue(name="voltage_limit", numeric=value, unit="V"),),
-                source=cell_source(dvc, quantity),
+                source=cell_of(row, column),
             )
-            for dvc, quantity, value in numeric_cells
+            for row, column, value in numeric_cells
         ),
         exhaustive=False,
         source=reference,
     )
 
-    fault_time_cells = (("dvc-2", "voltage-quantity-5"), ("dvc-3", "voltage-quantity-5"))
+    fault_time_cells = ((dvc_as_row, fault_column), (dvc_b_row, fault_column))
     fault_time_reference = DecisionRule(
         id=f"{ids.DVC_VOLTAGE_LIMITS}.fault_time_reference",
         inputs=table_2_inputs,
         outputs=(DecisionOutput(name="fault_time_voltage", kind="reference"),),
         rows=tuple(
             DecisionRow(
-                matchers=matchers(dvc, quantity),
+                matchers=matchers(row, column),
                 values=(
                     DecisionValue(name="fault_time_voltage", reference=ids.DVC_FAULT_TIME_VOLTAGE),
                 ),
-                source=cell_source(dvc, quantity),
+                source=cell_of(row, column),
             )
-            for dvc, quantity in fault_time_cells
+            for row, column in fault_time_cells
         ),
         exhaustive=False,
         source=reference,
     )
 
-    impulse_cells = (("dvc-3", "voltage-quantity-4"),)
+    impulse_cells = ((dvc_b_row, impulse_column),)
     impulse_reference = DecisionRule(
         id=f"{ids.DVC_VOLTAGE_LIMITS}.impulse_reference",
         inputs=table_2_inputs,
@@ -1102,7 +1135,7 @@ def synthetic_dvc_rule_package(*, edition: str = EDITION) -> RulePackage:
         ),
         rows=tuple(
             DecisionRow(
-                matchers=matchers(dvc, quantity),
+                matchers=matchers(row, column),
                 values=(
                     DecisionValue(
                         name="ac_reference",
@@ -1113,50 +1146,66 @@ def synthetic_dvc_rule_package(*, edition: str = EDITION) -> RulePackage:
                         reference=f"{ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC}.dc",
                     ),
                 ),
-                source=cell_source(dvc, quantity),
+                source=cell_of(row, column),
             )
-            for dvc, quantity in impulse_cells
+            for row, column in impulse_cells
         ),
         exhaustive=False,
         source=reference,
     )
 
-    not_applicable_cells = (("dvc-4", "voltage-quantity-5"),)
+    not_applicable_cells = ((dvc_c_dry_row, fault_column),)
     not_applicable = DecisionRule(
         id=f"{ids.DVC_VOLTAGE_LIMITS}.not_applicable",
         inputs=table_2_inputs,
         outputs=(DecisionOutput(name="applicable", kind="boolean"),),
         rows=tuple(
             DecisionRow(
-                matchers=matchers(dvc, quantity),
+                matchers=matchers(row, column),
                 values=(DecisionValue(name="applicable", boolean=False),),
-                source=cell_source(dvc, quantity),
+                source=cell_of(row, column),
             )
-            for dvc, quantity in not_applicable_cells
+            for row, column in not_applicable_cells
         ),
         exhaustive=False,
         source=reference,
     )
 
-    protection_dvc_input = DecisionInput(
-        name="dvc", kind="categorical", allowed_values=("dvc-1", "dvc-2", "dvc-3")
+    # (target, pe_relationship, access_context, person_scope, adjacent_dvc) - again the
+    # fixture's own invented column axis, not the source's reviewed one.
+    accessible_target = (
+        "accessible_part",
+        "connected_to_pe",
+        "general_access",
+        "ordinary_or_skilled",
+        "not_applicable",
     )
-    protection_context_input = DecisionInput(
-        name="protection_context",
-        kind="categorical",
-        allowed_values=tuple(f"protection-context-{index}" for index in range(1, 3)),
+    adjacent_target = (
+        "adjacent_circuit",
+        "not_applicable",
+        "not_applicable",
+        "not_applicable",
+        "dvc_b",
+    )
+    protection_targets = (accessible_target, adjacent_target)
+    protection_inputs = (
+        categorical("dvc", ("dvc_as", "dvc_b", "dvc_c")),
+        *(
+            categorical(name, (target[index] for target in protection_targets))
+            for index, name in enumerate(PROTECTION_TARGET_DIMENSIONS)
+        ),
     )
     protection_cells = {
-        ("dvc-1", "protection-context-1"): "none",
-        ("dvc-1", "protection-context-2"): "none",
-        ("dvc-2", "protection-context-1"): "basic_protection",
-        ("dvc-2", "protection-context-2"): "none",
-        ("dvc-3", "protection-context-1"): "enhanced_protection",
-        ("dvc-3", "protection-context-2"): "basic_protection",
+        ("dvc_as", accessible_target): "none",
+        ("dvc_as", adjacent_target): "none",
+        ("dvc_b", accessible_target): "basic_protection",
+        ("dvc_b", adjacent_target): "none",
+        ("dvc_c", accessible_target): "enhanced_protection",
+        ("dvc_c", adjacent_target): "basic_protection",
     }
     protection_matrix = DecisionRule(
         id=ids.DVC_PROTECTION_MATRIX,
-        inputs=(protection_dvc_input, protection_context_input),
+        inputs=protection_inputs,
         outputs=(
             DecisionOutput(
                 name="protection_requirement",
@@ -1167,15 +1216,20 @@ def synthetic_dvc_rule_package(*, edition: str = EDITION) -> RulePackage:
         rows=tuple(
             DecisionRow(
                 matchers=(
-                    Matcher(input="dvc", op="equals", values=(dvc,)),
-                    Matcher(input="protection_context", op="equals", values=(context,)),
+                    Matcher(input="dvc", op="equals", values=(designation,)),
+                    *(
+                        Matcher(input=name, op="equals", values=(target[index],))
+                        for index, name in enumerate(PROTECTION_TARGET_DIMENSIONS)
+                    ),
                 ),
                 values=(DecisionValue(name="protection_requirement", categorical=requirement),),
-                source=cell_source(dvc, context),
+                source=cell_of((designation,), target),
             )
-            for (dvc, context), requirement in protection_cells.items()
+            for (designation, target), requirement in protection_cells.items()
         ),
-        exhaustive=True,
+        # Not exhaustive, exactly as the real projection now is: five structured target
+        # dimensions multiply out far past the combinations any reviewed column carries.
+        exhaustive=False,
         source=reference,
     )
 

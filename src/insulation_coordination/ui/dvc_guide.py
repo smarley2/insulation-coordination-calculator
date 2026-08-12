@@ -60,8 +60,8 @@ _DVC_TITLES: dict[DecisiveVoltageClass, str] = {
     DecisiveVoltageClass.DVC_C: "DVC C",
 }
 
-#: This application's own explanation of how the four Table 2 voltage quantities and
-#: the fault-time behaviour relate - paraphrasing no clause and stating no number.
+#: This application's own explanation of how the Table 2 voltage quantities and the
+#: fault-time behaviour relate - paraphrasing no clause and stating no number.
 STRESS_BASIS_EXPLANATION = (
     "A decisive voltage class is an engineer's own classification of a circuit - this "
     "application never derives or recommends one. Once a class is assigned, the active "
@@ -74,9 +74,9 @@ STRESS_BASIS_EXPLANATION = (
     "package's fault-time rule states for that duration."
 )
 
-#: Maintainer confirmed 2026-08-11: DVC A-s here always shows the dry-condition row.
-#: The wet and salt-water-wet row exists in the source but has no enum member, so this
-#: sentence is the only place that says so - see domain.dvc.VOLTAGE_LIMITS_ROW_TOKENS.
+#: Maintainer confirmed 2026-08-11: DVC A-s here always shows the dry-condition reading.
+#: A wet or salt-water-wet reading has no enum member, so this sentence is the only place
+#: that says so to a reader - see domain.dvc.READ_ENVIRONMENTS for the selection itself.
 DVC_AS_CONDITION_NOTE = (
     "These are the dry-condition limits for DVC A-s. The source distinguishes a second "
     "set of conditions - wet and salt-water-wet - for this class; this application has "
@@ -120,10 +120,8 @@ def _render_limits(summary: DvcLimitSummary) -> str:
             lines.append(f"  • {quantity.label}: {quantity.value} {quantity.unit}{suffix}")
         elif quantity.status == "reference":
             lines.append(f"  • {quantity.label}: {_reference_text(quantity)}{suffix}")
-        elif quantity.status == "not_applicable":
-            lines.append(f"  • {quantity.label}: not applicable{suffix}")
         else:
-            lines.append(f"  • {quantity.label}: no data in the active package for this cell")
+            lines.append(f"  • {quantity.label}: not applicable{suffix}")
     return "\n".join(lines)
 
 
@@ -136,7 +134,7 @@ def _render_protection(summary: DvcProtectionSummary) -> str:
     for item in summary.relationships:
         cited = citation(item.source)
         suffix = f" [{cited}]" if cited else ""
-        lines.append(f"  • {item.protection_context}: {item.requirement}{suffix}")
+        lines.append(f"  • {item.label}: {item.requirement}{suffix}")
     return "\n".join(lines)
 
 

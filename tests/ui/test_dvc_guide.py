@@ -8,10 +8,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLineEdit, QTextBrowser
 
-from insulation_coordination.domain.dvc import (
-    VOLTAGE_QUANTITY_COLUMN_TOKENS,
-    DvcGuidanceService,
-)
+from insulation_coordination.domain.dvc import DvcGuidanceService, selector_label
 from insulation_coordination.domain.enums import DecisiveVoltageClass
 from insulation_coordination.ui.dvc_guide import (
     DVC_AS_CONDITION_NOTE,
@@ -19,15 +16,11 @@ from insulation_coordination.ui.dvc_guide import (
     STRESS_BASIS_EXPLANATION,
     DvcGuideDialog,
 )
+from tests.domain.test_dvc import FAULT_COLUMN, IMPULSE_COLUMN, RMS_COLUMN
 from tests.fixtures.synthetic_rules import synthetic_dvc_rule_package, synthetic_rule_package
 
 #: The search tests need a class whose body is fully populated, so a match exists to find.
 DVC_FOR_SEARCH = DecisiveVoltageClass.DVC_B
-
-
-def _label(column: int) -> str:
-    """Our own label for Table 2's Nth data column, read from the one place it is set."""
-    return dict(VOLTAGE_QUANTITY_COLUMN_TOKENS)[f"voltage-quantity-{column}"]
 
 
 def test_dialog_opens_and_shows_the_class_in_its_title(qtbot) -> None:
@@ -66,7 +59,7 @@ def test_synthetic_package_limits_render_with_their_source(qtbot) -> None:
     dialog = DvcGuideDialog(service, DecisiveVoltageClass.DVC_AS)
     qtbot.addWidget(dialog)
     body = dialog.body_text()
-    assert f"{_label(1)}: 11 V" in body
+    assert f"{selector_label(*RMS_COLUMN)}: 11 V" in body
     assert "IEC 62477-1 2022" in body
     assert "Table synthetic-table-2" in body
 
@@ -77,7 +70,7 @@ def test_the_impulse_cell_states_its_deferral_and_names_the_supply_rule(qtbot) -
     dialog = DvcGuideDialog(service, DecisiveVoltageClass.DVC_B)
     qtbot.addWidget(dialog)
     body = dialog.body_text()
-    assert f"{_label(4)}: resolved from the applicable system-voltage" in body
+    assert f"{selector_label(*IMPULSE_COLUMN)}: resolved from the applicable system-voltage" in body
     assert "iec62477_2022.supply.impulse_by_system_voltage_ovc" in body
     assert "depends on the project's own supply" in body
 
@@ -87,22 +80,21 @@ def test_the_fault_time_cell_is_worded_as_a_behaviour_not_a_supply_deferral(qtbo
     dialog = DvcGuideDialog(service, DecisiveVoltageClass.DVC_B)
     qtbot.addWidget(dialog)
     body = dialog.body_text()
-    assert f"{_label(5)}: resolved from the fault-time voltage rule" in body
+    assert f"{selector_label(*FAULT_COLUMN)}: resolved from the fault-time voltage rule" in body
     assert "iec62477_2022.dvc.fault_time_voltage" in body
 
 
 def test_no_positional_table_token_ever_reaches_the_reader(qtbot) -> None:
-    """The row and column ids are this application's internals, never user-facing."""
+    """Physical coordinates are extraction provenance, and never reach a reader."""
     service = DvcGuidanceService(synthetic_dvc_rule_package())
     for dvc in DecisiveVoltageClass:
         dialog = DvcGuideDialog(service, dvc)
         qtbot.addWidget(dialog)
         body = dialog.body_text()
         assert "voltage-quantity-" not in body
-        assert "dvc-1" not in body
-        assert "dvc-2" not in body
-        assert "dvc-3" not in body
-        assert "dvc-4" not in body
+        assert "protection-context-" not in body
+        for index in range(1, 5):
+            assert f"dvc-{index}" not in body
 
 
 def test_a_not_applicable_cell_says_so(qtbot) -> None:
@@ -110,17 +102,18 @@ def test_a_not_applicable_cell_says_so(qtbot) -> None:
     dialog = DvcGuideDialog(service, DecisiveVoltageClass.DVC_C)
     qtbot.addWidget(dialog)
     body = dialog.body_text()
-    assert f"{_label(5)}: not applicable" in body
+    assert f"{selector_label(*FAULT_COLUMN)}: not applicable" in body
 
 
-def test_protection_relationships_are_withheld_until_the_row_order_is_confirmed(qtbot) -> None:
+def test_protection_requirements_render_for_the_class_with_their_source(qtbot) -> None:
+    """Nothing is withheld any more; #53A's semantic Table 3 selector removed the question."""
     service = DvcGuidanceService(synthetic_dvc_rule_package())
-    dialog = DvcGuideDialog(service, DecisiveVoltageClass.DVC_AS)
+    dialog = DvcGuideDialog(service, DecisiveVoltageClass.DVC_C)
     qtbot.addWidget(dialog)
     body = dialog.body_text()
-    assert "Protection requirements: not available from the active package" in body
-    assert "has not been confirmed against the source" in body
-    assert "protection-context-1" not in body
+    assert "Protection requirements (from the active rule package):" in body
+    assert "enhanced_protection" in body
+    assert "IEC 62477-1 2022" in body
 
 
 def test_a_package_missing_the_dvc_rules_degrades_with_a_stated_reason(qtbot) -> None:

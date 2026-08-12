@@ -218,10 +218,10 @@ def test_dvc_guide_reads_the_project_s_active_rules_package(
     assert dialog is not None
     qtbot.addWidget(dialog)
     assert dialog.isVisible()
-    from insulation_coordination.domain.dvc import VOLTAGE_QUANTITY_COLUMN_TOKENS
+    from insulation_coordination.domain.dvc import selector_label
+    from tests.domain.test_dvc import RMS_COLUMN
 
-    rms_label = dict(VOLTAGE_QUANTITY_COLUMN_TOKENS)["voltage-quantity-1"]
-    assert f"{rms_label}: 11 V" in dialog.body_text()
+    assert f"{selector_label(*RMS_COLUMN)}: 11 V" in dialog.body_text()
 
 
 def test_every_classification_help_control_can_cite_the_active_package(
