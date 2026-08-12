@@ -643,8 +643,8 @@ class CurveReviewDialog(QDialog):
         self._redraw_from_table()
 
     def begin_calibration(self) -> None:
-        if not self._require_notes("calibration"):
-            return
+        """Capture the rectangle only; applying it is what mutates the draft."""
+
         self._calibration_corners.clear()
         self._view.capture_clicks = True
         self._status.setText("Click the plot's top-left corner, then its bottom-right corner.")
@@ -1009,17 +1009,9 @@ class CurveReviewDialog(QDialog):
             self._status.setText("Now click the plot's bottom-right corner.")
             return
         self._view.capture_clicks = False
-        bounds = self._bounds_values()
-        if bounds is None:
-            self._status.setText(
-                "Plot rectangle marked; enter valid decimal axis bounds, "
-                "then apply the calibration."
-            )
-            return
-        try:
-            self._save_calibration(*bounds)
-        except (ApprovalError, ValueError) as error:
-            self._status.setText(f"Enter valid decimal axis bounds: {error}")
+        self._status.setText(
+            "Plot rectangle marked; check the axis bounds, then apply the calibration."
+        )
 
     def _save_calibration(
         self, x_min: Decimal, x_max: Decimal, y_min: Decimal, y_max: Decimal

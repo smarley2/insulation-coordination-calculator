@@ -247,20 +247,25 @@ def _set_bounds_fields(
         field.setText(value)
 
 
-def _submit_two_click_calibration(
-    qtbot,
-    dialog: CurveReviewDialog,
-    values: tuple[str, str, str, str],
-) -> None:
-    """Drive the real bounds-field entry plus two-click rectangle path."""
+def _mark_rectangle(qtbot, dialog: CurveReviewDialog) -> None:
+    """Drive the real two-click rectangle capture over the source view."""
 
-    dialog.notes_edit.setText("Reviewed synthetic plot.")
-    _set_bounds_fields(dialog, values)
     dialog.begin_calibration()
     first = dialog._view.mapFromScene(QPointF(20, 10))
     qtbot.mouseClick(dialog._view.viewport(), Qt.MouseButton.LeftButton, pos=first)
     second = dialog._view.mapFromScene(QPointF(320, 210))
     qtbot.mouseClick(dialog._view.viewport(), Qt.MouseButton.LeftButton, pos=second)
+
+
+def _mark_rectangle_and_apply(
+    qtbot,
+    dialog: CurveReviewDialog,
+    values: tuple[str, str, str, str],
+) -> None:
+    dialog.notes_edit.setText("Reviewed synthetic plot.")
+    _set_bounds_fields(dialog, values)
+    _mark_rectangle(qtbot, dialog)
+    dialog.apply_calibration()
 
 
 @pytest.fixture
@@ -858,7 +863,27 @@ def test_provisional_reversed_or_duplicate_x_keeps_every_handle_inside_plot(
     assert "strictly increasing" in dialog.status_text.lower()
 
 
-def test_two_click_rectangle_saves_the_bounds_from_the_axis_fields(
+def test_marked_rectangle_alone_leaves_the_draft_unchanged(
+    qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
+) -> None:
+    draft, path = local_manual_draft
+    dialog = CurveReviewDialog(
+        draft,
+        actor="Reviewer",
+        pdf_paths={"SYNTHETIC": path},
+    )
+    qtbot.addWidget(dialog)
+    dialog.notes_edit.setText("Marked synthetic plot rectangle.")
+    before = dialog.draft
+
+    _mark_rectangle(qtbot, dialog)
+
+    assert dialog.draft == before
+    assert dialog._view.capture_clicks is False
+    assert "then apply the calibration" in dialog.status_text.lower()
+
+
+def test_applied_rectangle_and_axis_fields_save_one_calibration(
     qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
 ) -> None:
     draft, path = local_manual_draft
@@ -869,7 +894,7 @@ def test_two_click_rectangle_saves_the_bounds_from_the_axis_fields(
     )
     qtbot.addWidget(dialog)
 
-    _submit_two_click_calibration(qtbot, dialog, ("1", "1000", "1", "100"))
+    _mark_rectangle_and_apply(qtbot, dialog, ("1", "1000", "1", "100"))
 
     assert dialog.status_text == "Plot calibration saved."
     calibration = dialog.draft.curve_calibrations[0].calibration
@@ -884,7 +909,7 @@ def test_two_click_rectangle_saves_the_bounds_from_the_axis_fields(
         ("1000", "1", "1", "100"),
     ),
 )
-def test_invalid_two_click_calibration_leaves_the_draft_unchanged(
+def test_invalid_applied_calibration_leaves_the_draft_unchanged(
     qtbot,
     local_manual_draft: tuple[ImportedRuleDraft, Path],
     values: tuple[str, str, str, str],
@@ -898,7 +923,7 @@ def test_invalid_two_click_calibration_leaves_the_draft_unchanged(
     qtbot.addWidget(dialog)
     before = dialog.draft
 
-    _submit_two_click_calibration(qtbot, dialog, values)
+    _mark_rectangle_and_apply(qtbot, dialog, values)
 
     assert dialog.draft == before
     assert "valid decimal axis bounds" in dialog.status_text.lower()
