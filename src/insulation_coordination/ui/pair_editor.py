@@ -128,6 +128,13 @@ def _wrap(row: QHBoxLayout) -> QWidget:
     return container
 
 
+def _form_layout(parent: QWidget) -> QFormLayout:
+    """Build a form whose wrapped field rows receive the available width."""
+    layout = QFormLayout(parent)
+    layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+    return layout
+
+
 def _labelled(label: QLabel, help_indicator: HelpIndicator) -> QWidget:
     """A form label with its ⓘ beside it, never inside the value.
 
@@ -217,7 +224,7 @@ class PairEditor(QWidget):
         layout = QVBoxLayout(self)
 
         voltages_group = QGroupBox("Voltages")
-        voltages_layout = QFormLayout(voltages_group)
+        voltages_layout = _form_layout(voltages_group)
         self._rms_edit = QLineEdit()
         self._rms_edit.editingFinished.connect(self._on_rms_changed)
         self._rms_na_button = QPushButton("N/A")
@@ -282,7 +289,7 @@ class PairEditor(QWidget):
             na_button.setAccessibleName(f"Mark {stress} not applicable")
 
         params_group = QGroupBox("Parameters")
-        params_layout = QFormLayout(params_group)
+        params_layout = _form_layout(params_group)
 
         self._freq_edit = QLineEdit()
         self._freq_edit.editingFinished.connect(self._on_freq_changed)

@@ -46,9 +46,7 @@ from insulation_coordination.rules.archive import _canonical_json
 if TYPE_CHECKING:
     from insulation_coordination.rules.importer.clauses import RawClauseFragment
     from insulation_coordination.rules.importer.curves import (
-        CurveDigitizationResult,
-        OcrEngine,
-        RawCurveTrace,
+        ManualPlotCalibration,
         RawFigure,
     )
 
@@ -79,8 +77,7 @@ def _missing_parts_message(loaded: set[str]) -> str:
 
 __all__ = [
     "ComponentFormulaCandidate",
-    "CurveTraceAssociation",
-    "CurveVariantRejection",
+    "CurveCalibrationReview",
     "CurveVariantReview",
     "EquationAuditSpec",
     "ExtractedEquation",
@@ -88,7 +85,7 @@ __all__ = [
     "FormulaAuditSpec",
     "ImportReviewItem",
     "ImportedRuleDraft",
-    "ManualCurveTrace",
+    "ManualCurveVariantInput",
     "MappingAuditSpec",
     "ProposalState",
     "RawGrid",
@@ -168,33 +165,32 @@ class CurveVariantReview(FrozenModel):
     variant_id: Identifier
     variant_sha256: str = Field(pattern=r"[0-9a-f]{64}")
     source_artifact_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    calibration_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    input_origin: Literal["empty", "automatic_suggestion"]
     actor: str = Field(min_length=1, max_length=200)
     recorded_at: datetime
     notes: NotesText
 
 
-class CurveTraceAssociation(FrozenModel):
-    variant_id: Identifier
-    figure_artifact_sha256: str = Field(pattern=r"[0-9a-f]{64}")
-    trace_id: Identifier
-
-
-class ManualCurveTrace(FrozenModel):
-    """Audited maintainer-supplied pixel trace; extracted figures remain immutable."""
+class CurveCalibrationReview(FrozenModel):
+    """Draft-only calibration bound to one immutable source figure."""
 
     figure_artifact_sha256: str = Field(pattern=r"[0-9a-f]{64}")
-    trace: RawCurveTrace
+    calibration: ManualPlotCalibration
+    calibration_sha256: str = Field(pattern=r"[0-9a-f]{64}")
     actor: str = Field(min_length=1, max_length=200)
     recorded_at: datetime
     notes: NotesText
 
 
-class CurveVariantRejection(FrozenModel):
+class ManualCurveVariantInput(FrozenModel):
+    """Current manual-entry provenance for one draft curve variant."""
+
     variant_id: Identifier
     variant_sha256: str = Field(pattern=r"[0-9a-f]{64}")
-    actor: str = Field(min_length=1, max_length=200)
-    recorded_at: datetime
-    notes: NotesText
+    source_artifact_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    calibration_sha256: str = Field(pattern=r"[0-9a-f]{64}")
+    input_origin: Literal["empty", "automatic_suggestion"]
 
 
 class ImportReviewResolution(FrozenModel):
@@ -515,11 +511,9 @@ class ImportedRuleDraft(DraftRulePackage):
     raw_grids: tuple[RawGrid, ...] = ()
     raw_clause_fragments: tuple[RawClauseFragment, ...] = ()
     raw_figures: tuple[RawFigure, ...] = ()
-    curve_digitizations: tuple[CurveDigitizationResult, ...] = ()
+    curve_calibrations: tuple[CurveCalibrationReview, ...] = ()
+    manual_curve_variant_inputs: tuple[ManualCurveVariantInput, ...] = ()
     curve_variant_reviews: tuple[CurveVariantReview, ...] = ()
-    curve_trace_associations: tuple[CurveTraceAssociation, ...] = ()
-    curve_variant_rejections: tuple[CurveVariantRejection, ...] = ()
-    manual_curve_traces: tuple[ManualCurveTrace, ...] = ()
     extracted_equations: tuple[ExtractedEquation, ...] = ()
     semantic_proposals: tuple[SemanticProposal, ...] = ()
     source_identities: tuple[StandardIdentity, ...]
@@ -541,11 +535,9 @@ def _content_digest(
     guidance: tuple[GuidanceRule, ...] = (),
     curves: tuple[PiecewiseCurveRule, ...] = (),
     raw_figures: tuple[RawFigure, ...] = (),
-    curve_digitizations: tuple[CurveDigitizationResult, ...] = (),
+    curve_calibrations: tuple[CurveCalibrationReview, ...] = (),
+    manual_curve_variant_inputs: tuple[ManualCurveVariantInput, ...] = (),
     curve_variant_reviews: tuple[CurveVariantReview, ...] = (),
-    curve_trace_associations: tuple[CurveTraceAssociation, ...] = (),
-    curve_variant_rejections: tuple[CurveVariantRejection, ...] = (),
-    manual_curve_traces: tuple[ManualCurveTrace, ...] = (),
 ) -> str:
     payload = {
         "tables": [item.model_dump(mode="json") for item in tables],
@@ -563,20 +555,14 @@ def _content_digest(
         "guidance": [item.model_dump(mode="json") for item in guidance],
         "curves": [item.model_dump(mode="json") for item in curves],
         "raw_figures": [item.model_dump(mode="json") for item in raw_figures],
-        "curve_digitizations": [
-            item.model_dump(mode="json") for item in curve_digitizations
+        "curve_calibrations": [
+            item.model_dump(mode="json") for item in curve_calibrations
+        ],
+        "manual_curve_variant_inputs": [
+            item.model_dump(mode="json") for item in manual_curve_variant_inputs
         ],
         "curve_variant_reviews": [
             item.model_dump(mode="json") for item in curve_variant_reviews
-        ],
-        "curve_trace_associations": [
-            item.model_dump(mode="json") for item in curve_trace_associations
-        ],
-        "curve_variant_rejections": [
-            item.model_dump(mode="json") for item in curve_variant_rejections
-        ],
-        "manual_curve_traces": [
-            item.model_dump(mode="json") for item in manual_curve_traces
         ],
     }
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
@@ -1696,33 +1682,24 @@ def _extract_curve_artifacts(
     path: Path,
     identity: StandardIdentity,
     recipe: StandardRecipe,
-    ocr: OcrEngine,
     *,
     password: str | None = None,
 ) -> tuple[
     tuple[RawFigure, ...],
-    tuple[CurveDigitizationResult, ...],
     tuple[PiecewiseCurveRule, ...],
     tuple[SemanticProposal, ...],
     tuple[ImportReviewItem, ...],
 ]:
-    """Extract, digitize, and semantically associate every recipe curve figure."""
+    """Extract verified figures and create one manual item per recipe slot."""
 
     if not recipe.curves:
-        return (), (), (), (), ()
-    from insulation_coordination.rules.importer.curves import (
-        digitize_curve_figure,
-        extract_raw_figure,
-    )
-    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.projection import (
-        project_fault_time_voltage,
-    )
+        return (), (), (), ()
+    from insulation_coordination.rules.importer.curves import extract_raw_figure
 
     reader = PdfReader(path)
     if reader.is_encrypted and reader.decrypt(password or "") == 0:
         raise ExtractionError("recognized curve PDF password was rejected")
     figures: list[RawFigure] = []
-    digitizations: list[CurveDigitizationResult] = []
     with pdfplumber.open(path, password=password or "") as pdf:
         for spec in recipe.curves:
             try:
@@ -1732,13 +1709,8 @@ def _extract_curve_artifacts(
                 raise ExtractionError(
                     f"CURVE_SOURCE_MISSING: page {spec.page_number} for Figure {spec.figure}"
                 ) from error
-            figure = extract_raw_figure(reader_page, plumber_page, spec, ocr, identity)
+            figure = extract_raw_figure(reader_page, plumber_page, spec, identity)
             figures.append(figure)
-            digitizations.append(digitize_curve_figure(figure, spec, ocr, identity))
-
-    blocking_items = tuple(
-        item for result in digitizations for item in result.blocking_review_items
-    )
     variant_review_items = tuple(
         ImportReviewItem(
             code="CURVE_VARIANT_REVIEW_REQUIRED",
@@ -1752,51 +1724,20 @@ def _extract_curve_artifacts(
                     )
                 }
             ),
-            expected_contract="verify the reconstructed curve against the local source figure",
+            expected_contract="manually calibrate and review the curve against the local source figure",
         )
         for spec, figure in zip(recipe.curves, figures, strict=True)
         for slot_index, _selector in enumerate(spec.variant_slots, start=1)
         for semantic_id in (
-            f"{spec.semantic_id}.{spec.figure}.{slot_index}"
-            if len(spec.variant_slots) > 1
-            else f"{spec.semantic_id}.{spec.figure}",
+            f"{spec.semantic_id}.{spec.figure}.{slot_index}",
         )
     )
-    if blocking_items:
-        return (
-            tuple(figures),
-            tuple(digitizations),
-            (),
-            (),
-            (*variant_review_items, *blocking_items),
-        )
-    if identity.recipe_id != "iec62477-1-2022" or len(digitizations) != 3:
-        raise ExtractionError("no semantic projection is registered for extracted curves")
-    proposed_rules = tuple(result.proposed_rule for result in digitizations)
-    if any(rule is None for rule in proposed_rules):
-        raise ExtractionError("curve digitization completed without a proposed rule")
-    variants = tuple(rule.variants for rule in proposed_rules if rule is not None)
-    rule, proposals = project_fault_time_voltage(
-        tuple(figures), variants[0], variants[1], variants[2], identity
-    )
-    review_items = variant_review_items
-    review_hashes = tuple(
-        item.sha256
-        for item in sorted(
-            review_items, key=lambda item: f"{item.semantic_id}:{item.code}"
-        )
-    )
-    proposals = tuple(
-        proposal.model_copy(update={"review_item_sha256s": review_hashes})
-        for proposal in proposals
-    )
-    return tuple(figures), tuple(digitizations), (rule,), proposals, review_items
+    return tuple(figures), (), (), variant_review_items
 
 
 def _extract_one(
     path: Path,
     identity: StandardIdentity,
-    ocr: OcrEngine,
     *,
     password: str | None = None,
 ) -> tuple[
@@ -1808,15 +1749,14 @@ def _extract_one(
     tuple[RawClauseFragment, ...],
     tuple[ExtractedEquation, ...],
     tuple[RawFigure, ...],
-    tuple[CurveDigitizationResult, ...],
     tuple[PiecewiseCurveRule, ...],
     tuple[SemanticProposal, ...],
 ]:
     recipe = _recipe(identity)
     grids, fragments, review_items = _extract_real_layout(path, identity, recipe)
     equations = _extract_equations(path, identity, recipe)
-    figures, digitizations, curves, proposals, curve_reviews = _extract_curve_artifacts(
-        path, identity, recipe, ocr, password=password
+    figures, curves, proposals, curve_reviews = _extract_curve_artifacts(
+        path, identity, recipe, password=password
     )
     return (
         (),
@@ -1827,7 +1767,6 @@ def _extract_one(
         fragments,
         equations,
         figures,
-        digitizations,
         curves,
         proposals,
     )
@@ -1850,8 +1789,6 @@ def _require_unique_ids(
 def extract_draft(
     paths: tuple[Path, ...],
     passwords: Mapping[Path, str] | None = None,
-    *,
-    ocr_engine: OcrEngine | None = None,
 ) -> ImportedRuleDraft:
     """Extract recognized sources into a deliberately unusable immutable draft."""
 
@@ -1875,13 +1812,8 @@ def extract_draft(
     raw_clause_fragments: tuple[RawClauseFragment, ...] = ()
     extracted_equations: tuple[ExtractedEquation, ...] = ()
     raw_figures: tuple[RawFigure, ...] = ()
-    curve_digitizations: tuple[CurveDigitizationResult, ...] = ()
     curves: tuple[PiecewiseCurveRule, ...] = ()
     semantic_proposals: tuple[SemanticProposal, ...] = ()
-    if ocr_engine is None:
-        from insulation_coordination.rules.importer.curves import TesseractOcrEngine
-
-        ocr_engine = TesseractOcrEngine()
     for path, identity in sorted(identified, key=lambda pair: pair[1].recipe_id):
         (
             extracted_tables,
@@ -1892,13 +1824,11 @@ def extract_draft(
             extracted_fragments,
             extracted_source_equations,
             extracted_figures,
-            extracted_digitizations,
             extracted_curves,
             extracted_proposals,
         ) = _extract_one(
             path,
             identity,
-            ocr_engine,
             password=(passwords or {}).get(path),
         )
         tables += extracted_tables
@@ -1909,22 +1839,9 @@ def extract_draft(
         raw_clause_fragments += extracted_fragments
         extracted_equations += extracted_source_equations
         raw_figures += extracted_figures
-        curve_digitizations += extracted_digitizations
         curves += extracted_curves
         semantic_proposals += extracted_proposals
     _require_unique_ids(tables, formulas, mappings)
-    curve_trace_associations = tuple(
-        CurveTraceAssociation(
-            variant_id=variant.id,
-            figure_artifact_sha256=figure.artifact_sha256,
-            trace_id=trace.id,
-        )
-        for figure, result in zip(raw_figures, curve_digitizations, strict=True)
-        if result.proposed_rule is not None
-        for variant, trace in zip(
-            result.proposed_rule.variants, figure.traces, strict=True
-        )
-    )
 
     recorded_at = datetime.now(UTC)
     review_resolutions = tuple(
@@ -1962,7 +1879,7 @@ def extract_draft(
             *(f"curve:{curve.id}" for curve in curves),
             *(f"raw-figure:{figure.source.figure}" for figure in raw_figures),
             *(f"review:{item.code}:{item.semantic_id}" for item in review_items),
-            f"content:{_content_digest(tables, formulas, mappings, review_items, raw_grids, raw_clause_fragments=raw_clause_fragments, extracted_equations=extracted_equations, curves=curves, raw_figures=raw_figures, curve_digitizations=curve_digitizations, curve_trace_associations=curve_trace_associations)}",
+            f"content:{_content_digest(tables, formulas, mappings, review_items, raw_grids, raw_clause_fragments=raw_clause_fragments, extracted_equations=extracted_equations, curves=curves, raw_figures=raw_figures)}",
         )
     )
     ordered_identities = tuple(
@@ -1990,8 +1907,6 @@ def extract_draft(
         extracted_equations=extracted_equations,
         curves=curves,
         raw_figures=raw_figures,
-        curve_digitizations=curve_digitizations,
-        curve_trace_associations=curve_trace_associations,
     )
     records = tuple(
         record.model_copy(update={"notes": f"content:{content_digest}"})
@@ -2022,8 +1937,6 @@ def extract_draft(
         extracted_equations=extracted_equations,
         curves=curves,
         raw_figures=raw_figures,
-        curve_digitizations=curve_digitizations,
-        curve_trace_associations=curve_trace_associations,
         semantic_proposals=semantic_proposals,
         source_identities=ordered_identities,
     )
@@ -2032,8 +1945,7 @@ def extract_draft(
 def _rebuild_draft_model() -> None:
     from insulation_coordination.rules.importer.clauses import RawClauseFragment
     from insulation_coordination.rules.importer.curves import (
-        CurveDigitizationResult,
-        RawCurveTrace,
+        ManualPlotCalibration,
         RawFigure,
     )
 
@@ -2041,11 +1953,12 @@ def _rebuild_draft_model() -> None:
         _types_namespace={
             "RawClauseFragment": RawClauseFragment,
             "RawFigure": RawFigure,
-            "CurveDigitizationResult": CurveDigitizationResult,
-            "RawCurveTrace": RawCurveTrace,
+            "ManualPlotCalibration": ManualPlotCalibration,
         }
     )
-    ManualCurveTrace.model_rebuild(_types_namespace={"RawCurveTrace": RawCurveTrace})
+    CurveCalibrationReview.model_rebuild(
+        _types_namespace={"ManualPlotCalibration": ManualPlotCalibration}
+    )
 
 
 _rebuild_draft_model()

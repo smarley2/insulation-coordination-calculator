@@ -54,6 +54,7 @@ def test_imported_package_is_usable_without_pdfs(
 
 def test_rules_manager_exposes_draft_extraction(qtbot, rules_manager):
     assert rules_manager._extract_draft_button.isEnabled()
+    assert rules_manager._review_curves_button.text() == "Review manual curves…"
 
 
 def test_draft_identity_shows_all_three_required_standards(

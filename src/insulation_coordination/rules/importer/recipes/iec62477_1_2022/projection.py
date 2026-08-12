@@ -16,13 +16,10 @@ from insulation_coordination.domain.rules import (
     DecisionRow,
     DecisionRule,
     DecisionValue,
-    FaultTimeVoltageVariant,
     Identifier,
     Matcher,
-    PiecewiseCurveRule,
     SourceReference,
 )
-from insulation_coordination.rules.importer.curves import RawFigure
 from insulation_coordination.rules.importer.extract import (
     RawGrid,
     RawGridCell,
@@ -456,78 +453,4 @@ __all__ = [
     "ProtectionOutcome",
     "project_dvc_protection_matrix",
     "project_dvc_voltage_limits",
-    "project_fault_time_voltage",
 ]
-
-
-def project_fault_time_voltage(
-    figures: tuple[RawFigure, ...],
-    figure5_variants: tuple[FaultTimeVoltageVariant, ...],
-    figure6_variants: tuple[FaultTimeVoltageVariant, ...],
-    figure7_variants: tuple[FaultTimeVoltageVariant, ...],
-    identity: StandardIdentity,
-) -> tuple[PiecewiseCurveRule, tuple[SemanticProposal, ...]]:
-    """Associate reviewed Figure 5–7 variants into one proposed curve rule.
-
-    Figure order is fixed (5, 6, 7) and each figure must be present exactly once;
-    every variant keeps its exact four-dimension selector. The aggregate proposal's
-    artifact hash covers the ordered figure artifact digests, so any figure change
-    resets the review.
-    """
-
-    if len(figures) != 3 or any(
-        not isinstance(figure, RawFigure) for figure in figures
-    ):
-        raise ValueError("Figure 5, 6, and 7 artifacts are required exactly once")
-    pages = tuple(figure.source.page for figure in figures)
-    if pages != (54, 55, 56):
-        raise ValueError(f"Figure pages must be 54, 55, 56 in order, got {pages}")
-    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.curves import CURVES
-
-    member_groups = (figure5_variants, figure6_variants, figure7_variants)
-    expected_groups = tuple(spec.variant_slots for spec in CURVES)
-    if tuple(tuple(variant.selector for variant in members) for members in member_groups) != (
-        expected_groups
-    ):
-        raise ValueError("Figure 5, 6, and 7 require their exact reviewed variant inventory")
-    variants = (*figure5_variants, *figure6_variants, *figure7_variants)
-    selectors = tuple(variant.selector for variant in variants)
-    if len(set(selectors)) != len(selectors):
-        raise ValueError("curve variant selectors must be exact and unique")
-    for figure_number, figure, members in zip(
-        (5, 6, 7),
-        figures,
-        (figure5_variants, figure6_variants, figure7_variants),
-        strict=True,
-    ):
-        for variant in members:
-            if (
-                variant.reviewed_artifact_sha256 != figure.artifact_sha256
-                or variant.source.document_id != figure.source.document_id
-                or variant.source.page != figure.source.page
-                or variant.source.figure != figure.source.figure
-            ):
-                raise ValueError(
-                    f"Figure {figure_number} variant is not linked to its source artifact"
-                )
-    for figure in figures:
-        if figure.source.standard != identity.standard or figure.source.edition != identity.edition:
-            raise ValueError("figure artifact does not match its identified source")
-    rule = PiecewiseCurveRule(
-        id=ids.DVC_FAULT_TIME_VOLTAGE,
-        variants=variants,
-        source=figures[0].source.model_copy(update={"figure": "5-7"}),
-    )
-    from insulation_coordination.rules.importer.review import _aggregate_artifact_pairs
-
-    aggregate = _aggregate_artifact_pairs(
-        tuple((variant.id, variant.reviewed_artifact_sha256) for variant in variants)
-    )
-    proposal = SemanticProposal(
-        semantic_id=rule.id,
-        rule_kind="curve",
-        state="proposed",
-        rule_sha256=canonical_model_sha256(rule),
-        source_artifact_sha256=aggregate,
-    )
-    return rule, (proposal,)
