@@ -469,7 +469,10 @@ def project_internal_spd_monitoring(
         test_kind="internal_spd_monitoring",
         classifications=("type_test",),
         procedure_steps=_steps(fragment),
-        applicability_rule_id=ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS,
+        # The monitoring route specifically: the bare identifier stopped being projected when
+        # the reduction rule split into a route per supply kind, and monitoring is the
+        # obligation this test is gated on.
+        applicability_rule_id=f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring",
         source=fragment.source,
     )
     validate_classifications(matrix_grid(draft, label), procedure)
