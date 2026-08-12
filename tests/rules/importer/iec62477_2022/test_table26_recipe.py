@@ -163,9 +163,7 @@ def test_a_condition_stated_once_reaches_every_variant() -> None:
 
 def test_a_variant_specific_condition_stays_with_its_variant() -> None:
     rules, _proposals = project_impulse_procedure(_grid(), IDENTITY)
-    equipment = {
-        rule.id: tuple(step.text for step in rule.procedure_steps) for rule in rules
-    }
+    equipment = {rule.id: tuple(step.text for step in rule.procedure_steps) for rule in rules}
     assert len({steps for steps in equipment.values()}) == 3
 
 
@@ -196,9 +194,7 @@ def test_a_printing_with_an_extra_subject_row_blocks() -> None:
         update={
             "rows": grid.rows + 1,
             "cells": (*grid.cells, *extra),
-            "segments": (
-                grid.segments[0].model_copy(update={"row_count": grid.rows + 1}),
-            ),
+            "segments": (grid.segments[0].model_copy(update={"row_count": grid.rows + 1}),),
         }
     )
     with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_PROCEDURE_STRUCTURE"):

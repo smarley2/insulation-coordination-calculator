@@ -26,10 +26,7 @@ def _write_fake_bundle(tmp_path: Path) -> tuple[Path, Path]:
     executable.parent.mkdir(parents=True)
     cache.mkdir()
     executable.write_text(
-        "#!/bin/sh\n"
-        "if [ \"$1\" = \"--version\" ]; then\n"
-        "  echo 'Tectonic 0.16.9'\n"
-        "fi\n",
+        '#!/bin/sh\nif [ "$1" = "--version" ]; then\n  echo \'Tectonic 0.16.9\'\nfi\n',
         encoding="utf-8",
     )
     executable.chmod(executable.stat().st_mode | stat.S_IXUSR)

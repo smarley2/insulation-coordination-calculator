@@ -59,10 +59,19 @@ IDENTITY = StandardIdentity(
 REFERENCE_COORDINATES = {(3, 5), (5, 4)}
 STRUCTURAL_BLANKS = {(7, column) for column in range(1, 6)}
 INHERITED_BLANKS = {
-    (1, 0), (2, 0),
-    (0, 2), (0, 3), (0, 4), (0, 5),
-    (1, 2), (1, 3), (1, 4),
-    (4, 4), (4, 5), (5, 5), (6, 4),
+    (1, 0),
+    (2, 0),
+    (0, 2),
+    (0, 3),
+    (0, 4),
+    (0, 5),
+    (1, 2),
+    (1, 3),
+    (1, 4),
+    (4, 4),
+    (4, 5),
+    (5, 5),
+    (6, 4),
 }
 
 
@@ -73,9 +82,7 @@ def _cell(row: int, column: int) -> RawGridCell:
     data = row in range(3, 7) and column in range(1, 6)
     not_applicable = (row, column) == (6, 5)
     blank = (
-        (row, column) in INHERITED_BLANKS
-        or (row, column) in STRUCTURAL_BLANKS
-        or not_applicable
+        (row, column) in INHERITED_BLANKS or (row, column) in STRUCTURAL_BLANKS or not_applicable
     )
     reference = (row, column) in REFERENCE_COORDINATES
     text = "NA" if not_applicable else ("" if blank else ("REF" if reference else "HEADER"))
@@ -136,22 +143,18 @@ def test_projection_emits_five_quantities_without_synthetic_inputs() -> None:
 def test_curve_reference_rule_targets_only_the_fault_time_curve() -> None:
     rules, _ = project_dvc_voltage_limits(_grid(), IDENTITY)
     rule = next(
-        item for item in rules
-        if item.id == f"{ids.DVC_VOLTAGE_LIMITS}.fault_time_reference"
+        item for item in rules if item.id == f"{ids.DVC_VOLTAGE_LIMITS}.fault_time_reference"
     )
     assert [output.name for output in rule.outputs] == ["fault_time_voltage"]
-    assert {
-        value.reference for row in rule.rows for value in row.values
-    } == {ids.DVC_FAULT_TIME_VOLTAGE}
+    assert {value.reference for row in rule.rows for value in row.values} == {
+        ids.DVC_FAULT_TIME_VOLTAGE
+    }
     assert all(value.numeric is None for row in rule.rows for value in row.values)
 
 
 def test_impulse_reference_rule_targets_exact_ac_and_dc_tables() -> None:
     rules, _ = project_dvc_voltage_limits(_grid(), IDENTITY)
-    rule = next(
-        item for item in rules
-        if item.id == f"{ids.DVC_VOLTAGE_LIMITS}.impulse_reference"
-    )
+    rule = next(item for item in rules if item.id == f"{ids.DVC_VOLTAGE_LIMITS}.impulse_reference")
     assert {output.name for output in rule.outputs} == {"ac_reference", "dc_reference"}
     assert all(
         {value.reference for value in row.values}
@@ -162,16 +165,21 @@ def test_impulse_reference_rule_targets_exact_ac_and_dc_tables() -> None:
         for row in rule.rows
     )
 
+
 def test_numeric_rule_evaluates_a_physical_row_and_quantity_column() -> None:
     numeric = next(
-        rule for rule in project_dvc_voltage_limits(_grid(), IDENTITY)[0]
+        rule
+        for rule in project_dvc_voltage_limits(_grid(), IDENTITY)[0]
         if rule.id == ids.DVC_VOLTAGE_LIMITS
     )
-    result = evaluate_decision(numeric, {
-        "dvc": "dvc-1",
-        "voltage_quantity": "voltage-quantity-1",
-        "unit": "V",
-    })
+    result = evaluate_decision(
+        numeric,
+        {
+            "dvc": "dvc-1",
+            "voltage_quantity": "voltage-quantity-1",
+            "unit": "V",
+        },
+    )
     assert result.values[0].numeric == Decimal(307)
 
 
@@ -284,9 +292,7 @@ def test_build_and_review_lifecycle_resets_after_authoritative_grid_change(
     )
     corrected = record_correction(
         reviewed,
-        reviewed.model_copy(
-            update={"raw_grids": (grid.model_copy(update={"cells": cells}),)}
-        ),
+        reviewed.model_copy(update={"raw_grids": (grid.model_copy(update={"cells": cells}),)}),
         actor="Synthetic Source Reviewer",
         notes="Correct one reviewed synthetic source quantity.",
     )
@@ -305,9 +311,7 @@ def test_unrelated_prefixed_decision_cannot_borrow_table2_grounding(
         actor="Synthetic Rule Builder",
         notes="Build Table 2 decisions.",
     )
-    unrelated = built.decisions[0].model_copy(
-        update={"id": f"{ids.DVC_VOLTAGE_LIMITS}.unrelated"}
-    )
+    unrelated = built.decisions[0].model_copy(update={"id": f"{ids.DVC_VOLTAGE_LIMITS}.unrelated"})
 
     with pytest.raises(ApprovalError, match="review item inventory"):
         record_correction(
@@ -322,9 +326,7 @@ def test_reference_target_kind_mismatch_blocks_projection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     first = TABLE_2.reference_slots[0].model_copy(update={"target_kind": "table"})
-    broken = TABLE_2.model_copy(
-        update={"reference_slots": (first, *TABLE_2.reference_slots[1:])}
-    )
+    broken = TABLE_2.model_copy(update={"reference_slots": (first, *TABLE_2.reference_slots[1:])})
     monkeypatch.setattr(table2_projection, "TABLE_2", broken)
 
     with pytest.raises(ValueError, match="target kind"):

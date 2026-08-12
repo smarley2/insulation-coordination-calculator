@@ -158,9 +158,7 @@ _GUIDANCE: Mapping[VoltageGuidanceId, VoltageGuidance] = {
                 "Because it lasts, it stresses insulation more like a working voltage "
                 "than like an impulse."
             ),
-            examples=(
-                "A lost neutral raising a line-to-earth voltage for the whole fault.",
-            ),
+            examples=("A lost neutral raising a line-to-earth voltage for the whole fault.",),
             common_mistakes=(
                 "Entering an impulse level here because both are called overvoltages.",
                 "Leaving the field blank when the answer is a considered 'none' plus a reason.",

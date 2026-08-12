@@ -67,10 +67,10 @@ Expected: failures show the old `(2, 2)` semantic origin, old reference coordina
 Set:
 
 ```python
-data_row_start=3
-data_column_start=1
-expected_data_rows=4
-expected_data_columns=5
+data_row_start = 3
+data_column_start = 1
+expected_data_rows = 4
+expected_data_columns = 5
 ```
 
 Declare these merges:
@@ -181,9 +181,7 @@ Split reference outcomes by target family:
 ```python
 curve_outcomes = tuple(item for item in outcomes if item.value == ids.DVC_FAULT_TIME_VOLTAGE)
 impulse_outcomes = tuple(
-    item
-    for item in outcomes
-    if item.value == ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC
+    item for item in outcomes if item.value == ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC
 )
 ```
 

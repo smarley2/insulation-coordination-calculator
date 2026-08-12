@@ -1881,9 +1881,7 @@ def test_approval_constructs_every_final_collection_without_draft_proposals(
             semantic_id=semantic_id,
             kind="semantic",
             source=inventory_source.model_copy(
-                update={
-                    "geometry": SourceGeometryReference(artifact_sha256=artifact_sha256)
-                }
+                update={"geometry": SourceGeometryReference(artifact_sha256=artifact_sha256)}
             ),
             expected_contract=f"synthetic:{semantic_id}",
         )
@@ -1926,8 +1924,7 @@ def test_approval_constructs_every_final_collection_without_draft_proposals(
                 update={
                     "approval_records": tuple(
                         record.model_copy(update={"notes": f"content:{genesis_digest}"})
-                        if record.action == "extraction"
-                        and record.notes.startswith("content:")
+                        if record.action == "extraction" and record.notes.startswith("content:")
                         else record
                         for record in imported.manifest.approval_records
                     )
@@ -1942,9 +1939,7 @@ def test_approval_constructs_every_final_collection_without_draft_proposals(
         inputs=(
             DecisionInput(name="synthetic-choice", kind="categorical", allowed_values=("yes",)),
         ),
-        outputs=(
-            DecisionOutput(name="synthetic-result", kind="boolean"),
-        ),
+        outputs=(DecisionOutput(name="synthetic-result", kind="boolean"),),
         rows=(
             DecisionRow(
                 matchers=(Matcher(input="synthetic-choice", op="equals", values=("yes",)),),

@@ -270,7 +270,9 @@ def build_report_model(
     )
     project_pair_ids = tuple(str(pair.id) for pair in project.pairs if not pair.is_excluded)
     if not project_pair_ids:
-        raise ReportBuildError("every pair is excluded from the analysis; there is nothing to report")
+        raise ReportBuildError(
+            "every pair is excluded from the analysis; there is nothing to report"
+        )
     result_pair_ids = tuple(str(result.pair_id) for result in results)
     if len(result_pair_ids) != len(set(result_pair_ids)):
         raise ReportBuildError("duplicate pair result")

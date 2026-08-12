@@ -68,9 +68,7 @@ def _core_member_payloads(package: RulePackage) -> dict[str, bytes]:
         "guidance.json": _canonical_json(
             [guidance.model_dump(mode="json") for guidance in package.guidance]
         ),
-        "curves.json": _canonical_json(
-            [curve.model_dump(mode="json") for curve in package.curves]
-        ),
+        "curves.json": _canonical_json([curve.model_dump(mode="json") for curve in package.curves]),
     }
 
 

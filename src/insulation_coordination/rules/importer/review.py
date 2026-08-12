@@ -130,9 +130,7 @@ def _rule_for(draft: ImportedRuleDraft, proposal: SemanticProposal) -> SemanticR
         if kind == proposal.rule_kind and rule.id == proposal.semantic_id
     )
     if len(matches) != 1:
-        raise ApprovalError(
-            f"semantic proposal {proposal.semantic_id} has no unique current rule"
-        )
+        raise ApprovalError(f"semantic proposal {proposal.semantic_id} has no unique current rule")
     return matches[0]
 
 
@@ -260,10 +258,7 @@ def _current_source_artifact_sha256(
     if proposal.rule_kind == "curve":
         assert isinstance(rule, PiecewiseCurveRule)
         return _aggregate_artifact_pairs(
-            tuple(
-                (variant.id, variant.reviewed_artifact_sha256)
-                for variant in rule.variants
-            )
+            tuple((variant.id, variant.reviewed_artifact_sha256) for variant in rule.variants)
         )
 
     source_semantic_id = _source_semantic_id(proposal)
@@ -345,9 +340,7 @@ def _cross_standard_artifacts(
         return ()
     compared = {spec.source_grid_id, spec.target_grid_id}
     pairs = tuple(
-        (grid.id, canonical_model_sha256(grid))
-        for grid in draft.raw_grids
-        if grid.id in compared
+        (grid.id, canonical_model_sha256(grid)) for grid in draft.raw_grids if grid.id in compared
     )
     return pairs if len(pairs) == len(compared) else ()
 
@@ -459,9 +452,7 @@ def accept_clause_fragment(
     )
     if not pending:
         raise ValueError(f"clause {semantic_id} has no unresolved review item")
-    if not any(
-        fragment.id == f"raw-{semantic_id}" for fragment in draft.raw_clause_fragments
-    ):
+    if not any(fragment.id == f"raw-{semantic_id}" for fragment in draft.raw_clause_fragments):
         raise ValueError(f"clause {semantic_id} has no extracted fragment")
     return record_correction(
         draft,
@@ -636,9 +627,7 @@ def _corrected_cells(
     unexpected: set[tuple[int, int] | tuple[int, int, int]] = set()
     unexpected.update(set(scalar_corrections) - correctable)
     unexpected.update(
-        coordinate
-        for coordinate in component_corrections
-        if coordinate[:2] not in correctable
+        coordinate for coordinate in component_corrections if coordinate[:2] not in correctable
     )
     if unexpected:
         raise ValueError(f"raw grid cell is not correctable: {sorted(unexpected)!r}")
@@ -646,11 +635,13 @@ def _corrected_cells(
     for cell in grid.cells:
         coordinate = (cell.row, cell.column)
         selected_components = {
-            key[2]: value
-            for key, value in component_corrections.items()
-            if key[:2] == coordinate
+            key[2]: value for key, value in component_corrections.items() if key[:2] == coordinate
         }
-        if coordinate not in flagged and coordinate not in scalar_corrections and not selected_components:
+        if (
+            coordinate not in flagged
+            and coordinate not in scalar_corrections
+            and not selected_components
+        ):
             cells.append(cell)
             continue
         if selected_components:
@@ -711,8 +702,7 @@ def _replace_raw_cell(
                     update={
                         "cells": tuple(
                             replacement
-                            if (cell.row, cell.column)
-                            == (replacement.row, replacement.column)
+                            if (cell.row, cell.column) == (replacement.row, replacement.column)
                             else cell
                             for cell in grid.cells
                         )
@@ -770,8 +760,7 @@ def correct_raw_component(
 def _compound_complete(cell: RawGridCell) -> bool:
     return (
         len(cell.components) == len(cell.compound_component_ids)
-        and {part.component_id for part in cell.components}
-        == set(cell.compound_component_ids)
+        and {part.component_id for part in cell.components} == set(cell.compound_component_ids)
         and all(part.value is not None for part in cell.components)
     )
 
@@ -786,16 +775,13 @@ def _associated_cell(
     if component_id not in cell.compound_component_ids:
         raise ValueError("component is not declared for this compound cell")
     matches = tuple(
-        component
-        for component in cell.components
-        if component.source_index == source_index
+        component for component in cell.components if component.source_index == source_index
     )
     if len(matches) != 1:
         raise ValueError("association correction needs one exact source occurrence")
     replacement = matches[0].model_copy(update={"component_id": component_id})
     components = tuple(
-        replacement if part.source_index == source_index else part
-        for part in cell.components
+        replacement if part.source_index == source_index else part for part in cell.components
     )
     allowed = {
         allowed_formula_id
@@ -807,9 +793,7 @@ def _associated_cell(
     if formula_id is not None and formula_id not in allowed:
         raise ValueError("formula is not declared for this exact component route")
     candidates = tuple(
-        candidate
-        for candidate in cell.formula_candidates
-        if candidate.source_index != source_index
+        candidate for candidate in cell.formula_candidates if candidate.source_index != source_index
     )
     if formula_id is not None:
         candidates = (
@@ -821,13 +805,9 @@ def _associated_cell(
                 source=replacement.source,
             ),
         )
-    changed = cell.model_copy(
-        update={"components": components, "formula_candidates": candidates}
-    )
+    changed = cell.model_copy(update={"components": components, "formula_candidates": candidates})
     return changed.model_copy(
-        update={
-            "parse_status": "compound" if _compound_complete(changed) else "ambiguous_compound"
-        }
+        update={"parse_status": "compound" if _compound_complete(changed) else "ambiguous_compound"}
     )
 
 
@@ -859,10 +839,7 @@ def correct_component_association(
         item
         for item in draft.review_items
         if (
-            (
-                item.code == "AMBIGUOUS_COMPOUND_CELL"
-                and item.semantic_id.startswith(prefix)
-            )
+            (item.code == "AMBIGUOUS_COMPOUND_CELL" and item.semantic_id.startswith(prefix))
             or (
                 item.code == "AMBIGUOUS_COMPONENT_FORMULA"
                 and formula_id is not None
@@ -994,11 +971,7 @@ def _corrected_compound_cells(
         if cell is None:
             raise ValueError(f"unknown compound cell: {coordinate}")
         component = next(
-            (
-                part
-                for part in cell.components
-                if part.source_index == source_index
-            ),
+            (part for part in cell.components if part.source_index == source_index),
             None,
         )
         if component is None or component.component_id is None:
@@ -1754,9 +1727,7 @@ def _manual_figure(draft: ImportedRuleDraft, spec: CurveAuditSpec) -> RawFigure:
     return matches[0]
 
 
-def _manual_calibration(
-    draft: ImportedRuleDraft, figure: RawFigure
-) -> CurveCalibrationReview:
+def _manual_calibration(draft: ImportedRuleDraft, figure: RawFigure) -> CurveCalibrationReview:
     matches = tuple(
         review
         for review in draft.curve_calibrations
@@ -1767,16 +1738,13 @@ def _manual_calibration(
     calibration = matches[0]
     if (
         calibration.calibration.figure_artifact_sha256 != figure.artifact_sha256
-        or calibration.calibration_sha256
-        != canonical_model_sha256(calibration.calibration)
+        or calibration.calibration_sha256 != canonical_model_sha256(calibration.calibration)
     ):
         raise ApprovalError("curve variant has stale calibration evidence")
     return calibration
 
 
-def _manual_reviewed_artifact_sha256(
-    figure: RawFigure, calibration_sha256: str
-) -> str:
+def _manual_reviewed_artifact_sha256(figure: RawFigure, calibration_sha256: str) -> str:
     return hashlib.sha256(
         _canonical_json(
             {
@@ -1794,11 +1762,7 @@ def _resolved_curve_items(
     return tuple(
         item
         for item in draft.review_items
-        if (
-            item.kind == "curve"
-            and item.semantic_id in variant_ids
-            and item.sha256 in resolved
-        )
+        if (item.kind == "curve" and item.semantic_id in variant_ids and item.sha256 in resolved)
     )
 
 
@@ -1830,9 +1794,7 @@ def set_manual_curve_calibration(
     if calibration.figure_artifact_sha256 != raw_figure.artifact_sha256:
         raise ApprovalError("manual calibration does not match the source figure")
     calibration_sha256 = canonical_model_sha256(calibration)
-    reviewed_artifact_sha256 = _manual_reviewed_artifact_sha256(
-        raw_figure, calibration_sha256
-    )
+    reviewed_artifact_sha256 = _manual_reviewed_artifact_sha256(raw_figure, calibration_sha256)
     updated_variants = {
         variant.id: variant.model_copy(
             update={"reviewed_artifact_sha256": reviewed_artifact_sha256}
@@ -1856,8 +1818,7 @@ def set_manual_curve_calibration(
                 rule.model_copy(
                     update={
                         "variants": tuple(
-                            updated_variants.get(variant.id, variant)
-                            for variant in rule.variants
+                            updated_variants.get(variant.id, variant) for variant in rule.variants
                         )
                     }
                 )
@@ -1927,16 +1888,11 @@ def replace_manual_curve_variant(
     ):
         raise ApprovalError("manual curve points must be inside reviewed axis bounds")
     if source_points and (
-        source_points[0].x != calibration.x_min
-        or source_points[-1].x != calibration.x_max
+        source_points[0].x != calibration.x_min or source_points[-1].x != calibration.x_max
     ):
-        raise ApprovalError(
-            "manual curve points must cover the full reviewed X-axis domain"
-        )
+        raise ApprovalError("manual curve points must cover the full reviewed X-axis domain")
     x_scale = _source_x_scale(spec)
-    points = tuple(
-        CurvePoint(x=point.x * x_scale, y=point.y) for point in source_points
-    )
+    points = tuple(CurvePoint(x=point.x * x_scale, y=point.y) for point in source_points)
     variant = FaultTimeVoltageVariant(
         id=variant_id,
         selector=selector,
@@ -1982,15 +1938,12 @@ def replace_manual_curve_variant(
     changed = draft.model_copy(
         update={
             "curves": tuple(
-                changed_rule if rule.id == spec.semantic_id else rule
-                for rule in draft.curves
+                changed_rule if rule.id == spec.semantic_id else rule for rule in draft.curves
             )
             if rules
             else (*draft.curves, changed_rule),
             "curve_variant_reviews": tuple(
-                review
-                for review in draft.curve_variant_reviews
-                if review.variant_id != variant_id
+                review for review in draft.curve_variant_reviews if review.variant_id != variant_id
             ),
             "manual_curve_variant_inputs": tuple(
                 input
@@ -2017,9 +1970,7 @@ def replace_manual_curve_variant(
     )
 
 
-def _variant(
-    rule: PiecewiseCurveRule, variant_id: str
-) -> FaultTimeVoltageVariant:
+def _variant(rule: PiecewiseCurveRule, variant_id: str) -> FaultTimeVoltageVariant:
     variant = next((item for item in rule.variants if item.id == variant_id), None)
     if variant is None:
         raise ValueError(f"unknown curve variant: {variant_id}")
@@ -2077,17 +2028,12 @@ def review_curve_variant(
     )
     if len(member_items) != 1:
         raise ApprovalError("curve variant lacks one exact review item")
-    if any(
-        item.review_item_sha256 == member_items[0].sha256
-        for item in draft.review_resolutions
-    ):
+    if any(item.review_item_sha256 == member_items[0].sha256 for item in draft.review_resolutions):
         raise ApprovalError("curve variant review item is already resolved")
     changed = draft.model_copy(
         update={
             "curve_variant_reviews": tuple(
-                item
-                for item in draft.curve_variant_reviews
-                if item.variant_id != variant.id
+                item for item in draft.curve_variant_reviews if item.variant_id != variant.id
             )
             + (review,)
         }

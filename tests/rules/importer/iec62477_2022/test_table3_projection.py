@@ -135,10 +135,7 @@ def test_every_source_combination_evaluates_to_its_reviewed_category() -> None:
 
 def test_rows_carry_exact_cell_provenance() -> None:
     rule = project_dvc_protection_matrix(_grid(), IDENTITY)[0][0]
-    assert {
-        (row.source.row, row.source.column)
-        for row in rule.rows
-    } == {
+    assert {(row.source.row, row.source.column) for row in rule.rows} == {
         (f"grid row {row + 1}", f"grid column {column + 1}")
         for row in DATA_ROWS
         for column in DATA_COLUMNS
@@ -148,9 +145,7 @@ def test_rows_carry_exact_cell_provenance() -> None:
 def test_unknown_or_numeric_outcome_blocks_projection() -> None:
     grid = _grid()
     unknown = tuple(
-        cell.model_copy(update={"raw_text": "maybe"})
-        if (cell.row, cell.column) == (3, 1)
-        else cell
+        cell.model_copy(update={"raw_text": "maybe"}) if (cell.row, cell.column) == (3, 1) else cell
         for cell in grid.cells
     )
     with pytest.raises(ValueError, match="unknown categorical token"):

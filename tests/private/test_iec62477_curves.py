@@ -89,9 +89,7 @@ def test_figures_5_to_7_extract_deterministically(
 
 
 def test_import_creates_one_manual_review_item_per_declared_slot(extracted_draft) -> None:
-    curve_items = tuple(
-        item for item in extracted_draft.review_items if item.kind == "curve"
-    )
+    curve_items = tuple(item for item in extracted_draft.review_items if item.kind == "curve")
 
     expected_slots = sum(
         len(spec.variant_slots)

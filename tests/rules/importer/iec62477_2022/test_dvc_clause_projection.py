@@ -90,12 +90,11 @@ def _token(kind: str, raw: str, normalized: str, order: int) -> ClauseToken:
     )
 
 
-def _fragment(*, references: tuple[str, ...] = ("figure-5", "figure-6", "figure-7")) -> RawClauseFragment:
+def _fragment(
+    *, references: tuple[str, ...] = ("figure-5", "figure-6", "figure-7")
+) -> RawClauseFragment:
     nodes = (_node(0, "neutral fault-voltage paragraph with three figure slots"),)
-    tokens = [
-        _token("reference", f"slot {figure}", figure, 0)
-        for figure in references
-    ]
+    tokens = [_token("reference", f"slot {figure}", figure, 0) for figure in references]
     fragment = RawClauseFragment(
         id=f"raw-{ids.DVC_FAULT_APPLICABILITY}",
         raw_sha256="0" * 64,
@@ -103,9 +102,7 @@ def _fragment(*, references: tuple[str, ...] = ("figure-5", "figure-6", "figure-
         tokens=tuple(tokens),
         source=SOURCE,
     )
-    return fragment.model_copy(
-        update={"raw_sha256": canonical_model_sha256(fragment)}
-    )
+    return fragment.model_copy(update={"raw_sha256": canonical_model_sha256(fragment)})
 
 
 def test_projection_emits_typed_applicability_inputs_and_outputs() -> None:
@@ -149,9 +146,7 @@ def test_projection_evaluates_all_four_curve_selector_routes() -> None:
 def test_missing_or_unknown_figure_reference_blocks_projection() -> None:
     for references in (("figure-5", "figure-6"), ("figure-5", "figure-6", "figure-8")):
         with pytest.raises(ValueError, match="AMBIGUOUS_CLAUSE_STRUCTURE"):
-            project_dvc_fault_applicability(
-                _fragment(references=references), synthetic_identity()
-            )
+            project_dvc_fault_applicability(_fragment(references=references), synthetic_identity())
 
 
 def test_wrong_fragment_identity_blocks_projection() -> None:
@@ -253,9 +248,7 @@ def test_build_and_review_lifecycle_resets_after_fragment_change(
         notes="Build clause decisions.",
     )
     proposal = next(
-        item
-        for item in built.semantic_proposals
-        if item.semantic_id == ids.DVC_FAULT_APPLICABILITY
+        item for item in built.semantic_proposals if item.semantic_id == ids.DVC_FAULT_APPLICABILITY
     )
     assert proposal.state == "proposed"
 
@@ -312,9 +305,7 @@ def test_unrelated_prefixed_decision_cannot_borrow_clause_grounding(
         actor="Synthetic Rule Builder",
         notes="Build clause decisions.",
     )
-    rule = next(
-        item for item in built.decisions if item.id == ids.DVC_FAULT_APPLICABILITY
-    )
+    rule = next(item for item in built.decisions if item.id == ids.DVC_FAULT_APPLICABILITY)
     unrelated = rule.model_copy(update={"id": f"{ids.DVC_FAULT_APPLICABILITY}.unrelated"})
 
     with pytest.raises(ApprovalError, match="review item inventory"):
@@ -332,20 +323,14 @@ def test_recipe_emits_clause_review_item_and_build_blocks_until_resolved(
     from insulation_coordination.rules.importer.extract import _manual_review_items
 
     draft = _logged_clause_extraction(monkeypatch)
-    recipe = next(
-        item for item in recipe_registry.RECIPES if item.id == IDENTITY.recipe_id
-    )
+    recipe = next(item for item in recipe_registry.RECIPES if item.id == IDENTITY.recipe_id)
     clause_items = tuple(
-        item
-        for item in _manual_review_items(IDENTITY, recipe)
-        if item.kind == "clause"
+        item for item in _manual_review_items(IDENTITY, recipe) if item.kind == "clause"
     )
     assert [item.code for item in clause_items] == ["MANUAL_CLAUSE_DEFINITION_REQUIRED"]
     assert clause_items[0].semantic_id == ids.DVC_FAULT_APPLICABILITY
 
-    gated = draft.model_copy(
-        update={"review_items": (*draft.review_items, *clause_items)}
-    )
+    gated = draft.model_copy(update={"review_items": (*draft.review_items, *clause_items)})
     assert unresolved_clause_items(gated) == clause_items
     with pytest.raises(ValueError, match="Review extracted clauses first"):
         build_reviewed_draft(gated, actor="Synthetic Rule Builder", notes="Build.")
@@ -354,9 +339,7 @@ def test_recipe_emits_clause_review_item_and_build_blocks_until_resolved(
 def test_missing_clause_fragment_is_flagged_as_required_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    draft = _logged_clause_extraction(monkeypatch).model_copy(
-        update={"raw_clause_fragments": ()}
-    )
+    draft = _logged_clause_extraction(monkeypatch).model_copy(update={"raw_clause_fragments": ()})
     missing = missing_required_content(draft)
     clause_missing = [item for item in missing if item.kind == "clause"]
     assert [item.semantic_id for item in clause_missing] == [ids.DVC_FAULT_APPLICABILITY]
@@ -377,17 +360,14 @@ def test_rule_change_with_unchanged_artifact_resets_reviewed_proposal(
         actor="Synthetic Semantic Reviewer",
         notes="Reviewed the generated clause decision.",
     )
-    rule = next(
-        item for item in reviewed.decisions if item.id == ids.DVC_FAULT_APPLICABILITY
-    )
+    rule = next(item for item in reviewed.decisions if item.id == ids.DVC_FAULT_APPLICABILITY)
     changed_rule = rule.model_copy(update={"applicability": "reviewed synthetic route"})
     corrected = record_correction(
         reviewed,
         reviewed.model_copy(
             update={
                 "decisions": tuple(
-                    changed_rule if item.id == rule.id else item
-                    for item in reviewed.decisions
+                    changed_rule if item.id == rule.id else item for item in reviewed.decisions
                 )
             }
         ),

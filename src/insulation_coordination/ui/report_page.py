@@ -382,7 +382,9 @@ class ReportPage(QWidget):
         except (OSError, RuntimeError) as error:
             QMessageBox.critical(self, "Generate Report", str(error))
             return
-        artifacts = f"{output.tex_path.name} → {output.pdf_path.name if output.pdf_path else '(no PDF)'}"
+        artifacts = (
+            f"{output.tex_path.name} → {output.pdf_path.name if output.pdf_path else '(no PDF)'}"
+        )
         if output.diff_pdf_path is not None:
             artifacts += f" + {output.diff_pdf_path.name}"
         self._artifacts_label.setText(artifacts)

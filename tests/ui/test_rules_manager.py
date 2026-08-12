@@ -144,8 +144,7 @@ def test_audit_tree_counts_and_lists_curves(
 ) -> None:
     rules_manager.set_package(synthetic_rule_package)
     sections = {
-        rules_manager._tree.topLevelItem(index).text(0):
-        rules_manager._tree.topLevelItem(index)
+        rules_manager._tree.topLevelItem(index).text(0): rules_manager._tree.topLevelItem(index)
         for index in range(rules_manager._tree.topLevelItemCount())
     }
 

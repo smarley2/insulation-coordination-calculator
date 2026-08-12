@@ -110,9 +110,7 @@ class ProjectPage(QWidget):
         self._freq_edit = QLineEdit()
         self._freq_edit.editingFinished.connect(self._on_freq_changed)
         self._freq_help = HelpIndicator(VoltageGuidanceId.FREQUENCY)
-        defaults_layout.addRow(
-            _labelled("Frequency (Hz):", self._freq_help), self._freq_edit
-        )
+        defaults_layout.addRow(_labelled("Frequency (Hz):", self._freq_help), self._freq_edit)
         self._impulse_combo = QComboBox()
         populate_combo(self._impulse_combo, IMPULSE_OPTIONS)
         self._impulse_combo.currentIndexChanged.connect(
@@ -138,7 +136,9 @@ class ProjectPage(QWidget):
         self._pollution_combo = QComboBox()
         populate_combo(self._pollution_combo, POLLUTION_OPTIONS)
         self._pollution_combo.currentIndexChanged.connect(
-            lambda index: self._update_combo_default("pollution_degree", self._pollution_combo, index)
+            lambda index: self._update_combo_default(
+                "pollution_degree", self._pollution_combo, index
+            )
         )
         defaults_layout.addRow("Pollution degree:", self._pollution_combo)
         self._construction_combo = QComboBox()
@@ -243,9 +243,7 @@ class ProjectPage(QWidget):
             self._impulse_combo,
             IMPULSE_OPTIONS,
             defaults.impulse_v,
-            None
-            if defaults.impulse_v is None
-            else impulse_display(defaults.impulse_v),
+            None if defaults.impulse_v is None else impulse_display(defaults.impulse_v),
         )
         select_combo_value(
             self._pollution_combo,

@@ -97,9 +97,7 @@ def test_field_state_label_rejects_a_non_state_id() -> None:
 
 
 def test_voltage_field_state_reads_applicability() -> None:
-    assert (
-        voltage_field_state(PairVoltage.applicable(1200)) is VoltageGuidanceId.MANUAL_VALUE
-    )
+    assert voltage_field_state(PairVoltage.applicable(1200)) is VoltageGuidanceId.MANUAL_VALUE
     assert (
         voltage_field_state(PairVoltage.not_applicable("No coupling"))
         is VoltageGuidanceId.NOT_APPLICABLE

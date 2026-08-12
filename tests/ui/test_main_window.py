@@ -395,7 +395,9 @@ def test_a_new_project_has_nothing_to_discard_but_can_still_be_saved(qtbot, monk
     assert window._save_action.isEnabled() is True
 
 
-def test_save_asks_for_a_name_only_while_the_project_has_no_file(qtbot, tmp_path, monkeypatch) -> None:
+def test_save_asks_for_a_name_only_while_the_project_has_no_file(
+    qtbot, tmp_path, monkeypatch
+) -> None:
     from insulation_coordination.project.persistence import load_project
     from insulation_coordination.ui import main_window as main_window_module
 

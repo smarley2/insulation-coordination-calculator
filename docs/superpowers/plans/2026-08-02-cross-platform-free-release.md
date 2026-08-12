@@ -133,9 +133,7 @@ def default_rules_dir() -> Path:
     return platformdirs.user_data_path("icc") / "rules"
 
 
-def install_rule_package(
-    source: Path, rules_dir: Path | None = None
-) -> InstalledRulePackage:
+def install_rule_package(source: Path, rules_dir: Path | None = None) -> InstalledRulePackage:
     package = load_rule_package(Path(source))
     destination_dir = Path(rules_dir) if rules_dir is not None else default_rules_dir()
     destination_dir.mkdir(parents=True, exist_ok=True)

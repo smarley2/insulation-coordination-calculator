@@ -161,9 +161,7 @@ def test_the_non_mains_table_is_one_spec_over_two_segments() -> None:
     for spec in _by_table("29"):
         assert len(spec.segments) == 2
         assert [segment.page_number for segment in spec.segments] == [127, 128]
-        assert spec.expected_raw_rows == sum(
-            segment.expected_raw_rows for segment in spec.segments
-        )
+        assert spec.expected_raw_rows == sum(segment.expected_raw_rows for segment in spec.segments)
         assert [segment.expected_raw_rows for segment in spec.segments] == [16, 9]
         assert spec.segments[1].logical_row_offset == len(spec.segments[0].data_rows)
         assert spec.expected_data_rows == 18

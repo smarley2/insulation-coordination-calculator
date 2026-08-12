@@ -53,9 +53,7 @@ def _manual_curve_review_is_current(
     variant: FaultTimeVoltageVariant,
 ) -> bool:
     figures = tuple(
-        figure
-        for figure in draft.raw_figures
-        if _source_matches(figure.source, variant.source)
+        figure for figure in draft.raw_figures if _source_matches(figure.source, variant.source)
     )
     if len(figures) != 1:
         return False
@@ -78,16 +76,19 @@ def _manual_curve_review_is_current(
         figure, calibration.calibration_sha256
     ):
         return False
-    return len(
-        tuple(
-            review
-            for review in draft.curve_variant_reviews
-            if review.variant_id == variant.id
-            and review.variant_sha256 == canonical_model_sha256(variant)
-            and review.source_artifact_sha256 == variant.reviewed_artifact_sha256
-            and review.calibration_sha256 == calibration.calibration_sha256
+    return (
+        len(
+            tuple(
+                review
+                for review in draft.curve_variant_reviews
+                if review.variant_id == variant.id
+                and review.variant_sha256 == canonical_model_sha256(variant)
+                and review.source_artifact_sha256 == variant.reviewed_artifact_sha256
+                and review.calibration_sha256 == calibration.calibration_sha256
+            )
         )
-    ) == 1
+        == 1
+    )
 
 
 def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft) -> bool:
@@ -123,9 +124,7 @@ def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft
             for variant in curve.variants
             if variant.id == item.semantic_id
         )
-        return len(variants) == 1 and _manual_curve_review_is_current(
-            changed, variants[0]
-        )
+        return len(variants) == 1 and _manual_curve_review_is_current(changed, variants[0])
     if item.code in {"AMBIGUOUS_COMPOUND_CELL", "AMBIGUOUS_COMPONENT_FORMULA"}:
         grid_id, row_text, column_text, source_index_text = item.semantic_id.rsplit(":", 3)
         cell = next(
@@ -143,11 +142,7 @@ def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft
             return False
         source_index = int(source_index_text)
         component = next(
-            (
-                component
-                for component in cell.components
-                if component.source_index == source_index
-            ),
+            (component for component in cell.components if component.source_index == source_index),
             None,
         )
         if component is None or component.component_id is None:
@@ -182,9 +177,7 @@ def _review_resolution_exists(item: ImportReviewItem, changed: ImportedRuleDraft
         if f"{grid.id}:{cell.row}:{cell.column}" == item.semantic_id
         and _source_matches(cell.source, item.source)
     )
-    return any(
-        cell.value is not None and cell.parse_status == "numeric" for cell in cells
-    )
+    return any(cell.value is not None and cell.parse_status == "numeric" for cell in cells)
 
 
 def _recipes() -> tuple[StandardRecipe, ...]:
@@ -238,9 +231,7 @@ def _changed_tokens(
     before_calibrations = {
         item.figure_artifact_sha256: item for item in original.curve_calibrations
     }
-    after_calibrations = {
-        item.figure_artifact_sha256: item for item in changed.curve_calibrations
-    }
+    after_calibrations = {item.figure_artifact_sha256: item for item in changed.curve_calibrations}
     tokens.extend(
         f"curve-calibration:{artifact_sha256}"
         for artifact_sha256 in sorted(set(before_calibrations) | set(after_calibrations))
@@ -295,12 +286,8 @@ def _require_safe_raw_grid_correction(
                 != after_cell.allowed_component_formula_ids
             ):
                 raise ApprovalError("a correction cannot rewrite component formula routes")
-            before_components = {
-                part.source_index: part for part in before_cell.components
-            }
-            after_components = {
-                part.source_index: part for part in after_cell.components
-            }
+            before_components = {part.source_index: part for part in before_cell.components}
+            after_components = {part.source_index: part for part in after_cell.components}
             if (
                 len(before_components) != len(before_cell.components)
                 or len(after_components) != len(after_cell.components)
@@ -337,9 +324,7 @@ def _require_safe_raw_grid_correction(
                     continue
                 allowed = {
                     formula_id
-                    for component_id, formula_id in (
-                        after_cell.allowed_component_formula_ids
-                    )
+                    for component_id, formula_id in (after_cell.allowed_component_formula_ids)
                     if component_id == component.component_id
                 }
                 exact = (
@@ -353,9 +338,7 @@ def _require_safe_raw_grid_correction(
                     else not after_candidates
                 )
                 if not exact:
-                    raise ApprovalError(
-                        "a correction must select one exact formula candidate"
-                    )
+                    raise ApprovalError("a correction must select one exact formula candidate")
 
 
 def _require_safe_equation_correction(
@@ -379,10 +362,7 @@ def _curve_reopen_evidence(
     variant_id: str,
 ) -> tuple[object, ...]:
     variants = tuple(
-        variant
-        for curve in draft.curves
-        for variant in curve.variants
-        if variant.id == variant_id
+        variant for curve in draft.curves for variant in curve.variants if variant.id == variant_id
     )
     if len(variants) != 1:
         raise ApprovalError("curve review reopening requires one exact curve variant")
@@ -401,9 +381,7 @@ def _curve_reopen_evidence(
             if calibration.figure_artifact_sha256 == artifact_sha256
         ),
         tuple(
-            input
-            for input in draft.manual_curve_variant_inputs
-            if input.variant_id == variant_id
+            input for input in draft.manual_curve_variant_inputs if input.variant_id == variant_id
         ),
     )
 
@@ -515,9 +493,7 @@ def _sync_semantic_proposals(
             source_artifact_sha256="0" * 64,
             review_item_sha256s=(),
         )
-        review_hashes = tuple(
-            item.sha256 for item in _required_review_items(changed, probe)
-        )
+        review_hashes = tuple(item.sha256 for item in _required_review_items(changed, probe))
         probe = probe.model_copy(update={"review_item_sha256s": review_hashes})
         source_sha256 = _current_source_artifact_sha256(changed, probe)
         unchanged = (
@@ -750,9 +726,7 @@ def _require_complete_audit(draft: DraftRulePackage) -> None:
     required.update(f"curve:{rule.id}" for rule in draft.curves)
     if isinstance(draft, ImportedRuleDraft):
         required.update(f"equation:{equation.id}" for equation in draft.extracted_equations)
-        required.update(
-            f"raw-clause:{fragment.id}" for fragment in draft.raw_clause_fragments
-        )
+        required.update(f"raw-clause:{fragment.id}" for fragment in draft.raw_clause_fragments)
     missing = required - audited
     if missing:
         raise ApprovalError("draft has incomplete extraction, table, formula, or mapping audits")
@@ -784,9 +758,7 @@ def _require_logged_content(draft: DraftRulePackage) -> None:
         expected = match.group(2)
     reviews = draft.review_items if isinstance(draft, ImportedRuleDraft) else ()
     raw_grids = draft.raw_grids if isinstance(draft, ImportedRuleDraft) else ()
-    fragments = (
-        draft.raw_clause_fragments if isinstance(draft, ImportedRuleDraft) else ()
-    )
+    fragments = draft.raw_clause_fragments if isinstance(draft, ImportedRuleDraft) else ()
     actual = _content_digest(
         draft.tables,
         draft.formulas,
@@ -807,9 +779,7 @@ def _require_logged_content(draft: DraftRulePackage) -> None:
             draft.curve_calibrations if isinstance(draft, ImportedRuleDraft) else ()
         ),
         manual_curve_variant_inputs=(
-            draft.manual_curve_variant_inputs
-            if isinstance(draft, ImportedRuleDraft)
-            else ()
+            draft.manual_curve_variant_inputs if isinstance(draft, ImportedRuleDraft) else ()
         ),
         curve_variant_reviews=(
             draft.curve_variant_reviews if isinstance(draft, ImportedRuleDraft) else ()
@@ -892,9 +862,7 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
                     if guidance_rule.id in expected_by_id:
                         actual_by_id[guidance_rule.id] = guidance_rule
                 if actual_by_id != expected_by_id:
-                    raise ApprovalError(
-                        "reviewed rule does not correspond to its raw recipe grid"
-                    )
+                    raise ApprovalError("reviewed rule does not correspond to its raw recipe grid")
                 continue
             table = tables[spec.semantic_id]
             expected_source = SourceReference(
@@ -957,13 +925,11 @@ def _require_resolved_recipe_semantics(draft: ImportedRuleDraft) -> None:
                                     (
                                         component
                                         for component in raw.components
-                                        if component.component_id
-                                        == column.projected_component_id
+                                        if component.component_id == column.projected_component_id
                                     ),
                                     None,
                                 )
-                                if raw is not None
-                                and column.projected_component_id is not None
+                                if raw is not None and column.projected_component_id is not None
                                 else raw
                             )
                         if selected is not None and selected.value is not None:
@@ -1178,8 +1144,7 @@ def _require_source_genesis(draft: ImportedRuleDraft) -> None:
         or any(
             identity.standard != recipe.standard
             or identity.edition != recipe.edition
-            or identity.page_count
-            not in (recipe.expected_page_count, *recipe.accepted_page_counts)
+            or identity.page_count not in (recipe.expected_page_count, *recipe.accepted_page_counts)
             for identity, recipe in zip(
                 draft.source_identities,
                 expected,
@@ -1268,7 +1233,9 @@ def approval_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
         or len(resolution_hashes) != len(resolved)
         or not resolved <= set(inventory_hashes)
     ):
-        semantic_id = draft.review_items[0].semantic_id if draft.review_items else draft.manifest.version
+        semantic_id = (
+            draft.review_items[0].semantic_id if draft.review_items else draft.manifest.version
+        )
         blockers.append(
             _semantic_blocker(
                 draft,
@@ -1345,9 +1312,7 @@ def approval_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
                 draft,
                 code="CURVE_REQUIRED",
                 semantic_id=semantic_id,
-                message=(
-                    f"required curve {semantic_id} has no reviewed variants in the draft"
-                ),
+                message=(f"required curve {semantic_id} has no reviewed variants in the draft"),
             )
         )
     for semantic_id in incomplete_required_curve_variants(draft):
@@ -1427,12 +1392,8 @@ def missing_required_curves(draft: ImportedRuleDraft) -> tuple[str, ...]:
     from insulation_coordination.rules.importer.recipes import RECIPES
 
     present = {curve.id for curve in draft.curves}
-    required = {
-        semantic_id for recipe in RECIPES for semantic_id in recipe.required_curves
-    }
-    return tuple(
-        semantic_id for semantic_id in sorted(required) if semantic_id not in present
-    )
+    required = {semantic_id for recipe in RECIPES for semantic_id in recipe.required_curves}
+    return tuple(semantic_id for semantic_id in sorted(required) if semantic_id not in present)
 
 
 def is_fully_resolved(draft: ImportedRuleDraft) -> bool:

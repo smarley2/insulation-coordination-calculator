@@ -65,9 +65,7 @@ def _pages(path: Path):
 def test_vector_paths_win_even_when_an_image_exists(curve_pdf: Path) -> None:
     reader, pdf = _pages(curve_pdf)
     with pdf:
-        figure = extract_raw_figure(
-            reader.pages[0], pdf.pages[0], synthetic_curve_spec(), IDENTITY
-        )
+        figure = extract_raw_figure(reader.pages[0], pdf.pages[0], synthetic_curve_spec(), IDENTITY)
     assert figure.source_mode == "vector_path"
     assert figure.pixel_size is not None
 
@@ -89,12 +87,8 @@ def test_raster_only_page_falls_back_to_lossless_xobject(curve_pdf: Path) -> Non
 def test_source_artifact_hash_is_deterministic(curve_pdf: Path) -> None:
     reader, pdf = _pages(curve_pdf)
     with pdf:
-        first = extract_raw_figure(
-            reader.pages[0], pdf.pages[0], synthetic_curve_spec(), IDENTITY
-        )
-        second = extract_raw_figure(
-            reader.pages[0], pdf.pages[0], synthetic_curve_spec(), IDENTITY
-        )
+        first = extract_raw_figure(reader.pages[0], pdf.pages[0], synthetic_curve_spec(), IDENTITY)
+        second = extract_raw_figure(reader.pages[0], pdf.pages[0], synthetic_curve_spec(), IDENTITY)
     assert first.artifact_sha256 == second.artifact_sha256
     assert len(first.artifact_sha256) == 64
 
@@ -102,9 +96,7 @@ def test_source_artifact_hash_is_deterministic(curve_pdf: Path) -> None:
 def test_crop_bbox_and_vector_transform_are_retained(curve_pdf: Path) -> None:
     reader, pdf = _pages(curve_pdf)
     with pdf:
-        figure = extract_raw_figure(
-            reader.pages[0], pdf.pages[0], synthetic_curve_spec(), IDENTITY
-        )
+        figure = extract_raw_figure(reader.pages[0], pdf.pages[0], synthetic_curve_spec(), IDENTITY)
     assert figure.source_bbox == tuple(Decimal(str(value)) for value in BBOX)
     assert len(figure.transform) == 6
     assert figure.transform[0] > 0
@@ -138,9 +130,7 @@ def test_missing_source_in_declared_bbox_blocks_extraction(curve_pdf: Path) -> N
             extract_raw_figure(reader.pages[0], pdf.pages[0], spec, IDENTITY)
 
 
-def test_lossy_image_blocks_before_decode(
-    curve_pdf: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_lossy_image_blocks_before_decode(curve_pdf: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from pypdf.generic import NameObject
 
     reader, pdf = _pages(curve_pdf)

@@ -107,9 +107,7 @@ _FREQUENCY_INPUT = "working_voltage_frequency_hz"
 #: upper bound with a trailing comma, so the pair is read from the reviewed node text --
 #: the same way ``extract.py`` reads a bound out of a table's own header text. The
 #: quantity is never declared here: only the shape of the pair is.
-_FREQUENCY_PAIR = re.compile(
-    r"([0-9]+(?:[.,][0-9]+)?)[  ]*([kM]?Hz)\b"
-)
+_FREQUENCY_PAIR = re.compile(r"([0-9]+(?:[.,][0-9]+)?)[  ]*([kM]?Hz)\b")
 
 
 def _frequency_bounds_hz(
@@ -166,13 +164,9 @@ def project_high_frequency_applicability(
             source=fragment.nodes[0].source,
         )
 
-    below = Matcher(
-        input=_FREQUENCY_INPUT, op="range", maximum=lower_hz, maximum_inclusive=False
-    )
+    below = Matcher(input=_FREQUENCY_INPUT, op="range", maximum=lower_hz, maximum_inclusive=False)
     within = Matcher(input=_FREQUENCY_INPUT, op="range", minimum=lower_hz, maximum=upper_hz)
-    above = Matcher(
-        input=_FREQUENCY_INPUT, op="range", minimum=upper_hz, minimum_inclusive=False
-    )
+    above = Matcher(input=_FREQUENCY_INPUT, op="range", minimum=upper_hz, minimum_inclusive=False)
     rule = DecisionRule(
         id=ids.HIGH_FREQUENCY_APPLICABILITY,
         inputs=(

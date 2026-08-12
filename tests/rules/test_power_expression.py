@@ -12,7 +12,9 @@ from insulation_coordination.domain.rules import (
 from insulation_coordination.domain.trace import Quantity
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_formula
 
-SOURCE = SourceReference(document_id="synthetic-source", standard="SYNTHETIC-1", edition="1", clause="4.2")
+SOURCE = SourceReference(
+    document_id="synthetic-source", standard="SYNTHETIC-1", edition="1", clause="4.2"
+)
 
 
 def _formula(expression: Power, unit: str = "1", precision: int = 34) -> Formula:

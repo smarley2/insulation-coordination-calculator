@@ -89,15 +89,18 @@ def test_source_reference_has_typed_document_and_page() -> None:
     assert source.page == 7
     assert source.note is None
 
+
 def test_package_rejects_unknown_source_document_link() -> None:
     package = synthetic_package()
     bad = package.model_copy(
         update={
             "tables": (
                 package.tables[0].model_copy(
-                    update={"source": package.tables[0].source.model_copy(
-                        update={"document_id": "missing-source"}
-                    )}
+                    update={
+                        "source": package.tables[0].source.model_copy(
+                            update={"document_id": "missing-source"}
+                        )
+                    }
                 ),
                 *package.tables[1:],
             )
@@ -129,9 +132,11 @@ In `domain/rules.py`:
 RULE_SCHEMA_VERSION = 4
 IEC_IMPORTER_VERSION = "iec-pdf-4"
 
+
 class SourceGeometryReference(FrozenModel):
     artifact_sha256: str
     bbox: tuple[DecimalValue, DecimalValue, DecimalValue, DecimalValue] | None = None
+
 
 class SourceReference(FrozenModel):
     document_id: Identifier
@@ -145,6 +150,7 @@ class SourceReference(FrozenModel):
     column: ReferenceText | None = None
     geometry: SourceGeometryReference | None = None
     note: ReferenceText | None = None
+
 
 class SourceDocument(FrozenModel):
     id: Identifier
@@ -197,9 +203,8 @@ Use updated schema-v4 synthetic `SOURCE`. Add this helper and assertions:
 ```python
 def _boolean_rule(*, include_false: bool = True, mixed: bool = False) -> DecisionRule:
     inputs = (DecisionInput(name="enabled", kind="boolean"),)
-    combinations: tuple[tuple[bool, str | None, str], ...] = (
-        ((True, None, "path-a"),)
-        + (((False, None, "path-b"),) if include_false else ())
+    combinations: tuple[tuple[bool, str | None, str], ...] = ((True, None, "path-a"),) + (
+        ((False, None, "path-b"),) if include_false else ()
     )
     if mixed:
         inputs += (DecisionInput(name="mode", kind="categorical", allowed_values=("x", "y")),)
@@ -221,11 +226,14 @@ def _boolean_rule(*, include_false: bool = True, mixed: bool = False) -> Decisio
     return DecisionRule(
         id="synthetic-boolean",
         inputs=inputs,
-        outputs=(DecisionOutput(name="route", kind="categorical", allowed_values=("path-a", "path-b")),),
+        outputs=(
+            DecisionOutput(name="route", kind="categorical", allowed_values=("path-a", "path-b")),
+        ),
         rows=rows,
         exhaustive=True,
         source=SOURCE,
     )
+
 
 rule = _boolean_rule()
 assert evaluate_decision(rule, {"enabled": True}).values[0].categorical == "path-a"
@@ -244,11 +252,13 @@ with pytest.raises(ValueError, match="boolean"):
         id="synthetic-string-boolean",
         inputs=(DecisionInput(name="enabled", kind="boolean"),),
         outputs=(DecisionOutput(name="route", kind="categorical", allowed_values=("path-a",)),),
-        rows=(DecisionRow(
-            matchers=(Matcher(input="enabled", op="equals", values=("true",)),),
-            values=(DecisionValue(name="route", categorical="path-a"),),
-            source=SOURCE,
-        ),),
+        rows=(
+            DecisionRow(
+                matchers=(Matcher(input="enabled", op="equals", values=("true",)),),
+                values=(DecisionValue(name="route", categorical="path-a"),),
+                source=SOURCE,
+            ),
+        ),
         exhaustive=False,
         source=SOURCE,
     )
@@ -338,7 +348,10 @@ Its source uses only synthetic provenance. Add these exact assertions:
 ```python
 assert set(CurvePoint.model_fields) == {"x", "y"}
 assert select_curve_variant(rule, exact_selector).status == "matched"
-assert select_curve_variant(rule, exact_selector.model_copy(update={"dvc_context": None})).status == "no_match"
+assert (
+    select_curve_variant(rule, exact_selector.model_copy(update={"dvc_context": None})).status
+    == "no_match"
+)
 with pytest.raises(ValueError, match="selector"):
     PiecewiseCurveRule(id=rule.id, variants=(rule.variants[0], rule.variants[0]), source=SOURCE)
 with pytest.raises(EvaluationError, match="multiple"):
@@ -375,6 +388,7 @@ CurveInterpolation = TypingLiteral[
     "linear", "log_x", "log_y", "log_log", "constant", "step_before", "step_after"
 ]
 
+
 class CurveAxis(FrozenModel):
     quantity_kind: Identifier
     unit: Identifier
@@ -382,9 +396,11 @@ class CurveAxis(FrozenModel):
     minimum: DecimalValue
     maximum: DecimalValue
 
+
 class CurvePoint(FrozenModel):
     x: DecimalValue
     y: DecimalValue
+
 
 class CurveSegment(FrozenModel):
     start: int
@@ -392,11 +408,13 @@ class CurveSegment(FrozenModel):
     segment_type: CurveSegmentType
     interpolation: CurveInterpolation
 
+
 class FaultTimeVoltageSelector(FrozenModel):
     subject: TypingLiteral["accessible_circuit", "conductive_accessible_part"]
     voltage_basis: TypingLiteral["ac_rms", "ac_peak", "dc"]
     dvc_context: Identifier | None
     environment_context: Identifier | None
+
 
 class FaultTimeVoltageVariant(FrozenModel):
     id: Identifier
@@ -408,6 +426,7 @@ class FaultTimeVoltageVariant(FrozenModel):
     applicability: ApplicabilityText
     source: SourceReference
     reviewed_artifact_sha256: str
+
 
 class PiecewiseCurveRule(FrozenModel):
     id: Identifier
@@ -428,6 +447,7 @@ Use result models:
 class CurveSelectionResult(FrozenModel):
     status: TypingLiteral["matched", "no_match"]
     variant: FaultTimeVoltageVariant | None = None
+
 
 class CurveEvaluationResult(FrozenModel):
     status: TypingLiteral["matched", "no_match", "out_of_domain"]
@@ -513,6 +533,7 @@ In `extract.py`:
 ```python
 ProposalState = Literal["proposed", "reviewed"]
 
+
 class SemanticProposal(FrozenModel):
     semantic_id: Identifier
     rule_kind: RuleKind
@@ -520,6 +541,7 @@ class SemanticProposal(FrozenModel):
     rule_sha256: str
     source_artifact_sha256: str
     review_item_sha256s: tuple[str, ...] = ()
+
 
 class ImportedRuleDraft(DraftRulePackage):
     semantic_proposals: tuple[SemanticProposal, ...] = ()
@@ -602,11 +624,14 @@ assert "curves.json" in checksums
 assert build_audit_inventory(loaded).curve_count == 1
 rules_manager.set_package(loaded)
 assert rules_manager.audit_curve_count == 1
-assert next(
-    rules_manager._audit_tree.topLevelItem(index).text(0)
-    for index in range(rules_manager._audit_tree.topLevelItemCount())
-    if rules_manager._audit_tree.topLevelItem(index).text(0) == "Curves"
-) == "Curves"
+assert (
+    next(
+        rules_manager._audit_tree.topLevelItem(index).text(0)
+        for index in range(rules_manager._audit_tree.topLevelItemCount())
+        if rules_manager._audit_tree.topLevelItem(index).text(0) == "Curves"
+    )
+    == "Curves"
+)
 report = build_report_model(project, results, group_results(results, ()), loaded)
 assert report.rules.curve_count == 1
 ```
@@ -632,14 +657,23 @@ class RulePackage(FrozenModel):
     # existing final collections remain
     curves: tuple[PiecewiseCurveRule, ...] = ()
 
+
 CORE_MEMBERS = (
-    "manifest.json", "tables.json", "formulas.json", "mappings.json",
-    "decisions.json", "procedures.json", "guidance.json", "curves.json",
+    "manifest.json",
+    "tables.json",
+    "formulas.json",
+    "mappings.json",
+    "decisions.json",
+    "procedures.json",
+    "guidance.json",
+    "curves.json",
 )
+
 
 class AuditInventory(FrozenModel):
     # existing fields remain
     curves: tuple[PiecewiseCurveRule, ...]
+
 
 class RulesProvenance(FrozenModel):
     # existing fields remain
@@ -737,6 +771,7 @@ Define `CompoundQuantitySpec` in `identify.py` and raw component types/parser in
 class CompoundQuantitySpec(FrozenModel):
     component_ids: tuple[Identifier, ...]
 
+
 class RawQuantityComponent(FrozenModel):
     component_id: Identifier
     raw_text: str
@@ -744,10 +779,12 @@ class RawQuantityComponent(FrozenModel):
     unit: Identifier | None = None
     source: SourceReference
 
+
 class ComponentFormulaCandidate(FrozenModel):
     component_id: Identifier
     formula_id: Identifier | None
     source: SourceReference
+
 
 class ParsedDataCell(FrozenModel):
     # existing scalar fields remain
@@ -838,6 +875,7 @@ Define recipe types in `identify.py` and extracted reference token in `extract.p
 ```python
 BlankCellSemantics = Literal["inherit", "not_applicable", "reference", "missing"]
 
+
 class MergedCellSpec(FrozenModel):
     row: int
     column: int
@@ -845,16 +883,19 @@ class MergedCellSpec(FrozenModel):
     column_span: int = Field(ge=1)
     inherit: Literal["right", "down", "both", "none"]
 
+
 class BlankCellSpec(FrozenModel):
     row: int
     column: int
     semantics: BlankCellSemantics
+
 
 class ReferenceSlotSpec(FrozenModel):
     row: int
     column: int
     target_rule_id: Identifier
     target_kind: RuleKind
+
 
 class SemanticReferenceToken(FrozenModel):
     target_rule_id: Identifier
@@ -1022,17 +1063,20 @@ class ClauseAuditSpec(FrozenModel):
     expected_root_kind: Literal["paragraph", "bullets"]
     output_kind: Literal["decision", "procedure"]
 
+
 class ClauseNode(FrozenModel):
     order: int = Field(ge=0)
     kind: Literal["paragraph", "bullet", "alternative"]
     raw_text: str
     source: SourceReference
 
+
 class ClauseToken(FrozenModel):
     kind: Literal["reference", "quantity", "unit", "operator", "condition"]
     raw_text: str
     normalized: str | Decimal
     source: SourceReference
+
 
 class RawClauseFragment(FrozenModel):
     id: Identifier
@@ -1094,8 +1138,14 @@ Public UI tests use synthetic proposals and assert proposed rules cannot approve
 
 ```python
 grids = {grid.id: grid for grid in draft.raw_grids}
-assert (grids["iec62477_2022.dvc.voltage_limits"].rows, grids["iec62477_2022.dvc.voltage_limits"].columns) == (8, 6)
-assert (grids["iec62477_2022.dvc.protection_matrix"].rows, grids["iec62477_2022.dvc.protection_matrix"].columns) == (9, 7)
+assert (
+    grids["iec62477_2022.dvc.voltage_limits"].rows,
+    grids["iec62477_2022.dvc.voltage_limits"].columns,
+) == (8, 6)
+assert (
+    grids["iec62477_2022.dvc.protection_matrix"].rows,
+    grids["iec62477_2022.dvc.protection_matrix"].columns,
+) == (9, 7)
 assert all(proposal.state == "proposed" for proposal in draft.semantic_proposals)
 assert [
     (item.semantic_id, item.rule_sha256, item.source_artifact_sha256)
@@ -1134,9 +1184,7 @@ Core delegation:
 ```python
 class SemanticReviewModel:
     def review(self, semantic_id: str, actor: str, notes: str) -> ImportedRuleDraft:
-        self.draft = mark_proposal_reviewed(
-            self.draft, semantic_id, actor=actor, notes=notes
-        )
+        self.draft = mark_proposal_reviewed(self.draft, semantic_id, actor=actor, notes=notes)
         return self.draft
 
     @property
@@ -1200,6 +1248,7 @@ class FakeOcrEngine:
     def recognize(self, image: Image.Image) -> tuple[OcrToken, ...]:
         return (OcrToken(text="13", confidence=Decimal("0.99"), box=PixelBox(1, 2, 3, 4)),)
 
+
 def test_fake_ocr_is_protocol_compatible() -> None:
     assert isinstance(FakeOcrEngine(), OcrEngine)
 ```
@@ -1225,15 +1274,18 @@ class PixelBox(FrozenModel):
     right: int = Field(gt=0)
     bottom: int = Field(gt=0)
 
+
 class OcrToken(FrozenModel):
     text: str
     confidence: Decimal = Field(ge=0, le=1)
     box: PixelBox
 
+
 class OcrEngineIdentity(FrozenModel):
     name: Identifier
     version: str
     config_sha256: str
+
 
 @runtime_checkable
 class OcrEngine(Protocol):
@@ -1297,7 +1349,10 @@ vector = extract_raw_figure(vector_page, synthetic_curve_spec(), FakeOcrEngine()
 raster = extract_raw_figure(raster_page, synthetic_curve_spec(), FakeOcrEngine())
 assert vector.source_mode == "vector_path"
 assert raster.source_mode == "image_xobject"
-assert vector.artifact_sha256 == extract_raw_figure(vector_page, synthetic_curve_spec(), FakeOcrEngine()).artifact_sha256
+assert (
+    vector.artifact_sha256
+    == extract_raw_figure(vector_page, synthetic_curve_spec(), FakeOcrEngine()).artifact_sha256
+)
 ```
 
 Also assert vector data wins even when image exists; lossy/ambiguous image choice blocks; crop bbox and transformation matrix are retained; `RawCurvePoint` carries pixel/PDF geometry while `CurvePoint` does not. IEC recipe test asserts only allowed structural locators: pages 54–56 and figure IDs 5–7.
@@ -1331,16 +1386,19 @@ class CurveAuditSpec(FrozenModel):
     permitted_segment_types: tuple[CurveSegmentType, ...]
     permitted_interpolations: tuple[CurveInterpolation, ...]
 
+
 class RawCurvePoint(FrozenModel):
     x: Decimal
     y: Decimal
     space: Literal["pdf", "pixel"]
     primitive_ref: str
 
+
 class RawCurveTrace(FrozenModel):
     id: Identifier
     points: tuple[RawCurvePoint, ...]
     stroke_width: Decimal
+
 
 class RawFigure(FrozenModel):
     source: SourceReference
@@ -1428,14 +1486,17 @@ class AxisCalibration(FrozenModel):
     residual_pixels: Decimal
     minor_grid_spacing_pixels: Decimal
 
+
 class PlotCalibration(FrozenModel):
     x: AxisCalibration
     y: AxisCalibration
+
 
 class ConservatismReport(FrozenModel):
     maximum_positive_voltage_error: Decimal
     maximum_fidelity_error_pixels: Decimal
     proven: bool
+
 
 class CurveDigitizationResult(FrozenModel):
     proposed_rule: PiecewiseCurveRule | None
@@ -1613,7 +1674,10 @@ path = tmp_path / "synthetic.icrules"
 write_rule_package(path, package)
 reloaded = load_rule_package(path)
 assert reloaded.curves == package.curves
-assert evaluate_piecewise_curve(reloaded.curves[0], synthetic_selector(), Decimal("27")).status == "matched"
+assert (
+    evaluate_piecewise_curve(reloaded.curves[0], synthetic_selector(), Decimal("27")).status
+    == "matched"
+)
 ```
 
 Private tests locate Figures 5, 6, and 7; digitize twice and compare canonical hashes; assert initial proposal blocks approval; review all required exact artifact/rule hashes through review API; export/re-import `.icrules`; evaluate every extracted selector at an in-domain breakpoint; assert Table 2 resolves to the single curve rule and Table 7 semantic IDs. Never assert, snapshot, log, or commit actual labels, coordinates, thresholds, values, crops, or package bytes.

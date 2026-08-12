@@ -529,7 +529,8 @@ def test_point_replacement_reopens_only_its_curve_review(
     assert {
         item.semantic_id
         for item in changed.review_items
-        if item.sha256 in {resolution.review_item_sha256 for resolution in changed.review_resolutions}
+        if item.sha256
+        in {resolution.review_item_sha256 for resolution in changed.review_resolutions}
     } == {"synthetic.curve.5.2"}
     reviewed = review_curve_variant(
         changed,
@@ -688,10 +689,7 @@ def test_stale_manual_calibration_blocks_curve_approval(
         }
     )
 
-    assert any(
-        item.code == "CURVE_VARIANT_REVIEW_REQUIRED"
-        for item in approval_blockers(stale)
-    )
+    assert any(item.code == "CURVE_VARIANT_REVIEW_REQUIRED" for item in approval_blockers(stale))
 
 
 def test_tampered_manual_provenance_blocks_approval_and_resolution(
@@ -728,14 +726,9 @@ def test_tampered_manual_provenance_blocks_approval_and_resolution(
             ),
         }
     )
-    item = next(
-        item
-        for item in tampered.review_items
-        if item.semantic_id == tampered_variant.id
-    )
+    item = next(item for item in tampered.review_items if item.semantic_id == tampered_variant.id)
 
     assert _review_resolution_exists(item, tampered) is False
     assert any(
-        blocker.code == "CURVE_VARIANT_REVIEW_REQUIRED"
-        for blocker in approval_blockers(tampered)
+        blocker.code == "CURVE_VARIANT_REVIEW_REQUIRED" for blocker in approval_blockers(tampered)
     )

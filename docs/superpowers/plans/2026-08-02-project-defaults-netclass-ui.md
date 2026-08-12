@@ -63,8 +63,18 @@ def test_project_default_dropdown_choices(qtbot, qtbot_project):
         "80 kV",
         "100 kV",
     ]
-    assert [page._pollution_combo.itemText(i) for i in range(page._pollution_combo.count())] == ["", "1", "2"]
-    assert [page._cti_combo.itemText(i) for i in range(page._cti_combo.count())] == ["", "I", "II", "IIIa", "IIIb"]
+    assert [page._pollution_combo.itemText(i) for i in range(page._pollution_combo.count())] == [
+        "",
+        "1",
+        "2",
+    ]
+    assert [page._cti_combo.itemText(i) for i in range(page._cti_combo.count())] == [
+        "",
+        "I",
+        "II",
+        "IIIa",
+        "IIIb",
+    ]
 ```
 
 - [ ] **Step 2: Add a test for selection storage and blank clearing**

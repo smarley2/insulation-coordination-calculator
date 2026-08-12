@@ -92,9 +92,7 @@ def test_human_view_reports_inner_layer_distances(report_inputs) -> None:
     view = build_human_report_view(changed_model)
 
     clearance = next(
-        item
-        for item in view.comparison_matrices
-        if item.name == "Required inner-layer clearance"
+        item for item in view.comparison_matrices if item.name == "Required inner-layer clearance"
     )
     creepage = next(
         item for item in view.comparison_matrices if item.name == "Required inner-layer creepage"

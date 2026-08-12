@@ -13,7 +13,9 @@ from insulation_coordination.domain.rules import (
     SourceReference,
 )
 
-SOURCE = SourceReference(document_id="synthetic-source", standard="SYNTHETIC-1", edition="1", clause="4.2", table="T-1")
+SOURCE = SourceReference(
+    document_id="synthetic-source", standard="SYNTHETIC-1", edition="1", clause="4.2", table="T-1"
+)
 
 
 def _rule(
@@ -66,9 +68,7 @@ def test_categorical_matcher_outside_allowed_values_is_rejected() -> None:
 
 def test_range_matcher_on_a_categorical_input_is_rejected() -> None:
     row = DecisionRow(
-        matchers=(
-            Matcher(input="colour", op="range", minimum=Decimal(0), maximum=Decimal(1)),
-        ),
+        matchers=(Matcher(input="colour", op="range", minimum=Decimal(0), maximum=Decimal(1)),),
         values=(DecisionValue(name="protection", categorical="basic"),),
         source=SOURCE,
     )
@@ -180,8 +180,8 @@ def test_duplicate_input_or_output_names_are_rejected() -> None:
 
 def _boolean_rule(*, include_false: bool = True, mixed: bool = False) -> DecisionRule:
     inputs = (DecisionInput(name="enabled", kind="boolean"),)
-    combinations: tuple[tuple[bool, str | None, str], ...] = (
-        ((True, None, "path-a"),) + (((False, None, "path-b"),) if include_false else ())
+    combinations: tuple[tuple[bool, str | None, str], ...] = ((True, None, "path-a"),) + (
+        ((False, None, "path-b"),) if include_false else ()
     )
     if mixed:
         inputs += (DecisionInput(name="mode", kind="categorical", allowed_values=("x", "y")),)

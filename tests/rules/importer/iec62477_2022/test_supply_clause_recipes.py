@@ -97,9 +97,7 @@ def _paragraph_fragment(
 
 
 def _decision(rules: tuple[object, ...], semantic_id: str) -> DecisionRule:
-    return next(
-        rule for rule in rules if isinstance(rule, DecisionRule) and rule.id == semantic_id
-    )
+    return next(rule for rule in rules if isinstance(rule, DecisionRule) and rule.id == semantic_id)
 
 
 def _project_system_voltage(fragment: RawClauseFragment) -> DecisionRule:
@@ -218,9 +216,7 @@ def test_a_foreign_fragment_cannot_be_projected() -> None:
 
 def test_a_fragment_from_another_standard_cannot_be_projected() -> None:
     other = _bullet_fragment()
-    other = other.model_copy(
-        update={"source": other.source.model_copy(update={"edition": "2"})}
-    )
+    other = other.model_copy(update={"source": other.source.model_copy(update={"edition": "2"})})
     with pytest.raises(ValueError, match="identified source"):
         project_system_voltage_resolution(other, IDENTITY)
 
@@ -235,9 +231,7 @@ def test_propagation_is_evaluated_in_both_directions() -> None:
     mains_side = _lookup(rule, evaluated_side="mains", **common)
     non_mains_side = _lookup(rule, evaluated_side="non_mains", **common)
     assert mains_side is not None and non_mains_side is not None
-    assert _value(mains_side, "transferred_requirement") != _value(
-        mains_side, "source_requirement"
-    )
+    assert _value(mains_side, "transferred_requirement") != _value(mains_side, "source_requirement")
     assert _value(mains_side, "source_requirement") == "ovc_ii"
     assert _value(non_mains_side, "source_requirement") == "ovc_iv"
     assert _value(mains_side, "governing_requirement") == "ovc_iii"
@@ -264,9 +258,7 @@ def test_a_propagation_fragment_with_the_wrong_alternative_count_blocks() -> Non
 
 
 def test_without_verified_isolation_the_combined_requirement_propagates() -> None:
-    rule = _project_barrier(
-        _paragraph_fragment(ids.SUPPLY_VERIFIED_BARRIER_TRANSFER)
-    )
+    rule = _project_barrier(_paragraph_fragment(ids.SUPPLY_VERIFIED_BARRIER_TRANSFER))
     row = _lookup(
         rule,
         galvanic_isolation_verified=False,
@@ -280,9 +272,7 @@ def test_without_verified_isolation_the_combined_requirement_propagates() -> Non
 
 
 def test_verified_isolation_keeps_the_transfer_side_specific() -> None:
-    rule = _project_barrier(
-        _paragraph_fragment(ids.SUPPLY_VERIFIED_BARRIER_TRANSFER)
-    )
+    rule = _project_barrier(_paragraph_fragment(ids.SUPPLY_VERIFIED_BARRIER_TRANSFER))
     row = _lookup(
         rule,
         galvanic_isolation_verified=True,
@@ -336,9 +326,7 @@ def _frequency_tokens(
                 source=SOURCE,
             )
         )
-        tokens.append(
-            ClauseToken(kind="unit", raw_text=unit, normalized=unit, source=SOURCE)
-        )
+        tokens.append(ClauseToken(kind="unit", raw_text=unit, normalized=unit, source=SOURCE))
     return tuple(tokens)
 
 
@@ -385,9 +373,7 @@ def test_a_degradable_device_requires_monitoring_and_indication() -> None:
 
 def test_a_device_outside_a_category_reduction_is_exempt() -> None:
     rule = _project_spd(_paragraph_fragment(ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS))
-    row = _lookup(
-        rule, **_spd_inputs(device_degradable=True, part_of_category_reduction=False)
-    )
+    row = _lookup(rule, **_spd_inputs(device_degradable=True, part_of_category_reduction=False))
     assert row is not None
     assert _value(row, "monitoring_required") is False
     assert _value(row, "reduction_permitted") is False
@@ -433,9 +419,7 @@ def test_a_transformer_fragment_without_a_frequency_pair_blocks() -> None:
 
 def test_a_transformer_fragment_with_two_frequency_pairs_blocks() -> None:
     with pytest.raises(ClauseStructureError, match="AMBIGUOUS_CLAUSE_STRUCTURE"):
-        project_hf_transformer_attenuation(
-            _hf_fragment(("42", "kHz"), ("7", "MHz")), IDENTITY
-        )
+        project_hf_transformer_attenuation(_hf_fragment(("42", "kHz"), ("7", "MHz")), IDENTITY)
 
 
 def test_no_supply_recipe_file_declares_a_frequency_threshold() -> None:

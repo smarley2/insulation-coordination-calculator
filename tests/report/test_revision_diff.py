@@ -97,9 +97,8 @@ def test_diff_labels_added_and_removed_content() -> None:
     diff = render_revision_diff(previous, current, previous_revision="01", current_revision="02")
 
     assert r"\textbf{added:} FIELD\_CHECK: Confirm the field classification.\par" in diff
-    assert (
-        r"\textbf{removed:}"
-        in render_revision_diff(current, previous, previous_revision="02", current_revision="03")
+    assert r"\textbf{removed:}" in render_revision_diff(
+        current, previous, previous_revision="02", current_revision="03"
     )
 
 

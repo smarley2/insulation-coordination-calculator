@@ -228,9 +228,7 @@ def project_impulse_procedure(
     for variant, column in VARIANT_COLUMNS:
         fields = {field: _condition(grid, row, column) for row, field in FIELD_ROWS}
         continuations = tuple(
-            text
-            for row in CONTINUATION_ROWS
-            if (text := _condition(grid, row, column))
+            text for row in CONTINUATION_ROWS if (text := _condition(grid, row, column))
         )
         steps = tuple(
             ProcedureStep(
@@ -256,11 +254,7 @@ def project_impulse_procedure(
                 source=source,
             )
             for order, text in enumerate(
-                (
-                    fields[field]
-                    for field in _PREPARATION_FIELDS
-                    if fields[field]
-                ),
+                (fields[field] for field in _PREPARATION_FIELDS if fields[field]),
                 start=1,
             )
         )
@@ -506,8 +500,7 @@ def _dielectric_specs(
                         TableColumnSpec(
                             semantic_id=f"test_voltage_{purpose}_{supply}_v",
                             heading=(
-                                f"{supply} test voltage for the "
-                                f"{purpose.replace('_', ' ')} case"
+                                f"{supply} test voltage for the {purpose.replace('_', ' ')} case"
                             ),
                             source_column=source_column,
                             role="data",
@@ -705,9 +698,7 @@ def _partial_discharge_applicability(
     note = _cell_text(grid, _TABLE_30_NOTE_ROWS[0], 0)
     return DecisionRule(
         id=_PARTIAL_DISCHARGE_APPLICABILITY_ID,
-        inputs=(
-            DecisionInput(name="partial_discharge_test_voltage_declared", kind="boolean"),
-        ),
+        inputs=(DecisionInput(name="partial_discharge_test_voltage_declared", kind="boolean"),),
         outputs=(
             DecisionOutput(
                 name="partial_discharge_test",
@@ -740,9 +731,7 @@ def _partial_discharge_applicability(
                         boolean=True,
                     ),
                 ),
-                values=(
-                    DecisionValue(name="partial_discharge_test", categorical="required"),
-                ),
+                values=(DecisionValue(name="partial_discharge_test", categorical="required"),),
                 source=row_source,
             ),
         ),
@@ -779,9 +768,7 @@ def project_partial_discharge(
         table="30",
     )
     rows_by_field = {field: row for row, field in PARTIAL_DISCHARGE_FIELD_ROWS}
-    conditions = {
-        field: _cell_text(grid, row, 1) for row, field in PARTIAL_DISCHARGE_FIELD_ROWS
-    }
+    conditions = {field: _cell_text(grid, row, 1) for row, field in PARTIAL_DISCHARGE_FIELD_ROWS}
     empty = sorted(field for field, text in conditions.items() if not text)
     if empty:
         _fail(f"declared fields {empty} state no condition")
@@ -797,9 +784,7 @@ def project_partial_discharge(
             ProcedureStep(
                 order=order,
                 text=conditions[field],
-                source=source.model_copy(
-                    update={"row": f"grid row {rows_by_field[field] + 1}"}
-                ),
+                source=source.model_copy(update={"row": f"grid row {rows_by_field[field] + 1}"}),
             )
             for order, field in enumerate(fields, start=1)
         )

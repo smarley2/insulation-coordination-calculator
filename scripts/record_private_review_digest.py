@@ -31,8 +31,13 @@ def main() -> int:
     identities = tuple(identify_standard(path) for path in args.pdf)
     draft = extract_draft(tuple(args.pdf))
     digest = draft_review_digest(draft)
-    print("Identified standards:", ", ".join(f"{item.standard} {item.edition}" for item in identities))
-    print("Raw-grid dimensions:", ", ".join(f"{grid.id}={grid.rows}x{grid.columns}" for grid in draft.raw_grids))
+    print(
+        "Identified standards:", ", ".join(f"{item.standard} {item.edition}" for item in identities)
+    )
+    print(
+        "Raw-grid dimensions:",
+        ", ".join(f"{grid.id}={grid.rows}x{grid.columns}" for grid in draft.raw_grids),
+    )
     print("Review-item count:", len(draft.review_items))
     print("Digest:", digest)
     if input(f'Type "{CONFIRMATION}" to write the digest: ') != CONFIRMATION:

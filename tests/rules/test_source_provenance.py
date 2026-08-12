@@ -92,11 +92,7 @@ def test_package_rejects_source_document_standard_or_edition_mismatch(
         update={
             "tables": (
                 package.tables[0].model_copy(
-                    update={
-                        "source": package.tables[0].source.model_copy(
-                            update={field: value}
-                        )
-                    }
+                    update={"source": package.tables[0].source.model_copy(update={field: value})}
                 ),
                 *package.tables[1:],
             )

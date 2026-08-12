@@ -188,9 +188,7 @@ def _compare_by_axis_value(
     """
     source_cells = _by_coordinate(source_grid)
     target_cells = _by_coordinate(target_grid)
-    items: list[ImportReviewItem] = list(
-        _matched_columns(spec, match, source_cells, target_cells)
-    )
+    items: list[ImportReviewItem] = list(_matched_columns(spec, match, source_cells, target_cells))
     source_axis, source_unreadable = _axis_values(source_cells, match.source_axis_column)
     target_axis, target_unreadable = _axis_values(target_cells, match.target_axis_column)
     for rule_id, rows in (
@@ -324,9 +322,7 @@ def compare_across_standards(
     """Compare two grids cell by cell; map them only when every mapped pair agrees."""
 
     absent = tuple(
-        grid_id
-        for grid_id in (spec.source_grid_id, spec.target_grid_id)
-        if grid_id not in grids
+        grid_id for grid_id in (spec.source_grid_id, spec.target_grid_id) if grid_id not in grids
     )
     if absent:
         return None, (

@@ -657,9 +657,7 @@ class _Evaluator:
             quantity,
             (child,),
             symbolic=f"{{{child.embedded_symbolic}}}^{{{exponent}}}",
-            substituted=(
-                f"{substituted_base} ^ ({expression.numerator}/{expression.denominator})"
-            ),
+            substituted=(f"{substituted_base} ^ ({expression.numerator}/{expression.denominator})"),
             reason=(
                 f"raised to {expression.numerator}/{expression.denominator} "
                 f"at precision {precision}"

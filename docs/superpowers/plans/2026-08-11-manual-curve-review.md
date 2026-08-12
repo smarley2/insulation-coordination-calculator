@@ -128,8 +128,14 @@ class ManualPlotCalibration(FrozenModel):
     @model_validator(mode="after")
     def _valid_bounds(self) -> Self:
         values = (
-            self.left, self.top, self.right, self.bottom,
-            self.x_min, self.x_max, self.y_min, self.y_max,
+            self.left,
+            self.top,
+            self.right,
+            self.bottom,
+            self.x_min,
+            self.x_max,
+            self.y_min,
+            self.y_max,
         )
         if any(not value.is_finite() for value in values):
             raise ValueError("manual curve calibration values must be finite")
@@ -216,7 +222,9 @@ def test_manual_variant_replacement_uses_recipe_slot_identity(synthetic_curve_dr
     variant = next(v for rule in changed.curves for v in rule.variants)
     assert variant.id == "synthetic.curve.5.1"
     assert tuple(segment.interpolation for segment in variant.segments) == (
-        "constant", "log_log", "constant"
+        "constant",
+        "log_log",
+        "constant",
     )
     assert not changed.curve_variant_reviews
 ```
@@ -284,7 +292,8 @@ def test_calibration_change_invalidates_all_figure_reviews(reviewed_curve_draft)
         notes="Corrected synthetic plot corner.",
     )
     assert not tuple(
-        review for review in changed.curve_variant_reviews
+        review
+        for review in changed.curve_variant_reviews
         if review.variant_id.startswith("synthetic.curve.5.")
     )
 
@@ -353,9 +362,7 @@ def test_stale_manual_calibration_blocks_approval(reviewed_curve_draft) -> None:
     review = reviewed_curve_draft.curve_variant_reviews[0]
     stale = reviewed_curve_draft.model_copy(
         update={
-            "curve_variant_reviews": (
-                review.model_copy(update={"calibration_sha256": "f" * 64}),
-            )
+            "curve_variant_reviews": (review.model_copy(update={"calibration_sha256": "f" * 64}),)
         }
     )
     assert any(item.code == "CURVE_VARIANT_REVIEW_REQUIRED" for item in approval_blockers(stale))
@@ -441,6 +448,7 @@ Expose only:
 @property
 def variant_entries(self) -> tuple[tuple[str, str], ...]: ...
 
+
 def set_calibration(
     self,
     figure: str,
@@ -449,6 +457,7 @@ def set_calibration(
     actor: str,
     notes: str,
 ) -> ImportedRuleDraft: ...
+
 
 def replace_points(
     self,
@@ -459,6 +468,7 @@ def replace_points(
     notes: str,
     input_origin: Literal["empty", "automatic_suggestion"] = "empty",
 ) -> ImportedRuleDraft: ...
+
 
 def review_variant(
     self,

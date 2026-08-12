@@ -13,7 +13,9 @@ from insulation_coordination.domain.rules import (
 )
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_decision
 
-SOURCE = SourceReference(document_id="synthetic-source", standard="SYNTHETIC-1", edition="1", clause="4.2")
+SOURCE = SourceReference(
+    document_id="synthetic-source", standard="SYNTHETIC-1", edition="1", clause="4.2"
+)
 ROW_SOURCE = SOURCE.model_copy(update={"row": "synthetic row 1"})
 
 
@@ -194,7 +196,9 @@ def _boolean_rule(*, mixed: bool = False) -> DecisionRule:
     return DecisionRule(
         id="synthetic-boolean",
         inputs=inputs,
-        outputs=(DecisionOutput(name="route", kind="categorical", allowed_values=("path-a", "path-b")),),
+        outputs=(
+            DecisionOutput(name="route", kind="categorical", allowed_values=("path-a", "path-b")),
+        ),
         rows=tuple(
             DecisionRow(
                 matchers=(Matcher(input="enabled", op="equals", boolean=enabled),)

@@ -154,7 +154,12 @@ def write_platform_metadata(
 
 def _safe_leaf(root: Path, filename: str) -> Path:
     relative = PurePosixPath(filename)
-    if not filename or relative.is_absolute() or len(relative.parts) != 1 or relative.parts[0] in {".", ".."}:
+    if (
+        not filename
+        or relative.is_absolute()
+        or len(relative.parts) != 1
+        or relative.parts[0] in {".", ".."}
+    ):
         raise ReleaseArtifactError(f"artifact filename must be a leaf: {filename!r}")
     candidate = (root / relative.parts[0]).resolve()
     try:

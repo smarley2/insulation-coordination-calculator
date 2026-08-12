@@ -120,7 +120,6 @@ def _fragment() -> RawClauseFragment:
     return fragment.model_copy(update={"raw_sha256": canonical_model_sha256(fragment)})
 
 
-
 def _synthetic_curve() -> PiecewiseCurveRule:
     source = SOURCE.model_copy(update={"figure": "SF-1"})
     axis_x = CurveAxis(
@@ -243,9 +242,7 @@ def built_draft(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
         y_max=Decimal(100),
     )
     calibration_sha256 = canonical_model_sha256(calibration)
-    reviewed_artifact_sha256 = _manual_reviewed_artifact_sha256(
-        figure, calibration_sha256
-    )
+    reviewed_artifact_sha256 = _manual_reviewed_artifact_sha256(figure, calibration_sha256)
     variant = curve.variants[0].model_copy(
         update={"reviewed_artifact_sha256": reviewed_artifact_sha256}
     )
@@ -404,10 +401,7 @@ def test_correction_changes_hash_and_resets_review(built_draft) -> None:
     assert model.can_approve is False
     # The rule itself is rebuilt only at projection time; the correction changes the
     # source artifact hash, and that drift is what resets the proposal to proposed.
-    assert (
-        model.proposal(ids.DVC_FAULT_APPLICABILITY).source_artifact_sha256
-        != before_artifact
-    )
+    assert model.proposal(ids.DVC_FAULT_APPLICABILITY).source_artifact_sha256 != before_artifact
 
 
 def test_complete_review_enables_approval(built_draft) -> None:
