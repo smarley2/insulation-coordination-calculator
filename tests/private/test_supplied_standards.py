@@ -36,11 +36,9 @@ from insulation_coordination.rules.importer.identify import (
     StandardIdentificationError,
     identify_standard,
 )
-from insulation_coordination.rules.importer.review import (
-    draft_review_digest,
-    review_curve_variant,
-)
+from insulation_coordination.rules.importer.review import draft_review_digest
 from insulation_coordination.rules.validation import validate_rule_package
+from tests.private.test_iec62477_curves import _complete_manual_curve_review
 from tests.private.test_iec62477_dvc_tables import _review_all_c2_proposals
 
 pytestmark = pytest.mark.private_standard
@@ -57,17 +55,15 @@ def _golden_digest_path() -> Path:
 
 
 def _approve_supplied_package(reviewed) -> RulePackage:
-    """Approve an already-reviewed draft: the review pass is shared by fixture."""
+    """Approve an already-reviewed draft: the review pass is shared by fixture.
 
-    for variant in tuple(
-        variant for curve in reviewed.curves for variant in curve.variants
-    ):
-        reviewed = review_curve_variant(
-            reviewed,
-            variant.id,
-            actor="Private fixture reviewer",
-            notes="Verified curve against supplied PDF",
-        )
+    A curve variant does not exist until it is manually entered, so the calibration and
+    the point entry both have to run before the variant can be reviewed.  The helper
+    beside the manual-review lifecycle tests owns that sequence, and its inputs are local
+    placeholders rather than values read off the licensed figure.
+    """
+
+    reviewed = _complete_manual_curve_review(reviewed)
     assert is_fully_resolved(reviewed)
     return approve_draft(
         reviewed,

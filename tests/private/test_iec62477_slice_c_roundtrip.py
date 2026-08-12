@@ -21,7 +21,7 @@ from insulation_coordination.rules.importer.extract import (
     canonical_model_sha256,
 )
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
-from insulation_coordination.rules.importer.review import review_curve_variant
+from tests.private.test_iec62477_curves import _complete_manual_curve_review
 
 pytestmark = pytest.mark.private_standard
 
@@ -31,23 +31,16 @@ def _paths(supplied_standards: dict[str, Path]) -> tuple[Path, ...]:
 
 
 def _approved_slice_c(reviewed):
-    """Approve an already-reviewed draft: the review pass is shared by fixture."""
+    """Approve an already-reviewed draft: the review pass is shared by fixture.
 
-    variant_ids = tuple(
-        variant.id
-        for curve in reviewed.curves
-        if curve.id == ids.DVC_FAULT_TIME_VOLTAGE
-        for variant in curve.variants
-    )
-    for variant_id in variant_ids:
-        reviewed = review_curve_variant(
-            reviewed,
-            variant_id,
-            actor="Private fixture reviewer",
-            notes="Verified curve against supplied PDF",
-        )
+    A curve variant does not exist until it is manually entered, so the calibration and
+    the point entry both have to run before the variant can be reviewed.  The helper
+    beside the manual-review lifecycle tests owns that sequence, and its inputs are local
+    placeholders rather than values read off the licensed figure.
+    """
+
     return approve_draft(
-        reviewed,
+        _complete_manual_curve_review(reviewed),
         approver="Private fixture reviewer",
         notes="Approved reviewed Slice C package",
     )
