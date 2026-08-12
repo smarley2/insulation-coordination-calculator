@@ -237,10 +237,6 @@ def built_draft(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
     )
     calibration = ManualPlotCalibration(
         figure_artifact_sha256=figure.artifact_sha256,
-        left=Decimal(0),
-        top=Decimal(0),
-        right=Decimal(100),
-        bottom=Decimal(140),
         x_min=Decimal(1),
         x_max=Decimal(100),
         y_min=Decimal(1),

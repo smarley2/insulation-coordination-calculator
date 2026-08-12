@@ -43,10 +43,6 @@ def _complete_manual_curve_review(draft):
             figure=raw_figure.source.figure,
             calibration=ManualPlotCalibration(
                 figure_artifact_sha256=raw_figure.artifact_sha256,
-                left=Decimal(0),
-                top=Decimal(0),
-                right=Decimal(1),
-                bottom=Decimal(1),
                 x_min=Decimal(1),
                 x_max=Decimal(10),
                 y_min=Decimal(1),
