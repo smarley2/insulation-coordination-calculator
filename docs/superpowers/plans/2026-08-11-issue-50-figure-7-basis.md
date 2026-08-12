@@ -182,12 +182,14 @@ In `tests/rules/importer/iec62477_2022/test_figure_curve_proposals.py`, in `test
 In the same file, in `test_exact_selector_evaluates_matching_variant`:
 
 ```python
-        FaultTimeVoltageSelector(
-            subject="conductive_accessible_part",
-            voltage_basis="ac_unspecified",
-            dvc_context=None,
-            environment_context=None,
-        ),
+(
+    FaultTimeVoltageSelector(
+        subject="conductive_accessible_part",
+        voltage_basis="ac_unspecified",
+        dvc_context=None,
+        environment_context=None,
+    ),
+)
 ```
 
 In `tests/rules/importer/iec62477_2022/test_dvc_clause_projection.py`, in `test_projection_evaluates_all_four_curve_selector_routes`:

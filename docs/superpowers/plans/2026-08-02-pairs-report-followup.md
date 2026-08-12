@@ -105,7 +105,11 @@ Separate the existing default/effective specifications from voltage specificatio
     ("Long-term RMS voltage", "V", lambda row: _stress_text(row, "long-term RMS")),
     ("Steady-state peak voltage", "V", lambda row: _stress_text(row, "steady-state peak")),
     ("Recurring peak voltage", "V", lambda row: _stress_text(row, "recurring peak")),
-    ("Temporary overvoltage peak voltage", "V", lambda row: _stress_text(row, "temporary overvoltage peak")),
+    (
+        "Temporary overvoltage peak voltage",
+        "V",
+        lambda row: _stress_text(row, "temporary overvoltage peak"),
+    ),
 )
 ```
 

@@ -70,8 +70,8 @@ semantic clarity and would churn artifacts and hashes for nothing.
 `iec62477_2022/inventory.py` replaces one item with two, in document order:
 
 ```python
-_item(ids.ALTITUDE_CLEARANCE_CORRECTION, "table", (36,), table="Table E.1"),
-_item(ids.ALTITUDE_TEST_VOLTAGE_CORRECTION, "table", (37,), table="Table E.2"),
+(_item(ids.ALTITUDE_CLEARANCE_CORRECTION, "table", (36,), table="Table E.1"),)
+(_item(ids.ALTITUDE_TEST_VOLTAGE_CORRECTION, "table", (37,), table="Table E.2"),)
 ```
 
 Clearance dimensioning feeds #36; corrected test voltages feed #37. The checklist then says
@@ -104,10 +104,10 @@ removed. The replacement pins which physical table each identifier owns, togethe
 subclause:
 
 ```python
-e1 = next(spec for spec in RECIPE.tables
-          if spec.semantic_id == ids.ALTITUDE_CLEARANCE_CORRECTION)
-e2 = next(spec for spec in RECIPE.tables
-          if spec.semantic_id == ids.ALTITUDE_TEST_VOLTAGE_CORRECTION)
+e1 = next(spec for spec in RECIPE.tables if spec.semantic_id == ids.ALTITUDE_CLEARANCE_CORRECTION)
+e2 = next(
+    spec for spec in RECIPE.tables if spec.semantic_id == ids.ALTITUDE_TEST_VOLTAGE_CORRECTION
+)
 
 assert e1.source_table == "E.1"
 assert e1.clause == "E.1"

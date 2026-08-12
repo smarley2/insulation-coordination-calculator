@@ -67,6 +67,7 @@ Imported content remains a `DraftRulePackage` and carries separate `SemanticProp
 ```python
 ProposalState = Literal["proposed", "reviewed"]
 
+
 class SemanticProposal(FrozenModel):
     semantic_id: Identifier
     rule_kind: RuleKind
@@ -102,6 +103,7 @@ hash remains stored once in the manifest document. `SourceReference` gains requi
 class SourceGeometryReference(FrozenModel):
     artifact_sha256: str
     bbox: tuple[DecimalValue, DecimalValue, DecimalValue, DecimalValue] | None = None
+
 
 class SourceReference(FrozenModel):
     document_id: Identifier
@@ -141,6 +143,7 @@ CurveInterpolation = Literal[
     "linear", "log_x", "log_y", "log_log", "constant", "step_before", "step_after"
 ]
 
+
 class CurveAxis(FrozenModel):
     quantity_kind: Identifier
     unit: Identifier
@@ -148,9 +151,11 @@ class CurveAxis(FrozenModel):
     minimum: DecimalValue
     maximum: DecimalValue
 
+
 class CurvePoint(FrozenModel):
     x: DecimalValue
     y: DecimalValue
+
 
 class CurveSegment(FrozenModel):
     start: int
@@ -158,11 +163,13 @@ class CurveSegment(FrozenModel):
     segment_type: CurveSegmentType
     interpolation: CurveInterpolation
 
+
 class FaultTimeVoltageSelector(FrozenModel):
     subject: Literal["accessible_circuit", "conductive_accessible_part"]
     voltage_basis: Literal["ac_rms", "ac_peak", "dc"]
     dvc_context: Identifier | None
     environment_context: Identifier | None
+
 
 class FaultTimeVoltageVariant(FrozenModel):
     id: Identifier
@@ -174,6 +181,7 @@ class FaultTimeVoltageVariant(FrozenModel):
     applicability: ApplicabilityText
     source: SourceReference
     reviewed_artifact_sha256: str
+
 
 class PiecewiseCurveRule(FrozenModel):
     id: Identifier

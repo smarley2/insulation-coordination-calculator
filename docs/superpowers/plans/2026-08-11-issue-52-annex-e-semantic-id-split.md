@@ -103,14 +103,10 @@ def test_each_annex_e_table_owns_its_own_semantic_id() -> None:
     re-nesting one table under the other's family, which is the defect #52 removed.
     """
     e1 = next(
-        spec
-        for spec in RECIPE.tables
-        if spec.semantic_id == ids.ALTITUDE_CLEARANCE_CORRECTION
+        spec for spec in RECIPE.tables if spec.semantic_id == ids.ALTITUDE_CLEARANCE_CORRECTION
     )
     e2 = next(
-        spec
-        for spec in RECIPE.tables
-        if spec.semantic_id == ids.ALTITUDE_TEST_VOLTAGE_CORRECTION
+        spec for spec in RECIPE.tables if spec.semantic_id == ids.ALTITUDE_TEST_VOLTAGE_CORRECTION
     )
 
     assert e1.source_table == "E.1"
@@ -120,9 +116,7 @@ def test_each_annex_e_table_owns_its_own_semantic_id() -> None:
     assert e2.clause == "E.2"
 
     altitude = [
-        spec
-        for spec in RECIPE.tables
-        if spec.semantic_id.startswith("iec62477_2022.altitude.")
+        spec for spec in RECIPE.tables if spec.semantic_id.startswith("iec62477_2022.altitude.")
     ]
     assert [spec.semantic_id for spec in altitude] == [
         ids.ALTITUDE_CLEARANCE_CORRECTION,
@@ -148,11 +142,9 @@ In `test_no_column_hardcodes_a_licensed_axis_value`, lines 127-131 currently rea
 Replace with:
 
 ```python
-    altitude_e2 = next(
-        spec
-        for spec in RECIPE.tables
-        if spec.semantic_id == ids.ALTITUDE_TEST_VOLTAGE_CORRECTION
-    )
+altitude_e2 = next(
+    spec for spec in RECIPE.tables if spec.semantic_id == ids.ALTITUDE_TEST_VOLTAGE_CORRECTION
+)
 ```
 
 - [ ] **Step 3: Write the failing inventory guard**
@@ -258,8 +250,8 @@ Then, in `REQUIRED_SEMANTIC_IDS`, insert the new member immediately above the ex
 (line 54 becomes two lines):
 
 ```python
-        ALTITUDE_CLEARANCE_CORRECTION,
-        ALTITUDE_TEST_VOLTAGE_CORRECTION,
+(ALTITUDE_CLEARANCE_CORRECTION,)
+(ALTITUDE_TEST_VOLTAGE_CORRECTION,)
 ```
 
 - [ ] **Step 7: Split the inventory item**
@@ -268,16 +260,14 @@ In `src/insulation_coordination/rules/importer/iec62477_2022/inventory.py`, line
 currently read:
 
 ```python
-    _item(
-        ids.ALTITUDE_TEST_VOLTAGE_CORRECTION, "table", (36, 37), table="Table E.1"
-    ),
+(_item(ids.ALTITUDE_TEST_VOLTAGE_CORRECTION, "table", (36, 37), table="Table E.1"),)
 ```
 
 Replace with:
 
 ```python
-    _item(ids.ALTITUDE_CLEARANCE_CORRECTION, "table", (36,), table="Table E.1"),
-    _item(ids.ALTITUDE_TEST_VOLTAGE_CORRECTION, "table", (37,), table="Table E.2"),
+(_item(ids.ALTITUDE_CLEARANCE_CORRECTION, "table", (36,), table="Table E.1"),)
+(_item(ids.ALTITUDE_TEST_VOLTAGE_CORRECTION, "table", (37,), table="Table E.2"),)
 ```
 
 Neither item gets `clause=`: table-backed items name their table, and the subclause lives in
@@ -289,41 +279,41 @@ In `src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/tables.py
 Annex E spec (line 376 and line 380) currently reads:
 
 ```python
-        semantic_id=f"{ids.ALTITUDE_TEST_VOLTAGE_CORRECTION}.e1",
-        source_table="E.1",
-        title_anchor="Table E.1",
-        page_number=193,
-        clause="Annex E",
+semantic_id = (f"{ids.ALTITUDE_TEST_VOLTAGE_CORRECTION}.e1",)
+source_table = ("E.1",)
+title_anchor = ("Table E.1",)
+page_number = (193,)
+clause = ("Annex E",)
 ```
 
 Replace those with:
 
 ```python
-        semantic_id=ids.ALTITUDE_CLEARANCE_CORRECTION,
-        source_table="E.1",
-        title_anchor="Table E.1",
-        page_number=193,
-        clause="E.1",
+semantic_id = (ids.ALTITUDE_CLEARANCE_CORRECTION,)
+source_table = ("E.1",)
+title_anchor = ("Table E.1",)
+page_number = (193,)
+clause = ("E.1",)
 ```
 
 The second Annex E spec (line 418 and line 422) currently reads:
 
 ```python
-        semantic_id=f"{ids.ALTITUDE_TEST_VOLTAGE_CORRECTION}.e2",
-        source_table="E.2",
-        title_anchor="Table E.2",
-        page_number=194,
-        clause="Annex E",
+semantic_id = (f"{ids.ALTITUDE_TEST_VOLTAGE_CORRECTION}.e2",)
+source_table = ("E.2",)
+title_anchor = ("Table E.2",)
+page_number = (194,)
+clause = ("Annex E",)
 ```
 
 Replace those with:
 
 ```python
-        semantic_id=ids.ALTITUDE_TEST_VOLTAGE_CORRECTION,
-        source_table="E.2",
-        title_anchor="Table E.2",
-        page_number=194,
-        clause="E.2",
+semantic_id = (ids.ALTITUDE_TEST_VOLTAGE_CORRECTION,)
+source_table = ("E.2",)
+title_anchor = ("Table E.2",)
+page_number = (194,)
+clause = ("E.2",)
 ```
 
 Change nothing else in either spec: the bboxes, segments, row and column axes, data columns,
