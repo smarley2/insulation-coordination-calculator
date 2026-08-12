@@ -9,11 +9,14 @@ read-only or disabled.
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFocusEvent, QKeyEvent
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
+    QHBoxLayout,
     QLabel,
     QScrollArea,
     QToolButton,
@@ -22,8 +25,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insulation_coordination.domain.rule_provenance import citation, rule_provenance
+from insulation_coordination.domain.rules import RulePackage
 from insulation_coordination.ui.voltage_guidance import (
     FIELD_STATE_IDS,
+    VoltageGuidance,
     VoltageGuidanceId,
     accessible_help_name,
     field_state_label,
@@ -44,20 +50,27 @@ class GuidanceDialog(QDialog):
     ``context`` carries whatever only the caller knows — the justification stored
     with a not-applicable stress, or the provenance of a derived value. It is
     shown with the guidance rather than replacing it.
+
+    ``package`` is the project's active rule package, when the caller has one. Guidance
+    that names a semantic rule then also shows where that rule was read from, under its
+    own heading so that package-derived provenance is never mistaken for the application's
+    own prose above it. Without a package the guidance still reads; it just says that it
+    cannot cite one.
     """
 
     def __init__(
         self,
-        guidance_id: VoltageGuidanceId,
+        guidance_id: StrEnum,
         context: str = "",
         parent: QWidget | None = None,
+        package: RulePackage | None = None,
     ) -> None:
         super().__init__(parent)
         guidance = guidance_for(guidance_id)
         self.setWindowTitle(guidance.title[0].upper() + guidance.title[1:])
         self.resize(_DIALOG_WIDTH, _DIALOG_HEIGHT)
 
-        self._body = QLabel(_body_text(guidance_id, context))
+        self._body = QLabel(_body_text(guidance_id, context, package))
         self._body.setObjectName("_guidance_body")
         self._body.setWordWrap(True)
         self._body.setTextInteractionFlags(
@@ -83,7 +96,19 @@ class GuidanceDialog(QDialog):
         return self._body.text()
 
 
-def _body_text(guidance_id: VoltageGuidanceId, context: str) -> str:
+#: Says whose words the reader has just read, before any package citation follows. Without
+#: it the two would run together and a clause number would appear to back the prose.
+GUIDANCE_AUTHORSHIP_NOTE = "The explanation above is this application's own guidance."
+
+#: Shown for a named rule the active package does not carry. An absence, deliberately: a
+#: clause reference is never invented to fill the field.
+RULE_NOT_IN_PACKAGE = "not carried by the active rule package"
+
+#: Shown when guidance names a rule but no package is loaded to resolve it against.
+NO_PACKAGE_FOR_PROVENANCE = "No rule package is loaded, so no source can be cited for it."
+
+
+def _body_text(guidance_id: StrEnum, context: str, package: RulePackage | None = None) -> str:
     guidance = guidance_for(guidance_id)
     sections = [guidance.detailed_text]
     if guidance.examples:
@@ -92,7 +117,35 @@ def _body_text(guidance_id: VoltageGuidanceId, context: str) -> str:
         sections.append(_bullets("Common mistakes", guidance.common_mistakes))
     if context.strip():
         sections.append(f"Recorded for this field:\n{context.strip()}")
+    provenance = _provenance_section(guidance, package)
+    if provenance:
+        sections.append(provenance)
     return "\n\n".join(sections)
+
+
+def _provenance_section(guidance: VoltageGuidance, package: RulePackage | None) -> str:
+    """The rules this guidance names, and where the active package read each one from.
+
+    Omitted entirely when the guidance names no rule — a voltage-stress field explains
+    itself and cites nothing, and an empty heading would only suggest something is missing.
+    """
+    named = rule_provenance(package, _guidance_text(guidance))
+    if not named:
+        return ""
+    if package is None:
+        return f"{GUIDANCE_AUTHORSHIP_NOTE} {NO_PACKAGE_FOR_PROVENANCE}"
+    heading = (
+        f"{GUIDANCE_AUTHORSHIP_NOTE} The rules it names are read from the active rule package, at:"
+    )
+    lines = [heading]
+    for entry in named:
+        lines.append(f"  • {entry.rule_id}: {citation(entry.source) or RULE_NOT_IN_PACKAGE}")
+    return "\n".join(lines)
+
+
+def _guidance_text(guidance: VoltageGuidance) -> str:
+    """Every part of an entry a rule id can be named in, as one searchable block."""
+    return "\n".join((guidance.detailed_text, *guidance.examples, *guidance.common_mistakes))
 
 
 def _bullets(heading: str, lines: tuple[str, ...]) -> str:
@@ -104,10 +157,11 @@ class HelpIndicator(QToolButton):
 
     details_requested = Signal(str)
 
-    def __init__(self, guidance_id: VoltageGuidanceId, parent: QWidget | None = None) -> None:
+    def __init__(self, guidance_id: StrEnum, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._guidance_id = guidance_id
         self._context = ""
+        self._package: RulePackage | None = None
         self.setText(_HELP_GLYPH)
         self.set_guidance(guidance_id)
         self.setAutoRaise(True)
@@ -120,10 +174,10 @@ class HelpIndicator(QToolButton):
         self.clicked.connect(self._on_activated)
 
     @property
-    def guidance_id(self) -> VoltageGuidanceId:
+    def guidance_id(self) -> StrEnum:
         return self._guidance_id
 
-    def set_guidance(self, guidance_id: VoltageGuidanceId) -> None:
+    def set_guidance(self, guidance_id: StrEnum) -> None:
         """Point the control at another explanation, as a changing state does."""
         self._guidance_id = guidance_id
         guidance = guidance_for(guidance_id)
@@ -135,9 +189,13 @@ class HelpIndicator(QToolButton):
         """Attach field-specific detail — an N/A justification, a value's provenance."""
         self._context = context
 
+    def set_rules_package(self, package: RulePackage | None) -> None:
+        """Let the long form cite the rules its guidance names, from this package."""
+        self._package = package
+
     def open_details(self) -> GuidanceDialog:
         """Show the long form. Non-modal ``open`` so it never blocks the editor."""
-        dialog = GuidanceDialog(self._guidance_id, self._context, self)
+        dialog = GuidanceDialog(self._guidance_id, self._context, self, self._package)
         dialog.open()
         return dialog
 
@@ -205,3 +263,18 @@ class FieldStateBadge(HelpIndicator):
         self.setEnabled(True)
         self.set_guidance(state)
         self.setText(field_state_label(state))
+
+
+def labelled(text: str, help_indicator: HelpIndicator) -> QWidget:
+    """A form label with its ⓘ beside it, so the help never sits inside the value.
+
+    It lives beside the control it carries because every page that puts help on a form
+    needs the same row, and two copies of it drift.
+    """
+    container = QWidget()
+    row = QHBoxLayout(container)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.addWidget(QLabel(text))
+    row.addWidget(help_indicator)
+    row.addStretch(1)
+    return container

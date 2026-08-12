@@ -6,6 +6,20 @@ from collections.abc import Sequence
 
 from insulation_coordination.domain.project import PairCase, Project
 
+#: This application's own statement of scope for the on-board-charger (OBC) worked
+#: example: IEC 62477-1:2022 does not cover EV/OBC equipment, so the OBC example is a
+#: topology illustration only, never a claim of compliance. Kept as one constant so
+#: every place the OBC example appears - a guidance example in
+#: :mod:`insulation_coordination.ui.topology_guidance`, or the example project's own
+#: domain descriptions in ``tests/fixtures/topology_examples.py`` - carries the
+#: identical wording rather than a paraphrase that could drift from it. Lives here,
+#: not in the UI package, so a test fixture can use it without importing ``ui``.
+OBC_APPLICABILITY_WARNING = (
+    "OBC is a topology example only. IEC 62477-1:2022 excludes electric-vehicle "
+    "electrical equipment/systems; the applicable EV/OBC product standard takes "
+    "precedence."
+)
+
 _COMPARISON_SYMBOLS = {
     "lt": "<",
     "le": "<=",

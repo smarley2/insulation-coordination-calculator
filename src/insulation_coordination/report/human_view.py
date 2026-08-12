@@ -5,8 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
+from uuid import UUID
 
 from insulation_coordination.domain.rules import SourceReference
+from insulation_coordination.domain.topology import GalvanicBarrier
 from insulation_coordination.report.model import (
     MatrixRow,
     PairCalculationReport,
@@ -80,12 +82,67 @@ class HumanGroup:
 
 
 @dataclass(frozen=True)
+class HumanNetClassification:
+    name: str
+    net_type: str
+    source_relationship: str
+    connection_exposure: str
+    decisive_voltage_class: str
+    galvanic_domain: str
+    review_state: str
+
+
+@dataclass(frozen=True)
+class HumanGalvanicDomain:
+    name: str
+    description: str
+    is_direct_source_domain: bool
+    review_state: str
+
+
+@dataclass(frozen=True)
+class HumanGalvanicBarrier:
+    domain_a: str
+    domain_b: str
+    status: str
+    verification_method: str
+    evidence_reference: str
+    notes: str
+
+
+@dataclass(frozen=True)
+class HumanTopologyStatus:
+    """What is still unresolved, by name rather than by ID, plus domain review state.
+
+    ``is_complete`` mirrors :func:`topology_completion`'s own field exactly - it never
+    looks at ``GalvanicDomain.review_state``. ``fully_resolved`` adds that missing axis so
+    a domain still awaiting review is never reported as nothing left to look at.
+    """
+
+    is_complete: bool
+    nets_needing_review: tuple[str, ...]
+    circuit_nets_without_domain: tuple[str, ...]
+    circuit_nets_with_unevaluated_dvc: tuple[str, ...]
+    domain_pairs_without_barrier: tuple[str, ...]
+    unevaluated_barriers: tuple[str, ...]
+    domains_needing_review: tuple[str, ...]
+
+    @property
+    def fully_resolved(self) -> bool:
+        return self.is_complete and not self.domains_needing_review
+
+
+@dataclass(frozen=True)
 class HumanReportView:
     common_values: tuple[HumanValue, ...]
     comparison_matrices: tuple[HumanMatrix, ...]
     groups: tuple[HumanGroup, ...]
     advisories: tuple[HumanAdvisory, ...]
     verification_requirements: tuple[HumanAdvisory, ...]
+    net_classifications: tuple[HumanNetClassification, ...]
+    galvanic_domains: tuple[HumanGalvanicDomain, ...]
+    galvanic_barriers: tuple[HumanGalvanicBarrier, ...]
+    topology_status: HumanTopologyStatus
     rules: object
 
 
@@ -185,6 +242,8 @@ def build_human_report_view(model: ReportModel) -> HumanReportView:
             )
         )
 
+    # Three topology sections name the same domains, so the lookup is built once here.
+    domain_names = {domain.id: domain.name for domain in model.galvanic_domains}
     warnings = _deduplicate_advisories(model.warnings)
     verification_requirements = _deduplicate_advisories(model.verification_requirements)
     warning_codes = {item.code for item in warnings}
@@ -197,7 +256,107 @@ def build_human_report_view(model: ReportModel) -> HumanReportView:
         groups=tuple(report_groups),
         advisories=warnings,
         verification_requirements=verification_requirements,
+        net_classifications=_human_net_classifications(model, domain_names),
+        galvanic_domains=_human_galvanic_domains(model),
+        galvanic_barriers=_human_galvanic_barriers(model, domain_names),
+        topology_status=_human_topology_status(model, domain_names),
         rules=model.rules,
+    )
+
+
+def _human_net_classifications(
+    model: ReportModel, domain_names: dict[UUID, str]
+) -> tuple[HumanNetClassification, ...]:
+    return tuple(
+        HumanNetClassification(
+            name=net.name,
+            net_type=_value_text(net.net_type),
+            source_relationship=_value_text(net.source_relationship),
+            connection_exposure=_value_text(net.connection_exposure),
+            decisive_voltage_class=_value_text(net.decisive_voltage_class),
+            galvanic_domain=(
+                "—"
+                if net.galvanic_domain_id is None
+                else domain_names.get(net.galvanic_domain_id, "—")
+            ),
+            review_state=_value_text(net.classification_review_state),
+        )
+        for net in model.net_classes
+    )
+
+
+def _human_galvanic_domains(model: ReportModel) -> tuple[HumanGalvanicDomain, ...]:
+    return tuple(
+        HumanGalvanicDomain(
+            name=domain.name,
+            description=domain.description or "—",
+            is_direct_source_domain=domain.is_direct_source_domain,
+            review_state=_value_text(domain.review_state),
+        )
+        for domain in model.galvanic_domains
+    )
+
+
+def _human_galvanic_barriers(
+    model: ReportModel, domain_names: dict[UUID, str]
+) -> tuple[HumanGalvanicBarrier, ...]:
+    return tuple(
+        HumanGalvanicBarrier(
+            domain_a=domain_names.get(barrier.domain_a_id, "?"),
+            domain_b=domain_names.get(barrier.domain_b_id, "?"),
+            status=_value_text(barrier.status),
+            verification_method=_value_text(barrier.verification_method),
+            evidence_reference=barrier.evidence_reference or "—",
+            notes=barrier.notes or "—",
+        )
+        for barrier in model.galvanic_barriers
+    )
+
+
+def _domain_pair_label(left: UUID, right: UUID, domain_names: dict[UUID, str]) -> str:
+    return f"{domain_names.get(left, '?')} ↔ {domain_names.get(right, '?')}"
+
+
+def _barrier_label(
+    barrier_id: UUID,
+    barriers: tuple[GalvanicBarrier, ...],
+    domain_names: dict[UUID, str],
+) -> str:
+    barrier = next((item for item in barriers if item.id == barrier_id), None)
+    if barrier is None:
+        return str(barrier_id)
+    return _domain_pair_label(barrier.domain_a_id, barrier.domain_b_id, domain_names)
+
+
+def _human_topology_status(
+    model: ReportModel, domain_names: dict[UUID, str]
+) -> HumanTopologyStatus:
+    net_names = {net.id: net.name for net in model.net_classes}
+    topology = model.topology
+    return HumanTopologyStatus(
+        is_complete=topology.is_complete,
+        nets_needing_review=tuple(
+            net_names.get(net_id, str(net_id)) for net_id in topology.nets_needing_review
+        ),
+        circuit_nets_without_domain=tuple(
+            net_names.get(net_id, str(net_id)) for net_id in topology.circuit_nets_without_domain
+        ),
+        circuit_nets_with_unevaluated_dvc=tuple(
+            net_names.get(net_id, str(net_id))
+            for net_id in topology.circuit_nets_with_unevaluated_dvc
+        ),
+        domain_pairs_without_barrier=tuple(
+            _domain_pair_label(left, right, domain_names)
+            for left, right in topology.domain_pairs_without_barrier
+        ),
+        unevaluated_barriers=tuple(
+            _barrier_label(barrier_id, model.galvanic_barriers, domain_names)
+            for barrier_id in topology.unevaluated_barriers
+        ),
+        domains_needing_review=tuple(
+            domain_names.get(domain_id, str(domain_id))
+            for domain_id in model.domains_needing_review
+        ),
     )
 
 

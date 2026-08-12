@@ -12,9 +12,11 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
+from insulation_coordination.domain.enums import ReviewState
 from insulation_coordination.domain.project import (
     GroupSplit,
     NetClass,
+    OverrideValue,
     PairCase,
     PairVoltage,
     PairVoltages,
@@ -24,6 +26,8 @@ from insulation_coordination.domain.project import (
     RulePackageReference,
 )
 from insulation_coordination.project.persistence import (
+    NET_TOPOLOGY_KEYS,
+    PROJECT_SCHEMA_VERSION,
     ProjectLoadError,
     ProjectSaveError,
     ProjectVersionError,
@@ -57,6 +61,225 @@ def sample_project() -> Project:
                 voltages=PairVoltages(long_term_rms_v=PairVoltage.applicable(Decimal("560.00"))),
             ),
         ),
+    )
+
+
+@pytest.fixture
+def topology_migration_project() -> Project:
+    """Three nets and three pairs exercising stresses, an override, an exclusion, and a note."""
+    net_a = UUID(int=10)
+    net_b = UUID(int=11)
+    net_c = UUID(int=12)
+    return Project(
+        id=UUID(int=13),
+        metadata=ProjectMetadata(title="Legacy fixture"),
+        application_version="0.1.0",
+        defaults=ProjectDefaults(frequency_hz=Decimal("50000.00")),
+        net_classes=(
+            NetClass(id=net_a, name="Net A"),
+            NetClass(id=net_b, name="Net B"),
+            NetClass(id=net_c, name="Net C"),
+        ),
+        pairs=(
+            PairCase(
+                key=f"{net_a}::{net_b}",
+                net_a=net_a,
+                net_b=net_b,
+                voltages=PairVoltages(long_term_rms_v=PairVoltage.applicable(Decimal("400.00"))),
+                frequency_hz=OverrideValue.override(Decimal("60000.00")),
+                notes="check clearance again",
+            ),
+            PairCase(
+                key=f"{net_a}::{net_c}",
+                net_a=net_a,
+                net_b=net_c,
+                voltages=PairVoltages(
+                    long_term_rms_v=PairVoltage.not_applicable("never adjacent"),
+                    steady_state_peak_v=PairVoltage.not_applicable("never adjacent"),
+                    recurring_peak_v=PairVoltage.not_applicable("never adjacent"),
+                    temporary_overvoltage_peak_v=PairVoltage.not_applicable("never adjacent"),
+                ),
+            ),
+            PairCase(key=f"{net_b}::{net_c}", net_a=net_b, net_b=net_c),
+        ),
+    )
+
+
+def _without_topology_fields(document: dict[str, object]) -> dict[str, object]:
+    """Strip everything the version 3 -> 4 migration introduces, in place."""
+    document.pop("galvanic_domains", None)
+    document.pop("galvanic_barriers", None)
+    for net in document["net_classes"]:  # type: ignore[union-attr]
+        for key in NET_TOPOLOGY_KEYS:
+            net.pop(key, None)
+    return document
+
+
+def _as_schema_v3_document(project: Project) -> dict[str, object]:
+    return _without_topology_fields({"schema_version": 3, **project.model_dump(mode="json")})
+
+
+def test_migration_v3_to_v4_adds_direct_domain_and_classifies_every_net(
+    topology_migration_project: Project,
+) -> None:
+    raw = _as_schema_v3_document(topology_migration_project)
+    original_pairs = deepcopy(raw["pairs"])
+    original_nets = deepcopy(raw["net_classes"])
+
+    migrated = migrate_project_document(raw)
+
+    assert migrated["schema_version"] == PROJECT_SCHEMA_VERSION
+    assert migrated["pairs"] == original_pairs
+    assert migrated["galvanic_barriers"] == []
+
+    domains = migrated["galvanic_domains"]
+    assert isinstance(domains, list)
+    assert len(domains) == 1
+    domain = domains[0]
+    assert domain["is_direct_source_domain"] is True
+    assert domain["review_state"] == "needs_review"
+    assert isinstance(domain["name"], str) and domain["name"]
+    assert UUID(domain["id"])  # generated id must parse as a UUID
+    domain_id = domain["id"]
+
+    nets = migrated["net_classes"]
+    assert isinstance(nets, list)
+    assert len(nets) == len(original_nets)
+    for migrated_net, original_net in zip(nets, original_nets, strict=True):
+        assert migrated_net["net_type"] == "circuit"
+        assert migrated_net["source_relationship"] == "internally_generated"
+        assert migrated_net["connection_exposure"] == "internal_only"
+        assert migrated_net["decisive_voltage_class"] == "not_evaluated"
+        assert migrated_net["galvanic_domain_id"] == domain_id
+        assert migrated_net["classification_review_state"] == "needs_review"
+        untouched = {k: v for k, v in migrated_net.items() if k not in NET_TOPOLOGY_KEYS}
+        assert untouched == original_net
+
+
+def test_migration_v3_to_v4_changes_nothing_outside_the_topology_fields_it_introduces(
+    topology_migration_project: Project,
+) -> None:
+    """Every top-level key the v3 document already had survives byte-identically.
+
+    The per-net and per-pair checks above cover the two collections the migration walks;
+    this covers the rest of the document, so a future migration step cannot quietly
+    rewrite the metadata, defaults or required-rules reference of an existing project.
+    """
+    raw = _as_schema_v3_document(topology_migration_project)
+    original = deepcopy(raw)
+
+    migrated = migrate_project_document(raw)
+
+    introduced = {"schema_version", "galvanic_domains", "galvanic_barriers", "net_classes"}
+    assert set(migrated) - set(original) == introduced - {"schema_version", "net_classes"}
+    for key, value in original.items():
+        if key in introduced:
+            continue
+        assert migrated[key] == value, f"migration changed the pre-existing key {key!r}"
+
+
+def test_migrated_classification_state_is_needs_review_not_confirmed(
+    topology_migration_project: Project,
+) -> None:
+    raw = _as_schema_v3_document(topology_migration_project)
+
+    migrated = migrate_project_document(raw)
+
+    assert migrated["galvanic_domains"][0]["review_state"] == "needs_review"  # type: ignore[index]
+    assert all(
+        net["classification_review_state"] == "needs_review"  # type: ignore[union-attr]
+        for net in migrated["net_classes"]  # type: ignore[union-attr]
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    [
+        (lambda raw: raw.__setitem__("galvanic_domains", []), "galvanic_domains"),
+        (lambda raw: raw.__setitem__("galvanic_barriers", []), "galvanic_barriers"),
+    ],
+)
+def test_migration_rejects_v3_document_already_carrying_reserved_top_level_keys(
+    topology_migration_project: Project, mutate: object, match: str
+) -> None:
+    raw = _as_schema_v3_document(topology_migration_project)
+    mutate(raw)  # type: ignore[operator]
+
+    with pytest.raises(ProjectVersionError, match=match):
+        migrate_project_document(raw)
+
+
+@pytest.mark.parametrize("key", sorted(NET_TOPOLOGY_KEYS))
+def test_migration_rejects_v3_document_whose_net_already_carries_any_topology_key(
+    topology_migration_project: Project, key: str
+) -> None:
+    """Parametrized over the whole frozenset, so a key added later is covered for free."""
+    raw = _as_schema_v3_document(topology_migration_project)
+    raw["net_classes"][0][key] = "already-set"  # type: ignore[index]
+
+    with pytest.raises(ProjectVersionError, match="topology"):
+        migrate_project_document(raw)
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"schema_version": 2, "net_classes": ["oops"]},
+        {"schema_version": 1, "net_classes": [None]},
+    ],
+)
+def test_load_rejects_schema_document_with_a_non_dict_net_class_entry(
+    tmp_path: Path, document: dict[str, object]
+) -> None:
+    """A hand-edited or corrupt document must fail as ``ProjectLoadError``, never crash.
+
+    Before the fix, the migration called ``.keys()`` on each ``net_classes`` entry
+    unconditionally, so a string or ``null`` entry raised a bare ``AttributeError`` out
+    of ``load_project`` instead of the load error every other bad document produces.
+    """
+    path = tmp_path / "corrupt.icproj"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ProjectLoadError):
+        load_project(path)
+
+
+def test_migrated_project_round_trips_without_creating_a_second_domain(
+    topology_migration_project: Project, tmp_path: Path
+) -> None:
+    raw = _as_schema_v3_document(topology_migration_project)
+    path = tmp_path / "legacy.icproj"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    first_load = load_project(path)
+    save_project_atomic(path, first_load)
+    second_load = load_project(path)
+
+    assert second_load == first_load
+    assert len(second_load.galvanic_domains) == 1
+    assert second_load.galvanic_domains[0].id == first_load.galvanic_domains[0].id
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["schema_version"] == PROJECT_SCHEMA_VERSION
+    assert len(saved["galvanic_domains"]) == 1
+
+
+def test_schema_v1_document_loads_through_every_migration_step(
+    topology_migration_project: Project, tmp_path: Path
+) -> None:
+    document = _as_schema_v3_document(topology_migration_project)
+    document.pop("group_splits", None)
+    document.pop("circuit_diagram", None)
+    document["schema_version"] = 1
+    path = tmp_path / "legacy-v1.icproj"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    loaded = load_project(path)
+
+    assert loaded.group_splits == ()
+    assert len(loaded.galvanic_domains) == 1
+    assert loaded.galvanic_domains[0].is_direct_source_domain is True
+    assert all(
+        net.classification_review_state is ReviewState.NEEDS_REVIEW for net in loaded.net_classes
     )
 
 
@@ -97,25 +320,31 @@ def test_failed_replace_preserves_previous_file(
     assert list(tmp_path.glob("*.tmp")) == [unrelated]
 
 
-def test_migration_returns_new_document_without_overwriting_source() -> None:
+def test_migration_chains_v1_through_v3_to_v4_without_mutating_source() -> None:
     raw: dict[str, object] = {"schema_version": 1, "sentinel": True}
     original = deepcopy(raw)
 
     migrated = migrate_project_document(raw)
 
+    domain = migrated["galvanic_domains"][0]  # type: ignore[index]
     assert migrated == {
-        "schema_version": 3,
+        "schema_version": 4,
         "sentinel": True,
         "group_splits": [],
         "circuit_diagram": None,
+        "galvanic_domains": [domain],
+        "galvanic_barriers": [],
     }
+    assert domain["is_direct_source_domain"] is True  # type: ignore[index]
+    assert domain["review_state"] == "needs_review"  # type: ignore[index]
+    assert UUID(domain["id"])  # type: ignore[index]
     assert raw == original
     assert migrated is not raw
 
 
 def test_future_schema_is_rejected() -> None:
     with pytest.raises(ProjectVersionError, match="newer"):
-        migrate_project_document({"schema_version": 4})
+        migrate_project_document({"schema_version": PROJECT_SCHEMA_VERSION + 1})
 
 
 def test_unsupported_older_schema_is_rejected() -> None:
@@ -125,7 +354,7 @@ def test_unsupported_older_schema_is_rejected() -> None:
 
 def test_load_rejects_future_schema_without_changing_file(tmp_path: Path) -> None:
     path = tmp_path / "future.icproj"
-    original = json.dumps({"schema_version": 4})
+    original = json.dumps({"schema_version": PROJECT_SCHEMA_VERSION + 1})
     path.write_text(original, encoding="utf-8")
 
     with pytest.raises(ProjectVersionError, match="newer"):
@@ -140,6 +369,11 @@ def test_schema_v1_loads_with_empty_group_splits_and_save_writes_the_current_sch
     old_document = {"schema_version": 1, **sample_project.model_dump(mode="json")}
     old_document.pop("group_splits", None)
     old_document.pop("circuit_diagram", None)
+    old_document.pop("galvanic_domains", None)
+    old_document.pop("galvanic_barriers", None)
+    for net in old_document["net_classes"]:
+        for key in NET_TOPOLOGY_KEYS:
+            net.pop(key, None)
     path = tmp_path / "old.icproj"
     path.write_text(json.dumps(old_document), encoding="utf-8")
 
@@ -149,13 +383,17 @@ def test_schema_v1_loads_with_empty_group_splits_and_save_writes_the_current_sch
 
     assert loaded.group_splits == ()
     assert loaded.circuit_diagram is None
-    assert saved["schema_version"] == 3
+    assert len(loaded.galvanic_domains) == 1
+    assert loaded.galvanic_domains[0].is_direct_source_domain is True
+    assert saved["schema_version"] == PROJECT_SCHEMA_VERSION
     assert saved["group_splits"] == []
     assert saved["circuit_diagram"] is None
 
 
 def test_schema_v2_loads_without_a_circuit_diagram(sample_project: Project, tmp_path: Path) -> None:
-    document = {"schema_version": 2, **sample_project.model_dump(mode="json")}
+    document = _without_topology_fields(
+        {"schema_version": 2, **sample_project.model_dump(mode="json")}
+    )
     document.pop("circuit_diagram", None)
     path = tmp_path / "v2.icproj"
     path.write_text(json.dumps(document), encoding="utf-8")

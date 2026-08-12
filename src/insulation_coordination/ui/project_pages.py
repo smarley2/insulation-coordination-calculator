@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -43,7 +43,10 @@ from insulation_coordination.project.persistence import (
     save_project_atomic,
 )
 from insulation_coordination.ui.circuit_diagram import CircuitDiagramBox
-from insulation_coordination.ui.help_indicator import HelpIndicator
+from insulation_coordination.ui.galvanic_barriers import GalvanicBarriersPanel
+from insulation_coordination.ui.galvanic_domains import GalvanicDomainsPanel
+from insulation_coordination.ui.help_indicator import HelpIndicator, labelled
+from insulation_coordination.ui.net_class_classification import NetClassClassificationPanel
 from insulation_coordination.ui.value_options import (
     IMPULSE_OPTIONS,
     MATERIAL_OPTIONS,
@@ -57,16 +60,9 @@ from insulation_coordination.ui.voltage_guidance import VoltageGuidanceId
 #: Upper bound on one bulk net-class add, so a mistyped amount cannot flood the pair set.
 MAX_BULK_NET_CLASSES = 64
 
-
-def _labelled(text: str, help_indicator: HelpIndicator) -> QWidget:
-    """A form label with its ⓘ beside it, so the help never sits inside the value."""
-    container = QWidget()
-    row = QHBoxLayout(container)
-    row.setContentsMargins(0, 0, 0, 0)
-    row.addWidget(QLabel(text))
-    row.addWidget(help_indicator)
-    row.addStretch(1)
-    return container
+#: The Qt item-data role the net list stores each row's net id under - named the same
+#: way ``ui.galvanic_domains._DOMAIN_ID_ROLE`` names it, rather than as a raw ``0x0100``.
+_NET_ID_ROLE = Qt.ItemDataRole.UserRole
 
 
 class ProjectPage(QWidget):
@@ -110,14 +106,14 @@ class ProjectPage(QWidget):
         self._freq_edit = QLineEdit()
         self._freq_edit.editingFinished.connect(self._on_freq_changed)
         self._freq_help = HelpIndicator(VoltageGuidanceId.FREQUENCY)
-        defaults_layout.addRow(_labelled("Frequency (Hz):", self._freq_help), self._freq_edit)
+        defaults_layout.addRow(labelled("Frequency (Hz):", self._freq_help), self._freq_edit)
         self._impulse_combo = QComboBox()
         populate_combo(self._impulse_combo, IMPULSE_OPTIONS)
         self._impulse_combo.currentIndexChanged.connect(
             lambda index: self._update_combo_default("impulse_v", self._impulse_combo, index)
         )
         self._impulse_help = HelpIndicator(VoltageGuidanceId.TRANSIENT_OVERVOLTAGE)
-        defaults_layout.addRow(_labelled("Impulse:", self._impulse_help), self._impulse_combo)
+        defaults_layout.addRow(labelled("Impulse:", self._impulse_help), self._impulse_combo)
         self._insulation_combo = QComboBox()
         self._insulation_combo.addItem("")
         for insulation in InsulationType:
@@ -195,7 +191,18 @@ class ProjectPage(QWidget):
         net_controls.addWidget(self._delete_button)
         net_controls.addStretch(1)
         net_layout.addLayout(net_controls)
+        self._classification_panel = NetClassClassificationPanel()
+        self._classification_panel.net_class_changed.connect(self._on_classification_changed)
+        net_layout.addWidget(self._classification_panel, 1)
         layout.addWidget(net_group)
+
+        self._domains_panel = GalvanicDomainsPanel()
+        self._domains_panel.project_changed.connect(self._on_domains_changed)
+        layout.addWidget(self._domains_panel)
+
+        self._barriers_panel = GalvanicBarriersPanel()
+        self._barriers_panel.project_changed.connect(self._on_barriers_changed)
+        layout.addWidget(self._barriers_panel)
 
         self._net_list.currentRowChanged.connect(self._on_net_selection_changed)
 
@@ -217,6 +224,8 @@ class ProjectPage(QWidget):
             f"{package.manifest.package_id} v{package.manifest.version} "
             f"({package.package_sha256 or 'no digest'})"
         )
+        self._classification_panel.set_rules_package(package)
+        self._barriers_panel.set_rules_package(package)
 
     def load_project(self, project: Project) -> None:
         self._project = project
@@ -289,6 +298,8 @@ class ProjectPage(QWidget):
             self._rules_label.setText("(none)")
         else:
             self._rules_label.setText(f"{rules.package_id} v{rules.version} ({rules.sha256[:12]}…)")
+        self._domains_panel.set_project(project)
+        self._barriers_panel.set_project(project)
         self._refresh_net_list()
 
     def open_project(self, path: Path) -> None:
@@ -314,7 +325,16 @@ class ProjectPage(QWidget):
         existing_names = self._project.net_class_names
         if name in existing_names:
             raise ValueError(f"Net-class name '{name}' already exists")
-        net_class = NetClass(id=uuid4(), name=name, description=description or None)
+        direct_domain = next(
+            (domain for domain in self._project.galvanic_domains if domain.is_direct_source_domain),
+            None,
+        )
+        net_class = NetClass(
+            id=uuid4(),
+            name=name,
+            description=description or None,
+            galvanic_domain_id=None if direct_domain is None else direct_domain.id,
+        )
         net_classes = (*self._project.net_classes, net_class)
         pairs = reconcile_pairs(net_classes, self._project.pairs)
         self._update_project(net_classes=net_classes, pairs=pairs)
@@ -370,19 +390,63 @@ class ProjectPage(QWidget):
         self._update_project(circuit_diagram=attachment)
 
     def _update_project(self, **updates: object) -> None:
-        self._project = self._project.model_copy(update=updates)  # type: ignore[union-attr]
+        self._apply_project(self._project.model_copy(update=updates))  # type: ignore[union-attr]
+
+    def _on_domains_changed(self, project: Project) -> None:
+        """Receive the galvanic-domains panel's own complete replacement project.
+
+        The panel already produced a fully-formed ``Project`` (it needs the whole thing to
+        run its remap-and-delete workflow), so this installs it directly instead of folding
+        it through ``model_copy`` a second time.
+        """
+        self._apply_project(project)
+
+    def _on_barriers_changed(self, project: Project) -> None:
+        """Receive the galvanic-barriers panel's own complete replacement project.
+
+        Same reasoning as ``_on_domains_changed``: the panel already produced the full
+        replacement, so it is installed directly.
+        """
+        self._apply_project(project)
+
+    def _apply_project(self, project: Project) -> None:
+        self._project = project
         self._dirty = True
         self._refresh_net_list()
+        # Every project change flows through here, not just a domain or barrier edit, so
+        # neither panel's own idea of the project - and thus what a later edit on either
+        # one computes against - ever drifts from what the rest of the page holds.
+        self._domains_panel.set_project(project)
+        self._barriers_panel.set_project(project)
         self.project_changed.emit(self._project)
 
     def _refresh_net_list(self) -> None:
+        """Rebuild the list, keeping whichever net was selected selected.
+
+        Every project update refreshes the list, and clearing it drops the selection.
+        Without restoring it, editing one classification dropdown would deselect the net
+        and blank the panel before the next dropdown could be touched.
+        """
+        selected = self._net_list.currentItem()
+        selected_id = None if selected is None else selected.data(_NET_ID_ROLE)
         self._net_list.clear()
         if self._project is None:
             return
         for net_class in self._project.net_classes:
             item = QListWidgetItem(net_class.name)
-            item.setData(0x0100, str(net_class.id))
+            item.setData(_NET_ID_ROLE, str(net_class.id))
             self._net_list.addItem(item)
+        if selected_id is not None:
+            restored = next(
+                (
+                    index
+                    for index, net_class in enumerate(self._project.net_classes)
+                    if str(net_class.id) == selected_id
+                ),
+                None,
+            )
+            if restored is not None:
+                self._net_list.setCurrentRow(restored)
         self._on_net_selection_changed(self._net_list.currentRow())
 
     def _on_net_selection_changed(self, row: int) -> None:
@@ -390,11 +454,26 @@ class ProjectPage(QWidget):
             self._description_edit.blockSignals(True)
             self._description_edit.clear()
             self._description_edit.blockSignals(False)
+            self._classification_panel.set_net_class(None)
             return
         net = self._project.net_classes[row]
         self._description_edit.blockSignals(True)
         self._description_edit.setText(net.description or "")
         self._description_edit.blockSignals(False)
+        self._classification_panel.set_net_class(net, self._project.galvanic_domains)
+
+    def _on_classification_changed(self, net_class: NetClass) -> None:
+        if self._project is None:
+            return
+        index = next(
+            (i for i, nc in enumerate(self._project.net_classes) if nc.id == net_class.id),
+            None,
+        )
+        if index is None:
+            return
+        net_classes = list(self._project.net_classes)
+        net_classes[index] = net_class
+        self._update_project(net_classes=tuple(net_classes))
 
     def _on_description_changed(self) -> None:
         if self._project is None:

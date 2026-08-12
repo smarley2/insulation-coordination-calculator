@@ -5,21 +5,28 @@ from itertools import combinations
 from typing import Self
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from insulation_coordination.domain.attachments import ProjectImageAttachment
 from insulation_coordination.domain.enums import (
     Applicability,
+    CircuitSourceRelationship,
+    ConnectionExposure,
     ConstructionType,
+    DecisiveVoltageClass,
     FieldCondition,
     InsulationType,
+    NetClassType,
     Provenance,
+    ReviewState,
 )
+from insulation_coordination.domain.frozen_model import FrozenModel
 from insulation_coordination.domain.quantities import DecimalValue, PositiveDecimal
+from insulation_coordination.domain.topology import GalvanicBarrier, GalvanicDomain
 
-
-class FrozenModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+# `FrozenModel` used to be defined here; many other modules still import it from this module.
+# Explicitly re-export it (mypy's strict mode does not re-export imported names by default).
+__all__ = ["FrozenModel"]
 
 
 class NetClass(FrozenModel):
@@ -27,6 +34,33 @@ class NetClass(FrozenModel):
     name: str = Field(min_length=1)
     description: str | None = None
     notes: str | None = None
+    net_type: NetClassType = NetClassType.CIRCUIT
+    source_relationship: CircuitSourceRelationship | None = (
+        CircuitSourceRelationship.INTERNALLY_GENERATED
+    )
+    connection_exposure: ConnectionExposure | None = ConnectionExposure.INTERNAL_ONLY
+    decisive_voltage_class: DecisiveVoltageClass | None = DecisiveVoltageClass.NOT_EVALUATED
+    galvanic_domain_id: UUID | None = None
+    classification_review_state: ReviewState = ReviewState.NEEDS_REVIEW
+
+    @model_validator(mode="after")
+    def _requires_consistent_classification(self) -> Self:
+        circuit_only_fields = (
+            self.source_relationship,
+            self.connection_exposure,
+            self.decisive_voltage_class,
+            self.galvanic_domain_id,
+        )
+        if self.net_type is NetClassType.CIRCUIT:
+            if (
+                self.source_relationship is None
+                or self.connection_exposure is None
+                or self.decisive_voltage_class is None
+            ):
+                raise ValueError("A circuit net requires its classification enums to be set")
+        elif any(field is not None for field in circuit_only_fields):
+            raise ValueError("A non-circuit net must leave its circuit-only fields unset")
+        return self
 
 
 class OverrideValue[T](FrozenModel):
@@ -214,6 +248,8 @@ class Project(FrozenModel):
     pairs: tuple[PairCase, ...]
     group_splits: tuple[GroupSplit, ...] = ()
     circuit_diagram: ProjectImageAttachment | None = None
+    galvanic_domains: tuple[GalvanicDomain, ...] = ()
+    galvanic_barriers: tuple[GalvanicBarrier, ...] = ()
 
     @model_validator(mode="after")
     def _requires_consistent_pairs(self) -> Self:
@@ -233,6 +269,34 @@ class Project(FrozenModel):
             raise ValueError("Pair keys must be canonical")
         if len(actual) != len(self.pairs) or actual != expected:
             raise ValueError("Pairs must reconcile exactly to the net classes")
+
+        domain_ids = [domain.id for domain in self.galvanic_domains]
+        if len(domain_ids) != len(set(domain_ids)):
+            raise ValueError("Galvanic domain IDs must be unique")
+        domain_names = [domain.name.strip().casefold() for domain in self.galvanic_domains]
+        if len(domain_names) != len(set(domain_names)):
+            raise ValueError("Galvanic domain names must be unique")
+        direct_domain_count = sum(
+            domain.is_direct_source_domain for domain in self.galvanic_domains
+        )
+        if self.galvanic_domains and direct_domain_count != 1:
+            raise ValueError("Exactly one galvanic domain must be the direct source domain")
+
+        domain_id_set = set(domain_ids)
+        if any(
+            net_class.galvanic_domain_id is not None
+            and net_class.galvanic_domain_id not in domain_id_set
+            for net_class in self.net_classes
+        ):
+            raise ValueError("A net class's galvanic domain must reference a declared domain")
+        if any(
+            barrier.domain_a_id not in domain_id_set or barrier.domain_b_id not in domain_id_set
+            for barrier in self.galvanic_barriers
+        ):
+            raise ValueError("A galvanic barrier's domains must reference declared domains")
+        barrier_keys = [barrier.domain_key for barrier in self.galvanic_barriers]
+        if len(barrier_keys) != len(set(barrier_keys)):
+            raise ValueError("Galvanic barriers must not duplicate a domain pair")
         return self
 
     @property

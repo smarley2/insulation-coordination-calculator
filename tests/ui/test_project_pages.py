@@ -54,6 +54,135 @@ def test_adding_three_net_classes_creates_three_pairs(qtbot, qtbot_project):
     assert len(page.project.pairs) == 3
 
 
+def test_add_net_class_leaves_the_domain_unset_without_a_direct_source_domain(qtbot, qtbot_project):
+    page = qtbot_project
+    page.add_net_class("HV")
+    assert page.project.net_classes[0].galvanic_domain_id is None
+
+
+def test_set_rules_package_reaches_the_panels_that_cite_it(qtbot, qtbot_project):
+    """The DVC guide and both topology help controls read the package through this path."""
+    page = qtbot_project
+    package = synthetic_rule_package()
+    page.set_rules_package(package)
+    assert page._classification_panel._rules_package is package
+    assert page._barriers_panel._verified_help._package is package
+
+
+def test_add_net_class_assigns_the_projects_direct_source_domain(qtbot, qtbot_project):
+    from insulation_coordination.domain.topology import GalvanicDomain
+
+    page = qtbot_project
+    direct_domain = GalvanicDomain(
+        id=UUID(int=2), name="Primary side", is_direct_source_domain=True
+    )
+    other_domain = GalvanicDomain(id=UUID(int=3), name="Secondary side")
+    page.load_project(
+        page.project.model_copy(update={"galvanic_domains": (direct_domain, other_domain)})
+    )
+
+    page.add_net_class("HV")
+
+    assert page.project.net_classes[0].galvanic_domain_id == direct_domain.id
+
+
+def test_a_classification_edit_leaves_every_pair_untouched(qtbot, qtbot_project):
+    """Classification is recorded, not calculated: no pair may move when a DVC changes.
+
+    Asserted through the real editing path - the dropdown, the panel's signal, and the
+    page's own update - rather than against the transformation alone, because the page is
+    where a pair-rebuilding refresh would creep in.
+    """
+    from insulation_coordination.domain.enums import DecisiveVoltageClass
+
+    page = qtbot_project
+    page.add_net_class("HV+")
+    page.add_net_class("HV-")
+    page.add_net_class("PE")
+    pairs_before = page.project.pairs
+    page._net_list.setCurrentRow(0)
+
+    combo = page._classification_panel._dvc_combo
+    with qtbot.waitSignal(page.project_changed, timeout=1000):
+        combo.setCurrentIndex(combo.findData(DecisiveVoltageClass.DVC_C))
+
+    assert page.project.net_classes[0].decisive_voltage_class is DecisiveVoltageClass.DVC_C
+    assert page.project.pairs == pairs_before
+
+
+def test_renaming_a_domain_through_the_panel_updates_the_project_and_the_dropdown(
+    qtbot, qtbot_project
+):
+    from insulation_coordination.domain.topology import GalvanicDomain
+
+    page = qtbot_project
+    domain = GalvanicDomain(id=UUID(int=2), name="Primary side", is_direct_source_domain=True)
+    page.load_project(page.project.model_copy(update={"galvanic_domains": (domain,)}))
+    page.add_net_class("HV")
+    page._net_list.setCurrentRow(0)
+
+    with qtbot.waitSignal(page.project_changed, timeout=1000) as blocker:
+        page._domains_panel.rename_domain(domain.id, "Renamed side")
+    (updated,) = blocker.args
+
+    assert updated.galvanic_domains[0].name == "Renamed side"
+    assert page._classification_panel._domain_combo.itemText(1) == "Renamed side"
+
+
+def test_a_net_class_edit_keeps_the_domains_panel_in_sync_for_a_later_domain_edit(
+    qtbot, qtbot_project
+):
+    """A domain edit reads the *whole* project through the panel's own reference.
+
+    If an unrelated page edit (adding a net class here) did not refresh that reference,
+    a later domain rename would compute its replacement project from a stale one and the
+    newly-added net class would vanish from the result.
+    """
+    page = qtbot_project
+    page.add_net_class("HV")
+    page._domains_panel.add_domain("Primary side")
+    page.add_net_class("LV")
+
+    domain_id = page.project.galvanic_domains[0].id
+    page._domains_panel.rename_domain(domain_id, "Renamed side")
+
+    assert page.project.net_class_names == ("HV", "LV")
+    assert page.project.galvanic_domains[0].name == "Renamed side"
+
+
+def test_selecting_a_net_populates_the_classification_panel(qtbot, qtbot_project):
+    page = qtbot_project
+    page.add_net_class("HV")
+    page._net_list.setCurrentRow(0)
+    panel = page._classification_panel
+    assert panel._type_combo.isEnabled()
+    assert panel._source_combo.currentText() == "Internally generated"
+
+
+def test_a_classification_edit_emits_one_project_changed_and_leaves_pairs_untouched(
+    qtbot, qtbot_project
+):
+    from insulation_coordination.domain.enums import CircuitSourceRelationship
+
+    page = qtbot_project
+    page.add_net_class("HV")
+    page.add_net_class("LV")
+    page._net_list.setCurrentRow(0)
+    pairs_before = page.project.pairs
+
+    received: list[object] = []
+    page.project_changed.connect(received.append)
+    combo = page._classification_panel._source_combo
+    index = combo.findData(CircuitSourceRelationship.MAINS_CONNECTED)
+    combo.setCurrentIndex(index)
+
+    assert len(received) == 1
+    assert page.project.net_classes[0].source_relationship is (
+        CircuitSourceRelationship.MAINS_CONNECTED
+    )
+    assert page.project.pairs == pairs_before
+
+
 def test_project_default_dropdown_choices(qtbot, qtbot_project):
     page = qtbot_project
     assert [page._impulse_combo.itemText(i) for i in range(page._impulse_combo.count())] == [
