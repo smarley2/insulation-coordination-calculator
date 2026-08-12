@@ -2,40 +2,39 @@
 
 Every mutation delegates to the importer's correction functions, so each change
 records an audited correction and resets the aggregate proposal. No source pixels
-are stored; the overlay decodes the current local PDF crop in memory only.
+are stored; the source view decodes the current local PDF crop in memory only.
 """
 
 from __future__ import annotations
 
 import hashlib
 import io
-from collections.abc import Callable, Mapping
-from decimal import Decimal, InvalidOperation
+from collections.abc import Mapping
+from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import pdfplumber
-from PySide6.QtCore import QPointF, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainterPath, QPen, QPixmap
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QFormLayout,
-    QGraphicsEllipseItem,
-    QGraphicsItem,
-    QGraphicsPathItem,
-    QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsView,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from insulation_coordination.domain.rules import (
@@ -54,7 +53,6 @@ from insulation_coordination.rules.importer.approval import (
 from insulation_coordination.rules.importer.curves import (
     ManualPlotCalibration,
     RawFigure,
-    pixel_to_source_point,
     source_point_to_pixel,
 )
 from insulation_coordination.rules.importer.extract import ImportedRuleDraft
@@ -252,82 +250,183 @@ class CurveReviewModel:
         )
         return self._draft
 
-class _CurveGraphicsView(QGraphicsView):
-    """Zoomable source view that can capture the two calibration clicks."""
 
-    scene_clicked = Signal(QPointF)
+class _CurveGraphicsView(QGraphicsView):
+    """Zoomable read-only view of the verified source crop."""
 
     def __init__(self, scene: QGraphicsScene) -> None:
         super().__init__(scene)
-        self.capture_clicks = False
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
 
     def wheelEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
         self.scale(factor, factor)
 
-    def mousePressEvent(self, event) -> None:  # type: ignore[no-untyped-def]
-        if self.capture_clicks:
-            self.scene_clicked.emit(self.mapToScene(event.position().toPoint()))
-            event.accept()
-            return
-        super().mousePressEvent(event)
 
+class _PointPlot(QWidget):
+    """Read-only log-log plot of the table points, in reviewed axis units."""
 
-class _CurvePointHandle(QGraphicsEllipseItem):
-    """Movable point with dialog-owned ordering and bounds checks."""
+    def __init__(self) -> None:
+        super().__init__()
+        self.setMinimumHeight(200)
+        self._bounds: tuple[Decimal, Decimal, Decimal, Decimal] | None = None
+        self._points: tuple[CurvePoint, ...] = ()
+        self._siblings: tuple[tuple[CurvePoint, ...], ...] = ()
+        self._siblings_visible = True
 
-    def __init__(
+    def set_curve(
         self,
-        index: int,
-        constrain: Callable[[int, QPointF], QPointF],
-        moved: Callable[[int, QPointF], None],
+        bounds: tuple[Decimal, Decimal, Decimal, Decimal] | None,
+        points: tuple[CurvePoint, ...],
+        siblings: tuple[tuple[CurvePoint, ...], ...] = (),
     ) -> None:
-        super().__init__(-5, -5, 10, 10)
-        self._index = index
-        self._constrain = constrain
-        self._moved = moved
-        self.setBrush(QColor("#e53935"))
-        self.setPen(QPen(QColor("#ffffff"), 1.0))
-        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
-        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges)
+        self._bounds = bounds
+        self._points = points
+        self._siblings = siblings
+        self.update()
 
-    def itemChange(self, change, value):  # type: ignore[no-untyped-def]
-        if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange:
-            return self._constrain(self._index, value)
-        if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
-            self._moved(self._index, value)
-        return super().itemChange(change, value)
+    def set_siblings_visible(self, visible: bool) -> None:
+        self._siblings_visible = visible
+        self.update()
 
+    @property
+    def vertices(self) -> tuple[tuple[float, float], ...]:
+        """Widget positions of the plotted points, in table-row order."""
 
-class _AxisBoundsDialog(QDialog):
-    """The four exact axis values paired with two scene-space corner clicks."""
+        return self._widget_points(self._points)
 
-    def __init__(self, parent: QDialog) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Set plot axes")
-        layout = QVBoxLayout(self)
-        form = QFormLayout()
-        self.x_min = QLineEdit()
-        self.x_max = QLineEdit()
-        self.y_min = QLineEdit()
-        self.y_max = QLineEdit()
-        form.addRow("X minimum", self.x_min)
-        form.addRow("X maximum", self.x_max)
-        form.addRow("Y minimum", self.y_min)
-        form.addRow("Y maximum", self.y_max)
-        layout.addLayout(form)
-        actions = QHBoxLayout()
-        apply = QPushButton("Apply")
-        apply.clicked.connect(self.accept)
-        actions.addWidget(apply)
-        cancel = QPushButton("Cancel")
-        cancel.clicked.connect(self.reject)
-        actions.addWidget(cancel)
-        layout.addLayout(actions)
+    @property
+    def sibling_vertices(self) -> tuple[tuple[tuple[float, float], ...], ...]:
+        """Widget positions of each reviewed sibling curve currently drawn."""
+
+        if not self._siblings_visible:
+            return ()
+        return tuple(self._widget_points(points) for points in self._siblings)
+
+    def _calibration(self) -> ManualPlotCalibration | None:
+        if self._bounds is None:
+            return None
+        x_min, x_max, y_min, y_max = self._bounds
+        try:
+            return ManualPlotCalibration(
+                # ponytail: display-only; this hash never reaches the draft.
+                figure_artifact_sha256="0" * 64,
+                x_min=x_min,
+                x_max=x_max,
+                y_min=y_min,
+                y_max=y_max,
+            )
+        except ValueError:
+            return None
+
+    def _rectangle(self) -> tuple[Decimal, Decimal, Decimal, Decimal] | None:
+        left, top = 52.0, 12.0
+        right, bottom = self.width() - 14.0, self.height() - 26.0
+        if right - left < 20 or bottom - top < 20:
+            return None
+        return tuple(  # type: ignore[return-value]
+            Decimal(str(value)) for value in (left, top, right, bottom)
+        )
+
+    def _pixels(
+        self, points: tuple[CurvePoint, ...]
+    ) -> tuple[tuple[Decimal, Decimal], ...]:
+        calibration = self._calibration()
+        rectangle = self._rectangle()
+        if calibration is None or rectangle is None:
+            return ()
+        pixels: list[tuple[Decimal, Decimal]] = []
+        for point in points:
+            try:
+                pixels.append(source_point_to_pixel(point, calibration, rectangle))
+            except ValueError:
+                continue
+        return tuple(pixels)
+
+    def _widget_points(
+        self, points: tuple[CurvePoint, ...]
+    ) -> tuple[tuple[float, float], ...]:
+        return tuple((float(x), float(y)) for x, y in self._pixels(points))
+
+    @staticmethod
+    def _decades(minimum: Decimal, maximum: Decimal) -> tuple[Decimal, ...]:
+        exponent = int(minimum.log10().to_integral_value(rounding=ROUND_CEILING))
+        values: list[Decimal] = []
+        while (value := Decimal(10) ** exponent) <= maximum:
+            values.append(value)
+            exponent += 1
+        return tuple(values)
+
+    @staticmethod
+    def _polyline(pixels: tuple[tuple[Decimal, Decimal], ...]) -> QPainterPath:
+        path = QPainterPath()
+        for x, y in pixels:
+            position = QPointF(float(x), float(y))
+            if path.elementCount() == 0:
+                path.moveTo(position)
+            else:
+                path.lineTo(position)
+        return path
+
+    def paintEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        calibration = self._calibration()
+        rectangle = self._rectangle()
+        if calibration is None or rectangle is None:
+            painter.setPen(QColor("#757575"))
+            painter.drawText(
+                self.rect(),
+                Qt.AlignmentFlag.AlignCenter,
+                "Enter axis bounds to plot the entered points.",
+            )
+            return
+        left, top, right, bottom = (float(value) for value in rectangle)
+        painter.setPen(QPen(QColor("#e0e0e0"), 1.0))
+        for value in self._decades(calibration.x_min, calibration.x_max):
+            x, _y = source_point_to_pixel(
+                CurvePoint(x=value, y=calibration.y_min), calibration, rectangle
+            )
+            painter.drawLine(QPointF(float(x), top), QPointF(float(x), bottom))
+        for value in self._decades(calibration.y_min, calibration.y_max):
+            _x, y = source_point_to_pixel(
+                CurvePoint(x=calibration.x_min, y=value), calibration, rectangle
+            )
+            painter.drawLine(QPointF(left, float(y)), QPointF(right, float(y)))
+        painter.setPen(QPen(QColor("#9e9e9e"), 1.0))
+        painter.drawRect(QRectF(left, top, right - left, bottom - top))
+        painter.setPen(QColor("#616161"))
+        for alignment, value in (
+            (Qt.AlignmentFlag.AlignLeft, calibration.x_min),
+            (Qt.AlignmentFlag.AlignRight, calibration.x_max),
+        ):
+            painter.drawText(
+                QRectF(left, bottom, right - left, 24.0),
+                alignment | Qt.AlignmentFlag.AlignVCenter,
+                format(value, "f"),
+            )
+        for edge, value in ((top, calibration.y_max), (bottom, calibration.y_min)):
+            painter.drawText(
+                QRectF(0.0, edge - 8.0, left - 6.0, 16.0),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                format(value, "f"),
+            )
+        if self._siblings_visible:
+            sibling_pen = QPen(QColor("#607d8b"), 1.5)
+            sibling_pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(sibling_pen)
+            for points in self._siblings:
+                painter.drawPath(self._polyline(self._pixels(points)))
+        pixels = self._pixels(self._points)
+        painter.setPen(QPen(QColor("#e53935"), 2.0))
+        painter.drawPath(self._polyline(pixels))
+        painter.setBrush(QColor("#e53935"))
+        for x, y in pixels:
+            painter.drawEllipse(QPointF(float(x), float(y)), 3.0, 3.0)
 
 
 class CurveReviewDialog(QDialog):
-    """Manually calibrate a verified local crop and author one selected curve."""
+    """Read a verified local crop and author one selected curve from typed points."""
 
     draft_changed = Signal(object)
 
@@ -341,20 +440,13 @@ class CurveReviewDialog(QDialog):
     ) -> None:
         super().__init__()
         self.setWindowTitle("Manual curve review")
-        self.resize(1000, 760)
+        self.resize(1440, 820)
         self._model = CurveReviewModel(draft)
         self._actor = actor
         self._pdf_paths = {key: Path(value) for key, value in pdf_paths.items()}
         self._pdf_passwords = dict(pdf_passwords or {})
         self._scene = QGraphicsScene(self)
         self._view = _CurveGraphicsView(self._scene)
-        self._view.scene_clicked.connect(self._record_calibration_corner)
-        self._overlay_item: QGraphicsPathItem | None = None
-        self._sibling_items: list[QGraphicsPathItem] = []
-        self._plot_item: QGraphicsRectItem | None = None
-        self._handles: list[_CurvePointHandle] = []
-        self._handle_rows: list[int] = []
-        self._calibration_corners: list[QPointF] = []
         self._source_loaded = False
         self._syncing = False
 
@@ -366,17 +458,41 @@ class CurveReviewDialog(QDialog):
             self._variant_selector.addItem(label, variant_id)
         self._variant_selector.currentIndexChanged.connect(self._load_current_variant)
         selector_row.addWidget(self._variant_selector, 1)
-        self._overlay_toggle = QCheckBox("Show semantic overlay")
-        self._overlay_toggle.setChecked(True)
-        self._overlay_toggle.toggled.connect(self.set_overlay_visible)
-        selector_row.addWidget(self._overlay_toggle)
+        self._sibling_toggle = QCheckBox("Show reviewed siblings")
+        self._sibling_toggle.setChecked(True)
+        self._sibling_toggle.toggled.connect(self.set_siblings_visible)
+        selector_row.addWidget(self._sibling_toggle)
         layout.addLayout(selector_row)
-        layout.addWidget(self._view, 1)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(self._view)
+
+        editor_pane = QWidget()
+        editor_layout = QVBoxLayout(editor_pane)
+        editor_layout.setContentsMargins(0, 0, 0, 0)
+        self._bounds_box = QGroupBox("Axis bounds")
+        bounds_form = QFormLayout(self._bounds_box)
+        self.x_min_edit = QLineEdit()
+        self.x_max_edit = QLineEdit()
+        self.y_min_edit = QLineEdit()
+        self.y_max_edit = QLineEdit()
+        for label, field in (
+            ("X minimum", self.x_min_edit),
+            ("X maximum", self.x_max_edit),
+            ("Y minimum", self.y_min_edit),
+            ("Y maximum", self.y_max_edit),
+        ):
+            field.textChanged.connect(self._refresh_point_plot)
+            bounds_form.addRow(label, field)
+        self.apply_bounds_button = QPushButton("Apply axis bounds")
+        self.apply_bounds_button.clicked.connect(self.apply_axis_bounds)
+        bounds_form.addRow(self.apply_bounds_button)
+        editor_layout.addWidget(self._bounds_box)
 
         self.point_table = QTableWidget(0, 2)
         self.point_table.setHorizontalHeaderLabels(("X (source unit)", "Y"))
         self.point_table.itemChanged.connect(self._table_changed)
-        layout.addWidget(self.point_table)
+        editor_layout.addWidget(self.point_table, 1)
         point_actions = QHBoxLayout()
         self.add_point_button = QPushButton("Add point")
         self.add_point_button.clicked.connect(self.add_point)
@@ -384,19 +500,18 @@ class CurveReviewDialog(QDialog):
         self.remove_point_button = QPushButton("Remove point")
         self.remove_point_button.clicked.connect(self.remove_point)
         point_actions.addWidget(self.remove_point_button)
-        self.calibration_button = QPushButton("Set plot and axes…")
-        self.calibration_button.clicked.connect(self.begin_calibration)
-        point_actions.addWidget(self.calibration_button)
-        self.save_points_button = QPushButton("Save points")
-        self.save_points_button.clicked.connect(self.save_points)
-        point_actions.addWidget(self.save_points_button)
-        layout.addLayout(point_actions)
+        editor_layout.addLayout(point_actions)
+        self.point_plot = _PointPlot()
+        editor_layout.addWidget(self.point_plot, 1)
+        splitter.addWidget(editor_pane)
+        splitter.setSizes((820, 600))
+        layout.addWidget(splitter, 1)
 
         self._status = QLabel()
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
         self.notes_edit = QLineEdit()
-        self.notes_edit.setPlaceholderText("Review notes (required for calibration, save, and acceptance)")
+        self.notes_edit.setPlaceholderText("Review notes (required for axis bounds, save, and acceptance)")
         layout.addWidget(self.notes_edit)
         actions = QHBoxLayout()
         self.accept_variant_button = QPushButton("Accept variant")
@@ -410,8 +525,7 @@ class CurveReviewDialog(QDialog):
         self._mutation_controls = (
             self.add_point_button,
             self.remove_point_button,
-            self.calibration_button,
-            self.save_points_button,
+            self.apply_bounds_button,
             self.accept_variant_button,
         )
         self._set_source_available(False)
@@ -435,40 +549,8 @@ class CurveReviewDialog(QDialog):
     def status_text(self) -> str:
         return self._status.text()
 
-    @property
-    def overlay_item(self) -> QGraphicsPathItem:
-        if self._overlay_item is None:
-            raise RuntimeError("No curve overlay loaded")
-        return self._overlay_item
-
-    @property
-    def overlay_path(self) -> QPainterPath:
-        return self.overlay_item.path()
-
-    @property
-    def point_handle_count(self) -> int:
-        """Number of individually valid table rows currently shown as handles."""
-
-        return len(self._handles)
-
-    @property
-    def point_handle_positions(self) -> tuple[tuple[Decimal, Decimal], ...]:
-        """Scene positions of the preview handles, in table-row order."""
-
-        return tuple(
-            (Decimal(str(handle.pos().x())), Decimal(str(handle.pos().y())))
-            for handle in self._handles
-        )
-
-    def set_overlay_visible(self, visible: bool) -> None:
-        for item in (
-            self._overlay_item,
-            self._plot_item,
-            *self._sibling_items,
-            *self._handles,
-        ):
-            if item is not None:
-                item.setVisible(visible)
+    def set_siblings_visible(self, visible: bool) -> None:
+        self.point_plot.set_siblings_visible(visible)
 
     def point_text(self, row: int) -> tuple[str, str]:
         return (
@@ -480,7 +562,7 @@ class CurveReviewDialog(QDialog):
         self._set_table_text(row, 0, x)
         self._set_table_text(row, 1, y)
         if not self._syncing:
-            self._redraw_from_table()
+            self._refresh_point_plot()
 
     def add_point(self) -> None:
         row = self.point_table.rowCount()
@@ -490,6 +572,10 @@ class CurveReviewDialog(QDialog):
         self._set_table_text(row, 1, "")
         self._syncing = False
         self.point_table.setCurrentCell(row, 0)
+        self.point_table.setFocus()
+        item = self.point_table.item(row, 0)
+        if item is not None:
+            self.point_table.editItem(item)
 
     def remove_point(self) -> None:
         row = self.point_table.currentRow()
@@ -498,48 +584,67 @@ class CurveReviewDialog(QDialog):
         if row < 0:
             return
         self.point_table.removeRow(row)
-        self._redraw_from_table()
+        self._refresh_point_plot()
 
-    def begin_calibration(self) -> None:
-        if not self._require_notes("calibration"):
+    def apply_axis_bounds(self) -> None:
+        """Save the reviewed log-axis domain currently typed into the fields."""
+
+        if not self._source_loaded:
+            self._status.setText(
+                "A verified local source must be loaded before saving axis bounds."
+            )
             return
-        self._calibration_corners.clear()
-        self._view.capture_clicks = True
-        self._status.setText("Click the plot's top-left corner, then its bottom-right corner.")
+        if not self._require_notes("axis bounds"):
+            return
+        bounds = self._bounds_values()
+        if bounds is None:
+            self._status.setText("Enter valid decimal axis bounds.")
+            return
+        try:
+            self._save_bounds(*bounds)
+        except (ApprovalError, ValueError) as error:
+            self._status.setText(f"Enter valid decimal axis bounds: {error}")
 
-    def set_plot_and_axes(
+    def set_axis_bounds(
         self,
-        top_left: QPointF,
-        bottom_right: QPointF,
         x_min: Decimal,
         x_max: Decimal,
         y_min: Decimal,
         y_max: Decimal,
     ) -> None:
-        """Save the same calibration captured by the two-click interaction."""
+        """Save the same axis bounds the fields would submit."""
 
         if not self._source_loaded:
             self._status.setText(
-                "A verified local source must be loaded before calibration."
+                "A verified local source must be loaded before saving axis bounds."
             )
             return
-        if not self._require_notes("calibration"):
+        if not self._require_notes("axis bounds"):
             return
-        self._calibration_corners = [top_left, bottom_right]
         try:
-            self._save_calibration(x_min, x_max, y_min, y_max)
+            self._save_bounds(x_min, x_max, y_min, y_max)
         except (ApprovalError, ValueError) as error:
             self._status.setText(f"Enter valid decimal axis bounds: {error}")
 
     def save_points(self) -> None:
         if not self._require_notes("saving points"):
             return
+        self._store_points()
+
+    def _store_points(self) -> bool:
         variant_id = self._variant_selector.currentData()
         if not isinstance(variant_id, str):
             self._status.setText("Choose a semantic curve variant first.")
-            return
+            return False
         try:
             points = self._table_points()
+        except (InvalidOperation, ValueError) as error:
+            self._status.setText(str(error))
+            return False
+        if self._stored_points_match(points):
+            self._status.setText("Visible points already match the saved variant.")
+            return True
+        try:
             self._model.replace_points(
                 variant_id,
                 points,
@@ -549,13 +654,29 @@ class CurveReviewDialog(QDialog):
             )
         except (ApprovalError, InvalidOperation, ValueError) as error:
             self._status.setText(str(error))
-            return
+            return False
         self.draft_changed.emit(self._model.draft)
         self._load_current_variant(self._variant_selector.currentIndex())
-        self._status.setText("Points saved; accept the variant after reviewing the overlay.")
+        self._status.setText("Points saved; accept the variant after reviewing them.")
+        return True
 
     def accept_variant(self) -> None:
+        """Store the visible table, then record the manual review of what was stored."""
+
         if not self._require_notes("acceptance"):
+            return
+        try:
+            source = self._current_source(self._current_variant())
+            _figure, calibration = self._figure_and_calibration(source)
+        except ApprovalError as failure:
+            self._status.setText(str(failure))
+            return
+        if calibration is None:
+            self._status.setText(
+                "Apply this figure's axis bounds before accepting this variant."
+            )
+            return
+        if not self._store_points():
             return
         variant = self._current_variant()
         error = self._acceptance_error(variant)
@@ -575,16 +696,16 @@ class CurveReviewDialog(QDialog):
         self.draft_changed.emit(self._model.draft)
         self._status.setText("Variant manually reviewed.")
 
-    def move_handle(self, row: int, x: Decimal, y: Decimal) -> None:
-        """Move a selected handle in scene coordinates; used by deterministic UI tests."""
+    def _stored_points_match(self, points: tuple[CurvePoint, ...]) -> bool:
+        """Report whether the visible points already are the saved variant."""
 
-        try:
-            index = self._handle_rows.index(row)
-        except ValueError as error:
-            raise IndexError("unknown curve point handle") from error
-        if not 0 <= index < len(self._handles):
-            raise IndexError("unknown curve point handle")
-        self._handles[index].setPos(float(x), float(y))
+        variant = self._current_variant()
+        if variant is None:
+            return False
+        scale = self._model.source_x_scale(variant.id)
+        return points == tuple(
+            CurvePoint(x=point.x / scale, y=point.y) for point in variant.points
+        )
 
     def _current_variant(self) -> FaultTimeVoltageVariant | None:
         variant_id = self._variant_selector.currentData()
@@ -644,14 +765,14 @@ class CurveReviewDialog(QDialog):
             and figure.source.figure == source.figure
         )
         if len(figures) != 1:
-            raise ApprovalError("curve overlay lacks a unique source figure")
+            raise ApprovalError("curve source lacks a unique source figure")
         calibrations = tuple(
             item.calibration
             for item in self._model.draft.curve_calibrations
             if item.figure_artifact_sha256 == figures[0].artifact_sha256
         )
         if len(calibrations) > 1:
-            raise ApprovalError("curve overlay has ambiguous calibration evidence")
+            raise ApprovalError("curve source has ambiguous calibration evidence")
         return figures[0], calibrations[0] if calibrations else None
 
     def _load_current_variant(self, _index: int) -> None:
@@ -682,13 +803,9 @@ class CurveReviewDialog(QDialog):
 
         self._scene.clear()
         self._scene.addPixmap(QPixmap.fromImage(image))
-        self._overlay_item = None
-        self._sibling_items = []
-        self._plot_item = None
-        self._handles = []
-        self._handle_rows = []
+        self._set_bounds_fields(calibration)
         self._populate_table(variant)
-        self._redraw_from_table()
+        self._refresh_point_plot()
         self._scene.setSceneRect(0, 0, image.width(), image.height())
         self._view.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
         self._set_source_available(True)
@@ -699,27 +816,22 @@ class CurveReviewDialog(QDialog):
         if variant is None:
             status += " No points entered for this variant."
         if calibration is None:
-            status += " Set the plot rectangle and log-axis bounds before saving points."
+            status += " Read the figure's log-axis bounds and apply them before saving points."
         self._status.setText(status)
 
     def _set_source_available(self, available: bool) -> None:
         self._source_loaded = available
         self.point_table.setEnabled(available)
+        self._bounds_box.setEnabled(available)
         for control in self._mutation_controls:
             control.setEnabled(available)
 
     def _block_source(self, error: Exception) -> None:
-        self._view.capture_clicks = False
-        self._calibration_corners.clear()
         self._scene.clear()
-        self._overlay_item = None
-        self._sibling_items = []
-        self._plot_item = None
-        self._handles = []
-        self._handle_rows = []
         self._syncing = True
         self.point_table.setRowCount(0)
         self._syncing = False
+        self.point_plot.set_curve(None, ())
         detail = str(error).strip() or type(error).__name__
         self._status.setText(f"Source unavailable; manual editing is blocked: {detail}")
 
@@ -740,48 +852,47 @@ class CurveReviewDialog(QDialog):
                 self._set_table_text(row, 1, self._decimal_text(point.y))
         self._syncing = False
 
-    def _record_calibration_corner(self, point: QPointF) -> None:
-        if not self._view.capture_clicks:
-            return
-        self._calibration_corners.append(point)
-        if len(self._calibration_corners) == 1:
-            self._status.setText("Now click the plot's bottom-right corner.")
-            return
-        self._view.capture_clicks = False
-        bounds = _AxisBoundsDialog(self)
-        if bounds.exec() != QDialog.DialogCode.Accepted:
-            self._status.setText("Calibration cancelled; draft was unchanged.")
-            return
+    def _bounds_values(self) -> tuple[Decimal, Decimal, Decimal, Decimal] | None:
         try:
-            self.set_plot_and_axes(
-                self._calibration_corners[0],
-                self._calibration_corners[1],
-                Decimal(bounds.x_min.text().strip()),
-                Decimal(bounds.x_max.text().strip()),
-                Decimal(bounds.y_min.text().strip()),
-                Decimal(bounds.y_max.text().strip()),
+            return (
+                Decimal(self.x_min_edit.text().strip()),
+                Decimal(self.x_max_edit.text().strip()),
+                Decimal(self.y_min_edit.text().strip()),
+                Decimal(self.y_max_edit.text().strip()),
             )
-        except InvalidOperation as error:
-            self._status.setText(f"Enter valid decimal axis bounds: {error}")
+        except InvalidOperation:
+            return None
 
-    def _save_calibration(
+    def _set_bounds_fields(self, calibration: ManualPlotCalibration | None) -> None:
+        values = (
+            ("", "", "", "")
+            if calibration is None
+            else tuple(
+                self._decimal_text(value)
+                for value in (
+                    calibration.x_min,
+                    calibration.x_max,
+                    calibration.y_min,
+                    calibration.y_max,
+                )
+            )
+        )
+        for field, value in zip(
+            (self.x_min_edit, self.x_max_edit, self.y_min_edit, self.y_max_edit),
+            values,
+            strict=True,
+        ):
+            field.setText(value)
+
+    def _save_bounds(
         self, x_min: Decimal, x_max: Decimal, y_min: Decimal, y_max: Decimal
     ) -> None:
-        if not self._source_loaded:
-            raise ApprovalError(
-                "a verified local source must be loaded before calibration"
-            )
         source = self._current_source(self._current_variant())
         figure, _calibration = self._figure_and_calibration(source)
         if source.figure is None:
             raise ApprovalError("curve source lacks a figure identifier")
-        first, second = self._calibration_corners
         calibration = ManualPlotCalibration(
             figure_artifact_sha256=figure.artifact_sha256,
-            left=Decimal(str(first.x())),
-            top=Decimal(str(first.y())),
-            right=Decimal(str(second.x())),
-            bottom=Decimal(str(second.y())),
             x_min=x_min,
             x_max=x_max,
             y_min=y_min,
@@ -794,12 +905,12 @@ class CurveReviewDialog(QDialog):
             notes=self.notes_edit.text().strip(),
         )
         self.draft_changed.emit(self._model.draft)
-        self._redraw_from_table()
-        self._status.setText("Plot calibration saved.")
+        self._refresh_point_plot()
+        self._status.setText("Axis bounds saved.")
 
     def _table_changed(self, _item: QTableWidgetItem) -> None:
         if not self._syncing:
-            self._redraw_from_table()
+            self._refresh_point_plot()
 
     def _table_points(self) -> tuple[CurvePoint, ...]:
         points: list[CurvePoint] = []
@@ -820,10 +931,10 @@ class CurveReviewDialog(QDialog):
             raise ValueError("point X values must be strictly increasing")
         return tuple(points)
 
-    def _preview_points(self) -> tuple[tuple[int, CurvePoint], ...]:
+    def _preview_points(self) -> tuple[CurvePoint, ...]:
         """Return each independently valid table row without save-only constraints."""
 
-        points: list[tuple[int, CurvePoint]] = []
+        points: list[CurvePoint] = []
         for row in range(self.point_table.rowCount()):
             try:
                 point = CurvePoint(
@@ -833,77 +944,28 @@ class CurveReviewDialog(QDialog):
             except (InvalidOperation, ValueError):
                 continue
             if point.x.is_finite() and point.y.is_finite():
-                points.append((row, point))
+                points.append(point)
         return tuple(points)
 
-    def _redraw_from_table(self) -> None:
-        source = self._current_source(self._current_variant())
-        _figure, calibration = self._figure_and_calibration(source)
-        points = self._preview_points()
-        self._remove_overlay()
-        path = QPainterPath()
-        if calibration is not None:
-            self._plot_item = self._scene.addRect(
-                float(calibration.left),
-                float(calibration.top),
-                float(calibration.right - calibration.left),
-                float(calibration.bottom - calibration.top),
-                QPen(QColor("#1976d2"), 1.0),
-            )
-            for sibling in self._reviewed_siblings(source):
-                sibling_path = QPainterPath()
-                scale = self._model.source_x_scale(sibling.id)
-                for point in sibling.points:
-                    x, y = source_point_to_pixel(
-                        CurvePoint(x=point.x / scale, y=point.y), calibration
-                    )
-                    if sibling_path.elementCount() == 0:
-                        sibling_path.moveTo(float(x), float(y))
-                    else:
-                        sibling_path.lineTo(float(x), float(y))
-                sibling_pen = QPen(QColor("#607d8b"), 1.5)
-                sibling_pen.setStyle(Qt.PenStyle.DashLine)
-                self._sibling_items.append(
-                    self._scene.addPath(sibling_path, sibling_pen)
-                )
-            self._syncing = True
-            try:
-                for row, point in points:
-                    try:
-                        x, y = source_point_to_pixel(point, calibration)
-                    except ValueError:
-                        continue
-                    position = QPointF(float(x), float(y))
-                    if path.elementCount() == 0:
-                        path.moveTo(position)
-                    else:
-                        path.lineTo(position)
-                    handle = _CurvePointHandle(
-                        row, self._constrain_handle, self._handle_moved
-                    )
-                    self._scene.addItem(handle)
-                    self._handles.append(handle)
-                    self._handle_rows.append(row)
-                    handle.setPos(position)
-            finally:
-                self._syncing = False
-        self._overlay_item = self._scene.addPath(path, QPen(QColor("#e53935"), 2.0))
-        self.set_overlay_visible(self._overlay_toggle.isChecked())
+    def _refresh_point_plot(self) -> None:
+        self.point_plot.set_curve(
+            self._bounds_values(), self._preview_points(), self._sibling_points()
+        )
 
-    def _remove_overlay(self) -> None:
-        for item in (
-            self._overlay_item,
-            self._plot_item,
-            *self._sibling_items,
-            *self._handles,
-        ):
-            if item is not None:
-                self._scene.removeItem(item)
-        self._overlay_item = None
-        self._sibling_items = []
-        self._plot_item = None
-        self._handles = []
-        self._handle_rows = []
+    def _sibling_points(self) -> tuple[tuple[CurvePoint, ...], ...]:
+        try:
+            source = self._current_source(self._current_variant())
+        except ApprovalError:
+            return ()
+        siblings: list[tuple[CurvePoint, ...]] = []
+        for variant in self._reviewed_siblings(source):
+            scale = self._model.source_x_scale(variant.id)
+            siblings.append(
+                tuple(
+                    CurvePoint(x=point.x / scale, y=point.y) for point in variant.points
+                )
+            )
+        return tuple(siblings)
 
     def _reviewed_siblings(
         self, source: SourceReference
@@ -917,65 +979,6 @@ class CurveReviewDialog(QDialog):
             and _source_matches(variant.source, source)
             and _manual_curve_review_is_current(self._model.draft, variant)
         )
-
-    def _constrain_handle(self, row: int, candidate: QPointF) -> QPointF:
-        source = self._current_source(self._current_variant())
-        _figure, calibration = self._figure_and_calibration(source)
-        if calibration is None:
-            return candidate
-        left = float(calibration.left)
-        right = float(calibration.right)
-        top = float(calibration.top)
-        bottom = float(calibration.bottom)
-        x = min(max(candidate.x(), left), right)
-        y = min(max(candidate.y(), top), bottom)
-        gap = 0.000001
-        index = self._handle_rows.index(row)
-        if index:
-            x = max(x, self._handles[index - 1].pos().x() + gap)
-        if index + 1 < len(self._handles):
-            x = min(x, self._handles[index + 1].pos().x() - gap)
-        x = min(max(x, left), right)
-        return QPointF(x, y)
-
-    def _handle_moved(self, row: int, position: QPointF) -> None:
-        if self._syncing:
-            return
-        source = self._current_source(self._current_variant())
-        _figure, calibration = self._figure_and_calibration(source)
-        if calibration is None:
-            return
-        try:
-            point = pixel_to_source_point(
-                Decimal(str(position.x())), Decimal(str(position.y())), calibration
-            )
-        except ValueError:
-            return
-        self._syncing = True
-        self._set_table_text(row, 0, self._decimal_text(point.x))
-        self._set_table_text(row, 1, self._decimal_text(point.y))
-        self._syncing = False
-        self._update_overlay_path()
-
-    def _update_overlay_path(self) -> None:
-        if self._overlay_item is None:
-            return
-        source = self._current_source(self._current_variant())
-        _figure, calibration = self._figure_and_calibration(source)
-        if calibration is None:
-            return
-        points = self._preview_points()
-        path = QPainterPath()
-        for _row, point in points:
-            try:
-                x, y = source_point_to_pixel(point, calibration)
-            except ValueError:
-                continue
-            if path.elementCount() == 0:
-                path.moveTo(float(x), float(y))
-            else:
-                path.lineTo(float(x), float(y))
-        self._overlay_item.setPath(path)
 
     def _acceptance_error(self, variant: FaultTimeVoltageVariant | None) -> str | None:
         """Require stored manual provenance and an unchanged, currently visible table."""
@@ -992,16 +995,12 @@ class CurveReviewDialog(QDialog):
             and item.calibration_sha256 == canonical_model_sha256(item.calibration)
         )
         if calibration is None or len(calibrations) != 1:
-            return "A current manual calibration is required before accepting this variant."
+            return "Apply this figure's axis bounds before accepting this variant."
         try:
             visible_points = self._table_points()
         except ValueError:
             return "Visible points are not ready; save points before accepting this variant."
-        scale = self._model.source_x_scale(variant.id)
-        stored_points = tuple(
-            CurvePoint(x=point.x / scale, y=point.y) for point in variant.points
-        )
-        if visible_points != stored_points:
+        if not self._stored_points_match(visible_points):
             return "Visible points have unsaved changes; save points before accepting."
         calibration_sha256 = calibrations[0].calibration_sha256
         source_artifact_sha256 = _manual_reviewed_artifact_sha256(

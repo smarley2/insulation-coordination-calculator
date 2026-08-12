@@ -25,7 +25,6 @@ from insulation_coordination.rules.importer.curves import (
     ManualPlotCalibration,
     RawFigure,
     infer_curve_segments,
-    pixel_to_source_point,
     source_point_to_pixel,
 )
 from insulation_coordination.rules.importer.extract import (
@@ -49,14 +48,12 @@ from insulation_coordination.rules.importer.review import (
 )
 from tests.fixtures.synthetic_rules import synthetic_rule_package
 
+_DISPLAY_RECTANGLE = (Decimal("20"), Decimal("10"), Decimal("320"), Decimal("210"))
+
 
 def _calibration() -> ManualPlotCalibration:
     return ManualPlotCalibration(
         figure_artifact_sha256="0" * 64,
-        left=Decimal("20"),
-        top=Decimal("10"),
-        right=Decimal("320"),
-        bottom=Decimal("210"),
         x_min=Decimal("1"),
         x_max=Decimal("1000"),
         y_min=Decimal("1"),
@@ -64,36 +61,31 @@ def _calibration() -> ManualPlotCalibration:
     )
 
 
-def test_manual_log_calibration_round_trips_without_float() -> None:
-    calibration = _calibration()
-    point = pixel_to_source_point(Decimal("120"), Decimal("110"), calibration)
+def test_manual_log_mapping_places_a_decade_midpoint_without_float() -> None:
+    point = CurvePoint(x=Decimal("10"), y=Decimal("10"))
 
-    assert point.x == Decimal("10")
-    assert point.y == Decimal("10")
-    assert source_point_to_pixel(point, calibration) == (
+    assert source_point_to_pixel(point, _calibration(), _DISPLAY_RECTANGLE) == (
         Decimal("120"),
         Decimal("110"),
     )
 
 
 @pytest.mark.parametrize(
-    ("pixel", "source"),
+    ("source", "pixel"),
     (
-        ((Decimal("20"), Decimal("10")), (Decimal("1"), Decimal("100"))),
-        ((Decimal("320"), Decimal("10")), (Decimal("1000"), Decimal("100"))),
-        ((Decimal("20"), Decimal("210")), (Decimal("1"), Decimal("1"))),
-        ((Decimal("320"), Decimal("210")), (Decimal("1000"), Decimal("1"))),
+        ((Decimal("1"), Decimal("100")), (Decimal("20"), Decimal("10"))),
+        ((Decimal("1000"), Decimal("100")), (Decimal("320"), Decimal("10"))),
+        ((Decimal("1"), Decimal("1")), (Decimal("20"), Decimal("210"))),
+        ((Decimal("1000"), Decimal("1")), (Decimal("320"), Decimal("210"))),
     ),
 )
-def test_manual_log_calibration_round_trips_plot_corners(
-    pixel: tuple[Decimal, Decimal],
+def test_manual_log_mapping_pins_every_axis_corner(
     source: tuple[Decimal, Decimal],
+    pixel: tuple[Decimal, Decimal],
 ) -> None:
-    calibration = _calibration()
-    point = pixel_to_source_point(*pixel, calibration)
+    point = CurvePoint(x=source[0], y=source[1])
 
-    assert (point.x, point.y) == source
-    assert source_point_to_pixel(point, calibration) == pixel
+    assert source_point_to_pixel(point, _calibration(), _DISPLAY_RECTANGLE) == pixel
 
 
 def test_segments_are_inferred_from_adjacent_y_values() -> None:
@@ -116,7 +108,7 @@ def test_segments_are_inferred_from_adjacent_y_values() -> None:
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    (("right", "20"), ("bottom", "10"), ("x_min", "0"), ("y_max", "1")),
+    (("x_min", "0"), ("y_min", "0"), ("x_max", "1"), ("y_max", "1")),
 )
 def test_manual_calibration_rejects_invalid_bounds(field: str, value: str) -> None:
     payload = _calibration().model_dump(mode="python")
@@ -133,9 +125,19 @@ def test_manual_calibration_rejects_65_character_hash_variants(digest: str) -> N
         ManualPlotCalibration.model_validate(payload)
 
 
-def test_pixel_conversion_rejects_point_outside_plot() -> None:
-    with pytest.raises(ValueError, match="outside reviewed plot rectangle"):
-        pixel_to_source_point(Decimal("19"), Decimal("110"), _calibration())
+def test_mapping_rejects_a_point_outside_the_reviewed_axis_bounds() -> None:
+    point = CurvePoint(x=Decimal("1001"), y=Decimal("10"))
+
+    with pytest.raises(ValueError, match="outside reviewed source axis bounds"):
+        source_point_to_pixel(point, _calibration(), _DISPLAY_RECTANGLE)
+
+
+def test_mapping_rejects_an_unordered_display_rectangle() -> None:
+    point = CurvePoint(x=Decimal("10"), y=Decimal("10"))
+    rectangle = (Decimal("320"), Decimal("10"), Decimal("20"), Decimal("210"))
+
+    with pytest.raises(ValueError, match="display rectangle must be ordered"):
+        source_point_to_pixel(point, _calibration(), rectangle)
 
 
 @pytest.fixture
@@ -362,7 +364,7 @@ def test_calibration_change_invalidates_all_figure_reviews(
     changed = set_manual_curve_calibration(
         reviewed_curve_draft,
         figure="5",
-        calibration=_calibration().model_copy(update={"right": Decimal("321")}),
+        calibration=_calibration().model_copy(update={"y_max": Decimal("200")}),
         actor="Reviewer",
         notes="Corrected synthetic plot corner.",
     )
@@ -486,7 +488,7 @@ def test_calibration_edit_reopens_every_affected_curve_review(
     changed = set_manual_curve_calibration(
         two_reviewed_curve_draft,
         figure="5",
-        calibration=_calibration().model_copy(update={"right": Decimal("321")}),
+        calibration=_calibration().model_copy(update={"y_max": Decimal("200")}),
         actor="Reviewer",
         notes="Corrected synthetic plot corner.",
     )
