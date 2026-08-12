@@ -48,6 +48,10 @@ from insulation_coordination.rules.importer.axis_selectors import (
     AxisSelectorReview,
     selector_sha256,
 )
+from insulation_coordination.rules.importer.clause_facts import (
+    ClauseFactCompletion,
+    ClauseFactReview,
+)
 
 if TYPE_CHECKING:
     from insulation_coordination.rules.importer.clauses import RawClauseFragment
@@ -634,6 +638,8 @@ class ImportedRuleDraft(DraftRulePackage):
     curve_variant_reviews: tuple[CurveVariantReview, ...] = ()
     axis_selector_proposals: tuple[AxisSelectorProposal, ...] = ()
     axis_selector_reviews: tuple[AxisSelectorReview, ...] = ()
+    clause_fact_reviews: tuple[ClauseFactReview, ...] = ()
+    clause_fact_completions: tuple[ClauseFactCompletion, ...] = ()
     extracted_equations: tuple[ExtractedEquation, ...] = ()
     semantic_proposals: tuple[SemanticProposal, ...] = ()
     source_identities: tuple[StandardIdentity, ...]
@@ -660,6 +666,8 @@ def _content_digest(
     curve_variant_reviews: tuple[CurveVariantReview, ...] = (),
     axis_selector_proposals: tuple[AxisSelectorProposal, ...] = (),
     axis_selector_reviews: tuple[AxisSelectorReview, ...] = (),
+    clause_fact_reviews: tuple[ClauseFactReview, ...] = (),
+    clause_fact_completions: tuple[ClauseFactCompletion, ...] = (),
 ) -> str:
     payload = {
         "tables": [item.model_dump(mode="json") for item in tables],
@@ -686,6 +694,10 @@ def _content_digest(
             item.model_dump(mode="json") for item in axis_selector_proposals
         ],
         "axis_selector_reviews": [item.model_dump(mode="json") for item in axis_selector_reviews],
+        "clause_fact_reviews": [item.model_dump(mode="json") for item in clause_fact_reviews],
+        "clause_fact_completions": [
+            item.model_dump(mode="json") for item in clause_fact_completions
+        ],
     }
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
 
@@ -722,6 +734,8 @@ def draft_content_digest(draft: DraftRulePackage) -> str:
         curve_variant_reviews=imported.curve_variant_reviews if imported else (),
         axis_selector_proposals=imported.axis_selector_proposals if imported else (),
         axis_selector_reviews=imported.axis_selector_reviews if imported else (),
+        clause_fact_reviews=imported.clause_fact_reviews if imported else (),
+        clause_fact_completions=imported.clause_fact_completions if imported else (),
     )
 
 
