@@ -153,9 +153,7 @@ def test_no_column_heading_repeats_source_wording() -> None:
         for column in spec.columns:
             assert column.heading == column.heading.lower()
             assert not any(sign in column.heading for sign in ("≤", "<", ">", "="))
-            digits = [
-                word for word in column.heading.split() if any(c.isdigit() for c in word)
-            ]
+            digits = [word for word in column.heading.split() if any(c.isdigit() for c in word)]
             assert digits in ([], [str(column.source_column)])
 
 

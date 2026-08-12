@@ -209,9 +209,7 @@ def test_two_equal_thresholds_block() -> None:
 
 def test_a_multi_node_fragment_blocks() -> None:
     with pytest.raises(ClauseStructureError, match="AMBIGUOUS_CLAUSE_STRUCTURE"):
-        project_high_frequency_applicability(
-            _fragment(LOWER, UPPER, nodes=2), IDENTITY
-        )
+        project_high_frequency_applicability(_fragment(LOWER, UPPER, nodes=2), IDENTITY)
 
 
 def test_a_foreign_fragment_cannot_be_projected() -> None:
@@ -221,12 +219,8 @@ def test_a_foreign_fragment_cannot_be_projected() -> None:
 
 
 def test_the_rule_is_not_exhaustive_and_proposes_itself() -> None:
-    rules, proposals = project_high_frequency_applicability(
-        _fragment(LOWER, UPPER), IDENTITY
-    )
+    rules, proposals = project_high_frequency_applicability(_fragment(LOWER, UPPER), IDENTITY)
     assert len(rules) == 1
     assert rules[0].exhaustive is False
-    assert [proposal.semantic_id for proposal in proposals] == [
-        ids.HIGH_FREQUENCY_APPLICABILITY
-    ]
+    assert [proposal.semantic_id for proposal in proposals] == [ids.HIGH_FREQUENCY_APPLICABILITY]
     assert {proposal.rule_kind for proposal in proposals} == {"decision"}

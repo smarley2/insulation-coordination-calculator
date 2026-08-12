@@ -173,8 +173,36 @@ _TABLE_9_BBOX = (71.3, 112.6, 524.3, 775.9)
 _TABLE_9_HEADER_ROWS = (0, 2, 3, 4, 5, 6, 7, 8, 9, 11)
 #: One grid row per printed working voltage.
 _TABLE_9_DATA_ROWS = (
-    13, 15, 17, 19, 21, 23, 25, 27, 29, 32, 34, 38, 40, 42, 43, 45, 49, 51, 54, 57, 59,
-    61, 63, 65, 67, 69, 71, 73, 75, 77,
+    13,
+    15,
+    17,
+    19,
+    21,
+    23,
+    25,
+    27,
+    29,
+    32,
+    34,
+    38,
+    40,
+    42,
+    43,
+    45,
+    49,
+    51,
+    54,
+    57,
+    59,
+    61,
+    63,
+    65,
+    67,
+    69,
+    71,
+    73,
+    75,
+    77,
 )
 #: The printed-wiring columns carry values only over the lower part of the axis. Above
 #: that, one row holds a footnote marker in place of a value and the remaining rows are

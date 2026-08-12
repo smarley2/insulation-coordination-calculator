@@ -72,7 +72,9 @@ def test_prepare_tectonic_extracts_declared_member(tmp_path: Path) -> None:
     payload = b"not-an-executable"
     archive = tmp_path / "tectonic.tar.gz"
     _write_tar(archive, {"tectonic": payload})
-    manifest = _fake_manifest(tmp_path, archive.read_bytes(), hashlib.sha256(archive.read_bytes()).hexdigest())
+    manifest = _fake_manifest(
+        tmp_path, archive.read_bytes(), hashlib.sha256(archive.read_bytes()).hexdigest()
+    )
 
     with pytest.raises(TectonicPreparationError, match="version"):
         prepare_tectonic("linux-x86_64", tmp_path / "stage", manifest_path=manifest)

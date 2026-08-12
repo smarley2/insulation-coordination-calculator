@@ -106,19 +106,13 @@ class SemanticReviewModel:
     ) -> ImportedRuleDraft:
         """Record one source correction; changed proposals reset to proposed."""
 
-        self._draft = record_correction(
-            self._draft, corrected, actor=actor, notes=notes
-        )
+        self._draft = record_correction(self._draft, corrected, actor=actor, notes=notes)
         return self._draft
 
     def review(self, semantic_id: str, actor: str, notes: str) -> ImportedRuleDraft:
         if proposal_for(self._draft, semantic_id).rule_kind == "curve":
-            raise ApprovalError(
-                "curve variants must be reviewed individually in Curve Review"
-            )
-        self._draft = mark_proposal_reviewed(
-            self._draft, semantic_id, actor=actor, notes=notes
-        )
+            raise ApprovalError("curve variants must be reviewed individually in Curve Review")
+        self._draft = mark_proposal_reviewed(self._draft, semantic_id, actor=actor, notes=notes)
         return self._draft
 
     @property
@@ -135,14 +129,10 @@ class SemanticReviewModel:
         bboxes: list[tuple[float, float, float, float]] = []
         for recipe in RECIPES:
             clause_matches = tuple(
-                spec.expected_bbox
-                for spec in recipe.clauses
-                if spec.semantic_id == semantic_id
+                spec.expected_bbox for spec in recipe.clauses if spec.semantic_id == semantic_id
             )
             table_matches = tuple(
-                spec.expected_bbox
-                for spec in recipe.tables
-                if spec.semantic_id == semantic_id
+                spec.expected_bbox for spec in recipe.tables if spec.semantic_id == semantic_id
             )
             bboxes.extend(clause_matches + table_matches)
         if len(set(bboxes)) > 1:

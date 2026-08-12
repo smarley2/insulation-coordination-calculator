@@ -179,9 +179,7 @@ def extract_clause_fragment(
     )
     lines = _lines(page, spec.expected_bbox)
     if not lines:
-        raise ExtractionError(
-            f"clause structure mismatch for {spec.semantic_id}: bbox is empty"
-        )
+        raise ExtractionError(f"clause structure mismatch for {spec.semantic_id}: bbox is empty")
     bullets = [line for line in lines if _is_bullet(line.text)]
     if spec.expected_root_kind == "bullets":
         if len(bullets) < 2:
@@ -221,14 +219,8 @@ def extract_clause_fragment(
             elif seen_bullet and nodes:
                 merged = f"{nodes[-1].raw_text} {line.text.strip()}"
                 nodes[-1] = nodes[-1].model_copy(update={"raw_text": merged})
-    nodes = [
-        node.model_copy(update={"order": order}) for order, node in enumerate(nodes)
-    ]
-    tokens = tuple(
-        token
-        for node in nodes
-        for token in _tokens_for_node(node, node.source)
-    )
+    nodes = [node.model_copy(update={"order": order}) for order, node in enumerate(nodes)]
+    tokens = tuple(token for node in nodes for token in _tokens_for_node(node, node.source))
     fragment = RawClauseFragment(
         id=f"raw-{spec.semantic_id}",
         raw_sha256="0" * 64,

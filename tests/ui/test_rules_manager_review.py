@@ -108,9 +108,7 @@ def test_loading_a_package_clears_the_draft_review_panel(
     rules_manager, supported_pdfs, tmp_path: Path
 ) -> None:
     """Review actions must not stay live once a draft is replaced by a package."""
-    rules_manager.set_draft(
-        build_reviewed(extract_draft(supported_pdfs), recipe_registry.RECIPES)
-    )
+    rules_manager.set_draft(build_reviewed(extract_draft(supported_pdfs), recipe_registry.RECIPES))
     assert rules_manager.review_approve_enabled is True
 
     rules_manager.approve_reviewed_draft("Maintainer", "Approved for use")
@@ -269,9 +267,7 @@ def test_approve_projects_typed_rules_but_still_requires_semantic_review(
     assert rules_manager.active_package is None
     assert rules_manager._draft is not None
     assert rules_manager._draft.tables
-    assert all(
-        proposal.state == "proposed" for proposal in rules_manager._draft.semantic_proposals
-    )
+    assert all(proposal.state == "proposed" for proposal in rules_manager._draft.semantic_proposals)
 
 
 def test_approve_requires_notes(qtbot, rules_manager, supported_pdfs, monkeypatch) -> None:

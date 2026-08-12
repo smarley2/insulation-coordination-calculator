@@ -38,9 +38,7 @@ def test_table_seven_is_split_into_four_ac_dc_specs() -> None:
 
 
 def _table_seven_spec(suffix: str, base_id: str):
-    return next(
-        spec for spec in RECIPE.tables if spec.semantic_id == f"{base_id}.{suffix}"
-    )
+    return next(spec for spec in RECIPE.tables if spec.semantic_id == f"{base_id}.{suffix}")
 
 
 def test_the_ac_and_dc_specs_of_one_quantity_read_different_row_axis_columns() -> None:
@@ -106,11 +104,7 @@ def test_each_annex_e_table_owns_its_own_semantic_id() -> None:
     re-nesting one table under the other's family, which is the defect #52 removed.
     """
     e1 = next(
-        (
-            spec
-            for spec in RECIPE.tables
-            if spec.semantic_id == ids.ALTITUDE_CLEARANCE_CORRECTION
-        ),
+        (spec for spec in RECIPE.tables if spec.semantic_id == ids.ALTITUDE_CLEARANCE_CORRECTION),
         None,
     )
     assert e1 is not None, f"no spec declares {ids.ALTITUDE_CLEARANCE_CORRECTION}"
@@ -131,9 +125,7 @@ def test_each_annex_e_table_owns_its_own_semantic_id() -> None:
     assert e2.clause == "E.2"
 
     altitude = [
-        spec
-        for spec in RECIPE.tables
-        if spec.semantic_id.startswith("iec62477_2022.altitude.")
+        spec for spec in RECIPE.tables if spec.semantic_id.startswith("iec62477_2022.altitude.")
     ]
     assert [spec.semantic_id for spec in altitude] == [
         ids.ALTITUDE_CLEARANCE_CORRECTION,
@@ -160,14 +152,8 @@ def test_no_column_hardcodes_a_licensed_axis_value() -> None:
             assert column.axis_value is None
 
     altitude_e2 = next(
-        spec
-        for spec in RECIPE.tables
-        if spec.semantic_id == ids.ALTITUDE_TEST_VOLTAGE_CORRECTION
+        spec for spec in RECIPE.tables if spec.semantic_id == ids.ALTITUDE_TEST_VOLTAGE_CORRECTION
     )
-    altitude_data_columns = [
-        column for column in altitude_e2.columns if column.role == "data"
-    ]
+    altitude_data_columns = [column for column in altitude_e2.columns if column.role == "data"]
     assert altitude_data_columns
-    assert all(
-        column.axis_value_source_row is not None for column in altitude_data_columns
-    )
+    assert all(column.axis_value_source_row is not None for column in altitude_data_columns)

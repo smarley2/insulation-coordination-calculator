@@ -506,10 +506,7 @@ class FaultTimeVoltageVariant(FrozenModel):
                 point.y <= 0 for point in endpoints
             ):
                 raise ValueError("Logarithmic y interpolation needs positive coordinates")
-            if (
-                segment.segment_type == "plateau"
-                and endpoints[0].y != endpoints[1].y
-            ):
+            if segment.segment_type == "plateau" and endpoints[0].y != endpoints[1].y:
                 raise ValueError("A plateau segment needs equal endpoint voltage")
         return self
 
@@ -690,7 +687,9 @@ class DecisionRule(FrozenModel):
                     raise ValueError("An in matcher cannot target a boolean input")
                 if matcher.op == "equals" and declared.kind == "boolean":
                     if matcher.boolean is None:
-                        raise ValueError("An equals matcher needs a boolean value for a boolean input")
+                        raise ValueError(
+                            "An equals matcher needs a boolean value for a boolean input"
+                        )
                 elif matcher.op in ("equals", "in") and declared.kind != "categorical":
                     raise ValueError(
                         f"A {matcher.op} matcher needs a categorical input, got {declared.kind}"

@@ -87,10 +87,7 @@ def test_curve_domain_is_closed_and_never_extrapolated() -> None:
     assert evaluate_piecewise_curve(rule, exact_selector, Decimal(3)).status == "matched"
     assert evaluate_piecewise_curve(rule, exact_selector, Decimal(243)).status == "matched"
     assert evaluate_piecewise_curve(rule, exact_selector, Decimal(2)).status == "out_of_domain"
-    assert (
-        evaluate_piecewise_curve(rule, exact_selector, Decimal(244)).status
-        == "out_of_domain"
-    )
+    assert evaluate_piecewise_curve(rule, exact_selector, Decimal(244)).status == "out_of_domain"
 
 
 def test_exact_breakpoint_returns_the_reviewed_point() -> None:
@@ -109,14 +106,8 @@ def test_log_log_midpoint_uses_a_34_digit_local_decimal_context() -> None:
     exact_selector = rule.variants[0].selector
     with localcontext() as context:
         context.prec = 34
-        fraction = (
-            (Decimal(9).ln() - Decimal(3).ln())
-            / (Decimal(27).ln() - Decimal(3).ln())
-        )
-        expected = (
-            Decimal(777).ln()
-            + fraction * (Decimal(271).ln() - Decimal(777).ln())
-        ).exp()
+        fraction = (Decimal(9).ln() - Decimal(3).ln()) / (Decimal(27).ln() - Decimal(3).ln())
+        expected = (Decimal(777).ln() + fraction * (Decimal(271).ln() - Decimal(777).ln())).exp()
 
     assert evaluate_piecewise_curve(rule, exact_selector, Decimal(9)).value == expected
 

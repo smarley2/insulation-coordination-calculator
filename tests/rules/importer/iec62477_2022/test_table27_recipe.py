@@ -133,8 +133,7 @@ def test_each_spec_covers_one_column_pair() -> None:
 
     assert len(TABLE_27_SPECS) == 4
     pairs = {
-        tuple(c.source_column for c in spec.columns if c.role == "data")
-        for spec in TABLE_27_SPECS
+        tuple(c.source_column for c in spec.columns if c.role == "data") for spec in TABLE_27_SPECS
     }
     assert pairs == {(2, 3), (4, 5)}
     for spec in TABLE_27_SPECS:

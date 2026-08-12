@@ -172,9 +172,7 @@ class CircuitDiagramBox(QGroupBox):
         self._publish(updated)
 
     def _on_choose_clicked(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Circuit Diagram", "", IMAGE_FILE_FILTER
-        )
+        path, _ = QFileDialog.getOpenFileName(self, "Select Circuit Diagram", "", IMAGE_FILE_FILTER)
         if not path:
             return
         try:

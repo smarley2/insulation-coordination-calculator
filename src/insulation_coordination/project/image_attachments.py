@@ -101,9 +101,7 @@ def _read_bounded(path: Path) -> bytes:
     if not data:
         raise ImageAttachmentError("The image file is empty")
     if len(data) > MAX_DIAGRAM_BYTES:
-        raise ImageAttachmentError(
-            f"The image is larger than the {MAX_DIAGRAM_BYTES} byte limit"
-        )
+        raise ImageAttachmentError(f"The image is larger than the {MAX_DIAGRAM_BYTES} byte limit")
     return data
 
 

@@ -45,15 +45,11 @@ def _cell(row: int, column: int) -> RawGridCell:
     data = row in range(3, 7) and column in range(1, 6)
     not_applicable = (row, column) == (6, 5)
     blank = (
-        (row, column) in INHERITED_BLANKS
-        or (row, column) in STRUCTURAL_BLANKS
-        or not_applicable
+        (row, column) in INHERITED_BLANKS or (row, column) in STRUCTURAL_BLANKS or not_applicable
     )
     reference = (row, column) in REFERENCE_COORDINATES
     text = (
-        "NA"
-        if not_applicable
-        else ("" if blank else ("REF" if reference else f"H_{row}_{column}"))
+        "NA" if not_applicable else ("" if blank else ("REF" if reference else f"H_{row}_{column}"))
     )
     value = Decimal(row * 10 + column) if data and not blank else None
     if reference:
@@ -64,9 +60,7 @@ def _cell(row: int, column: int) -> RawGridCell:
         raw_text=text if value is None else str(value),
         role="data" if data else ("blank" if blank else "header"),
         logical_row=row - 3 if data else None,
-        logical_column=(
-            f"column-{column}" if data else None
-        ),
+        logical_column=(f"column-{column}" if data else None),
         value=value,
         parse_status=(
             "non_scalar"
@@ -103,9 +97,7 @@ def test_table_2_recipe_is_structural_and_uses_existing_semantic_targets() -> No
         ids.DVC_FAULT_TIME_VOLTAGE,
         ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC,
     }
-    assert {(slot.row, slot.column) for slot in TABLE_2.reference_slots} == (
-        REFERENCE_COORDINATES
-    )
+    assert {(slot.row, slot.column) for slot in TABLE_2.reference_slots} == (REFERENCE_COORDINATES)
 
 
 def test_merged_headers_and_data_expand_while_logical_coordinates_remain_typed() -> None:
@@ -124,7 +116,9 @@ def test_merged_headers_and_data_expand_while_logical_coordinates_remain_typed()
     )
     assert cells[(6, 5)].blank_semantics == "not_applicable"
     assert cells[(6, 5)].blank_semantics != "missing"
-    assert all(cells[coordinate].blank_semantics == "structural" for coordinate in STRUCTURAL_BLANKS)
+    assert all(
+        cells[coordinate].blank_semantics == "structural" for coordinate in STRUCTURAL_BLANKS
+    )
 
 
 def test_missing_physical_cell_blocks_structural_expansion() -> None:
@@ -138,7 +132,9 @@ def test_missing_physical_cell_blocks_structural_expansion() -> None:
 def test_declared_blank_rejects_unexpected_numeric_content() -> None:
     grid = _grid()
     cells = tuple(
-        cell.model_copy(update={"raw_text": "999", "value": Decimal(999), "parse_status": "numeric"})
+        cell.model_copy(
+            update={"raw_text": "999", "value": Decimal(999), "parse_status": "numeric"}
+        )
         if (cell.row, cell.column) == (6, 5)
         else cell
         for cell in grid.cells

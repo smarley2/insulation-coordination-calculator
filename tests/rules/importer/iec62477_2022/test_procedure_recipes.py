@@ -88,7 +88,9 @@ def _fragment(
             order=order,
             kind=kind,  # type: ignore[arg-type]
             raw_text=(
-                texts[order] if order < len(texts) else f"perform the declared condition {order + 1}"
+                texts[order]
+                if order < len(texts)
+                else f"perform the declared condition {order + 1}"
             ),
             source=source,
         )
@@ -177,9 +179,7 @@ def _draft(*grids: RawGrid, fragments: tuple[RawClauseFragment, ...] = ()) -> Im
 def _agreeing_matrix(
     invocations: tuple[str, ...] = MATERIAL_PRECONDITIONING_INVOCATIONS,
 ) -> RawGrid:
-    return _matrix_grid(
-        {clause: ("type_test",) for clause in CLAUSE_OF.values()}, invocations
-    )
+    return _matrix_grid({clause: ("type_test",) for clause in CLAUSE_OF.values()}, invocations)
 
 
 def test_the_recipe_registers_a_projector_for_every_procedure_clause() -> None:
@@ -414,9 +414,7 @@ def test_the_material_route_is_gated_on_the_requirements_that_invoke_it() -> Non
     assert set(contexts) == {"electrical_test", *PRECONDITIONING_MATERIAL_CONTEXTS}
     assert len(PRECONDITIONING_MATERIAL_CONTEXTS) == len(MATERIAL_PRECONDITIONING_INVOCATIONS)
     for context in PRECONDITIONING_MATERIAL_CONTEXTS:
-        selected = evaluate_decision(
-            rule, {"test_context": context, "test_purpose": "type_test"}
-        )
+        selected = evaluate_decision(rule, {"test_context": context, "test_purpose": "type_test"})
         assert _values(selected) == {
             "preconditioning_required": True,
             "preconditioning_procedure_rule_id": PRECONDITIONING_MATERIAL_ID,

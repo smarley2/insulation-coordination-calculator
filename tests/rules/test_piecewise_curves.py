@@ -249,9 +249,7 @@ def test_variant_rejects_invalid_points_and_incomplete_segments(
 ) -> None:
     variant = _synthetic_curve().variants[0]
     with pytest.raises(ValidationError, match=message):
-        FaultTimeVoltageVariant.model_validate(
-            {**variant.model_dump(mode="python"), **update}
-        )
+        FaultTimeVoltageVariant.model_validate({**variant.model_dump(mode="python"), **update})
 
 
 @pytest.mark.parametrize(

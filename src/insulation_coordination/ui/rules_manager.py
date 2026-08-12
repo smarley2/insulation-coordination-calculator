@@ -322,9 +322,7 @@ class RulesManagerWindow(QWidget):
         self._review_equations_button.setEnabled(
             tables_done and bool(equation_pending or mapping_pending)
         )
-        self._review_curves_button.setEnabled(
-            bool(self._draft.raw_figures)
-        )
+        self._review_curves_button.setEnabled(bool(self._draft.raw_figures))
         for item in table_pending:
             flagged = sum(
                 candidate.semantic_id.startswith(f"raw-{item.semantic_id}:")
@@ -426,9 +424,7 @@ class RulesManagerWindow(QWidget):
         # warning -- a maintainer must never lose the one statement that this draft
         # still requires review.
         self._identity_label.setText(
-            "\n".join(
-                (f"Draft {draft.manifest.package_id} (unapproved; review required)", *lines)
-            )
+            "\n".join((f"Draft {draft.manifest.package_id} (unapproved; review required)", *lines))
         )
         self._approve_button.setEnabled(False)
         self._inventory_button.setEnabled(False)
@@ -821,9 +817,7 @@ class RulesManagerWindow(QWidget):
         if top is None or self._inventory is None:
             return
         for curve in self._inventory.curves:
-            top.addChild(
-                QTreeWidgetItem((f"{curve.id} — {_format_reference(curve.source)}",))
-            )
+            top.addChild(QTreeWidgetItem((f"{curve.id} — {_format_reference(curve.source)}",)))
 
     def _require_inventory(self) -> AuditInventory:
         if self._inventory is None:

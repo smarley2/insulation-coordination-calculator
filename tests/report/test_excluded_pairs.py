@@ -92,9 +92,7 @@ def test_comparison_matrices_mark_excluded_pairs_as_na(inputs_with_excluded_pair
 def test_report_refuses_a_project_where_every_pair_is_excluded(report_inputs) -> None:
     project, _results, _groups, rules = report_inputs
     pair = project.pairs[0]
-    project = project.model_copy(
-        update={"pairs": (_excluded_pair(pair.net_a, pair.net_b),)}
-    )
+    project = project.model_copy(update={"pairs": (_excluded_pair(pair.net_a, pair.net_b),)})
 
     with pytest.raises(ReportBuildError, match="every pair is excluded"):
         build_report_model(project, (), (), rules)

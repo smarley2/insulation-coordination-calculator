@@ -52,9 +52,7 @@ def test_report_model_carries_no_source_path(diagram_inputs, tmp_path: Path) -> 
 
     assert model.circuit_diagram is not None
     assert str(tmp_path) not in model.model_dump_json()
-    assert model.circuit_diagram.staged_filename == Path(
-        model.circuit_diagram.staged_filename
-    ).name
+    assert model.circuit_diagram.staged_filename == Path(model.circuit_diagram.staged_filename).name
 
 
 def test_a_diagram_without_a_directory_blocks_the_report(diagram_inputs) -> None:
@@ -104,7 +102,9 @@ def test_diagram_without_caption_or_note_renders_only_the_image(
     project, results, groups, rules = report_inputs
     project = project.model_copy(update={"circuit_diagram": attachment_from(png_bytes())})
 
-    tex = render_latex(build_report_model(project, results, groups, rules, image_directory=tmp_path))
+    tex = render_latex(
+        build_report_model(project, results, groups, rules, image_directory=tmp_path)
+    )
     section = tex[tex.index(r"\section{Circuit Diagram}") :]
     section = section[: section.index(r"\clearpage")]
 

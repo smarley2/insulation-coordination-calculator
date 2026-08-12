@@ -49,7 +49,9 @@ def _synthetic_matrix_grid() -> RawGrid:
     cells: list[RawGridCell] = []
     for row_index, (clause, marked) in enumerate(_ROWS):
         for column_index, column in enumerate((*_MARK_COLUMNS, TEST_CLAUSE_COLUMN)):
-            text = clause if column == TEST_CLAUSE_COLUMN else ("M" if column[:-5] in marked else "")
+            text = (
+                clause if column == TEST_CLAUSE_COLUMN else ("M" if column[:-5] in marked else "")
+            )
             cells.append(
                 RawGridCell(
                     row=row_index,
@@ -67,9 +69,7 @@ def _synthetic_matrix_grid() -> RawGrid:
         rows=len(_ROWS),
         columns=len(_MARK_COLUMNS) + 1,
         target_unit="1",
-        segments=(
-            RawGridSegment(page_number=1, row_start=0, row_count=len(_ROWS), source=SOURCE),
-        ),
+        segments=(RawGridSegment(page_number=1, row_start=0, row_count=len(_ROWS), source=SOURCE),),
         cells=tuple(cells),
         source=SOURCE,
     )

@@ -104,9 +104,7 @@ def _locate(reader_page: PageObject, spec: CurveAuditSpec) -> LocatedCurveSource
     pdf_top = page_height - top
 
     vector_points = 0
-    image_operands: list[
-        tuple[str, tuple[float, float, float, float, float, float]]
-    ] = []
+    image_operands: list[tuple[str, tuple[float, float, float, float, float, float]]] = []
     current_matrix = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
     active_clip: tuple[float, float, float, float] | None = None
     pending_rectangle: tuple[float, float, float, float] | None = None
@@ -172,12 +170,8 @@ def _locate(reader_page: PageObject, spec: CurveAuditSpec) -> LocatedCurveSource
                 width, height = numbers[2], numbers[3]
                 rectangle_corners = tuple(
                     (
-                        current_matrix[0] * rx
-                        + current_matrix[2] * ry
-                        + current_matrix[4],
-                        current_matrix[1] * rx
-                        + current_matrix[3] * ry
-                        + current_matrix[5],
+                        current_matrix[0] * rx + current_matrix[2] * ry + current_matrix[4],
+                        current_matrix[1] * rx + current_matrix[3] * ry + current_matrix[5],
                     )
                     for rx, ry in (
                         (px, py),
@@ -199,9 +193,7 @@ def _locate(reader_page: PageObject, spec: CurveAuditSpec) -> LocatedCurveSource
 
     if vector_points >= 2:
         if clipping_seen:
-            raise ExtractionError(
-                f"CURVE_SOURCE_CLIPPED: clipping path present for {spec.figure}"
-            )
+            raise ExtractionError(f"CURVE_SOURCE_CLIPPED: clipping path present for {spec.figure}")
         return LocatedCurveSource(
             mode="vector_path",
             transform=(
@@ -219,9 +211,7 @@ def _locate(reader_page: PageObject, spec: CurveAuditSpec) -> LocatedCurveSource
             f"CURVE_SOURCE_AMBIGUOUS: {len(names)} image candidates for {spec.figure}"
         )
     if not image_operands:
-        raise ExtractionError(
-            f"CURVE_SOURCE_MISSING: no vector paths or image for {spec.figure}"
-        )
+        raise ExtractionError(f"CURVE_SOURCE_MISSING: no vector paths or image for {spec.figure}")
     name, matrix = image_operands[0]
     return LocatedCurveSource(
         mode="image_xobject",
@@ -316,20 +306,14 @@ def extract_raw_figure(
     matched = [image for image in reader_page.images if image.name in expected_names]
     if len(matched) != 1:
         raise ExtractionError(
-            f"CURVE_SOURCE_AMBIGUOUS: {len(matched)} images match {image_name} "
-            f"for {spec.figure}"
+            f"CURVE_SOURCE_AMBIGUOUS: {len(matched)} images match {image_name} for {spec.figure}"
         )
     image_file = matched[0]
     raster_image = image_file.image
     if raster_image is None:
         raise ExtractionError(f"CURVE_SOURCE_MISSING: image bytes for {spec.figure}")
-    if (
-        spec.expected_pixel_size is not None
-        and raster_image.size != spec.expected_pixel_size
-    ):
-        raise ExtractionError(
-            f"CURVE_SOURCE_MISMATCH: pixel size differs for {spec.figure}"
-        )
+    if spec.expected_pixel_size is not None and raster_image.size != spec.expected_pixel_size:
+        raise ExtractionError(f"CURVE_SOURCE_MISMATCH: pixel size differs for {spec.figure}")
     if image_file.indirect_reference is None:
         raise ExtractionError("CURVE_SOURCE_MISSING: image has no indirect reference")
     get_data = getattr(xobject, "get_data", None)

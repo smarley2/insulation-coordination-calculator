@@ -42,9 +42,7 @@ def migrate_project_document(raw: dict[str, object]) -> dict[str, object]:
         version = 2
     if version == 2:
         if "circuit_diagram" in document:
-            raise ProjectVersionError(
-                f"Project schema {declared} must not contain circuit_diagram"
-            )
+            raise ProjectVersionError(f"Project schema {declared} must not contain circuit_diagram")
         document["circuit_diagram"] = None
         version = 3
     if version != PROJECT_SCHEMA_VERSION:

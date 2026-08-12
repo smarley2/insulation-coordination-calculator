@@ -145,9 +145,7 @@ def test_projection_never_crosses_impulse_and_tov_components() -> None:
             update={
                 "components": tuple(
                     part.model_copy(
-                        update={
-                            "component_id": "impulse" if part.component_id == "ac" else "tov"
-                        }
+                        update={"component_id": "impulse" if part.component_id == "ac" else "tov"}
                     )
                     for part in cell.components
                 )

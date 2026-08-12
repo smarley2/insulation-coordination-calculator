@@ -293,7 +293,9 @@ class PairEditor(QWidget):
 
         self._freq_edit = QLineEdit()
         self._freq_edit.editingFinished.connect(self._on_freq_changed)
-        self._freq_source_label = FieldStateBadge(VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES)
+        self._freq_source_label = FieldStateBadge(
+            VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES
+        )
         self._freq_help = HelpIndicator(VoltageGuidanceId.FREQUENCY)
         params_layout.addRow(
             _labelled(QLabel("Frequency:"), self._freq_help),
@@ -309,7 +311,9 @@ class PairEditor(QWidget):
         for t in InsulationType:
             self._insulation_combo.addItem(t.value)
         self._insulation_combo.currentTextChanged.connect(self._on_insulation_changed)
-        self._insulation_source_label = FieldStateBadge(VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES)
+        self._insulation_source_label = FieldStateBadge(
+            VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES
+        )
         params_layout.addRow(
             "Insulation type:",
             _override_row(
@@ -323,7 +327,9 @@ class PairEditor(QWidget):
         self._impulse_combo = QComboBox()
         populate_combo(self._impulse_combo, IMPULSE_OPTIONS, blank=False)
         self._impulse_combo.currentIndexChanged.connect(self._on_impulse_selected)
-        self._impulse_source_label = FieldStateBadge(VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES)
+        self._impulse_source_label = FieldStateBadge(
+            VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES
+        )
         self._impulse_help = HelpIndicator(VoltageGuidanceId.TRANSIENT_OVERVOLTAGE)
         params_layout.addRow(
             _labelled(QLabel("Impulse:"), self._impulse_help),
@@ -339,7 +345,9 @@ class PairEditor(QWidget):
         for field in FieldCondition:
             self._field_combo.addItem(field.value)
         self._field_combo.currentTextChanged.connect(self._on_field_changed)
-        self._field_source_label = FieldStateBadge(VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES)
+        self._field_source_label = FieldStateBadge(
+            VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES
+        )
         params_layout.addRow(
             "Field condition:",
             _override_row(
@@ -352,7 +360,9 @@ class PairEditor(QWidget):
 
         self._radius_edit = QLineEdit()
         self._radius_edit.editingFinished.connect(self._on_radius_changed)
-        self._radius_source_label = FieldStateBadge(VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES)
+        self._radius_source_label = FieldStateBadge(
+            VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES
+        )
         params_layout.addRow(
             "Electrode radius (mm):",
             _override_row(
@@ -365,7 +375,9 @@ class PairEditor(QWidget):
 
         self._altitude_edit = QLineEdit()
         self._altitude_edit.editingFinished.connect(self._on_altitude_changed)
-        self._altitude_source_label = FieldStateBadge(VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES)
+        self._altitude_source_label = FieldStateBadge(
+            VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES
+        )
         params_layout.addRow(
             "Altitude (m):",
             _override_row(
@@ -379,7 +391,9 @@ class PairEditor(QWidget):
         self._pollution_combo = QComboBox()
         populate_combo(self._pollution_combo, POLLUTION_OPTIONS, blank=False)
         self._pollution_combo.currentIndexChanged.connect(self._on_pollution_selected)
-        self._pollution_source_label = FieldStateBadge(VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES)
+        self._pollution_source_label = FieldStateBadge(
+            VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES
+        )
         params_layout.addRow(
             "Pollution degree:",
             _override_row(
@@ -394,7 +408,9 @@ class PairEditor(QWidget):
         for construction in ConstructionType:
             self._construction_combo.addItem(construction.value)
         self._construction_combo.currentTextChanged.connect(self._on_construction_changed)
-        self._construction_source_label = FieldStateBadge(VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES)
+        self._construction_source_label = FieldStateBadge(
+            VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES
+        )
         params_layout.addRow(
             "Construction:",
             _override_row(
@@ -408,7 +424,9 @@ class PairEditor(QWidget):
         self._cti_combo = QComboBox()
         populate_combo(self._cti_combo, MATERIAL_OPTIONS, blank=False)
         self._cti_combo.currentIndexChanged.connect(self._on_cti_selected)
-        self._cti_source_label = FieldStateBadge(VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES)
+        self._cti_source_label = FieldStateBadge(
+            VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES
+        )
         params_layout.addRow(
             "CTI / material group:",
             _override_row(
@@ -461,12 +479,12 @@ class PairEditor(QWidget):
             edit.setText(_voltage_text(voltage))
             # The N/A justification has no other home in the UI.
             edit.setToolTip(voltage.justification or "")
-        frequency_value = effective.frequency_hz.value if effective is not None else pair.frequency_hz.value
+        frequency_value = (
+            effective.frequency_hz.value if effective is not None else pair.frequency_hz.value
+        )
         self._freq_edit.setText(str(frequency_value) if frequency_value is not None else "")
         insulation_value = (
-            effective.insulation_type.value
-            if effective is not None
-            else pair.insulation_type.value
+            effective.insulation_type.value if effective is not None else pair.insulation_type.value
         )
         _select_enum(self._insulation_combo, insulation_value, InsulationType)
         impulse_value = effective.impulse_v.value if effective is not None else pair.impulse_v.value
@@ -477,17 +495,19 @@ class PairEditor(QWidget):
             None if impulse_value is None else impulse_display(impulse_value),
             blank=False,
         )
-        field_value = effective.field_condition.value if effective is not None else pair.field_condition.value
+        field_value = (
+            effective.field_condition.value if effective is not None else pair.field_condition.value
+        )
         _select_enum(self._field_combo, field_value, FieldCondition)
         radius_value = (
             effective.electrode_radius_mm.value
             if effective is not None
             else pair.electrode_radius_mm.value
         )
-        self._radius_edit.setText(
-            str(radius_value) if radius_value is not None else ""
+        self._radius_edit.setText(str(radius_value) if radius_value is not None else "")
+        altitude_value = (
+            effective.altitude_m.value if effective is not None else pair.altitude_m.value
         )
-        altitude_value = effective.altitude_m.value if effective is not None else pair.altitude_m.value
         self._altitude_edit.setText(str(altitude_value) if altitude_value is not None else "")
         pollution_value = (
             effective.pollution_degree.value
@@ -512,9 +532,7 @@ class PairEditor(QWidget):
             if effective is not None
             else pair.cti_or_material_group.value
         )
-        select_combo_value(
-            self._cti_combo, MATERIAL_OPTIONS, cti_value, cti_value, blank=False
-        )
+        select_combo_value(self._cti_combo, MATERIAL_OPTIONS, cti_value, cti_value, blank=False)
         self._notes_edit.setText(pair.notes or "")
 
         self._insulation_combo.blockSignals(False)
@@ -892,9 +910,7 @@ class PairPage(QWidget):
         self._matrix_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._matrix_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         self._matrix_view.setMinimumHeight(160)
-        self._matrix_view.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
+        self._matrix_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         # Interactive is the drag-the-border mode; Stretch squeezed 20 net names
         # into unreadable stubs.
         self._matrix_view.horizontalHeader().setSectionResizeMode(
@@ -941,9 +957,7 @@ class PairPage(QWidget):
         self._matrix_parameter_combo.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToContents
         )
-        self._matrix_parameter_combo.currentIndexChanged.connect(
-            self._on_matrix_parameter_changed
-        )
+        self._matrix_parameter_combo.currentIndexChanged.connect(self._on_matrix_parameter_changed)
         parameter_row.addWidget(self._matrix_parameter_combo)
         self._hide_columns_button = QPushButton("Hide selected columns")
         self._hide_columns_button.clicked.connect(self.hide_selected_columns)
@@ -1055,9 +1069,7 @@ class PairPage(QWidget):
         """Hidden net classes, in matrix order."""
         if self._project is None:
             return ()
-        return tuple(
-            net.name for net in self._project.net_classes if net.name in self._hidden_nets
-        )
+        return tuple(net.name for net in self._project.net_classes if net.name in self._hidden_nets)
 
     def hide_selected_columns(self) -> None:
         """Hide every fully selected matrix column, leaving its row in place."""
@@ -1105,9 +1117,7 @@ class PairPage(QWidget):
         """Remember the selected pair's configuration for a later paste."""
         pair = self._selected_pair()
         if pair is not None:
-            self._copied_pair_fields = {
-                name: getattr(pair, name) for name in _COPIED_PAIR_FIELDS
-            }
+            self._copied_pair_fields = {name: getattr(pair, name) for name in _COPIED_PAIR_FIELDS}
 
     def paste_into_selection(self) -> None:
         """Overwrite every selected pair's configuration with the copied one."""

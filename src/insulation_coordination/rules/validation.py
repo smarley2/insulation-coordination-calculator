@@ -338,8 +338,7 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
         for rule in rules:
             semantic_targets.setdefault(rule.id, []).append(kind)
     semantic_references_resolve = all(
-        len(semantic_targets.get(reference, ())) == 1
-        for reference in decision_references
+        len(semantic_targets.get(reference, ())) == 1 for reference in decision_references
     )
     rule_references_valid = (
         set(procedure_references) <= set(rule_ids) and semantic_references_resolve
@@ -443,11 +442,14 @@ def _validate_rule_package(package: RulePackage) -> ValidationReport:
     from insulation_coordination.rules.audit import _source_references
 
     source_document_links_valid = all(
-        len(matches := tuple(
-            document
-            for document in package.manifest.source_documents
-            if document.id == owned.reference.document_id
-        )) == 1
+        len(
+            matches := tuple(
+                document
+                for document in package.manifest.source_documents
+                if document.id == owned.reference.document_id
+            )
+        )
+        == 1
         and matches[0].standard == owned.reference.standard
         and matches[0].edition == owned.reference.edition
         for owned in _source_references(package)

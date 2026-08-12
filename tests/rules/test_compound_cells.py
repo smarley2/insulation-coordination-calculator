@@ -468,11 +468,7 @@ def _draft_with_compound_cell(
         notes=f"content:{digest}",
     )
     return draft.model_copy(
-        update={
-            "manifest": draft.manifest.model_copy(
-                update={"approval_records": (extraction,)}
-            )
-        }
+        update={"manifest": draft.manifest.model_copy(update={"approval_records": (extraction,)})}
     )
 
 

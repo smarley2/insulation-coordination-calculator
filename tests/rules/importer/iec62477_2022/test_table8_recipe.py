@@ -71,7 +71,12 @@ def _cell(row: int, column: int, *, blank_at: tuple[int, int] | None) -> RawGrid
             text = COLUMN_AXIS_VALUES[column]
         if not text:
             return RawGridCell(
-                row=row, column=column, raw_text="", role="blank", parse_status="blank", source=source
+                row=row,
+                column=column,
+                raw_text="",
+                role="blank",
+                parse_status="blank",
+                source=source,
             )
         numeric = text.isdigit()
         return RawGridCell(
@@ -209,7 +214,9 @@ def test_an_undeclared_blank_data_cell_blocks_extraction() -> None:
 def test_the_declared_blanks_extract_without_a_review_item() -> None:
     structured = apply_table_structure(_grid(), TABLE_8)
     inherited = tuple(
-        cell for cell in structured.cells if cell.blank_semantics == "inherit" and cell.role == "blank"
+        cell
+        for cell in structured.cells
+        if cell.blank_semantics == "inherit" and cell.role == "blank"
     )
     assert {(cell.row, cell.column) for cell in inherited} <= DECLARED_BLANKS
 

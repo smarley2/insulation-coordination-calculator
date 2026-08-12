@@ -66,9 +66,7 @@ def project_dvc_fault_applicability(
 
     if len(fragment.nodes) != 1 or fragment.nodes[0].kind != "paragraph":
         _fail("expected one reviewed paragraph")
-    references = {
-        str(token.normalized) for token in fragment.tokens if token.kind == "reference"
-    }
+    references = {str(token.normalized) for token in fragment.tokens if token.kind == "reference"}
     if references != _CONTRACT_REFERENCES:
         _fail("expected the exact maintained curve-figure inventory")
 

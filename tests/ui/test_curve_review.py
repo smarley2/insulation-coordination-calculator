@@ -52,10 +52,7 @@ def test_variant_label_uses_selector_meaning_and_keeps_id_secondary() -> None:
         ),
     )
 
-    assert label == (
-        "Figure 5 — Accessible circuit · DC · DVC B · Dry "
-        "(synthetic.curve.5.1)"
-    )
+    assert label == ("Figure 5 — Accessible circuit · DC · DVC B · Dry (synthetic.curve.5.1)")
 
 
 @pytest.fixture
@@ -231,9 +228,7 @@ def _calibration() -> ManualPlotCalibration:
     )
 
 
-def _set_bounds_fields(
-    dialog: CurveReviewDialog, values: tuple[str, str, str, str]
-) -> None:
+def _set_bounds_fields(dialog: CurveReviewDialog, values: tuple[str, str, str, str]) -> None:
     for field, value in zip(
         (dialog.x_min_edit, dialog.x_max_edit, dialog.y_min_edit, dialog.y_max_edit),
         values,
@@ -256,23 +251,17 @@ def _sized_plot(dialog: CurveReviewDialog):
 
 
 @pytest.fixture
-def local_manual_draft(
-    manual_draft: ImportedRuleDraft, tmp_path
-) -> tuple[ImportedRuleDraft, Path]:
+def local_manual_draft(manual_draft: ImportedRuleDraft, tmp_path) -> tuple[ImportedRuleDraft, Path]:
     path = tmp_path / "synthetic-curves.pdf"
     writer = PdfWriter()
     writer.add_blank_page(width=400, height=300)
     with path.open("wb") as target:
         writer.write(target)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    document = manual_draft.manifest.source_documents[0].model_copy(
-        update={"sha256": digest}
-    )
+    document = manual_draft.manifest.source_documents[0].model_copy(update={"sha256": digest})
     draft = manual_draft.model_copy(
         update={
-            "manifest": manual_draft.manifest.model_copy(
-                update={"source_documents": (document,)}
-            )
+            "manifest": manual_draft.manifest.model_copy(update={"source_documents": (document,)})
         }
     )
     content_digest = _content_digest(
@@ -327,8 +316,7 @@ def test_dialog_shows_semantic_selector_text_and_stable_variant_id(
 
     assert dialog.source_loaded is True
     assert dialog._variant_selector.currentText() == (
-        "Figure 5 — Accessible circuit · DC · DVC B · Dry "
-        "(synthetic.curve.5.1)"
+        "Figure 5 — Accessible circuit · DC · DVC B · Dry (synthetic.curve.5.1)"
     )
     assert dialog._variant_selector.currentData() == "synthetic.curve.5.1"
 
@@ -397,15 +385,9 @@ def test_source_hash_mismatch_keeps_dialog_constructible_and_blocked(
     qtbot, local_manual_draft: tuple[ImportedRuleDraft, Path]
 ) -> None:
     draft, path = local_manual_draft
-    document = draft.manifest.source_documents[0].model_copy(
-        update={"sha256": "f" * 64}
-    )
+    document = draft.manifest.source_documents[0].model_copy(update={"sha256": "f" * 64})
     draft = draft.model_copy(
-        update={
-            "manifest": draft.manifest.model_copy(
-                update={"source_documents": (document,)}
-            )
-        }
+        update={"manifest": draft.manifest.model_copy(update={"source_documents": (document,)})}
     )
 
     dialog = CurveReviewDialog(
@@ -520,12 +502,8 @@ def test_transformed_image_source_plots_the_same_points_as_a_vector_source(
     assert raster_dialog.source_loaded is True
     assert _sized_plot(raster_dialog).vertices == _sized_plot(vector_dialog).vertices
     assert tuple(
-        raster_dialog.point_text(row)
-        for row in range(raster_dialog.point_table.rowCount())
-    ) == tuple(
-        vector_dialog.point_text(row)
-        for row in range(vector_dialog.point_table.rowCount())
-    )
+        raster_dialog.point_text(row) for row in range(raster_dialog.point_table.rowCount())
+    ) == tuple(vector_dialog.point_text(row) for row in range(vector_dialog.point_table.rowCount()))
 
 
 def _review_variants(
@@ -535,9 +513,7 @@ def _review_variants(
     model = CurveReviewModel(draft)
     for variant_id, start_y, end_y in variants:
         if not any(
-            variant.id == variant_id
-            for rule in model.draft.curves
-            for variant in rule.variants
+            variant.id == variant_id for rule in model.draft.curves for variant in rule.variants
         ):
             model.replace_points(
                 variant_id,
@@ -1054,8 +1030,6 @@ def test_review_variant_records_manual_review(manual_draft: ImportedRuleDraft) -
         actor="Reviewer",
         notes="Entered synthetic points.",
     )
-    model.review_variant(
-        "synthetic.curve.5.1", actor="Reviewer", notes="Reviewed points."
-    )
+    model.review_variant("synthetic.curve.5.1", actor="Reviewer", notes="Reviewed points.")
 
     assert model.draft.curve_variant_reviews[0].variant_id == "synthetic.curve.5.1"

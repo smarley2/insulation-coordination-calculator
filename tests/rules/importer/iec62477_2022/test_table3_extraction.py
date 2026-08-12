@@ -121,9 +121,7 @@ def test_structure_retains_exactly_eighteen_data_cells_and_source_continuations(
     data = tuple(cell for cell in structured.cells if cell.role == "data")
     assert len(data) == 18
     assert {(cell.logical_row, cell.logical_column) for cell in data} == {
-        (row, f"protection-context-{column}")
-        for row in range(3)
-        for column in range(1, 7)
+        (row, f"protection-context-{column}") for row in range(3) for column in range(1, 7)
     }
     assert all(
         next(cell for cell in structured.cells if (cell.row, cell.column) == coordinate).role

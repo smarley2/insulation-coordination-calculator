@@ -67,9 +67,7 @@ _TABLE_F3_DATA_COLUMNS = tuple(range(1, _TABLE_F3_RAW_COLUMNS))
 #: the right across every data column.
 _TABLE_F3_MERGED_CELLS = (
     MergedCellSpec(row=0, column=0, row_span=2, inherit="down"),
-    MergedCellSpec(
-        row=0, column=1, column_span=len(_TABLE_F3_DATA_COLUMNS), inherit="right"
-    ),
+    MergedCellSpec(row=0, column=1, column_span=len(_TABLE_F3_DATA_COLUMNS), inherit="right"),
 )
 _TABLE_F3_BLANK_CELLS = (
     *(
@@ -285,8 +283,7 @@ TABLE_F3 = TableAuditSpec(
 #: as evidence for the cross-standard comparison rather than as rules of their own, so no
 #: package carries two copies of the same requirement.
 ANNEX_F_TABLES: tuple[TableAuditSpec, ...] = tuple(
-    spec.model_copy(update={"comparison_only": True})
-    for spec in (TABLE_F1, TABLE_F2, TABLE_F3)
+    spec.model_copy(update={"comparison_only": True}) for spec in (TABLE_F1, TABLE_F2, TABLE_F3)
 )
 
 __all__ = [

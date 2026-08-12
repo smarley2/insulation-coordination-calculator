@@ -174,11 +174,7 @@ def _slice_e1_draft(monkeypatch: pytest.MonkeyPatch) -> ImportedRuleDraft:
         notes=f"content:{digest}",
     )
     return draft.model_copy(
-        update={
-            "manifest": draft.manifest.model_copy(
-                update={"approval_records": (extraction,)}
-            )
-        }
+        update={"manifest": draft.manifest.model_copy(update={"approval_records": (extraction,)})}
     )
 
 
@@ -247,7 +243,6 @@ def test_only_the_five_e2_test_items_remain_deferred() -> None:
     #: five this slice inherited.
     assert len(DEFERRED_SEMANTIC_IDS) <= 5
     assert all(
-        semantic_id.startswith("iec62477_2022.test.")
-        for semantic_id in DEFERRED_SEMANTIC_IDS
+        semantic_id.startswith("iec62477_2022.test.") for semantic_id in DEFERRED_SEMANTIC_IDS
     )
     assert DEFERRED_SEMANTIC_IDS.isdisjoint(DELIVERED_ITEMS)

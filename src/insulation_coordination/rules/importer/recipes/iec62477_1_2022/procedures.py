@@ -167,8 +167,7 @@ CLASSIFICATION_MATRIX = TableAuditSpec(
             id=f"classification-matrix-page-{page}",
             page_number=page,
             title_anchor=(
-                _MATRIX_CAPTION_ANCHOR if page == _MATRIX_SEGMENTS[0][0]
-                else _MATRIX_RUNNING_ANCHOR
+                _MATRIX_CAPTION_ANCHOR if page == _MATRIX_SEGMENTS[0][0] else _MATRIX_RUNNING_ANCHOR
             ),
             expected_raw_rows=rows,
             expected_raw_columns=_MATRIX_COLUMNS,
@@ -366,10 +365,7 @@ def _require_own_fragment(
 ) -> None:
     if fragment.id != f"raw-{semantic_id}":
         raise ValueError(f"{label} projection requires its own fragment")
-    if (
-        fragment.source.standard != identity.standard
-        or fragment.source.edition != identity.edition
-    ):
+    if fragment.source.standard != identity.standard or fragment.source.edition != identity.edition:
         raise ValueError(f"{label} fragment does not match its identified source")
 
 
@@ -504,9 +500,7 @@ _PRECONDITIONING_STEP_REFERENCE = re.compile(r"\b5\.2\.6\.3\.\d+\b")
 _PRECONDITIONING_DEFERRAL = re.compile(r"\b5\.2\.3\.1\b")
 #: Which Table 26 row and condition column carry the preconditioning statement. Read from the
 #: maintained Table 26 recipe rather than restated, so the two cannot drift apart.
-_TABLE_26_PRECONDITIONING_ROW = next(
-    row for row, field in FIELD_ROWS if field == "preconditioning"
-)
+_TABLE_26_PRECONDITIONING_ROW = next(row for row, field in FIELD_ROWS if field == "preconditioning")
 _TABLE_26_FIRST_CONDITION_COLUMN = VARIANT_COLUMNS[0][1]
 #: What the general clause's gate discriminates on. The source settles the type test, the
 #: sample test, and the acceptance-criteria case; it settles no other, so the decision is not
@@ -735,9 +729,7 @@ def project_preconditioning_applicability(
             # clause's exemption across the gate.
             *(
                 DecisionRow(
-                    matchers=(
-                        Matcher(input="test_context", op="equals", values=(context,)),
-                    ),
+                    matchers=(Matcher(input="test_context", op="equals", values=(context,)),),
                     values=(
                         DecisionValue(name="preconditioning_required", boolean=True),
                         DecisionValue(

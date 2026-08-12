@@ -63,18 +63,11 @@ def _review_all_c2_proposals(draft):
             if raw.semantic_id.startswith(f"{grid_id}:")
             and raw.code in {"AMBIGUOUS_COMPOUND_CELL", "AMBIGUOUS_COMPONENT_FORMULA"}
         )
-        occurrences = {
-            tuple(map(int, raw.semantic_id.rsplit(":", 3)[1:]))
-            for raw in pending
-        }
+        occurrences = {tuple(map(int, raw.semantic_id.rsplit(":", 3)[1:])) for raw in pending}
         associations = {}
         formulas = {}
         for row, column, source_index in occurrences:
-            cell = next(
-                cell
-                for cell in grid.cells
-                if (cell.row, cell.column) == (row, column)
-            )
+            cell = next(cell for cell in grid.cells if (cell.row, cell.column) == (row, column))
             component_id = cell.compound_component_ids[source_index]
             associations[(row, column, source_index)] = component_id
             formulas[(row, column, source_index)] = next(

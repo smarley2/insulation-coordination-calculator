@@ -92,9 +92,7 @@ class HumanReportView:
 def build_human_report_view(model: ReportModel) -> HumanReportView:
     """Derive display-only report data without weakening report validation."""
     headers = tuple(net.name for net in model.net_classes)
-    excluded = frozenset(
-        frozenset((pair.net_a, pair.net_b)) for pair in model.excluded_pairs
-    )
+    excluded = frozenset(frozenset((pair.net_a, pair.net_b)) for pair in model.excluded_pairs)
     common_values: list[HumanValue] = []
     matrices: list[HumanMatrix] = []
     default_specs: tuple[tuple[str, str, str, Callable[[MatrixRow], str]], ...] = (

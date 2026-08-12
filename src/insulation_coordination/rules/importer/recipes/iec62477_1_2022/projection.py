@@ -74,9 +74,7 @@ def _outcomes(grid: RawGrid) -> tuple[_Outcome, ...]:
             ):
                 raise ValueError("Table 2 outcome has incomplete typed provenance")
             if cell.reference_token is not None:
-                expected_kind = _REFERENCE_TARGET_KINDS.get(
-                    cell.reference_token.target_rule_id
-                )
+                expected_kind = _REFERENCE_TARGET_KINDS.get(cell.reference_token.target_rule_id)
                 if expected_kind != cell.reference_token.target_kind:
                     raise ValueError("Table 2 semantic reference has an invalid target kind")
                 outcomes.append(
@@ -124,8 +122,7 @@ def _table_2_inputs(grid: RawGrid) -> tuple[DecisionInput, ...]:
             name="voltage_quantity",
             kind="categorical",
             allowed_values=tuple(
-                f"voltage-quantity-{index}"
-                for index in range(1, TABLE_2.expected_data_columns + 1)
+                f"voltage-quantity-{index}" for index in range(1, TABLE_2.expected_data_columns + 1)
             ),
         ),
         DecisionInput(name="unit", kind="categorical", allowed_values=(grid.target_unit,)),
@@ -147,18 +144,18 @@ def _numeric_rule(grid: RawGrid, outcomes: tuple[_Outcome, ...]) -> DecisionRule
         inputs=_table_2_inputs(grid),
         outputs=(output,),
         rows=tuple(
-        DecisionRow(
-            matchers=_matchers(outcome, grid.target_unit),
-            values=(
-                DecisionValue(
-                    name=output.name,
-                    numeric=cast(Decimal, outcome.value),
-                    unit=grid.target_unit,
+            DecisionRow(
+                matchers=_matchers(outcome, grid.target_unit),
+                values=(
+                    DecisionValue(
+                        name=output.name,
+                        numeric=cast(Decimal, outcome.value),
+                        unit=grid.target_unit,
+                    ),
                 ),
-            ),
-            source=outcome.source,
-        )
-        for outcome in outcomes
+                source=outcome.source,
+            )
+            for outcome in outcomes
         ),
         exhaustive=False,
         source=grid.source,
@@ -251,8 +248,7 @@ def project_dvc_voltage_limits(
     numeric = tuple(item for item in outcomes if item.kind == "numeric")
     curve = tuple(item for item in outcomes if item.value == ids.DVC_FAULT_TIME_VOLTAGE)
     impulse = tuple(
-        item for item in outcomes
-        if item.value == ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC
+        item for item in outcomes if item.value == ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC
     )
     not_applicable = tuple(item for item in outcomes if item.kind == "not_applicable")
     rules = (
@@ -427,9 +423,7 @@ def project_dvc_protection_matrix(
         if column.role == "data"
     }
     present = {
-        (cell.logical_row, cell.logical_column)
-        for cell in structured.cells
-        if cell.role == "data"
+        (cell.logical_row, cell.logical_column) for cell in structured.cells if cell.role == "data"
     }
     if present != expected:
         raise ValueError("Table 3 has incomplete Cartesian coverage")

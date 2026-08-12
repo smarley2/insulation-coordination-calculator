@@ -154,9 +154,7 @@ def test_schema_v1_loads_with_empty_group_splits_and_save_writes_the_current_sch
     assert saved["circuit_diagram"] is None
 
 
-def test_schema_v2_loads_without_a_circuit_diagram(
-    sample_project: Project, tmp_path: Path
-) -> None:
+def test_schema_v2_loads_without_a_circuit_diagram(sample_project: Project, tmp_path: Path) -> None:
     document = {"schema_version": 2, **sample_project.model_dump(mode="json")}
     document.pop("circuit_diagram", None)
     path = tmp_path / "v2.icproj"

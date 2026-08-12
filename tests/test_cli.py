@@ -204,9 +204,10 @@ def test_release_diagnostic_reports_a_failed_run(
     exit_code = cli.main(["--release-diagnostic", "p.icproj", "r.icrules", str(tmp_path)])
 
     assert exit_code == 1
-    assert json.loads((tmp_path / "release-diagnostic.json").read_text(encoding="utf-8"))[
-        "success"
-    ] is False
+    assert (
+        json.loads((tmp_path / "release-diagnostic.json").read_text(encoding="utf-8"))["success"]
+        is False
+    )
 
 
 def test_release_diagnostic_reports_a_diagnostic_error_on_stderr(

@@ -112,7 +112,9 @@ def load_tectonic_manifest(path: Path) -> TectonicManifest:
     except (OSError, TypeError, ValueError) as error:
         raise TectonicIntegrityError(f"could not load Tectonic manifest: {error}") from error
     if manifest.schema_version != 1:
-        raise TectonicIntegrityError(f"unsupported Tectonic manifest schema {manifest.schema_version}")
+        raise TectonicIntegrityError(
+            f"unsupported Tectonic manifest schema {manifest.schema_version}"
+        )
     return manifest
 
 
@@ -127,9 +129,7 @@ def verify_bundled_tectonic(
     if platform_record is None:
         raise TectonicIntegrityError(f"unsupported platform in Tectonic manifest: {platform_key}")
     if manifest.tectonic_version != "0.16.9":
-        raise TectonicIntegrityError(
-            f"unsupported Tectonic version: {manifest.tectonic_version}"
-        )
+        raise TectonicIntegrityError(f"unsupported Tectonic version: {manifest.tectonic_version}")
 
     executable_path = _safe_bundle_path(base, platform_record.executable_path, "executable")
     cache_path = _safe_bundle_path(base, platform_record.cache_path, "cache")
@@ -143,9 +143,7 @@ def verify_bundled_tectonic(
     if not cache_path.is_dir():
         raise TectonicIntegrityError(f"Tectonic cache is missing: {cache_path}")
     try:
-        lock = TectonicLock.model_validate(
-            json.loads(lock_path.read_text(encoding="utf-8"))
-        )
+        lock = TectonicLock.model_validate(json.loads(lock_path.read_text(encoding="utf-8")))
     except (OSError, TypeError, ValueError) as error:
         raise TectonicIntegrityError(f"could not load Tectonic lock: {error}") from error
     if lock.platform_key != platform_key or lock.tectonic_version != manifest.tectonic_version:

@@ -277,17 +277,11 @@ def test_dialog_applies_association_and_formula_atomically(
         }
     )
     changed_grid = grid.model_copy(
-        update={
-            "cells": tuple(
-                compound if cell is original else cell for cell in grid.cells
-            )
-        }
+        update={"cells": tuple(compound if cell is original else cell for cell in grid.cells)}
     )
     changed = draft.model_copy(
         update={
-            "raw_grids": tuple(
-                changed_grid if item is grid else item for item in draft.raw_grids
-            )
+            "raw_grids": tuple(changed_grid if item is grid else item for item in draft.raw_grids)
         }
     )
     dialog = RawGridReviewDialog(changed, actor="Maintainer")
@@ -302,9 +296,7 @@ def test_dialog_applies_association_and_formula_atomically(
     assert dialog._components_table.item(1, 2).text() == "17"
 
     dialog._components_table.setCurrentCell(1, 0)
-    dialog._association_selector.setCurrentIndex(
-        dialog._association_selector.findData("dc")
-    )
+    dialog._association_selector.setCurrentIndex(dialog._association_selector.findData("dc"))
     qtbot.mouseClick(dialog._apply_association_button, Qt.MouseButton.LeftButton)
 
     assert warnings == ["Select an exact formula for the reviewed component route."]
@@ -317,9 +309,7 @@ def test_dialog_applies_association_and_formula_atomically(
     qtbot.mouseClick(dialog._apply_association_button, Qt.MouseButton.LeftButton)
 
     assert dialog.pending_association_corrections == {(2, 1, 1): "dc"}
-    assert dialog.pending_formula_corrections == {
-        (2, 1, 1): "synthetic-dc-formula"
-    }
+    assert dialog.pending_formula_corrections == {(2, 1, 1): "synthetic-dc-formula"}
 
 
 @pytest.mark.parametrize("value", ("", "not-a-number", "NaN"))

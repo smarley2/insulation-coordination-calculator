@@ -108,9 +108,9 @@ def test_every_required_semantic_id_is_queryable_after_a_round_trip(
 
     assert len(REQUIRED_SOURCE_ITEMS) == 26
     for item in REQUIRED_SOURCE_ITEMS:
-        assert any(
-            _covers(candidate, item.semantic_id) for candidate in available
-        ), item.semantic_id
+        assert any(_covers(candidate, item.semantic_id) for candidate in available), (
+            item.semantic_id
+        )
 
 
 def test_the_archive_carries_the_procedures_and_the_preconditioning_routes(

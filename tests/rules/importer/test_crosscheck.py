@@ -182,7 +182,9 @@ def _axis_grid(
             logical_column=names[column_index],
             value=Decimal(text) if text.strip().replace(".", "").isdigit() else None,
             parse_status=(
-                "numeric" if text.strip().replace(".", "").isdigit() else "blank"
+                "numeric"
+                if text.strip().replace(".", "").isdigit()
+                else "blank"
                 if not text.strip()
                 else "text"
             ),

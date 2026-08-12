@@ -187,9 +187,7 @@ class CurveReviewModel:
         return (
             "automatic_suggestion"
             if any(
-                variant.id == variant_id
-                for rule in self._draft.curves
-                for variant in rule.variants
+                variant.id == variant_id for rule in self._draft.curves for variant in rule.variants
             )
             else "empty"
         )
@@ -245,9 +243,7 @@ class CurveReviewModel:
         )
         if rule is None:
             raise ValueError(f"unknown curve variant: {variant_id}")
-        self._draft = review_curve_variant(
-            self._draft, variant_id, actor=actor, notes=notes
-        )
+        self._draft = review_curve_variant(self._draft, variant_id, actor=actor, notes=notes)
         return self._draft
 
 
@@ -328,9 +324,7 @@ class _PointPlot(QWidget):
             Decimal(str(value)) for value in (left, top, right, bottom)
         )
 
-    def _pixels(
-        self, points: tuple[CurvePoint, ...]
-    ) -> tuple[tuple[Decimal, Decimal], ...]:
+    def _pixels(self, points: tuple[CurvePoint, ...]) -> tuple[tuple[Decimal, Decimal], ...]:
         calibration = self._calibration()
         rectangle = self._rectangle()
         if calibration is None or rectangle is None:
@@ -343,9 +337,7 @@ class _PointPlot(QWidget):
                 continue
         return tuple(pixels)
 
-    def _widget_points(
-        self, points: tuple[CurvePoint, ...]
-    ) -> tuple[tuple[float, float], ...]:
+    def _widget_points(self, points: tuple[CurvePoint, ...]) -> tuple[tuple[float, float], ...]:
         return tuple((float(x), float(y)) for x, y in self._pixels(points))
 
     @staticmethod
@@ -511,7 +503,9 @@ class CurveReviewDialog(QDialog):
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
         self.notes_edit = QLineEdit()
-        self.notes_edit.setPlaceholderText("Review notes (required for axis bounds, save, and acceptance)")
+        self.notes_edit.setPlaceholderText(
+            "Review notes (required for axis bounds, save, and acceptance)"
+        )
         layout.addWidget(self.notes_edit)
         actions = QHBoxLayout()
         self.accept_variant_button = QPushButton("Accept variant")
@@ -672,9 +666,7 @@ class CurveReviewDialog(QDialog):
             self._status.setText(str(failure))
             return
         if calibration is None:
-            self._status.setText(
-                "Apply this figure's axis bounds before accepting this variant."
-            )
+            self._status.setText("Apply this figure's axis bounds before accepting this variant.")
             return
         if not self._store_points():
             return
@@ -703,9 +695,7 @@ class CurveReviewDialog(QDialog):
         if variant is None:
             return False
         scale = self._model.source_x_scale(variant.id)
-        return points == tuple(
-            CurvePoint(x=point.x / scale, y=point.y) for point in variant.points
-        )
+        return points == tuple(CurvePoint(x=point.x / scale, y=point.y) for point in variant.points)
 
     def _current_variant(self) -> FaultTimeVoltageVariant | None:
         variant_id = self._variant_selector.currentData()
@@ -786,9 +776,7 @@ class CurveReviewDialog(QDialog):
                 raise ApprovalError("curve source page is unavailable")
             x0, top, x1, bottom = figure.source_bbox
             bbox = (float(x0), float(top), float(x1), float(bottom))
-            with pdfplumber.open(
-                path, password=self._pdf_passwords.get(path, "")
-            ) as pdf:
+            with pdfplumber.open(path, password=self._pdf_passwords.get(path, "")) as pdf:
                 if not 1 <= source.page <= len(pdf.pages):
                     raise ApprovalError("curve source page is unavailable")
                 rendered = pdf.pages[source.page - 1].crop(bbox).to_image(resolution=110)
@@ -884,9 +872,7 @@ class CurveReviewDialog(QDialog):
         ):
             field.setText(value)
 
-    def _save_bounds(
-        self, x_min: Decimal, x_max: Decimal, y_min: Decimal, y_max: Decimal
-    ) -> None:
+    def _save_bounds(self, x_min: Decimal, x_max: Decimal, y_min: Decimal, y_max: Decimal) -> None:
         source = self._current_source(self._current_variant())
         figure, _calibration = self._figure_and_calibration(source)
         if source.figure is None:
@@ -961,15 +947,11 @@ class CurveReviewDialog(QDialog):
         for variant in self._reviewed_siblings(source):
             scale = self._model.source_x_scale(variant.id)
             siblings.append(
-                tuple(
-                    CurvePoint(x=point.x / scale, y=point.y) for point in variant.points
-                )
+                tuple(CurvePoint(x=point.x / scale, y=point.y) for point in variant.points)
             )
         return tuple(siblings)
 
-    def _reviewed_siblings(
-        self, source: SourceReference
-    ) -> tuple[FaultTimeVoltageVariant, ...]:
+    def _reviewed_siblings(self, source: SourceReference) -> tuple[FaultTimeVoltageVariant, ...]:
         selected_id = self._variant_selector.currentData()
         return tuple(
             variant
@@ -1003,9 +985,7 @@ class CurveReviewDialog(QDialog):
         if not self._stored_points_match(visible_points):
             return "Visible points have unsaved changes; save points before accepting."
         calibration_sha256 = calibrations[0].calibration_sha256
-        source_artifact_sha256 = _manual_reviewed_artifact_sha256(
-            figure, calibration_sha256
-        )
+        source_artifact_sha256 = _manual_reviewed_artifact_sha256(figure, calibration_sha256)
         inputs = tuple(
             item
             for item in self._model.draft.manual_curve_variant_inputs
@@ -1014,10 +994,7 @@ class CurveReviewDialog(QDialog):
             and item.source_artifact_sha256 == source_artifact_sha256
             and item.calibration_sha256 == calibration_sha256
         )
-        if (
-            variant.reviewed_artifact_sha256 != source_artifact_sha256
-            or len(inputs) != 1
-        ):
+        if variant.reviewed_artifact_sha256 != source_artifact_sha256 or len(inputs) != 1:
             return "Saved points lack current manual provenance; save points before accepting."
         return None
 

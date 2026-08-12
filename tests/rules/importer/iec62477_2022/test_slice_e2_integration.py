@@ -37,9 +37,7 @@ def test_the_deferred_set_is_empty_and_every_item_has_a_recipe() -> None:
 
     declared = frozenset(EXPECTATIONS.typed_results)
     for item in REQUIRED_SOURCE_ITEMS:
-        assert any(
-            _covers(candidate, item.semantic_id) for candidate in declared
-        ), item.semantic_id
+        assert any(_covers(candidate, item.semantic_id) for candidate in declared), item.semantic_id
 
 
 def test_every_declared_route_of_a_required_item_is_expected_to_yield_a_rule() -> None:
@@ -85,7 +83,5 @@ def test_the_rules_manager_reports_every_required_item(qtbot, tmp_path: Path) ->
     assert len(inventory) == len(REQUIRED_SOURCE_ITEMS)
     assert f"required source items: 0 of {len(REQUIRED_SOURCE_ITEMS)} approved, 0 deferred" in lines
     for issue in (35, 36, 37):
-        consumed = tuple(
-            status for status in inventory if issue in status.consumer_issue_ids
-        )
+        consumed = tuple(status for status in inventory if issue in status.consumer_issue_ids)
         assert f"  issue #{issue}: 0 of {len(consumed)} approved" in lines

@@ -109,9 +109,7 @@ def package_expectations(recipes: tuple[StandardRecipe, ...]) -> PackageExpectat
             # result rather than an addition to it.
             routes = frozenset(clause_spec.projected_rule_ids)
             projected_rule_ids |= routes
-            typed_results[clause_spec.semantic_id] = routes or frozenset(
-                {clause_spec.semantic_id}
-            )
+            typed_results[clause_spec.semantic_id] = routes or frozenset({clause_spec.semantic_id})
         for curve_spec in recipe.curves:
             curve_rule_ids.add(curve_spec.semantic_id)
             raw_artifact_ids.add(curve_spec.semantic_id)
@@ -130,9 +128,7 @@ def package_expectations(recipes: tuple[StandardRecipe, ...]) -> PackageExpectat
         formula_ids=frozenset(formula_ids),
         clause_rule_ids=frozenset(clause_rule_ids),
         curve_rule_ids=frozenset(curve_rule_ids),
-        declared_mapping_ids=frozenset(
-            spec.id for recipe in recipes for spec in recipe.mappings
-        ),
+        declared_mapping_ids=frozenset(spec.id for recipe in recipes for spec in recipe.mappings),
         declared_mapping_routes=frozenset(
             spec.semantic_route for recipe in recipes for spec in recipe.mappings
         ),

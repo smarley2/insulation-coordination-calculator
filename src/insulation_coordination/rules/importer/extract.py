@@ -75,6 +75,7 @@ def _missing_parts_message(loaded: set[str]) -> str:
         f"missing required part(s): {', '.join(missing)}"
     )
 
+
 __all__ = [
     "ComponentFormulaCandidate",
     "CurveCalibrationReview",
@@ -293,8 +294,7 @@ class RawGridCell(FrozenModel):
         components = {component.source_index: component for component in self.components}
         if any(
             candidate.source_index not in components
-            or candidate.component_id
-            != components[candidate.source_index].component_id
+            or candidate.component_id != components[candidate.source_index].component_id
             for candidate in self.formula_candidates
         ):
             raise ValueError("formula candidate does not match its source occurrence")
@@ -426,11 +426,7 @@ def apply_table_structure(grid: RawGrid, spec: TableAuditSpec) -> RawGrid:
                         source=cell.source,
                     )
                     if slot is not None and cell.raw_text.strip()
-                    else (
-                        cell.reference_token
-                        if blanks.get(coordinate) == "inherit"
-                        else None
-                    )
+                    else (cell.reference_token if blanks.get(coordinate) == "inherit" else None)
                 ),
             }
         )
@@ -555,15 +551,11 @@ def _content_digest(
         "guidance": [item.model_dump(mode="json") for item in guidance],
         "curves": [item.model_dump(mode="json") for item in curves],
         "raw_figures": [item.model_dump(mode="json") for item in raw_figures],
-        "curve_calibrations": [
-            item.model_dump(mode="json") for item in curve_calibrations
-        ],
+        "curve_calibrations": [item.model_dump(mode="json") for item in curve_calibrations],
         "manual_curve_variant_inputs": [
             item.model_dump(mode="json") for item in manual_curve_variant_inputs
         ],
-        "curve_variant_reviews": [
-            item.model_dump(mode="json") for item in curve_variant_reviews
-        ],
+        "curve_variant_reviews": [item.model_dump(mode="json") for item in curve_variant_reviews],
     }
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
 
@@ -619,7 +611,7 @@ def _recipe(identity: StandardIdentity) -> StandardRecipe:
 
 
 _NUMBER_TOKEN = r"(?:[0-9]{1,3}(?:[ \u00a0][0-9]{3})+|[0-9]+)(?:[.,][0-9]+)?"
-_NUMERIC_CELL = re.compile(rf'^\s*(<=|>=|<|>|≤|≥)?\s*({_NUMBER_TOKEN})\s*(.*?)\s*$')
+_NUMERIC_CELL = re.compile(rf"^\s*(<=|>=|<|>|≤|≥)?\s*({_NUMBER_TOKEN})\s*(.*?)\s*$")
 _RANGE_CELL = re.compile(
     r"^\s*[0-9]+(?:[.,][0-9]+)?\s*(?:to|[-–—])\s*"
     r"[0-9]+(?:[.,][0-9]+)?\s*$",
@@ -752,13 +744,10 @@ def parse_compound_data_cell(
             )
         )
     component_ids = tuple(
-        component.component_id
-        for component in components
-        if component.component_id is not None
+        component.component_id for component in components if component.component_id is not None
     )
-    if (
-        len(component_ids) != len(set(component_ids))
-        or set(component_ids) != set(spec.component_ids)
+    if len(component_ids) != len(set(component_ids)) or set(component_ids) != set(
+        spec.component_ids
     ):
         ambiguous = True
     allowed_formula_ids = spec.allowed_formula_ids or tuple(
@@ -791,11 +780,7 @@ def parse_compound_data_cell(
         len(group) != 1 or group[0].formula_id is None
         for source_index in formula_source_indexes
         for group in (
-            tuple(
-                candidate
-                for candidate in candidates
-                if candidate.source_index == source_index
-            ),
+            tuple(candidate for candidate in candidates if candidate.source_index == source_index),
         )
     )
     review_codes = (
@@ -823,12 +808,9 @@ def compound_review_items(grid: RawGrid) -> tuple[ImportReviewItem, ...]:
             for component_id in cell.compound_component_ids
         }
         for component in cell.components:
-            semantic_id = (
-                f"{grid.id}:{cell.row}:{cell.column}:{component.source_index}"
-            )
+            semantic_id = f"{grid.id}:{cell.row}:{cell.column}:{component.source_index}"
             ambiguous_association = (
-                component.component_id is None
-                or counts.get(component.component_id, 0) != 1
+                component.component_id is None or counts.get(component.component_id, 0) != 1
             )
             if ambiguous_association:
                 items.append(
@@ -905,9 +887,9 @@ def _source(
 #: Anchor boxes already located, keyed by anchor text. Finding an anchor walks the page's
 #: whole content stream, and every spec searching a page repeats that walk for the same
 #: title. Keyed on the page object so it dies with the document.
-_ANCHOR_CACHE: WeakKeyDictionary[
-    PageObject, dict[str, tuple[dict[str, float], ...]]
-] = WeakKeyDictionary()
+_ANCHOR_CACHE: WeakKeyDictionary[PageObject, dict[str, tuple[dict[str, float], ...]]] = (
+    WeakKeyDictionary()
+)
 
 
 def _anchor_boxes(
@@ -1015,9 +997,7 @@ def _found_tables(
     by_page = _TABLE_CACHE.setdefault(document, {})
     key = (page.page_number, row_strategy)
     if key not in by_page:
-        by_page[key] = list(
-            page.find_tables(table_settings=_ROW_STRATEGY_SETTINGS[row_strategy])
-        )
+        by_page[key] = list(page.find_tables(table_settings=_ROW_STRATEGY_SETTINGS[row_strategy]))
     return by_page[key]
 
 
@@ -1337,13 +1317,9 @@ def _extract_layout_table(
                         compound_component_ids=(
                             () if parsed is None else parsed.compound_component_ids
                         ),
-                        formula_candidates=(
-                            () if parsed is None else parsed.formula_candidates
-                        ),
+                        formula_candidates=(() if parsed is None else parsed.formula_candidates),
                         allowed_component_formula_ids=(
-                            ()
-                            if parsed is None
-                            else parsed.allowed_component_formula_ids
+                            () if parsed is None else parsed.allowed_component_formula_ids
                         ),
                         parse_status=parse_status,
                         source=_source(
@@ -1395,28 +1371,28 @@ def _extract_layout_table(
     reviews = (
         *compound_reviews,
         *tuple(
-        ImportReviewItem(
-            code="MANUAL_RAW_CELL_REVIEW_REQUIRED",
-            semantic_id=f"{grid.id}:{cell.row}:{cell.column}",
-            kind="raw_cell",
-            source=cell.source,
-            expected_contract=f"raw-cell:{spec.semantic_id}:numeric",
-        )
-        for cell in cells
-        # A comparison-only grid is evidence for a cross-standard check, never an
-        # executable rule: its cells are compared against an already-approved rule's cells
-        # and are only ever read as the source printed them. Asking a maintainer to retype
-        # them as numbers would prove nothing, and a cell the parser cannot turn into a
-        # number could not be resolved at all.
-        # A text field table states a procedure, not quantities: there is no number to
-        # retype, and the rule projected from the grid carries the review instead.
-        if not spec.comparison_only
-        and not spec.text_field_table
-        and spec.token_grammar is None
-        and cell.role == "data"
-        and cell.reference_token is None
-        and cell.blank_semantics != "not_applicable"
-        and cell.parse_status not in {"numeric", "compound", "ambiguous_compound"}
+            ImportReviewItem(
+                code="MANUAL_RAW_CELL_REVIEW_REQUIRED",
+                semantic_id=f"{grid.id}:{cell.row}:{cell.column}",
+                kind="raw_cell",
+                source=cell.source,
+                expected_contract=f"raw-cell:{spec.semantic_id}:numeric",
+            )
+            for cell in cells
+            # A comparison-only grid is evidence for a cross-standard check, never an
+            # executable rule: its cells are compared against an already-approved rule's cells
+            # and are only ever read as the source printed them. Asking a maintainer to retype
+            # them as numbers would prove nothing, and a cell the parser cannot turn into a
+            # number could not be resolved at all.
+            # A text field table states a procedure, not quantities: there is no number to
+            # retype, and the rule projected from the grid carries the review instead.
+            if not spec.comparison_only
+            and not spec.text_field_table
+            and spec.token_grammar is None
+            and cell.role == "data"
+            and cell.reference_token is None
+            and cell.blank_semantics != "not_applicable"
+            and cell.parse_status not in {"numeric", "compound", "ambiguous_compound"}
         ),
     )
     return grid, reviews
@@ -1728,9 +1704,7 @@ def _extract_curve_artifacts(
         )
         for spec, figure in zip(recipe.curves, figures, strict=True)
         for slot_index, _selector in enumerate(spec.variant_slots, start=1)
-        for semantic_id in (
-            f"{spec.semantic_id}.{spec.figure}.{slot_index}",
-        )
+        for semantic_id in (f"{spec.semantic_id}.{spec.figure}.{slot_index}",)
     )
     return tuple(figures), (), (), variant_review_items
 

@@ -34,9 +34,7 @@ def _recipe_with_a_projector() -> StandardRecipe:
 
 
 def _recipe_with_comparison_evidence() -> StandardRecipe:
-    return next(
-        recipe for recipe in RECIPES if any(spec.comparison_only for spec in recipe.tables)
-    )
+    return next(recipe for recipe in RECIPES if any(spec.comparison_only for spec in recipe.tables))
 
 
 def test_every_table_spec_is_classified_by_exactly_one_expectation_set() -> None:
@@ -46,8 +44,7 @@ def test_every_table_spec_is_classified_by_exactly_one_expectation_set() -> None
             spec.semantic_id in EXPECTATIONS.evidence_grid_ids,
             bool(recipe.grid_projectors.get(spec.semantic_id))
             and bool(EXPECTATIONS.typed_results[spec.semantic_id])
-            and EXPECTATIONS.typed_results[spec.semantic_id]
-            <= EXPECTATIONS.projected_rule_ids,
+            and EXPECTATIONS.typed_results[spec.semantic_id] <= EXPECTATIONS.projected_rule_ids,
         ]
         assert sum(classifications) == 1, spec.semantic_id
 
@@ -75,9 +72,7 @@ def test_expectation_sets_do_not_contradict_each_other() -> None:
     )
     # Every table spec has a raw grid, evidence included, and only a rule with a source
     # artifact of its own is expected to have one: a formula is projected from the recipe.
-    assert EXPECTATIONS.raw_grid_ids == {
-        f"raw-{spec.semantic_id}" for _recipe, spec in TABLE_SPECS
-    }
+    assert EXPECTATIONS.raw_grid_ids == {f"raw-{spec.semantic_id}" for _recipe, spec in TABLE_SPECS}
     assert EXPECTATIONS.raw_artifact_ids == (
         {spec.semantic_id for _recipe, spec in TABLE_SPECS}
         | EXPECTATIONS.clause_rule_ids
@@ -125,9 +120,9 @@ def test_every_mapping_resolves_to_a_formula_the_package_carries() -> None:
     A cross-standard check that named the compared grid instead of the rule produced a
     mapping validation rejected, and only a licensed run reached that rejection.
     """
-    targets = {
-        spec.target_rule_id for recipe in RECIPES for spec in recipe.mappings
-    } | {check.target_rule_id for recipe in RECIPES for check in recipe.cross_standard_checks}
+    targets = {spec.target_rule_id for recipe in RECIPES for spec in recipe.mappings} | {
+        check.target_rule_id for recipe in RECIPES for check in recipe.cross_standard_checks
+    }
 
     assert targets <= EXPECTATIONS.formula_ids
 
@@ -159,7 +154,9 @@ def test_a_text_field_table_must_declare_its_projector_at_construction() -> None
     cannot see whether anything covers it and this validator can only live here.
     """
     recipe = next(
-        candidate for candidate in RECIPES if any(spec.text_field_table for spec in candidate.tables)
+        candidate
+        for candidate in RECIPES
+        if any(spec.text_field_table for spec in candidate.tables)
     )
     text_field = next(spec for spec in recipe.tables if spec.text_field_table)
     projectors = {
@@ -213,9 +210,7 @@ def test_a_new_spec_kind_flag_must_be_taught_to_the_derivation() -> None:
     silently expect the wrong rule for it.
     """
     boolean_flags = {
-        name
-        for name, field in TableAuditSpec.model_fields.items()
-        if field.annotation is bool
+        name for name, field in TableAuditSpec.model_fields.items() if field.annotation is bool
     }
 
     assert boolean_flags == {"comparison_only", "text_field_table"}

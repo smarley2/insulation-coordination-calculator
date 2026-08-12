@@ -168,9 +168,7 @@ def test_dirty_state_tracking(qtbot, qtbot_project):
     assert not page.is_dirty
 
 
-def test_attaching_a_diagram_updates_the_project_and_marks_it_dirty(
-    qtbot, tmp_path, qtbot_project
-):
+def test_attaching_a_diagram_updates_the_project_and_marks_it_dirty(qtbot, tmp_path, qtbot_project):
     page = qtbot_project
     path = tmp_path / "topology.png"
     path.write_bytes(png_bytes(20, 10))

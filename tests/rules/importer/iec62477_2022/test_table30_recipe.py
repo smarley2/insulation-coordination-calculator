@@ -142,9 +142,10 @@ def test_the_procedure_carries_every_declared_row() -> None:
     assert [step.order for step in procedure.preparation_steps] == list(
         range(1, len(procedure.preparation_steps) + 1)
     )
-    assert len(procedure.procedure_steps) + len(procedure.preparation_steps) == len(
-        PARTIAL_DISCHARGE_FIELD_ROWS
-    ) - 2
+    assert (
+        len(procedure.procedure_steps) + len(procedure.preparation_steps)
+        == len(PARTIAL_DISCHARGE_FIELD_ROWS) - 2
+    )
     for step in (*procedure.procedure_steps, *procedure.preparation_steps):
         assert step.source.row is not None
         assert step.source.table == "30"
