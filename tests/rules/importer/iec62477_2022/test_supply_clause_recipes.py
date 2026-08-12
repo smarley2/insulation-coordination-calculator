@@ -306,9 +306,16 @@ def _spd_inputs(**overrides: str | bool) -> dict[str, str | bool]:
     return inputs
 
 
+_SPD_MAINS_ID = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains"
+_SPD_NON_MAINS_ID = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains"
+_SPD_MONITORING_ID = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring"
+
+
 def _project_spd(fragment: RawClauseFragment) -> DecisionRule:
     rules, _proposals = project_spd_reduction_requirements(fragment, IDENTITY)
-    return _decision(rules, ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS)
+    # The produced rule's id is whichever route the fragment names -- there is no
+    # longer one bare id to look up.
+    return _decision(rules, fragment.id.removeprefix("raw-"))
 
 
 def _frequency_tokens(
@@ -354,7 +361,7 @@ def _hf_inputs(**overrides: Decimal | str | bool) -> dict[str, Decimal | str | b
 
 
 def test_double_and_reinforced_insulation_keep_the_unreduced_floor() -> None:
-    rule = _project_spd(_paragraph_fragment(ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS))
+    rule = _project_spd(_paragraph_fragment(_SPD_MAINS_ID))
     row = _lookup(rule, **_spd_inputs(insulation_class="reinforced"))
     assert row is not None
     assert _value(row, "reinforced_floor_applies") is True
@@ -363,7 +370,7 @@ def test_double_and_reinforced_insulation_keep_the_unreduced_floor() -> None:
 
 
 def test_a_degradable_device_requires_monitoring_and_indication() -> None:
-    rule = _project_spd(_paragraph_fragment(ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS))
+    rule = _project_spd(_paragraph_fragment(_SPD_MAINS_ID))
     row = _lookup(rule, **_spd_inputs(device_degradable=True))
     assert row is not None
     assert _value(row, "monitoring_required") is True
@@ -372,12 +379,40 @@ def test_a_degradable_device_requires_monitoring_and_indication() -> None:
 
 
 def test_a_device_outside_a_category_reduction_is_exempt() -> None:
-    rule = _project_spd(_paragraph_fragment(ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS))
+    rule = _project_spd(_paragraph_fragment(_SPD_MAINS_ID))
     row = _lookup(rule, **_spd_inputs(device_degradable=True, part_of_category_reduction=False))
     assert row is not None
     assert _value(row, "monitoring_required") is False
     assert _value(row, "reduction_permitted") is False
     assert _value(row, "verification_reference") == "not_required"
+
+
+def test_each_spd_route_is_projected_under_its_own_id() -> None:
+    """The projector is registered once per route and shares one body (Task 6 splits it).
+
+    Each route's fragment must still come back out under that route's own rule id.
+    """
+
+    for route_id in (_SPD_MAINS_ID, _SPD_NON_MAINS_ID, _SPD_MONITORING_ID):
+        rule = _project_spd(_paragraph_fragment(route_id))
+        assert rule.id == route_id
+
+
+def test_only_the_monitoring_route_enforces_a_reviewed_shape() -> None:
+    """The mains/non_mains node shapes have not been measured yet (#53 Task 9).
+
+    A malformed monitoring fragment still blocks; the same malformed shape on the other
+    two routes does not, because there is no reviewed contract there to check against.
+    """
+
+    malformed = _paragraph_fragment(_SPD_MONITORING_ID, count=2)
+    with pytest.raises(ClauseStructureError, match="AMBIGUOUS_CLAUSE_STRUCTURE"):
+        project_spd_reduction_requirements(malformed, IDENTITY)
+
+    for route_id in (_SPD_MAINS_ID, _SPD_NON_MAINS_ID):
+        same_shape = _paragraph_fragment(route_id, count=2)
+        rule = _project_spd(same_shape)
+        assert rule.id == route_id
 
 
 def test_the_transformer_route_needs_evidence_before_it_permits_anything() -> None:
@@ -445,8 +480,34 @@ def test_the_recipe_declares_and_registers_every_supply_clause() -> None:
         ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,
         ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION,
         ids.SUPPLY_VERIFIED_BARRIER_TRANSFER,
-        ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS,
+        _SPD_MAINS_ID,
+        _SPD_NON_MAINS_ID,
+        _SPD_MONITORING_ID,
         ids.SUPPLY_HF_TRANSFORMER_ATTENUATION,
     } <= declared
     assert all(spec.output_kind == "decision" for spec in SUPPLY_CLAUSES)
     assert all(65.0 <= spec.expected_bbox[0] for spec in SUPPLY_CLAUSES)
+
+
+def test_the_reduction_rule_is_read_from_the_clauses_that_state_it() -> None:
+    """The identifier previously pointed at the monitoring clause, which does not state the rule.
+
+    The reduction is stated once for mains supply and once for non-mains supply, with different
+    permitted category steps, so it is two routes of one family rather than one rule.
+    """
+    by_id = {spec.semantic_id: spec for spec in SUPPLY_CLAUSES}
+    mains = by_id[_SPD_MAINS_ID]
+    non_mains = by_id[_SPD_NON_MAINS_ID]
+    monitoring = by_id[_SPD_MONITORING_ID]
+
+    assert (mains.clause, mains.page_number) == ("4.4.7.2.3", 65)
+    assert (non_mains.clause, non_mains.page_number) == ("4.4.7.2.4", 66)
+    assert (monitoring.clause, monitoring.page_number) == ("4.4.7.2.2", 65)
+
+
+def test_no_supply_route_reads_a_clause_that_does_not_state_its_rule() -> None:
+    """Guard against the defect returning: the bare reduction id must declare no fragment."""
+
+    declared = {spec.semantic_id for spec in SUPPLY_CLAUSES}
+
+    assert ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS not in declared

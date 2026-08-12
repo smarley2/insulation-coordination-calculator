@@ -77,12 +77,33 @@ SUPPLY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
         output_kind="decision",
     ),
     ClauseAuditSpec(
-        semantic_id=ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS,
+        semantic_id=f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains",
+        clause="4.4.7.2.3",
+        page_number=65,
+        expected_bbox=(65.0, 390.0, 535.0, 518.0),
+        expected_root_kind="paragraph",
+        output_kind="decision",
+        projected_rule_ids=(f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains",),
+    ),
+    ClauseAuditSpec(
+        semantic_id=f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains",
+        clause="4.4.7.2.4",
+        page_number=66,
+        expected_bbox=(65.0, 385.0, 535.0, 512.0),
+        expected_root_kind="paragraph",
+        output_kind="decision",
+        projected_rule_ids=(f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains",),
+    ),
+    # Retained as cited evidence, not as the source of the reduction rule: the monitoring
+    # obligation each reduction route defers to is stated here.
+    ClauseAuditSpec(
+        semantic_id=f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring",
         clause="4.4.7.2.2",
         page_number=65,
         expected_bbox=(65.0, 110.0, 535.0, 258.0),
         expected_root_kind="paragraph",
         output_kind="decision",
+        projected_rule_ids=(f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring",),
     ),
     ClauseAuditSpec(
         semantic_id=ids.SUPPLY_HF_TRANSFORMER_ATTENUATION,
@@ -98,8 +119,28 @@ SUPPLY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
 _SYSTEM_VOLTAGE_SHAPE = ("bullet", 3)
 _PROPAGATION_SHAPE = ("bullet", 4)
 _BARRIER_SHAPE = ("paragraph", 1)
+#: Measured against the licensed document for the bare identifier before the SPD route
+#: split; that measurement was against what is now the monitoring route's own clause, so
+#: it is kept as that route's contract below rather than reused for the other two.
 _SPD_SHAPE = ("paragraph", 1)
 _HF_TRANSFORMER_SHAPE = ("paragraph", 1)
+
+#: NOT_YET_REVIEWED marks a route with no reviewed node-shape contract to check yet.
+#: Measuring one requires reading the licensed IEC 62477-1:2022 document, which this
+#: public repository does not carry -- that measurement is private licensed work, tracked
+#: as #53 Task 9. Until it lands, AMBIGUOUS_CLAUSE_STRUCTURE cannot fire for a malformed
+#: fragment on a NOT_YET_REVIEWED route. Grep this name to find every route still missing
+#: a contract.
+NOT_YET_REVIEWED: tuple[str, int] | None = None
+
+#: Reviewed structural contract per SPD reduction route. Only the monitoring route's shape
+#: has ever been measured (see the comment on ``_SPD_SHAPE`` above); the mains and
+#: non_mains routes are NOT_YET_REVIEWED.
+_SPD_SHAPE_BY_ROUTE: dict[str, tuple[str, int] | None] = {
+    f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains": NOT_YET_REVIEWED,
+    f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains": NOT_YET_REVIEWED,
+    f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring": _SPD_SHAPE,
+}
 
 
 def _fail(message: str) -> NoReturn:
@@ -126,6 +167,18 @@ def _require_shape(
     kind, count = shape
     if len(fragment.nodes) != count or any(node.kind != kind for node in fragment.nodes):
         _fail(f"{label} expected {count} reviewed {kind} node(s)")
+
+
+def _require_shape_if_reviewed(
+    fragment: RawClauseFragment,
+    shape: tuple[str, int] | None,
+    label: str,
+) -> None:
+    """Like ``_require_shape``, but a NOT_YET_REVIEWED route is a deliberate no-op."""
+
+    if shape is None:  # NOT_YET_REVIEWED
+        return
+    _require_shape(fragment, shape, label)
 
 
 def _matcher(name: str, values: tuple[str, ...] | None) -> Matcher:
@@ -554,11 +607,24 @@ def project_spd_reduction_requirements(
     identity: StandardIdentity,
     _draft: object = None,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
-    """Project the transient-limiter monitoring and reduction clause into a decision."""
+    """Project the transient-limiter monitoring and reduction clause into a decision.
+
+    Registered for all three SPD reduction routes (mains, non_mains, monitoring) under one
+    function body: the fragment passed to a given call is that route's own fragment, and
+    its id says which route this call produces. The rows below are still the single
+    reviewed clause's rule, shared unchanged across routes -- #53 Task 6 gives each route
+    its own reviewed branch logic.
+    """
 
     label = "supply SPD reduction requirements"
-    _require_own_fragment(fragment, identity, ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS, label)
-    _require_shape(fragment, _SPD_SHAPE, label)
+    rule_id = next(
+        (route_id for route_id in _SPD_SHAPE_BY_ROUTE if fragment.id == f"raw-{route_id}"),
+        None,
+    )
+    if rule_id is None:
+        raise ValueError(f"{label} projection requires its own fragment")
+    _require_own_fragment(fragment, identity, rule_id, label)
+    _require_shape_if_reviewed(fragment, _SPD_SHAPE_BY_ROUTE[rule_id], label)
 
     def _row(
         *,
@@ -598,7 +664,7 @@ def project_spd_reduction_requirements(
         )
 
     rule = DecisionRule(
-        id=ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS,
+        id=rule_id,
         inputs=(
             DecisionInput(
                 name="device_placement", kind="categorical", allowed_values=_DEVICE_PLACEMENTS
@@ -801,7 +867,9 @@ CLAUSE_PROJECTORS = {
     ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: project_system_voltage_resolution,
     ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION: project_multiple_source_propagation,
     ids.SUPPLY_VERIFIED_BARRIER_TRANSFER: project_verified_barrier_transfer,
-    ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS: project_spd_reduction_requirements,
+    f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains": project_spd_reduction_requirements,
+    f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains": project_spd_reduction_requirements,
+    f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring": project_spd_reduction_requirements,
     ids.SUPPLY_HF_TRANSFORMER_ATTENUATION: project_hf_transformer_attenuation,
 }
 
