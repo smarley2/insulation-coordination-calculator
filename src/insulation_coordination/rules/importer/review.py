@@ -58,9 +58,11 @@ from insulation_coordination.rules.importer.clause_facts import (
     CitedNode,
     ClauseFactCompletion,
     ClauseFactReview,
+    ConfirmedFacts,
     SupplyFact,
     evidence_sha256,
 )
+from insulation_coordination.rules.importer.clauses import RawClauseFragment
 from insulation_coordination.rules.importer.curves import (
     ManualPlotCalibration,
     RawFigure,
@@ -82,6 +84,7 @@ from insulation_coordination.rules.importer.extract import (
     is_recipe_derived,
 )
 from insulation_coordination.rules.importer.identify import (
+    ClauseAuditSpec,
     CurveAuditSpec,
     FormulaAuditSpec,
     MappingAuditSpec,
@@ -1227,8 +1230,9 @@ def build_reviewed_draft(
                 # A draft extracted before this clause recipe existed has no
                 # fragment; approval gating reports the missing required content.
                 continue
+            confirmed_facts = resolve_confirmed_clause_facts(clause_spec, fragment, draft)
             projected, _proposals = recipe.clause_projectors[clause_spec.semantic_id](
-                fragment, identity, draft
+                fragment, identity, draft, confirmed_facts
             )
             collect(projected)
 
@@ -2228,6 +2232,75 @@ def record_fact_completion(
     return record_correction(
         draft, changed, actor=actor, notes=f"record clause fact completion: {notes}"
     )
+
+
+class ClauseFactResolutionError(RulePackageError):
+    """A route's reviewed facts are missing, incomplete or stale."""
+
+
+def resolve_confirmed_clause_facts(
+    spec: ClauseAuditSpec,
+    fragment: RawClauseFragment,
+    draft: ImportedRuleDraft,
+) -> ConfirmedFacts:
+    """Current reviewed facts for one clause spec's routes, or an exception.
+
+    Resolution owns every refusal so a projector receives a complete context and never inspects
+    review state itself. A route no fact family is declared for resolves to nothing rather than
+    refusing -- every clause outside the supply set, and the guidance route a supply clause also
+    projects, keeps its authority in its recipe -- the way ``resolve_confirmed_axis_selectors``
+    returns an empty result for a spec declaring no axis selectors.
+    """
+
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        LEGACY_BRANCH_AUTHORITY_RULE_IDS,
+        SUPPLY_FACT_FAMILY_BY_ROUTE,
+    )
+
+    by_route: dict[str, tuple[SupplyFact, ...]] = {}
+    for route in spec.projected_rule_ids or (spec.semantic_id,):
+        if route not in SUPPLY_FACT_FAMILY_BY_ROUTE or route in LEGACY_BRANCH_AUTHORITY_RULE_IDS:
+            continue
+        reviews = sorted(
+            (item for item in draft.clause_fact_reviews if item.rule_route == route),
+            key=lambda item: item.statement_index,
+        )
+        if not reviews:
+            raise ClauseFactResolutionError(f"{route} has no authored facts")
+        # Identity before evidence, the order the approval gate keeps, and through the same
+        # function the authoring API refuses on: resolution must not accept a fact
+        # ``author_clause_fact`` would have rejected, and a fact of the wrong family or one
+        # resting entirely on another clause has perfectly current digests.
+        for review in reviews:
+            defect = clause_fact_defect(route, review.fact)
+            if defect is not None:
+                raise ClauseFactResolutionError(
+                    f"{route} statement {review.statement_index} {defect}"
+                )
+        facts = tuple(review.fact for review in reviews)
+        completion = next(
+            (item for item in draft.clause_fact_completions if item.rule_route == route), None
+        )
+        if completion is None:
+            raise ClauseFactResolutionError(f"{route} has no completion record")
+        # Route resolution is fragment-granular even though review invalidation below is
+        # node-granular, and deliberately so: a fragment that gained or lost a node may have
+        # gained or lost a normative statement, so completeness has to be re-asserted rather
+        # than inferred from the nodes that survived.
+        if completion.fragment_sha256 != fragment.raw_sha256:
+            raise ClauseFactResolutionError(f"{route} completion is bound to an older fragment")
+        if completion.fact_set_sha256 != fact_set_sha256(facts):
+            raise ClauseFactResolutionError(f"{route} completion predates its current fact set")
+        # Against the draft's own live nodes, never against the citations stored inside the fact:
+        # those are what the recorded digest was computed from, so comparing the two could only
+        # catch a hand-edited review and never a node this draft has since moved or corrected.
+        for review in reviews:
+            if review.evidence_sha256 != live_evidence_sha256(draft, review.fact.node_references):
+                raise ClauseFactResolutionError(
+                    f"{route} statement {review.statement_index} cites evidence that has moved"
+                )
+        by_route[route] = facts
+    return ConfirmedFacts(by_route=by_route)
 
 
 class AxisResolutionError(RulePackageError):

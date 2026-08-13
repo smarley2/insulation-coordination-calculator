@@ -330,6 +330,8 @@ def project_system_voltage_resolution(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     _draft: object = None,
+    # ponytail: ported in a later task of this slice
+    _confirmed_facts: object = None,
 ) -> tuple[tuple[DecisionRule | GuidanceRule, ...], tuple[SemanticProposal, ...]]:
     """Project the reviewed mains/non-mains system voltage clause into a decision."""
 
@@ -425,6 +427,9 @@ def project_multiple_source_propagation(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     _draft: object = None,
+    # The legacy branch-authority route: resolution declares no facts for it, so this stays
+    # the parameter every registered clause projector takes and this one never reads.
+    _confirmed_facts: object = None,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the lettered alternatives of the two-supply clause into a decision."""
 
@@ -512,6 +517,8 @@ def project_verified_barrier_transfer(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     _draft: object = None,
+    # ponytail: ported in a later task of this slice
+    _confirmed_facts: object = None,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the isolation and no-isolation paths into a decision."""
 
@@ -608,6 +615,8 @@ def project_spd_reduction_requirements(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     _draft: object = None,
+    # ponytail: ported in a later task of this slice
+    _confirmed_facts: object = None,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the transient-limiter monitoring and reduction clause into a decision.
 
@@ -795,6 +804,8 @@ def project_hf_transformer_attenuation(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     _draft: object = None,
+    # ponytail: ported in a later task of this slice
+    _confirmed_facts: object = None,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the isolating-transformer attenuation clause into a decision."""
 

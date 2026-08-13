@@ -615,9 +615,12 @@ type GridProjector = Callable[[Any, StandardIdentity, Any], tuple[tuple[Any, ...
 #: only the test cross-reference matrix carries, a preconditioning requirement stated in two
 #: clauses and a table row -- cannot be projected from one fragment alone, and reading the
 #: sibling artifacts from the draft keeps that cross-reading inside the projection instead of
-#: spreading a second mechanism across review.
+#: spreading a second mechanism across review. The fourth parameter carries the caller's
+#: already-resolved ``ConfirmedFacts`` for the spec's routes -- reviewed, complete and current,
+#: or empty for a route whose branch authority stays in its recipe -- uniformly across every
+#: registered projector, whether or not a given projector reads it yet.
 type ClauseProjector = Callable[
-    [Any, StandardIdentity, Any], tuple[tuple[Any, ...], tuple[Any, ...]]
+    [Any, StandardIdentity, Any, Any], tuple[tuple[Any, ...], tuple[Any, ...]]
 ]
 
 

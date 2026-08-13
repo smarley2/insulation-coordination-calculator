@@ -424,6 +424,7 @@ def project_working_voltage_determination(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     draft: ImportedRuleDraft,
+    _confirmed_facts: object = None,
 ) -> tuple[tuple[ProcedureRule, ...], tuple[SemanticProposal, ...]]:
     """Project the working-voltage determination clause into a reviewed procedure.
 
@@ -451,6 +452,7 @@ def project_internal_spd_monitoring(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     draft: ImportedRuleDraft,
+    _confirmed_facts: object = None,
 ) -> tuple[tuple[ProcedureRule, ...], tuple[SemanticProposal, ...]]:
     """Project the internal transient-limiter monitoring test into a reviewed procedure.
 
@@ -626,6 +628,7 @@ def project_preconditioning(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     draft: ImportedRuleDraft,
+    _confirmed_facts: object = None,
 ) -> tuple[tuple[ProcedureRule, ...], tuple[SemanticProposal, ...]]:
     """Project the material clause into the material preconditioning route.
 
@@ -655,6 +658,7 @@ def project_preconditioning_applicability(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     draft: ImportedRuleDraft,
+    _confirmed_facts: object = None,
 ) -> tuple[tuple[DecisionRule | ProcedureRule, ...], tuple[SemanticProposal, ...]]:
     """Project the general clause into the gate and the electrical-tests route.
 
@@ -777,6 +781,7 @@ def project_accessible_surface_foil(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     _draft: object = None,
+    _confirmed_facts: object = None,
 ) -> tuple[tuple[ProcedureRule | DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the accessible-surface paragraph into the foil procedure and its gate.
 
@@ -858,6 +863,7 @@ def project_assembled_routine_exemption(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     _draft: object = None,
+    _confirmed_facts: object = None,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the routine-test exemption for assembled equipment into a decision.
 

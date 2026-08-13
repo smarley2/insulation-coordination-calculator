@@ -133,6 +133,7 @@ def project_high_frequency_applicability(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     _draft: object = None,
+    _confirmed_facts: object = None,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the annex's general clause into an applicability decision."""
 
