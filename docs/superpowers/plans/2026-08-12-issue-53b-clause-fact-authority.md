@@ -1551,9 +1551,22 @@ Introduce an explicit distinction in the generic clause model instead, along the
 `projection_role = "rule" | "evidence"`:
 
 ```text
-mains 4.4.7.1.7.1     role = rule       segments = [page A, page B]   projects the rule
-non-mains 4.4.7.1.7.2 role = evidence   segments = [page B]           contributes facts only
+mains 4.4.7.1.7.1     role = rule       segments = [three regions]   projects the rule
+non-mains 4.4.7.1.7.2 role = evidence   segments = [one region]      contributes facts only
 ```
+
+**"One segment per page" is wrong, and a literal reading of it would leave three cases out.**
+Measured against the document: the first two cases sit at the foot of the previous page, the next
+three are inside the current rectangle on the following page, and the remaining three sit on that
+*same* page **below** the rectangle. So the mains subclause needs **three** segments, two of them on
+one page, and the segment tuple must be ordered by reading order rather than by page. The
+non-mains subclause starts on that same page again, which is why it is its own fragment.
+
+**`_require_shape` cannot express the result as it stands.** It takes one `(kind, count)` pair and
+rejects any node whose kind differs, while the mains subclause's later region is paragraphs
+following bullets. Either give each `ClauseSegmentSpec` its own shape expectation and check
+segment-wise, or replace the pair with an ordered per-node kind sequence. Do not relax the check
+into "any kind" — the shape guard is what makes a reflowed clause stop the build.
 
 Then refine the projector validator deliberately rather than loosening it: a rule-producing clause
 requires **exactly one** projector, and an evidence-only clause **prohibits** one. "Projector
@@ -1566,13 +1579,45 @@ that source-resolution mechanism for multi-fragment rules, or bypass it with an 
 over the exact confirmed fact and evidence sets the projector consumed. Exactly one `DecisionRule`
 and one `SemanticProposal` come out.
 
-- [ ] **Step 3: Widen `SystemVoltageFact` to every reviewed case**
+- [ ] **Step 3: Rebuild `SystemVoltageFact` against the rule's declared inputs**
 
-The family currently cannot express the two earthed-system arrangements stated before the page
-break, nor the non-mains measure. Widen `phase_system` and `measure` so every reviewed case is
-expressible, and check each new value against the projected rule's declared `allowed_values` — a
-fact carrying a value the rule does not declare fails `DecisionRule`'s matcher validation only when
-someone finally authors it, which for licensed content means much later.
+Widening is not enough — a review of Tasks 4-6 verified against the document that the family is
+wrong in a way widening cannot fix. **Four of `phase_system`'s six tokens are not phase systems at
+all:** `series_rectifier_bridges` and `isolated_secondary` are verbatim members of
+`_INPUT_TOPOLOGIES`, `rectified_from_mains` is a second spelling of that tuple's `rectified_dc`,
+and `non_mains` is a member of `_SUPPLY_KINDS`. Authoring any of the four raises immediately, since
+the projector emits them as a `phase_system` matcher:
+
+```text
+three_phase_it, single_phase_it   -> project
+the other four                   -> ValidationError: Matcher on 'phase_system' uses values
+                                    outside its allowed values
+```
+
+Meanwhile the projector wires `supply_kind` and `input_topology` to `op="any"`, so both are
+declared-but-dead in every row with no fact field able to revive them. One field collapsed three
+declared inputs. This is the same defect `080f1fa` fixed for `device_placement`, four times over.
+
+So: give `SystemVoltageFact` its own `supply_kind` and `input_topology` fields drawn from the
+rule's own tuples, each with an explicit "not stated" token, keep `phase_system` to actual phase
+systems (adding the two earthed arrangements stated before the page break), and emit real matchers
+for all four dimensions. Then check every value — new and existing — against the projected rule's
+declared `allowed_values`.
+
+**Also fix the empty-vocabulary crash this exposes.** The projector filters `any_purpose` out
+before feeding `calculation_purposes` into a categorical `DecisionInput`, so a fact set where every
+statement is `any_purpose` yields an empty tuple and `DecisionRule` refuses with "a categorical
+input must declare its allowed values". That is not hypothetical: **five of the nine source cases
+state no purpose restriction**, so a maintainer authoring those first hits a crash naming a pydantic
+field rather than their mistake. Declare `("impulse", "temporary_overvoltage")` as a constant input
+vocabulary and derive only the rows — a declared input's vocabulary is the consumer's question
+space, not the reviewed answer space.
+
+**Do not restore `not_derived_from_mains_supply`.** The review checked the source: that deleted
+token stood for the isolated-secondary case, and the source states there that such voltages *are*
+system voltages for impulse determination. That is an applicability statement, not a measure, so it
+cannot be expressed as one — it needs its own shape or it belongs to a later slice. Say which in
+your report rather than forcing it into `measure`.
 
 Do **not** restore the deleted nine-branch constant. The shape is
 `full source evidence -> reviewed SystemVoltageFacts -> rule rows`, never
