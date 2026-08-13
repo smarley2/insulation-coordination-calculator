@@ -54,6 +54,13 @@ from insulation_coordination.rules.importer.axis_selectors import (
     ConfirmedAxes,
     selector_sha256,
 )
+from insulation_coordination.rules.importer.clause_facts import (
+    CitedNode,
+    ClauseFactCompletion,
+    ClauseFactReview,
+    SupplyFact,
+    evidence_sha256,
+)
 from insulation_coordination.rules.importer.curves import (
     ManualPlotCalibration,
     RawFigure,
@@ -2068,6 +2075,121 @@ def review_curve_variant(
     ):
         return mark_proposal_reviewed(changed, rule.id, actor=actor, notes=notes)
     return changed
+
+
+# --- reviewed clause facts ---------------------------------------------------------
+
+
+def fact_set_sha256(facts: tuple[SupplyFact, ...]) -> str:
+    """Digest of one route's authored fact set, so a completion record binds what it approved."""
+
+    members = sorted(canonical_model_sha256(fact) for fact in facts)
+    return hashlib.sha256("\n".join(members).encode("utf-8")).hexdigest()
+
+
+def live_evidence_sha256(draft: ImportedRuleDraft, nodes: tuple[CitedNode, ...]) -> str | None:
+    """One fact's evidence digest, recomputed from the draft's own current fragment nodes.
+
+    ``None`` for a citation this draft cannot resolve, which no recorded digest can equal, so
+    such a fact reads as stale rather than as silently current -- the same contract
+    ``live_axis_evidence_sha256`` keeps for an axis position.
+    """
+
+    live: list[CitedNode] = []
+    for cited in nodes:
+        fragment = next(
+            (item for item in draft.raw_clause_fragments if item.id == cited.fragment_id), None
+        )
+        node = (
+            next((item for item in fragment.nodes if item.order == cited.node_order), None)
+            if fragment is not None
+            else None
+        )
+        if node is None:
+            return None
+        live.append(cited.model_copy(update={"node_sha256": canonical_model_sha256(node)}))
+    return evidence_sha256(tuple(live))
+
+
+def author_clause_fact(
+    draft: ImportedRuleDraft,
+    *,
+    rule_route: str,
+    fact: SupplyFact,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Record one maintainer-authored normative statement for a rule route.
+
+    Nothing proposes a statement: the reviewer reads the private fragment and authors it. The
+    review binds the fact's own hash and a digest of exactly the nodes it cites.
+    """
+
+    if not actor.strip() or not notes.strip():
+        raise ApprovalError("clause fact actor and notes are required")
+    for cited in fact.node_references:
+        fragment = next(
+            (item for item in draft.raw_clause_fragments if item.id == cited.fragment_id), None
+        )
+        if fragment is None:
+            raise ValueError(f"unknown fragment cited: {cited.fragment_id}")
+        node = next((node for node in fragment.nodes if node.order == cited.node_order), None)
+        if node is None or canonical_model_sha256(node) != cited.node_sha256:
+            raise ValueError(
+                f"citation does not match a current node: {cited.fragment_id} "
+                f"node {cited.node_order}"
+            )
+    review = ClauseFactReview(
+        rule_route=rule_route,
+        statement_index=fact.statement_index,
+        fact=fact,
+        fact_sha256=canonical_model_sha256(fact),
+        evidence_sha256=evidence_sha256(fact.node_references),
+        actor=actor.strip(),
+        recorded_at=datetime.now(UTC),
+        notes=notes.strip(),
+    )
+    kept = tuple(
+        item
+        for item in draft.clause_fact_reviews
+        if not (item.rule_route == rule_route and item.statement_index == fact.statement_index)
+    )
+    changed = draft.model_copy(update={"clause_fact_reviews": (*kept, review)})
+    return record_correction(draft, changed, actor=actor, notes=f"author clause fact: {notes}")
+
+
+def record_fact_completion(
+    draft: ImportedRuleDraft,
+    *,
+    rule_route: str,
+    fragment_id: str,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Assert that one route's fact set is complete for the current fragment."""
+
+    if not actor.strip() or not notes.strip():
+        raise ApprovalError("completion actor and notes are required")
+    fragment = next((item for item in draft.raw_clause_fragments if item.id == fragment_id), None)
+    if fragment is None:
+        raise ValueError(f"unknown fragment: {fragment_id}")
+    facts = tuple(item.fact for item in draft.clause_fact_reviews if item.rule_route == rule_route)
+    if not facts:
+        raise ApprovalError("a route with no authored facts cannot be complete")
+    completion = ClauseFactCompletion(
+        rule_route=rule_route,
+        fragment_id=fragment_id,
+        fragment_sha256=fragment.raw_sha256,
+        fact_set_sha256=fact_set_sha256(facts),
+        actor=actor.strip(),
+        recorded_at=datetime.now(UTC),
+        notes=notes.strip(),
+    )
+    kept = tuple(item for item in draft.clause_fact_completions if item.rule_route != rule_route)
+    changed = draft.model_copy(update={"clause_fact_completions": (*kept, completion)})
+    return record_correction(
+        draft, changed, actor=actor, notes=f"record clause fact completion: {notes}"
+    )
 
 
 class AxisResolutionError(RulePackageError):

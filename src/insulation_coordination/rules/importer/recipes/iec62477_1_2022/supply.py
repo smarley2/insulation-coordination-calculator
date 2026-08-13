@@ -115,6 +115,14 @@ SUPPLY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ),
 )
 
+#: Supply routes whose branch authority stays in this file rather than moving to reviewed
+#: clause facts. Propagation's contract *is* an ordinal comparison over the overvoltage
+#: category scale -- the ``reduce_one_level`` and ``take_more_severe_rating`` operations the
+#: fact vocabulary names -- and no honest reviewed fact can express an ordinal comparison,
+#: only the branches it enumerates. Porting it would therefore change behaviour, so it is
+#: deliberately left here and tracked as #53C item 3 instead.
+LEGACY_BRANCH_AUTHORITY_RULE_IDS = frozenset({ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION})
+
 #: Reviewed structural contract per projection: (node kind, node count).
 _SYSTEM_VOLTAGE_SHAPE = ("bullet", 3)
 _PROPAGATION_SHAPE = ("bullet", 4)
@@ -853,6 +861,7 @@ CLAUSE_PROJECTORS = {
 
 __all__ = [
     "CLAUSE_PROJECTORS",
+    "LEGACY_BRANCH_AUTHORITY_RULE_IDS",
     "SUPPLY_CLAUSES",
     "project_hf_transformer_attenuation",
     "project_multiple_source_propagation",

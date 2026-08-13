@@ -1113,6 +1113,62 @@ def _semantic_blocker(
     )
 
 
+def _clause_fact_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
+    """Refuse a supply route whose reviewed clause facts are absent, incomplete or stale.
+
+    Gated per fragment the draft actually carries: a draft that never extracted a supply
+    clause gives the maintainer nothing to author from, so it must not be blocked for facts
+    about a clause it does not hold. The legacy routes keep their branch authority in the
+    recipe and are skipped here.
+    """
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        LEGACY_BRANCH_AUTHORITY_RULE_IDS,
+        SUPPLY_CLAUSES,
+    )
+    from insulation_coordination.rules.importer.review import (
+        fact_set_sha256,
+        live_evidence_sha256,
+    )
+
+    fragments = {fragment.id: fragment for fragment in draft.raw_clause_fragments}
+    blockers: list[ImportReviewItem] = []
+    for spec in SUPPLY_CLAUSES:
+        route = spec.semantic_id
+        fragment = fragments.get(f"raw-{route}")
+        if fragment is None or route in LEGACY_BRANCH_AUTHORITY_RULE_IDS:
+            continue
+        reviews = tuple(item for item in draft.clause_fact_reviews if item.rule_route == route)
+        completions = tuple(
+            item for item in draft.clause_fact_completions if item.rule_route == route
+        )
+        if not reviews:
+            reason = "carries no authored clause fact"
+        elif len(completions) != 1:
+            reason = "lacks one exact fact-set completion record"
+        elif completions[0].fragment_sha256 != fragment.raw_sha256:
+            reason = "was completed against a superseded fragment"
+        elif completions[0].fact_set_sha256 != fact_set_sha256(
+            tuple(item.fact for item in reviews)
+        ):
+            reason = "was completed against a different fact set"
+        elif any(
+            item.evidence_sha256 != live_evidence_sha256(draft, item.fact.node_references)
+            for item in reviews
+        ):
+            reason = "has a fact whose cited evidence has moved"
+        else:
+            continue
+        blockers.append(
+            _semantic_blocker(
+                draft,
+                code="CLAUSE_FACT_REVIEW_REQUIRED",
+                semantic_id=route,
+                message=f"clause fact review required: {route} {reason}",
+            )
+        )
+    return tuple(blockers)
+
+
 def approval_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
     """Return the one authoritative manual and semantic approval gate."""
     from insulation_coordination.rules.importer.review import (
@@ -1243,6 +1299,7 @@ def approval_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
                         ),
                     )
                 )
+    blockers.extend(_clause_fact_blockers(draft))
     from insulation_coordination.rules.importer.review import axis_review_is_current
 
     for spec in (spec for recipe in RECIPES for spec in recipe.tables if spec.axis_selectors):
