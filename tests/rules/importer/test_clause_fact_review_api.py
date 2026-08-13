@@ -33,6 +33,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply impor
 from insulation_coordination.rules.importer.review import (
     author_clause_fact,
     record_fact_completion,
+    retract_clause_fact,
 )
 
 # draft_with_supply_fragments is a shared fixture; see tests/conftest.py.
@@ -258,6 +259,73 @@ def test_authoring_the_same_statement_index_twice_replaces_it(
 
     assert len(matching) == 1
     assert matching[0].fact.comparison_required is False
+
+
+def test_retracting_a_statement_reopens_the_gate_for_its_route(
+    draft_with_supply_fragments, hf_fact
+) -> None:
+    """The completion is left to go stale rather than repaired: completeness is re-asserted
+    by the reviewer, never inferred from the deletion that invalidated it."""
+
+    draft = author_clause_fact(
+        draft_with_supply_fragments,
+        rule_route=HF_ROUTE,
+        fact=hf_fact,
+        actor="tester",
+        notes="authored",
+    )
+    draft = record_fact_completion(
+        draft,
+        rule_route=HF_ROUTE,
+        fragment_id=HF_FRAGMENT_ID,
+        actor="tester",
+        notes="complete",
+    )
+    assert HF_ROUTE not in _blocked(draft)
+
+    draft = retract_clause_fact(
+        draft,
+        rule_route=HF_ROUTE,
+        statement_index=hf_fact.statement_index,
+        actor="tester",
+        notes="retracted",
+    )
+
+    assert not draft.clause_fact_reviews
+    assert draft.clause_fact_completions
+    assert HF_ROUTE in _blocked(draft)
+
+
+def test_retracting_an_unknown_statement_is_refused(draft_with_supply_fragments) -> None:
+    """A retraction that removed nothing would append an audited correction of nothing."""
+
+    with pytest.raises(ValueError, match="no authored statement"):
+        retract_clause_fact(
+            draft_with_supply_fragments,
+            rule_route=HF_ROUTE,
+            statement_index=0,
+            actor="tester",
+            notes="nothing there",
+        )
+
+
+def test_retract_actor_and_notes_are_required(draft_with_supply_fragments, hf_fact) -> None:
+    draft = author_clause_fact(
+        draft_with_supply_fragments,
+        rule_route=HF_ROUTE,
+        fact=hf_fact,
+        actor="tester",
+        notes="authored",
+    )
+
+    with pytest.raises(ApprovalError):
+        retract_clause_fact(
+            draft,
+            rule_route=HF_ROUTE,
+            statement_index=hf_fact.statement_index,
+            actor=" ",
+            notes="",
+        )
 
 
 def test_actor_and_notes_are_required(draft_with_supply_fragments, hf_fact) -> None:

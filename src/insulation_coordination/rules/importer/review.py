@@ -2225,6 +2225,35 @@ def author_clause_fact(
     return record_correction(draft, changed, actor=actor, notes=f"author clause fact: {notes}")
 
 
+def retract_clause_fact(
+    draft: ImportedRuleDraft,
+    *,
+    rule_route: str,
+    statement_index: int,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Remove one authored statement from a route's reviewed fact set.
+
+    The statement must exist: retracting an unknown one would append an audited correction
+    that corrected nothing. Any completion for the route is left in place, where the changed
+    fact-set digest makes it stale -- completeness must be re-asserted by the reviewer, never
+    silently repaired by the deletion that invalidated it.
+    """
+
+    if not actor.strip() or not notes.strip():
+        raise ApprovalError("clause fact actor and notes are required")
+    kept = tuple(
+        item
+        for item in draft.clause_fact_reviews
+        if not (item.rule_route == rule_route and item.statement_index == statement_index)
+    )
+    if len(kept) == len(draft.clause_fact_reviews):
+        raise ValueError(f"{rule_route} has no authored statement {statement_index}")
+    changed = draft.model_copy(update={"clause_fact_reviews": kept})
+    return record_correction(draft, changed, actor=actor, notes=f"retract clause fact: {notes}")
+
+
 def record_fact_completion(
     draft: ImportedRuleDraft,
     *,
