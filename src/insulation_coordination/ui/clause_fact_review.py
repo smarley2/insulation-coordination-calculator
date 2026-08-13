@@ -53,7 +53,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply impor
 )
 from insulation_coordination.rules.importer.review import (
     author_clause_fact,
-    fact_set_sha256,
+    clause_fact_route_defect,
     live_evidence_sha256,
     record_fact_completion,
     retract_clause_fact,
@@ -131,6 +131,10 @@ class ClauseFactRouteRow(FrozenModel):
     fragment_id: str
     authored: int
     status: Literal["needs_facts", "needs_completion", "complete", "stale"]
+    #: Why ``status`` is ``stale``, straight from ``clause_fact_route_defect``; ``None`` for
+    #: every other status, ``needs_completion`` included -- that one names an ordinary next
+    #: step, not a defect.
+    defect: str | None
 
 
 class ClauseFactNodeRow(FrozenModel):
@@ -173,8 +177,11 @@ class ClauseFactReviewModel:
         ``LEGACY_BRANCH_AUTHORITY_RULE_IDS`` keeps its branch authority in the recipe, and a
         route whose clause was never extracted gives the reviewer nothing to author from --
         the missing fragment is ``missing_required_content``'s finding, not this surface's.
-        Status is derived through the importer's own digests, so a route this table calls
-        complete is one the gate does not block.
+        Status comes from ``clause_fact_route_defect``, the same predicate the gate calls, so
+        a route this table calls complete is one the gate does not block; this table adds no
+        digest comparison of its own. ``needs_facts`` and ``needs_completion`` are ordinary
+        progress, not a defect -- everything else the predicate refuses reads as ``stale``,
+        with the reason carried alongside for the reviewer.
         """
 
         fragments = {item.id: item for item in self._draft.raw_clause_fragments}
@@ -186,27 +193,28 @@ class ClauseFactReviewModel:
             reviews = tuple(
                 item for item in self._draft.clause_fact_reviews if item.rule_route == route
             )
-            completion = next(
-                (item for item in self._draft.clause_fact_completions if item.rule_route == route),
-                None,
+            completions = tuple(
+                item for item in self._draft.clause_fact_completions if item.rule_route == route
             )
+            defect = clause_fact_route_defect(self._draft, route)
             status: Literal["needs_facts", "needs_completion", "complete", "stale"]
+            reason: str | None = None
             if not reviews:
                 status = "needs_facts"
-            elif completion is None:
-                status = "needs_completion"
-            elif completion.fragment_sha256 != fragment.raw_sha256 or (
-                completion.fact_set_sha256 != fact_set_sha256(tuple(item.fact for item in reviews))
-            ):
-                status = "stale"
-            else:
+            elif defect is None:
                 status = "complete"
+            elif not completions:
+                status = "needs_completion"
+            else:
+                status = "stale"
+                reason = defect
             rows.append(
                 ClauseFactRouteRow(
                     rule_route=route,
                     fragment_id=fragment.id,
                     authored=len(reviews),
                     status=status,
+                    defect=reason,
                 )
             )
         return tuple(rows)
@@ -418,8 +426,11 @@ class ClauseFactReviewDialog(QDialog):
         rows = self._model.routes()
         self.table.setRowCount(len(rows))
         for position, row in enumerate(rows):
+            # ``defect`` is only ever set beside ``stale``, so a reviewer sees why a route is
+            # not complete rather than just that it is not.
+            status = row.status if row.defect is None else f"{row.status}: {row.defect}"
             for column, text in enumerate(
-                (row.rule_route, str(row.authored), row.status, row.fragment_id)
+                (row.rule_route, str(row.authored), status, row.fragment_id)
             ):
                 self.table.setItem(position, column, QTableWidgetItem(text))
 

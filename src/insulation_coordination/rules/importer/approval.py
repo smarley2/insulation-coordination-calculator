@@ -1125,11 +1125,7 @@ def _clause_fact_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, .
         LEGACY_BRANCH_AUTHORITY_RULE_IDS,
         SUPPLY_CLAUSES,
     )
-    from insulation_coordination.rules.importer.review import (
-        clause_fact_defect,
-        fact_set_sha256,
-        live_evidence_sha256,
-    )
+    from insulation_coordination.rules.importer.review import clause_fact_route_defect
 
     fragments = {fragment.id: fragment for fragment in draft.raw_clause_fragments}
     blockers: list[ImportReviewItem] = []
@@ -1138,42 +1134,8 @@ def _clause_fact_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, .
         fragment = fragments.get(f"raw-{route}")
         if fragment is None or route in LEGACY_BRANCH_AUTHORITY_RULE_IDS:
             continue
-        reviews = tuple(item for item in draft.clause_fact_reviews if item.rule_route == route)
-        completions = tuple(
-            item for item in draft.clause_fact_completions if item.rule_route == route
-        )
-        # Identity before evidence, the order ``axis_review_is_current`` keeps: a fact of the
-        # wrong family, or one resting on someone else's clause, has perfectly current digests.
-        defects = tuple(
-            defect
-            for item in reviews
-            if (defect := clause_fact_defect(route, item.fact)) is not None
-        )
-        if not reviews:
-            reason = "carries no authored clause fact"
-        elif defects:
-            reason = f"has a fact that {defects[0]}"
-        # As ``axis_review_is_current`` verifies a review's ``proposal_sha256``: a written digest
-        # nothing reads is a digest a second writer can get wrong unnoticed.
-        elif any(item.fact_sha256 != canonical_model_sha256(item.fact) for item in reviews):
-            reason = "has a review whose fact hash is not its fact's"
-        elif len(completions) != 1:
-            reason = "lacks one exact fact-set completion record"
-        elif (
-            completions[0].fragment_id != fragment.id
-            or completions[0].fragment_sha256 != fragment.raw_sha256
-        ):
-            reason = "was completed against a superseded or foreign fragment"
-        elif completions[0].fact_set_sha256 != fact_set_sha256(
-            tuple(item.fact for item in reviews)
-        ):
-            reason = "was completed against a different fact set"
-        elif any(
-            item.evidence_sha256 != live_evidence_sha256(draft, item.fact.node_references)
-            for item in reviews
-        ):
-            reason = "has a fact whose cited evidence has moved"
-        else:
+        reason = clause_fact_route_defect(draft, route)
+        if reason is None:
             continue
         blockers.append(
             _semantic_blocker(

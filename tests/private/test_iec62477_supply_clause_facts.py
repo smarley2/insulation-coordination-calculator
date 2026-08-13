@@ -89,12 +89,17 @@ def _first_cited_node(draft: ImportedRuleDraft, route: str) -> tuple[CitedNode, 
 def _placeholder_facts(draft: ImportedRuleDraft) -> dict[str, SupplyFact]:
     """One local placeholder statement per non-legacy route: valid tokens, invented readings.
 
-    Not the source's readings, and not to be read as them. Each field is filled with a token
-    of its own declared vocabulary picked for structural distinctness only: the two
-    system-voltage scopes project into one rule's rows, so their dimensions are authored
-    explicitly and differ, because ``_require_distinct_branches`` refuses a set whose
-    distinguishing dimension nobody authored -- an unrestricted ``any_*`` beside a specific
-    value is exactly the overlap it exists to catch.
+    Not the source's readings, and not to be read as them. Each field is filled with a token of
+    its own declared vocabulary picked for structural distinctness only, and deliberately
+    combined so no set here reads as a plausible reviewed reading -- a category step is authored
+    inverted, and a phase system is paired with a measure that does not belong to it. What this
+    module proves is that the workflow runs against the real documents, never what the documents
+    say.
+
+    The two system-voltage scopes project into one rule's rows, so their dimensions are authored
+    explicitly and differ: ``_require_distinct_branches`` refuses a set whose distinguishing
+    dimension nobody authored, and an unrestricted ``any_*`` beside a specific value is exactly
+    the overlap it exists to catch.
     """
 
     return {
@@ -103,7 +108,7 @@ def _placeholder_facts(draft: ImportedRuleDraft) -> dict[str, SupplyFact]:
             node_references=_first_cited_node(draft, SV_ROUTE),
             obligation="requirement",
             supply_kind="mains",
-            phase_system="three_phase_star",
+            phase_system="three_phase_delta",
             earthing="tn",
             input_topology="direct",
             purpose="impulse",
@@ -133,8 +138,8 @@ def _placeholder_facts(draft: ImportedRuleDraft) -> dict[str, SupplyFact]:
             node_references=_first_cited_node(draft, SPD_MAINS_ROUTE),
             obligation="permission",
             supply_kind="mains",
-            source_ovc="ovc_iii",
-            target_ovc="ovc_ii",
+            source_ovc="ovc_i",
+            target_ovc="ovc_iv",
             insulation_class="basic",
             degradable=True,
             monitoring_obligation="required",

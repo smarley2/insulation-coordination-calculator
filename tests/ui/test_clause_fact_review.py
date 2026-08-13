@@ -9,6 +9,7 @@ import pytest
 from insulation_coordination.domain.rules import RulePackageError
 from insulation_coordination.rules.importer.clause_facts import (
     BarrierTransferFact,
+    CitedNode,
     HfAttenuationFact,
     SpdMonitoringFact,
     SpdReductionFact,
@@ -191,6 +192,169 @@ def test_a_statement_whose_cited_evidence_moved_reads_as_stale(
     facts = ClauseFactReviewModel(changed).facts(HF_ROUTE)
 
     assert [row.evidence for row in facts] == ["stale"]
+
+
+def _completed_hf_draft(draft_with_supply_fragments, hf_fact):
+    """One authored statement on the HF route, completed. The starting point for every path below."""
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    model.author(HF_ROUTE, hf_fact, actor="tester", notes="authored")
+    model.complete(HF_ROUTE, f"raw-{HF_ROUTE}", actor="tester", notes="complete")
+    return model.draft
+
+
+def _cited_node(draft, rule_route: str) -> CitedNode:
+    """A citation of one real node of that route's own fragment."""
+
+    fragment = next(item for item in draft.raw_clause_fragments if item.id == f"raw-{rule_route}")
+    node = fragment.nodes[0]
+    return CitedNode(
+        fragment_id=fragment.id,
+        node_order=node.order,
+        node_sha256=canonical_model_sha256(node),
+    )
+
+
+def _blocked_routes(draft) -> set[str]:
+    from insulation_coordination.rules.importer.approval import approval_blockers
+
+    return {
+        item.semantic_id
+        for item in approval_blockers(draft)
+        if item.code == "CLAUSE_FACT_REVIEW_REQUIRED"
+    }
+
+
+def _route_status(draft, rule_route: str) -> str:
+    return next(
+        route.status
+        for route in ClauseFactReviewModel(draft).routes()
+        if route.rule_route == rule_route
+    )
+
+
+def test_this_surface_and_the_gate_never_disagree_about_a_route(
+    draft_with_supply_fragments, hf_fact
+) -> None:
+    """The invariant the whole predicate exists for, asserted over every route of a real draft.
+
+    A route this table calls complete must be one the gate does not block, and the converse. The
+    dialog re-deriving a subset of the gate's comparison is how the two drifted before: the table
+    read green while approval refused, and the reviewer's only clue was a per-statement row that
+    contradicted the route above it.
+    """
+
+    draft = _completed_hf_draft(draft_with_supply_fragments, hf_fact)
+    blocked = _blocked_routes(draft)
+
+    for route in ClauseFactReviewModel(draft).routes():
+        assert (route.status == "complete") is (route.rule_route not in blocked), route.rule_route
+
+
+def test_a_fact_hash_that_is_not_its_fact_reads_as_stale(
+    draft_with_supply_fragments, hf_fact
+) -> None:
+    """Survives a draft-package round trip, so a loaded draft can carry it."""
+
+    draft = _completed_hf_draft(draft_with_supply_fragments, hf_fact)
+    tampered = draft.model_copy(
+        update={
+            "clause_fact_reviews": tuple(
+                item.model_copy(update={"fact_sha256": "0" * 64})
+                if item.rule_route == HF_ROUTE
+                else item
+                for item in draft.clause_fact_reviews
+            )
+        }
+    )
+
+    assert _route_status(tampered, HF_ROUTE) == "stale"
+    assert HF_ROUTE in _blocked_routes(tampered)
+
+
+def test_two_completion_records_for_one_route_read_as_stale(
+    draft_with_supply_fragments, hf_fact
+) -> None:
+    """``record_fact_completion`` replaces, so only a loaded or hand-built draft carries two."""
+
+    draft = _completed_hf_draft(draft_with_supply_fragments, hf_fact)
+    completion = next(item for item in draft.clause_fact_completions if item.rule_route == HF_ROUTE)
+    doubled = draft.model_copy(
+        update={"clause_fact_completions": (*draft.clause_fact_completions, completion)}
+    )
+
+    assert _route_status(doubled, HF_ROUTE) == "stale"
+    assert HF_ROUTE in _blocked_routes(doubled)
+
+
+def test_a_completion_bound_to_a_foreign_fragment_reads_as_stale(
+    draft_with_supply_fragments, hf_fact
+) -> None:
+    """The fragment digest can match while the fragment identity does not."""
+
+    draft = _completed_hf_draft(draft_with_supply_fragments, hf_fact)
+    foreign = draft.model_copy(
+        update={
+            "clause_fact_completions": tuple(
+                item.model_copy(
+                    update={"fragment_id": f"raw-{ids.SUPPLY_VERIFIED_BARRIER_TRANSFER}"}
+                )
+                if item.rule_route == HF_ROUTE
+                else item
+                for item in draft.clause_fact_completions
+            )
+        }
+    )
+
+    assert _route_status(foreign, HF_ROUTE) == "stale"
+    assert HF_ROUTE in _blocked_routes(foreign)
+
+
+def test_a_second_clause_moving_makes_its_citer_stale_without_tampering(
+    draft_with_supply_fragments, hf_fact
+) -> None:
+    """The path that needs no hand-edited digest at all, which is what made the old bug reachable.
+
+    A fact may cite a node of another route's fragment as well as its own. When only that other
+    clause is re-extracted, this route's own fragment digest and its fact set are both untouched,
+    so every check the dialog used to make on its own passed while the gate refused.
+    """
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    own = _cited_node(draft_with_supply_fragments, HF_ROUTE)
+    other = _cited_node(draft_with_supply_fragments, ids.SUPPLY_VERIFIED_BARRIER_TRANSFER)
+    model.author(
+        HF_ROUTE,
+        hf_fact.model_copy(update={"node_references": (own, other)}),
+        actor="tester",
+        notes="rests on two clauses",
+    )
+    model.complete(HF_ROUTE, f"raw-{HF_ROUTE}", actor="tester", notes="complete")
+    draft = model.draft
+    assert _route_status(draft, HF_ROUTE) == "complete"
+
+    moved = draft.model_copy(
+        update={
+            "raw_clause_fragments": tuple(
+                fragment.model_copy(
+                    update={
+                        "nodes": tuple(
+                            node.model_copy(update={"raw_text": "synthetic other clause reflowed"})
+                            if node.order == 0
+                            else node
+                            for node in fragment.nodes
+                        )
+                    }
+                )
+                if fragment.id == f"raw-{ids.SUPPLY_VERIFIED_BARRIER_TRANSFER}"
+                else fragment
+                for fragment in draft.raw_clause_fragments
+            )
+        }
+    )
+
+    assert _route_status(moved, HF_ROUTE) == "stale"
+    assert HF_ROUTE in _blocked_routes(moved)
 
 
 def test_replace_and_retract_round_trip(draft_with_supply_fragments, hf_fact) -> None:
