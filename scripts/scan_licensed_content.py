@@ -66,6 +66,14 @@ SERIES_MINIMUM_COUNT = 5
 # numbers are all small integers is treated as indexes, not engineering values.
 INDEX_LIKE_MAXIMUM = 64
 
+# Narrowly scoped allowlist: path -> justification. Entries must name why the
+# file is exempt; do not add content-bearing files here.
+ALLOWLIST = {
+    "docs/licensed-content-audit.md": (
+        "the audit inventory lists finding line numbers and categories, never licensed content"
+    ),
+}
+
 
 class Finding(NamedTuple):
     path: Path
@@ -118,6 +126,8 @@ def scan_tree(root: Path) -> tuple[Finding, ...]:
 
 def scan_file(path: Path, root: Path) -> tuple[Finding, ...]:
     relative = path.relative_to(root)
+    if relative.as_posix() in ALLOWLIST:
+        return ()
     findings = list(_private_artifact(relative))
     suffix = path.suffix.lower()
     if suffix == ".py":

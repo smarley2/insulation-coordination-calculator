@@ -163,6 +163,15 @@ def test_long_numeric_series_in_document_is_flagged(tmp_path: Path) -> None:
     assert _categories(scan_tree(tmp_path)) == {"text-numeric-series"}
 
 
+def test_allowlisted_audit_inventory_is_skipped(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "docs/licensed-content-audit.md",
+        "flagged lines 11, 22, 33, 44, 55, 66 by class\n",
+    )
+    assert scan_tree(tmp_path) == ()
+
+
 def test_private_artifact_types_are_flagged(tmp_path: Path) -> None:
     (tmp_path / "rules.icrules").write_bytes(b"private")
     (tmp_path / "audit-inventory.json").write_text("{}", encoding="utf-8")
