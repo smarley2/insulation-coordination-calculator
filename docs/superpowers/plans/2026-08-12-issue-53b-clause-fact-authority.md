@@ -1894,10 +1894,42 @@ with reviews but no current completion, `stale` when a completion's digests no l
 `canonical_model_sha256(node)` so the reviewer's citation is exact.
 
 `ClauseFactReviewDialog` is a four-column table — route, authored count, status, fragment — plus a
-node pane showing `nodes(...)` for the selected route, and a Close button. Authoring a fact's
-typed fields is the next increment; this task's deliverable is that the reviewer can see every
-route, read its nodes, and that `author`/`complete` are the seam the editor will call. Do not add
-an editor that is not tested.
+node pane showing `nodes(...)` for the selected route.
+
+**The fact editor ships here, in this task.** An earlier draft deferred it, and that repeats the
+mistake #53A made: its axis dialog shipped without a confirm affordance, so the gate could only be
+satisfied from test code, and the affordance had to be retrofitted before merge. #53B's whole claim
+is that a maintainer is the authority for normative facts. A slice that ends with a gate only an API
+call can clear is architecturally present and operationally incomplete, and it would let Task 9
+"prove" the workflow while the shipped surface cannot perform it.
+
+Minimum usable surface, and no more:
+
+```text
+route / fact inventory
+source-node reader
+fact-family selector
+typed field editor
+author / replace / delete fact
+completion action
+status + stale indicators
+```
+
+No wizard, no automation, no source-derived suggestions, no clever defaults. The form may be
+family-specific and boring — six families, each with a handful of `Literal` dimensions, so a combo
+per field read from the model's own annotations is enough. Reuse the pattern `ui/axis_review.py`
+already uses for exactly this, including its rule that a dimension starts unchosen and the confirm
+action stays disabled until every dimension has a value: a reviewer must never record a reading they
+did not pick.
+
+The model keeps every mutation behind `author_clause_fact` and `record_fact_completion`, so Qt holds
+no review logic and every refusal a reviewer can trigger — wrong family for the route, a citation to
+another clause's node, a duplicate statement — surfaces from the importer rather than being
+re-implemented in the dialog.
+
+So #53B finishes as `licensed PDF -> extracted evidence -> maintainer authors typed facts in the UI
+-> completion -> fact-derived rules -> approved package`, rather than `licensed PDF -> test code
+authors facts -> package passes`.
 
 `raw_text` reaches the UI because a reviewer must read the licensed clause to author a statement —
 it is displayed from the private draft and never written to a committed file.
