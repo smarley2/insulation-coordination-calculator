@@ -157,7 +157,7 @@ def test_a_route_without_facts_blocks_approval(draft_with_supply_fragments) -> N
 def test_facts_without_a_completion_record_still_block(
     draft_with_supply_fragments, hf_fact
 ) -> None:
-    """Authoring three statements where the source states four would silently narrow the rule."""
+    """Authoring fewer statements than the source states would silently narrow the rule."""
 
     draft = author_clause_fact(
         draft_with_supply_fragments,

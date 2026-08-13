@@ -919,8 +919,8 @@ def _spd_monitoring_row(fact: SpdMonitoringFact, fragment: RawClauseFragment) ->
     is this rule's own.
 
     ``compliance_evidence`` is not, and that one is a real gap rather than an oversight. The
-    source names two compliance routes for monitoring, while this rule's declared
-    ``verification_reference`` output carries neither of them -- it has the mains/non-mains
+    source names compliance routes for monitoring, while this rule's declared
+    ``verification_reference`` output carries none of them -- it has the mains/non-mains
     routes' tokens. Widening that output is a contract change, so it is #53C item 5, and until
     then the fact carries a reading the rule cannot yet express.
 

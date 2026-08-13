@@ -181,9 +181,9 @@ no_match            unsupported reduction pair; ineligible verification query;
 Ported to reviewed facts; leaves `LEGACY_BRANCH_AUTHORITY_RULE_IDS`, which becomes the empty
 frozenset — #53C's first acceptance criterion.
 
-Every normative statement of the clause stays reviewed authority. The clause states two kinds of
-statement — transfer statements and comparison statements, each kind once per evaluated direction —
-so the family has two variants under `fact_kind="propagation_step"`:
+Every normative statement of the clause stays reviewed authority. Its statements read as two
+kinds — transfer statements and comparison statements — so the family has two variants under
+`fact_kind="propagation_step"`:
 
 ```text
 PropagationTransferFact       (a transfer statement)
