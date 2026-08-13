@@ -373,6 +373,19 @@ def _value(result: object, name: str) -> object:
     raise AssertionError(f"decision value {name} carries nothing")
 
 
+def _declared_vocabularies(rule: DecisionRule) -> dict[str, tuple[str, ...]]:
+    """Every categorical input's declared question space, by name.
+
+    Asserted alongside the input names, because a contract test that pins only the names cannot
+    see the defect that actually happens: switching an input from a declared vocabulary to one
+    derived from the reviewed facts keeps its name and silently shrinks what a consumer may ask,
+    turning a question the rule used to answer into an ``EvaluationError``. Rows come from facts;
+    input vocabularies do not.
+    """
+
+    return {item.name: item.allowed_values for item in rule.inputs if item.kind == "categorical"}
+
+
 def _system_voltage_inputs(**overrides: str) -> dict[str, str]:
     inputs = {
         "supply_kind": "mains",
@@ -811,6 +824,10 @@ def test_barrier_transfer_keeps_its_declared_contract() -> None:
         "combined_circuit_requirement",
         "propagates_to_connected_circuits",
     }
+    assert _declared_vocabularies(rule) == {
+        "isolation_evidence_kind": ("none", "test", "calculation", "construction"),
+        "downstream_connection_kind": ("no_isolation", "verified_galvanic_isolation"),
+    }
 
 
 def test_a_barrier_fragment_with_extra_nodes_blocks() -> None:
@@ -1134,6 +1151,10 @@ def test_spd_keeps_its_declared_contract() -> None:
         "verification_reference",
         "reinforced_floor_applies",
     }
+    assert _declared_vocabularies(rule) == {
+        "device_placement": ("internal_to_pecs", "external_to_pecs", "bundled_external_to_pecs"),
+        "insulation_class": ("functional", "basic", "supplementary", "double", "reinforced"),
+    }
 
 
 def test_each_spd_route_is_projected_under_its_own_id() -> None:
@@ -1282,6 +1303,13 @@ def test_hf_attenuation_keeps_its_declared_contract() -> None:
         "working_voltage_basis_permitted",
         "required_evidence_kinds",
     }
+    assert _declared_vocabularies(rule) == {
+        "circuit_dvc": ("dvc_as", "dvc_b", "dvc_c"),
+        "attenuation_evidence_kind": ("none", "test", "simulation", "calculation"),
+    }
+    # What must still be shown, not an echo of what the consumer supplied.
+    required = next(item for item in rule.outputs if item.name == "required_evidence_kinds")
+    assert required.allowed_values == ("test_or_simulation_or_calculation", "already_provided")
 
 
 def test_the_transformer_threshold_is_read_from_the_fragment_not_declared() -> None:
