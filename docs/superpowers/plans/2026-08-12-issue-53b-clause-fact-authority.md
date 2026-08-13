@@ -1482,6 +1482,129 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 
 ---
 
+### Task 6B: One clause, several physical segments
+
+**Inserted after Task 6 was written, and it corrects Task 5.** Reading clause 4.4.7.1.7 in full
+against the licensed document showed the system voltage route's evidence model is wrong, not its
+rule. The subclause for mains supply states eight cases: two sit at the foot of one page, the rest
+continue on the next, and the recipe's single `(page_number, expected_bbox)` reaches only the three
+bullets inside its rectangle. A separate subclause then states the ninth case, for non-mains supply,
+and had no spec at all. Task 5 deleted a nine-branch constant and left a fact family able to
+express six of the nine, with no citable evidence for the rest — which the public suite cannot see,
+because every fixture is synthetic.
+
+`ClauseAuditSpec` assumed *one semantic clause = one rectangle on one page*. The source disproves
+that assumption, so the fix belongs in the extraction model. Structural locators are permitted
+public content, which is exactly why a generic multi-segment mechanism is the right correction.
+
+**Files:**
+- Modify: `src/insulation_coordination/rules/importer/identify.py` (`ClauseAuditSpec`, new `ClauseSegmentSpec`)
+- Modify: `src/insulation_coordination/rules/importer/clauses.py` (fragment assembly and digest)
+- Modify: `src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/supply.py` and every other recipe declaring clause specs
+- Modify: `src/insulation_coordination/rules/importer/clause_facts.py` (`SystemVoltageFact`)
+- Test: `tests/rules/importer/` clause extraction and supply recipe modules; `tests/private/` for the real inventory
+
+**Interfaces:**
+- Produces: `ClauseSegmentSpec(page_number, expected_bbox, ...)`, `ClauseAuditSpec.segments`, a `system_voltage_resolution` evidence scope per subclause, and a widened `SystemVoltageFact`.
+
+- [ ] **Step 1: Multi-segment clause specs**
+
+`ClauseSegmentSpec` carries one page number and one bbox, plus any segment-local shape expectation.
+`ClauseAuditSpec` replaces `page_number` and `expected_bbox` with `segments: tuple[ClauseSegmentSpec, ...]`,
+minimum length one. A simple clause declares one segment; the mains system voltage subclause declares
+two. Every existing spec becomes a one-segment spec — mechanical, and it must not change any
+extracted fragment.
+
+Extraction concatenates each segment's nodes **in declared segment order**, and every node keeps its
+own page and segment provenance rather than inheriting the spec's first page. The fragment digest
+covers the ordered segment inventory *and* the extracted nodes, so changing either physical part
+makes the right evidence stale.
+
+- [ ] **Step 2: Two evidence scopes, one rule**
+
+Keep one reviewed fragment per subclause: the mains subclause is one fragment of two segments, the
+non-mains subclause a separate fragment. Do **not** merge them into a fragment whose nominal clause
+is one subclause while quietly carrying material from the other, and do **not** let physical
+pagination create runtime routes — the consumer still wants a single
+`supply.system_voltage_resolution` rule.
+
+Completion is already scoped per `(clause, rule route)`, so the rule now has two evidence scopes,
+both of which must be reviewed and complete before it projects. Exactly one spec may project the
+rule; the other contributes evidence only. Read `StandardRecipe`'s own validation before choosing
+the mechanism — it requires a registered projector per spec and checks produced ids against
+declared ones — and pick the arrangement that satisfies it without weakening a validator. Report
+which you chose and why.
+
+- [ ] **Step 3: Widen `SystemVoltageFact` to every reviewed case**
+
+The family currently cannot express the two earthed-system arrangements stated before the page
+break, nor the non-mains measure. Widen `phase_system` and `measure` so every reviewed case is
+expressible, and check each new value against the projected rule's declared `allowed_values` — a
+fact carrying a value the rule does not declare fails `DecisionRule`'s matcher validation only when
+someone finally authors it, which for licensed content means much later.
+
+Do **not** restore the deleted nine-branch constant. The shape is
+`full source evidence -> reviewed SystemVoltageFacts -> rule rows`, never
+`partial source evidence + a public branch inventory -> rule rows`.
+
+Do **not** add system voltage to `LEGACY_BRANCH_AUTHORITY_RULE_IDS`. That set has exactly one
+member, and #53C's first acceptance criterion is removing it; a second member would mean merging
+#53B knowing its reviewed-fact authority is incomplete.
+
+- [ ] **Step 4: Tests, public then private**
+
+Public, synthetic, and written before the mechanism:
+
+- A two-segment clause spec whose segments carry nodes 1-2 and 3-4 extracts **one** fragment with a
+  stable ordered node inventory, and each node retains its own segment and page provenance.
+- The fragment digest changes when the segment inventory changes, not only when node content does.
+- Changing a segment-1 node leaves a fact citing only segment-2 nodes current at the review level,
+  while a fact citing a segment-1 node goes stale. This is where node-level evidence finally earns
+  its keep — every single-node route so far could not distinguish it. Assert currency at the review
+  level via `live_evidence_sha256`; route-level resolution still refuses, because the fragment's own
+  hash changed and completeness must be re-asserted.
+- Every pre-existing one-segment spec extracts exactly the fragment it extracted before.
+
+Private, licensed: prove the real system voltage evidence inventory is complete across both scopes,
+by fact family and typed identity. Keep the count and the per-route inventory private, consistent
+with the decision already recorded for the other routes.
+
+- [ ] **Step 5: Gates and commit**
+
+```text
+feat(rules): one clause may span several physical segments (#53)
+
+ClauseAuditSpec assumed one semantic clause is one rectangle on one page. The
+mains system-voltage subclause disproves it: two of its cases sit at the foot of
+one page and the rest continue on the next, so the single declared rectangle
+reached three of eight, and the non-mains subclause stating the ninth had no spec
+at all. A slice whose premise is that the licensed clause is the authority cannot
+read two thirds of a clause.
+
+ClauseAuditSpec now declares an ordered tuple of segments, each one page and one
+bbox. Extraction concatenates their nodes in declared order, every node keeps its
+own segment and page provenance, and the fragment digest covers the segment
+inventory as well as the nodes, so changing either physical part re-opens the
+right evidence. Every other clause declares a single segment and extracts exactly
+what it did before.
+
+The two subclauses stay two reviewed fragments feeding one rule, rather than one
+fragment spanning both or one runtime route per page: completion is scoped per
+clause and rule route, so the rule now has two evidence scopes and needs both.
+Physical pagination is provenance, not application semantics.
+
+SystemVoltageFact widens to express every reviewed case rather than the six the
+partial fragment happened to reach. The deleted branch inventory is not restored:
+the authority is the evidence, not a constant standing in for the part of the
+clause nobody extracted.
+
+Refs #53
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+```
+
+---
+
 ### Task 7: The legacy exception, made assertable
 
 **Files:**
