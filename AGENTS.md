@@ -57,11 +57,18 @@ PDFs will still cost seconds per file.
 Maintainers calibrate each plot and enter points during review.
 
 **What it costs.** The private suite shares one source-only import and one local manual-review
-pass. Run it once with the timeout below; do not add timing claims without a measured licensed
-run, and avoid a second import unless that is the assertion under test.
+pass. Measured on a 24-core Windows machine, 2026-08-12, three consecutive healthy runs of
+`pytest -m private_standard -q`: **281 s, 291 s and 308 s** — call it five minutes, most of it
+rasterizing the source figures. Avoid a second import unless that is the assertion under test.
 
-The default per-test timeout is 120 s. Use 900 s as a conservative allowance for a licensed
-run until a measurement supports a tighter limit:
+Five minutes is long enough to change how you delegate: **do not have a subagent run the whole
+licensed suite.** Point it at the private modules its change can actually touch, or tell it to
+skip the licensed run and say so in its report, and run the full suite yourself once at the end
+of a slice. Four subagents each re-running it costs twenty minutes to re-discover one failure.
+
+The default per-test timeout is 120 s. Keep 900 s for a licensed run: the whole-suite figure
+above does not bound a single test, because the session-scoped import is charged to whichever
+test triggers it first.
 
 ```bash
 uv run pytest tests/private -q --timeout=900
