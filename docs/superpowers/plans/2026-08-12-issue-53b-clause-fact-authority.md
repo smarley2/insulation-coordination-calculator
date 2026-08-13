@@ -1493,12 +1493,12 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 
 **Inserted after Task 6 was written, and it corrects Task 5.** Reading clause 4.4.7.1.7 in full
 against the licensed document showed the system voltage route's evidence model is wrong, not its
-rule. The subclause for mains supply states eight cases: two sit at the foot of one page, the rest
-continue on the next, and the recipe's single `(page_number, expected_bbox)` reaches only the three
-bullets inside its rectangle. A separate subclause then states the ninth case, for non-mains supply,
-and had no spec at all. Task 5 deleted a nine-branch constant and left a fact family able to
-express six of the nine, with no citable evidence for the rest — which the public suite cannot see,
-because every fixture is synthetic.
+rule. The subclause for mains supply spans a page break — part of it sits at the foot of one page
+and the rest continues on the next — and the recipe's single `(page_number, expected_bbox)`
+reaches only the region inside its one rectangle. A separate subclause then covers non-mains
+supply, and had no spec at all. Task 5 deleted a branch constant and left a fact family unable to
+express every reviewed case, with no citable evidence for the statements outside the rectangle —
+which the public suite cannot see, because every fixture is synthetic.
 
 `ClauseAuditSpec` assumed *one semantic clause = one rectangle on one page*. The source disproves
 that assumption, so the fix belongs in the extraction model. Structural locators are permitted
@@ -1562,12 +1562,12 @@ mains 4.4.7.1.7.1     role = rule       segments = [three regions]   projects th
 non-mains 4.4.7.1.7.2 role = evidence   segments = [one region]      contributes facts only
 ```
 
-**"One segment per page" is wrong, and a literal reading of it would leave three cases out.**
-Measured against the document: the first two cases sit at the foot of the previous page, the next
-three are inside the current rectangle on the following page, and the remaining three sit on that
-*same* page **below** the rectangle. So the mains subclause needs **three** segments, two of them on
-one page, and the segment tuple must be ordered by reading order rather than by page. The
-non-mains subclause starts on that same page again, which is why it is its own fragment.
+**"One segment per page" is wrong, and a literal reading of it would silently drop part of the
+clause.** Measured against the document: one region sits at the foot of the previous page, one is
+the current rectangle on the following page, and a further region sits on that *same* page
+**below** the rectangle. So the mains subclause needs **three** segments, two of them on one page,
+and the segment tuple must be ordered by reading order rather than by page. The non-mains
+subclause starts on that same page again, which is why it is its own fragment.
 
 **`_require_shape` cannot express the result as it stands.** It takes one `(kind, count)` pair and
 rejects any node whose kind differs, while the mains subclause's later region is paragraphs
@@ -1607,18 +1607,18 @@ declared inputs. This is the same defect `080f1fa` fixed for `device_placement`,
 
 So: give `SystemVoltageFact` its own `supply_kind` and `input_topology` fields drawn from the
 rule's own tuples, each with an explicit "not stated" token, keep `phase_system` to actual phase
-systems (adding the two earthed arrangements stated before the page break), and emit real matchers
+systems (adding the earthed arrangements stated before the page break), and emit real matchers
 for all four dimensions. Then check every value — new and existing — against the projected rule's
 declared `allowed_values`.
 
 **Also fix the empty-vocabulary crash this exposes.** The projector filters `any_purpose` out
 before feeding `calculation_purposes` into a categorical `DecisionInput`, so a fact set where every
 statement is `any_purpose` yields an empty tuple and `DecisionRule` refuses with "a categorical
-input must declare its allowed values". That is not hypothetical: **five of the nine source cases
-state no purpose restriction**, so a maintainer authoring those first hits a crash naming a pydantic
-field rather than their mistake. Declare `("impulse", "temporary_overvoltage")` as a constant input
-vocabulary and derive only the rows — a declared input's vocabulary is the consumer's question
-space, not the reviewed answer space.
+input must declare its allowed values". That is not hypothetical: **several of the clause's
+statements restrict no purpose**, so a maintainer authoring those first hits a crash naming a
+pydantic field rather than their mistake. Declare `("impulse", "temporary_overvoltage")` as a
+constant input vocabulary and derive only the rows — a declared input's vocabulary is the
+consumer's question space, not the reviewed answer space.
 
 **Do not restore `not_derived_from_mains_supply`.** The review checked the source: that deleted
 token stood for the isolated-secondary case, and the source states there that such voltages *are*
@@ -1626,7 +1626,7 @@ system voltages for impulse determination. That is an applicability statement, n
 cannot be expressed as one — it needs its own shape or it belongs to a later slice. Say which in
 your report rather than forcing it into `measure`.
 
-Do **not** restore the deleted nine-branch constant. The shape is
+Do **not** restore the deleted branch constant. The shape is
 `full source evidence -> reviewed SystemVoltageFacts -> rule rows`, never
 `partial source evidence + a public branch inventory -> rule rows`.
 
@@ -1672,11 +1672,12 @@ with the decision already recorded for the other routes.
 feat(rules): one clause may span several physical segments (#53)
 
 ClauseAuditSpec assumed one semantic clause is one rectangle on one page. The
-mains system-voltage subclause disproves it: two of its cases sit at the foot of
-one page and the rest continue on the next, so the single declared rectangle
-reached three of eight, and the non-mains subclause stating the ninth had no spec
+mains system-voltage subclause disproves it: its first cases sit at the foot of
+one page, the next continue at the head of the following one, and the rest resume
+on that same later page below the declared rectangle, so the single rectangle
+reached only the middle region, and the sibling non-mains subclause had no spec
 at all. A slice whose premise is that the licensed clause is the authority cannot
-read two thirds of a clause.
+read one region of it.
 
 ClauseAuditSpec now declares an ordered tuple of segments, each one page and one
 bbox. Extraction concatenates their nodes in declared order, every node keeps its
@@ -1690,10 +1691,10 @@ fragment spanning both or one runtime route per page: completion is scoped per
 clause and rule route, so the rule now has two evidence scopes and needs both.
 Physical pagination is provenance, not application semantics.
 
-SystemVoltageFact widens to express every reviewed case rather than the six the
-partial fragment happened to reach. The deleted branch inventory is not restored:
-the authority is the evidence, not a constant standing in for the part of the
-clause nobody extracted.
+SystemVoltageFact widens to express every reviewed case rather than only those
+the partial fragment happened to reach. The deleted branch inventory is not
+restored: the authority is the evidence, not a constant standing in for the part
+of the clause nobody extracted.
 
 Refs #53
 
