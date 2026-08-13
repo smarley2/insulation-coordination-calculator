@@ -388,11 +388,10 @@ def test_panel_add_barrier_emits_project_changed(panel: GalvanicBarriersPanel, q
     assert panel._table.rowCount() == 1
 
 
-def test_panel_add_barrier_for_an_existing_pair_raises() -> None:
+def test_panel_add_barrier_for_an_existing_pair_raises(panel: GalvanicBarriersPanel) -> None:
     project, a, b = _two_domain_project()
     barrier = _barrier(domain_a_id=a.id, domain_b_id=b.id)
     project = project.model_copy(update={"galvanic_barriers": (barrier,)})
-    panel = GalvanicBarriersPanel()
     panel.set_project(project)
     with pytest.raises(ValueError, match="already exists"):
         panel.add_barrier(b.id, a.id)
