@@ -44,7 +44,10 @@ class SystemVoltageFact(_Fact):
         "non_mains",
     ]
     earthing: Literal["tn", "tt", "it", "unspecified"]
-    purpose: Literal["impulse", "temporary_overvoltage"]
+    #: ``any_purpose`` names a statement that fixes its measure without restricting which
+    #: calculation purpose it applies to -- one normative statement, not two, so it needs its
+    #: own token rather than being authored as a separate fact per purpose.
+    purpose: Literal["impulse", "temporary_overvoltage", "any_purpose"]
     measure: Literal[
         "phase_to_artificial_neutral_rms",
         "phase_to_phase_rms",

@@ -7,9 +7,10 @@ outside the declared contract blocks with ``AMBIGUOUS_CLAUSE_STRUCTURE`` rather 
 letting a projection guess a branch.
 
 Each ``ClauseAuditSpec`` carries one page and one bbox, so a projection is grounded in
-exactly one page region. Where the source states a branch inventory across a page break
-(the mains system-voltage clause) the fragment anchors the clause structurally and the
-branch inventory itself is declared here, the same way the DVC fault-applicability
+exactly one page region. A ported route's branch content comes from its reviewed clause
+facts (system voltage resolution, verified barrier transfer): the fragment anchors the
+clause structurally and a maintainer-authored fact states the branch. A route not yet
+ported still declares its branch inventory here, the same way the DVC fault-applicability
 projection derives its selectors from the maintained curve recipes.
 """
 
@@ -27,6 +28,11 @@ from insulation_coordination.domain.rules import (
     GuidanceRule,
     Matcher,
     RuleKind,
+)
+from insulation_coordination.rules.importer.clause_facts import (
+    BarrierTransferFact,
+    ConfirmedFacts,
+    SystemVoltageFact,
 )
 from insulation_coordination.rules.importer.clauses import RawClauseFragment
 from insulation_coordination.rules.importer.extract import (
@@ -139,6 +145,11 @@ SUPPLY_FACT_FAMILY_BY_ROUTE: dict[str, str] = {
     ids.SUPPLY_HF_TRANSFORMER_ATTENUATION: "hf_attenuation",
 }
 
+#: A ported projector's default when its call site supplies nothing: still refuses to
+#: project, through the same "no facts for this route" check as a caller-supplied empty
+#: result -- never a second, quieter way to get the old fallback.
+_NO_CONFIRMED_FACTS = ConfirmedFacts()
+
 #: Reviewed structural contract per projection: (node kind, node count).
 _SYSTEM_VOLTAGE_SHAPE = ("bullet", 3)
 _PROPAGATION_SHAPE = ("bullet", 4)
@@ -225,119 +236,46 @@ _INPUT_TOPOLOGIES = (
     "series_rectifier_bridges",
     "isolated_secondary",
 )
-_CALCULATION_PURPOSES = ("impulse", "temporary_overvoltage")
-#: Which voltage measure the consumer must use. Names the measure only; the recipe
-#: projects no conversion between measures.
-_SYSTEM_VOLTAGE_MEASURES = (
-    "phase_to_earth_rms",
-    "phase_to_phase_rms",
-    "phase_to_artificial_neutral_rms",
-    "pre_rectifier_ac_rms",
-    "not_derived_from_mains_supply",
-)
-
-#: One row per source branch: supply kind, phase system, earthing arrangement, input
-#: topology, calculation purpose, resolved measure. ``None`` means the branch does not
-#: discriminate on that input. The inventory is nine branches; a projection that cannot
-#: build all nine is a defect, not a fallback.
-_SYSTEM_VOLTAGE_BRANCHES: tuple[
-    tuple[
-        tuple[str, ...],
-        tuple[str, ...] | None,
-        tuple[str, ...] | None,
-        tuple[str, ...],
-        tuple[str, ...],
-        str,
-    ],
-    ...,
-] = (
-    (
-        ("mains",),
-        ("three_phase_star",),
-        ("tn", "tt"),
-        ("direct",),
-        _CALCULATION_PURPOSES,
-        "phase_to_earth_rms",
-    ),
-    (
-        ("mains",),
-        ("three_phase_delta",),
-        ("tn", "tt"),
-        ("direct",),
-        _CALCULATION_PURPOSES,
-        "phase_to_phase_rms",
-    ),
-    (
-        ("mains",),
-        ("three_phase_it",),
-        ("it",),
-        ("direct",),
-        ("impulse",),
-        "phase_to_artificial_neutral_rms",
-    ),
-    (
-        ("mains",),
-        ("three_phase_it",),
-        ("it",),
-        ("direct",),
-        ("temporary_overvoltage",),
-        "phase_to_phase_rms",
-    ),
-    (
-        ("mains",),
-        ("single_phase_it",),
-        ("it",),
-        ("direct",),
-        _CALCULATION_PURPOSES,
-        "phase_to_phase_rms",
-    ),
-    (
-        ("mains",),
-        None,
-        ("tn", "tt", "it"),
-        ("rectified_dc",),
-        _CALCULATION_PURPOSES,
-        "pre_rectifier_ac_rms",
-    ),
-    (
-        ("mains",),
-        None,
-        ("tn", "tt", "it"),
-        ("series_rectifier_bridges",),
-        ("impulse",),
-        "pre_rectifier_ac_rms",
-    ),
-    (
-        ("mains",),
-        None,
-        None,
-        ("isolated_secondary",),
-        _CALCULATION_PURPOSES,
-        "not_derived_from_mains_supply",
-    ),
-    (
-        ("non_mains",),
-        None,
-        ("unspecified",),
-        ("direct",),
-        _CALCULATION_PURPOSES,
-        "phase_to_phase_rms",
-    ),
-)
 
 
 def project_system_voltage_resolution(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     _draft: object = None,
-    # ponytail: ported in a later task of this slice
-    _confirmed_facts: object = None,
+    confirmed_facts: ConfirmedFacts = _NO_CONFIRMED_FACTS,
 ) -> tuple[tuple[DecisionRule | GuidanceRule, ...], tuple[SemanticProposal, ...]]:
-    """Project the reviewed mains/non-mains system voltage clause into a decision."""
+    """Project the reviewed mains/non-mains system voltage clause into a decision.
+
+    Every row comes from one reviewed ``SystemVoltageFact``: the clause states the branch,
+    this projection only shapes it into the rule's declared inputs and outputs. A route with
+    no reviewed facts refuses rather than falling back to an inventory nobody reviewed.
+    """
 
     label = "supply system voltage resolution"
     _require_own_fragment(fragment, identity, ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION, label)
     _require_shape(fragment, _SYSTEM_VOLTAGE_SHAPE, label)
+
+    facts = confirmed_facts.for_route(ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION)
+    if not facts:
+        raise ClauseStructureError(f"{label} needs reviewed clause facts for its route")
+    system_voltage_facts = tuple(fact for fact in facts if isinstance(fact, SystemVoltageFact))
+    if len(system_voltage_facts) != len(facts):
+        raise ValueError(f"{label} projection requires system voltage facts")
+
+    def _purpose_matcher(purpose: str) -> Matcher:
+        # ``any_purpose`` names a statement that fixes its measure without restricting the
+        # calculation purpose -- one normative statement, not two -- so it matches both
+        # purposes rather than being authored twice.
+        if purpose == "any_purpose":
+            return Matcher(input="calculation_purpose", op="any")
+        return _matcher("calculation_purpose", (purpose,))
+
+    calculation_purposes = tuple(
+        dict.fromkeys(
+            fact.purpose for fact in system_voltage_facts if fact.purpose != "any_purpose"
+        )
+    )
+    measures = tuple(dict.fromkeys(fact.measure for fact in system_voltage_facts))
 
     rule = DecisionRule(
         id=ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,
@@ -355,31 +293,29 @@ def project_system_voltage_resolution(
             DecisionInput(
                 name="calculation_purpose",
                 kind="categorical",
-                allowed_values=_CALCULATION_PURPOSES,
+                allowed_values=calculation_purposes,
             ),
         ),
         outputs=(
             DecisionOutput(
                 name="system_voltage_measure",
                 kind="categorical",
-                allowed_values=_SYSTEM_VOLTAGE_MEASURES,
+                allowed_values=measures,
             ),
         ),
         rows=tuple(
             DecisionRow(
                 matchers=(
-                    _matcher("supply_kind", supply_kind),
-                    _matcher("phase_system", phase_system),
-                    _matcher("earthing_arrangement", earthing),
-                    _matcher("input_topology", topology),
-                    _matcher("calculation_purpose", purpose),
+                    Matcher(input="supply_kind", op="any"),
+                    _matcher("phase_system", (fact.phase_system,)),
+                    _matcher("earthing_arrangement", (fact.earthing,)),
+                    Matcher(input="input_topology", op="any"),
+                    _purpose_matcher(fact.purpose),
                 ),
-                values=(DecisionValue(name="system_voltage_measure", categorical=measure),),
+                values=(DecisionValue(name="system_voltage_measure", categorical=fact.measure),),
                 source=fragment.nodes[0].source,
             )
-            for supply_kind, phase_system, earthing, topology, purpose, measure in (
-                _SYSTEM_VOLTAGE_BRANCHES
-            )
+            for fact in system_voltage_facts
         ),
         exhaustive=False,
         source=fragment.source,
@@ -510,44 +446,34 @@ def project_multiple_source_propagation(
 
 _ISOLATION_EVIDENCE_KINDS = ("none", "test", "calculation", "construction")
 _DOWNSTREAM_CONNECTION_KINDS = ("no_isolation", "verified_galvanic_isolation")
-_COMBINED_CIRCUIT_REQUIREMENTS = ("more_severe_of_both_sides", "side_specific_from_transfer")
 
 
 def project_verified_barrier_transfer(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     _draft: object = None,
-    # ponytail: ported in a later task of this slice
-    _confirmed_facts: object = None,
+    confirmed_facts: ConfirmedFacts = _NO_CONFIRMED_FACTS,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
-    """Project the isolation and no-isolation paths into a decision."""
+    """Project the isolation and no-isolation paths into a decision.
+
+    Every row comes from one reviewed ``BarrierTransferFact``. ``transfer_permitted`` and
+    ``propagates_to_connected_circuits`` are not independently authored content: a verified
+    barrier is what makes the transfer permitted and what stops it propagating to circuits
+    connected without isolation, so both mirror ``isolation_present`` by definition.
+    """
 
     label = "supply verified barrier transfer"
     _require_own_fragment(fragment, identity, ids.SUPPLY_VERIFIED_BARRIER_TRANSFER, label)
     _require_shape(fragment, _BARRIER_SHAPE, label)
 
-    def _row(
-        *,
-        verified: bool,
-        evidence: tuple[str, ...] | None,
-        connection: str,
-        permitted: bool,
-        requirement: str,
-        propagates: bool,
-    ) -> DecisionRow:
-        return DecisionRow(
-            matchers=(
-                Matcher(input="galvanic_isolation_verified", op="equals", boolean=verified),
-                _matcher("isolation_evidence_kind", evidence),
-                Matcher(input="downstream_connection_kind", op="equals", values=(connection,)),
-            ),
-            values=(
-                DecisionValue(name="transfer_permitted", boolean=permitted),
-                DecisionValue(name="combined_circuit_requirement", categorical=requirement),
-                DecisionValue(name="propagates_to_connected_circuits", boolean=propagates),
-            ),
-            source=fragment.nodes[0].source,
-        )
+    facts = confirmed_facts.for_route(ids.SUPPLY_VERIFIED_BARRIER_TRANSFER)
+    if not facts:
+        raise ClauseStructureError(f"{label} needs reviewed clause facts for its route")
+    barrier_facts = tuple(fact for fact in facts if isinstance(fact, BarrierTransferFact))
+    if len(barrier_facts) != len(facts):
+        raise ValueError(f"{label} projection requires barrier transfer facts")
+
+    requirements = tuple(dict.fromkeys(fact.combined_circuit_rule for fact in barrier_facts))
 
     rule = DecisionRule(
         id=ids.SUPPLY_VERIFIED_BARRIER_TRANSFER,
@@ -569,31 +495,36 @@ def project_verified_barrier_transfer(
             DecisionOutput(
                 name="combined_circuit_requirement",
                 kind="categorical",
-                allowed_values=_COMBINED_CIRCUIT_REQUIREMENTS,
+                allowed_values=requirements,
             ),
             DecisionOutput(name="propagates_to_connected_circuits", kind="boolean"),
         ),
-        rows=(
-            _row(
-                verified=False,
-                evidence=None,
-                connection="no_isolation",
-                permitted=False,
-                requirement="more_severe_of_both_sides",
-                propagates=True,
-            ),
-            _row(
-                verified=True,
-                evidence=("test", "calculation", "construction"),
-                connection="verified_galvanic_isolation",
-                permitted=True,
-                requirement="side_specific_from_transfer",
-                propagates=False,
-            ),
+        rows=tuple(
+            DecisionRow(
+                matchers=(
+                    Matcher(
+                        input="galvanic_isolation_verified",
+                        op="equals",
+                        boolean=fact.isolation_present,
+                    ),
+                    Matcher(input="isolation_evidence_kind", op="any"),
+                    Matcher(input="downstream_connection_kind", op="any"),
+                ),
+                values=(
+                    DecisionValue(name="transfer_permitted", boolean=fact.isolation_present),
+                    DecisionValue(
+                        name="combined_circuit_requirement",
+                        categorical=fact.combined_circuit_rule,
+                    ),
+                    DecisionValue(
+                        name="propagates_to_connected_circuits",
+                        boolean=not fact.isolation_present,
+                    ),
+                ),
+                source=fragment.nodes[0].source,
+            )
+            for fact in barrier_facts
         ),
-        # Claimed isolation without evidence, and connection kinds the source does not
-        # settle, are left uncovered on purpose so the consumer blocks instead of
-        # inheriting a guessed outcome.
         exhaustive=False,
         source=fragment.source,
     )

@@ -14,6 +14,12 @@ from insulation_coordination.domain.rules import (
     SourceReference,
 )
 from insulation_coordination.rules.evaluator import evaluate_decision
+from insulation_coordination.rules.importer.clause_facts import (
+    BarrierTransferFact,
+    CitedNode,
+    ConfirmedFacts,
+    SystemVoltageFact,
+)
 from insulation_coordination.rules.importer.clauses import (
     ClauseNode,
     ClauseToken,
@@ -96,12 +102,102 @@ def _paragraph_fragment(
     return _fragment(semantic_id, kind="paragraph", count=count, tokens=tokens)
 
 
+def _barrier_fragment(*, count: int = 1) -> RawClauseFragment:
+    return _paragraph_fragment(ids.SUPPLY_VERIFIED_BARRIER_TRANSFER, count=count)
+
+
+def _cited_node(fragment: RawClauseFragment, *, node_order: int = 0) -> CitedNode:
+    """A citation of one real node of ``fragment``, matching its current content."""
+
+    node = next(item for item in fragment.nodes if item.order == node_order)
+    return CitedNode(
+        fragment_id=fragment.id, node_order=node.order, node_sha256=canonical_model_sha256(node)
+    )
+
+
+def _system_voltage_fact(
+    fragment: RawClauseFragment,
+    *,
+    index: int = 0,
+    phase_system: str = "three_phase_it",
+    earthing: str = "it",
+    purpose: str = "impulse",
+    measure: str,
+) -> SystemVoltageFact:
+    """Invented values only: a synthetic reviewed statement, never real clause content."""
+
+    return SystemVoltageFact(
+        statement_index=index,
+        node_references=(_cited_node(fragment, node_order=index % len(fragment.nodes)),),
+        obligation="requirement",
+        phase_system=phase_system,  # type: ignore[arg-type]
+        earthing=earthing,  # type: ignore[arg-type]
+        purpose=purpose,  # type: ignore[arg-type]
+        measure=measure,  # type: ignore[arg-type]
+    )
+
+
+def _confirmed_system_voltage_facts(
+    *,
+    measures: tuple[str, ...],
+    fragment: RawClauseFragment | None = None,
+) -> ConfirmedFacts:
+    """One fact per measure, each under its own phase system so rows stay distinguishable."""
+
+    frag = fragment if fragment is not None else _bullet_fragment()
+    phase_systems = ("three_phase_it", "single_phase_it")
+    facts = tuple(
+        _system_voltage_fact(
+            frag,
+            index=index,
+            phase_system=phase_systems[index % len(phase_systems)],
+            measure=measure,
+        )
+        for index, measure in enumerate(measures)
+    )
+    return ConfirmedFacts(by_route={ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: facts})
+
+
+def _barrier_fact(
+    fragment: RawClauseFragment,
+    *,
+    index: int = 0,
+    isolation_present: bool,
+    combined_rule: str,
+) -> BarrierTransferFact:
+    """Invented values only: a synthetic reviewed statement, never real clause content."""
+
+    return BarrierTransferFact(
+        statement_index=index,
+        node_references=(_cited_node(fragment),),
+        obligation="requirement",
+        isolation_present=isolation_present,
+        combined_circuit_rule=combined_rule,  # type: ignore[arg-type]
+    )
+
+
+def _confirmed_barrier_facts(
+    *,
+    combined_rule: str,
+    isolation_present: bool = False,
+    fragment: RawClauseFragment | None = None,
+) -> ConfirmedFacts:
+    frag = fragment if fragment is not None else _barrier_fragment()
+    fact = _barrier_fact(frag, isolation_present=isolation_present, combined_rule=combined_rule)
+    return ConfirmedFacts(by_route={ids.SUPPLY_VERIFIED_BARRIER_TRANSFER: (fact,)})
+
+
+_EMPTY_FACTS = ConfirmedFacts()
+
+
 def _decision(rules: tuple[object, ...], semantic_id: str) -> DecisionRule:
     return next(rule for rule in rules if isinstance(rule, DecisionRule) and rule.id == semantic_id)
 
 
-def _project_system_voltage(fragment: RawClauseFragment) -> DecisionRule:
-    rules, _proposals = project_system_voltage_resolution(fragment, IDENTITY)
+def _project_system_voltage(
+    fragment: RawClauseFragment, facts: ConfirmedFacts = _EMPTY_FACTS
+) -> DecisionRule:
+    rules, _proposals = project_system_voltage_resolution(fragment, IDENTITY, confirmed_facts=facts)
     return _decision(rules, ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION)
 
 
@@ -110,8 +206,10 @@ def _project_propagation(fragment: RawClauseFragment) -> DecisionRule:
     return _decision(rules, ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION)
 
 
-def _project_barrier(fragment: RawClauseFragment) -> DecisionRule:
-    rules, _proposals = project_verified_barrier_transfer(fragment, IDENTITY)
+def _project_barrier(
+    fragment: RawClauseFragment, facts: ConfirmedFacts = _EMPTY_FACTS
+) -> DecisionRule:
+    rules, _proposals = project_verified_barrier_transfer(fragment, IDENTITY, confirmed_facts=facts)
     return _decision(rules, ids.SUPPLY_VERIFIED_BARRIER_TRANSFER)
 
 
@@ -140,41 +238,106 @@ def _system_voltage_inputs(**overrides: str) -> dict[str, str]:
     return inputs
 
 
-# --- Task 6: system voltage, propagation, barrier transfer -------------------------
+# --- Task 5: system voltage and barrier transfer follow reviewed facts ------------
+# (propagation stays legacy branch authority; see LEGACY_BRANCH_AUTHORITY_RULE_IDS)
 
 
-def test_every_declared_branch_is_reachable_and_unsupported_combinations_are_not() -> None:
-    rule = _project_system_voltage(_bullet_fragment())
-    assert len(rule.rows) == 9
+def test_every_reviewed_fact_is_reachable_and_unsupported_combinations_are_not() -> None:
+    """Reachability now rests on the reviewed facts, not on a fixed nine-branch inventory."""
+
+    fragment = _bullet_fragment()
+    facts = ConfirmedFacts(
+        by_route={
+            ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: (
+                _system_voltage_fact(
+                    fragment,
+                    index=0,
+                    phase_system="three_phase_it",
+                    earthing="it",
+                    purpose="impulse",
+                    measure="phase_to_artificial_neutral_rms",
+                ),
+                _system_voltage_fact(
+                    fragment,
+                    index=1,
+                    phase_system="single_phase_it",
+                    earthing="it",
+                    purpose="temporary_overvoltage",
+                    measure="phase_to_phase_rms",
+                ),
+            )
+        }
+    )
+    rule = _project_system_voltage(fragment, facts)
+    assert len(rule.rows) == 2
     assert rule.exhaustive is False
+
     matched = {
-        evaluate_decision(rule, _system_voltage_inputs(**overrides)).matched_row
-        for overrides in (
-            {},
-            {"phase_system": "three_phase_delta"},
-            {"phase_system": "three_phase_it", "earthing_arrangement": "it"},
-            {
-                "phase_system": "three_phase_it",
-                "earthing_arrangement": "it",
-                "calculation_purpose": "temporary_overvoltage",
-            },
-            {"phase_system": "single_phase_it", "earthing_arrangement": "it"},
-            {"input_topology": "rectified_dc"},
-            {"input_topology": "series_rectifier_bridges"},
-            {"input_topology": "isolated_secondary"},
-            {
-                "supply_kind": "non_mains",
-                "phase_system": "single_phase",
-                "earthing_arrangement": "unspecified",
-            },
-        )
+        evaluate_decision(
+            rule,
+            _system_voltage_inputs(
+                phase_system="three_phase_it",
+                earthing_arrangement="it",
+                calculation_purpose="impulse",
+            ),
+        ).matched_row,
+        evaluate_decision(
+            rule,
+            _system_voltage_inputs(
+                phase_system="single_phase_it",
+                earthing_arrangement="it",
+                calculation_purpose="temporary_overvoltage",
+            ),
+        ).matched_row,
     }
-    assert matched == set(range(9))
-    assert _lookup(rule, **_system_voltage_inputs(phase_system="unspecified")) is None
+    assert matched == {0, 1}
+    # Same phase system as a fact, but the purpose no fact states for it: not covered.
+    assert (
+        _lookup(
+            rule,
+            **_system_voltage_inputs(
+                phase_system="single_phase_it",
+                earthing_arrangement="it",
+                calculation_purpose="impulse",
+            ),
+        )
+        is None
+    )
+    # An earthing arrangement no fact states at all: not covered.
+    assert (
+        _lookup(
+            rule,
+            **_system_voltage_inputs(
+                phase_system="three_phase_it",
+                earthing_arrangement="tt",
+                calculation_purpose="impulse",
+            ),
+        )
+        is None
+    )
 
 
 def test_impulse_and_temporary_overvoltage_branches_stay_separate() -> None:
-    rule = _project_system_voltage(_bullet_fragment())
+    fragment = _bullet_fragment()
+    facts = ConfirmedFacts(
+        by_route={
+            ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: (
+                _system_voltage_fact(
+                    fragment,
+                    index=0,
+                    purpose="impulse",
+                    measure="phase_to_artificial_neutral_rms",
+                ),
+                _system_voltage_fact(
+                    fragment,
+                    index=1,
+                    purpose="temporary_overvoltage",
+                    measure="phase_to_phase_rms",
+                ),
+            )
+        }
+    )
+    rule = _project_system_voltage(fragment, facts)
     impulse = _lookup(
         rule,
         **_system_voltage_inputs(
@@ -195,12 +358,136 @@ def test_impulse_and_temporary_overvoltage_branches_stay_separate() -> None:
     assert _value(impulse, "system_voltage_measure") != _value(tov, "system_voltage_measure")
 
 
+def test_a_fact_stated_without_a_purpose_covers_both_purposes() -> None:
+    """One reviewed statement that fixes its measure without restricting the purpose.
+
+    The coordinator's clarification for #53B Task 5: the source states this branch as one
+    bullet, not two, so authoring it as two facts differing only in purpose would record two
+    statements where the source makes one. The two purpose-specific facts still yield their
+    own, separate rows alongside it.
+    """
+
+    fragment = _bullet_fragment()
+    facts = ConfirmedFacts(
+        by_route={
+            ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: (
+                _system_voltage_fact(
+                    fragment,
+                    index=0,
+                    phase_system="three_phase_it",
+                    purpose="impulse",
+                    measure="phase_to_artificial_neutral_rms",
+                ),
+                _system_voltage_fact(
+                    fragment,
+                    index=1,
+                    phase_system="three_phase_it",
+                    purpose="temporary_overvoltage",
+                    measure="phase_to_phase_rms",
+                ),
+                _system_voltage_fact(
+                    fragment,
+                    index=2,
+                    phase_system="single_phase_it",
+                    purpose="any_purpose",
+                    measure="between_supply_conductors_rms",
+                ),
+            )
+        }
+    )
+    rule = _project_system_voltage(fragment, facts)
+    assert len(rule.rows) == 3
+
+    any_purpose_impulse = _lookup(
+        rule,
+        **_system_voltage_inputs(
+            phase_system="single_phase_it",
+            earthing_arrangement="it",
+            calculation_purpose="impulse",
+        ),
+    )
+    any_purpose_tov = _lookup(
+        rule,
+        **_system_voltage_inputs(
+            phase_system="single_phase_it",
+            earthing_arrangement="it",
+            calculation_purpose="temporary_overvoltage",
+        ),
+    )
+    assert any_purpose_impulse is not None and any_purpose_tov is not None
+    assert _value(any_purpose_impulse, "system_voltage_measure") == "between_supply_conductors_rms"
+    assert _value(any_purpose_tov, "system_voltage_measure") == "between_supply_conductors_rms"
+
+    specific_impulse = _lookup(
+        rule,
+        **_system_voltage_inputs(
+            phase_system="three_phase_it",
+            earthing_arrangement="it",
+            calculation_purpose="impulse",
+        ),
+    )
+    specific_tov = _lookup(
+        rule,
+        **_system_voltage_inputs(
+            phase_system="three_phase_it",
+            earthing_arrangement="it",
+            calculation_purpose="temporary_overvoltage",
+        ),
+    )
+    assert specific_impulse is not None and specific_tov is not None
+    assert _value(specific_impulse, "system_voltage_measure") == "phase_to_artificial_neutral_rms"
+    assert _value(specific_tov, "system_voltage_measure") == "phase_to_phase_rms"
+
+
 def test_the_note_becomes_guidance_and_never_a_formula() -> None:
-    rules, proposals = project_system_voltage_resolution(_bullet_fragment(), IDENTITY)
+    fragment = _bullet_fragment()
+    facts = _confirmed_system_voltage_facts(fragment=fragment, measures=("phase_to_phase_rms",))
+    rules, proposals = project_system_voltage_resolution(fragment, IDENTITY, confirmed_facts=facts)
     assert any(isinstance(rule, GuidanceRule) for rule in rules)
     assert not any(getattr(rule, "expression", None) for rule in rules)
     assert not any(getattr(rule, "expression_shape", None) for rule in rules)
     assert {proposal.rule_kind for proposal in proposals} == {"decision", "guidance"}
+
+
+def test_system_voltage_rows_follow_the_reviewed_facts_not_the_old_constants() -> None:
+    """Authority moved: facts the constants never contained must reach the rule."""
+
+    facts = _confirmed_system_voltage_facts(
+        measures=("phase_to_phase_rms", "highest_pre_rectifier_ac_rms_at_bridge")
+    )
+    rule = _project_system_voltage(_bullet_fragment(), facts)
+
+    emitted = {
+        value.categorical
+        for row in rule.rows
+        for value in row.values
+        if value.name == "system_voltage_measure"
+    }
+
+    assert emitted == {"phase_to_phase_rms", "highest_pre_rectifier_ac_rms_at_bridge"}
+
+
+def test_system_voltage_refuses_to_project_without_facts() -> None:
+    """No fallback: a factless projection would silently restore the deleted inventory."""
+
+    with pytest.raises(ClauseStructureError):
+        project_system_voltage_resolution(
+            _bullet_fragment(), IDENTITY, confirmed_facts=ConfirmedFacts()
+        )
+
+
+def test_system_voltage_keeps_its_declared_contract() -> None:
+    facts = _confirmed_system_voltage_facts(measures=("phase_to_phase_rms",))
+    rule = _project_system_voltage(_bullet_fragment(), facts)
+
+    assert {item.name for item in rule.inputs} == {
+        "supply_kind",
+        "phase_system",
+        "earthing_arrangement",
+        "input_topology",
+        "calculation_purpose",
+    }
+    assert {item.name for item in rule.outputs} == {"system_voltage_measure"}
 
 
 def test_a_fragment_whose_bullet_count_differs_blocks() -> None:
@@ -258,7 +545,11 @@ def test_a_propagation_fragment_with_the_wrong_alternative_count_blocks() -> Non
 
 
 def test_without_verified_isolation_the_combined_requirement_propagates() -> None:
-    rule = _project_barrier(_paragraph_fragment(ids.SUPPLY_VERIFIED_BARRIER_TRANSFER))
+    fragment = _barrier_fragment()
+    facts = _confirmed_barrier_facts(
+        fragment=fragment, isolation_present=False, combined_rule="more_severe_of_both_sides"
+    )
+    rule = _project_barrier(fragment, facts)
     row = _lookup(
         rule,
         galvanic_isolation_verified=False,
@@ -272,7 +563,11 @@ def test_without_verified_isolation_the_combined_requirement_propagates() -> Non
 
 
 def test_verified_isolation_keeps_the_transfer_side_specific() -> None:
-    rule = _project_barrier(_paragraph_fragment(ids.SUPPLY_VERIFIED_BARRIER_TRANSFER))
+    fragment = _barrier_fragment()
+    facts = _confirmed_barrier_facts(
+        fragment=fragment, isolation_present=True, combined_rule="side_specific_from_transfer"
+    )
+    rule = _project_barrier(fragment, facts)
     row = _lookup(
         rule,
         galvanic_isolation_verified=True,
@@ -282,6 +577,43 @@ def test_verified_isolation_keeps_the_transfer_side_specific() -> None:
     assert row is not None
     assert _value(row, "transfer_permitted") is True
     assert _value(row, "propagates_to_connected_circuits") is False
+
+
+def test_barrier_transfer_follows_the_reviewed_facts() -> None:
+    facts = _confirmed_barrier_facts(combined_rule="side_specific_from_transfer")
+    rule = _project_barrier(_barrier_fragment(), facts)
+
+    emitted = {
+        value.categorical
+        for row in rule.rows
+        for value in row.values
+        if value.name == "combined_circuit_requirement"
+    }
+
+    assert emitted == {"side_specific_from_transfer"}
+
+
+def test_barrier_transfer_refuses_to_project_without_facts() -> None:
+    with pytest.raises(ClauseStructureError):
+        project_verified_barrier_transfer(
+            _barrier_fragment(), IDENTITY, confirmed_facts=ConfirmedFacts()
+        )
+
+
+def test_barrier_transfer_keeps_its_declared_contract() -> None:
+    facts = _confirmed_barrier_facts(combined_rule="more_severe_of_both_sides")
+    rule = _project_barrier(_barrier_fragment(), facts)
+
+    assert {item.name for item in rule.inputs} == {
+        "galvanic_isolation_verified",
+        "isolation_evidence_kind",
+        "downstream_connection_kind",
+    }
+    assert {item.name for item in rule.outputs} == {
+        "transfer_permitted",
+        "combined_circuit_requirement",
+        "propagates_to_connected_circuits",
+    }
 
 
 def test_a_barrier_fragment_with_extra_nodes_blocks() -> None:
