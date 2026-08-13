@@ -355,7 +355,7 @@ class SpdReductionFact(_Fact):
 #: its own clause makes.
 class SpdMonitoringFact(_Fact):
     fact_kind: Literal["spd_monitoring"] = "spd_monitoring"
-    device_placement: Literal["bundled_external", "internal"]
+    device_placement: Literal["internal_to_pecs", "external_to_pecs"]
     participates_in_reduction: bool
     monitoring_required: bool
     compliance_evidence: Literal["visual_inspection", "monitoring_test", "not_required"]

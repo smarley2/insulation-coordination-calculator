@@ -100,7 +100,12 @@ class SpdMonitoringFact(_Fact):
     """
 
     fact_kind: Literal["spd_monitoring"] = "spd_monitoring"
-    device_placement: Literal["bundled_external", "internal"]
+    #: Spelled as the rule's own ``device_placement`` vocabulary, because these mean the same
+    #: thing. A fact field may diverge from a consumer input where the two really are different
+    #: concepts -- Table 2's basis against the curve basis in #53A is the precedent -- but only
+    #: with an explicit mapping. Two spellings of one concept and no mapping is just a field
+    #: nothing can consume.
+    device_placement: Literal["internal_to_pecs", "external_to_pecs"]
     participates_in_reduction: bool
     monitoring_required: bool
     compliance_evidence: Literal["visual_inspection", "monitoring_test", "not_required"]

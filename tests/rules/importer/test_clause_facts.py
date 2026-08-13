@@ -71,7 +71,7 @@ def test_monitoring_is_its_own_family_and_reduction_carries_no_placement() -> No
         statement_index=0,
         node_references=(CitedNode(fragment_id="raw-a", node_order=0, node_sha256="a" * 64),),
         obligation="requirement",
-        device_placement="bundled_external",
+        device_placement="external_to_pecs",
         participates_in_reduction=True,
         monitoring_required=True,
         compliance_evidence="visual_inspection",

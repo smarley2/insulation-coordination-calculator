@@ -249,7 +249,7 @@ def _spd_monitoring_fact(
     fragment: RawClauseFragment,
     *,
     index: int = 0,
-    device_placement: str = "internal",
+    device_placement: str = "internal_to_pecs",
     participates_in_reduction: bool = True,
     monitoring_required: bool = True,
     compliance_evidence: str = "monitoring_test",

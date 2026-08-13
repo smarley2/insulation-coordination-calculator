@@ -591,19 +591,28 @@ def _spd_reduction_row(fact: SpdReductionFact, fragment: RawClauseFragment) -> D
 def _spd_monitoring_row(fact: SpdMonitoringFact, fragment: RawClauseFragment) -> DecisionRow:
     """One row for one reviewed monitoring statement.
 
-    Only ``participates_in_reduction`` is read as a branch value: neither ``device_placement``
-    nor ``compliance_evidence`` shares its vocabulary with this rule's declared
-    ``device_placement`` input or ``verification_reference`` output (``bundled_external``/
-    ``internal`` and ``visual_inspection``/``monitoring_test`` are not the mains/non-mains
-    routes' tokens), so neither is read as one here. The other three outputs are the
-    mains/non-mains routes' own concern; this route fills them with a fixed, uninformative
-    value only because all three routes still share one declared output tuple -- right-sizing
-    that per route is #53C item 5.
+    ``device_placement`` and ``participates_in_reduction`` are both read as branch values: the
+    source gates the monitoring obligation on each of them, and the fact's placement vocabulary
+    is this rule's own.
+
+    ``compliance_evidence`` is not, and that one is a real gap rather than an oversight. The
+    source names two compliance routes for monitoring, while this rule's declared
+    ``verification_reference`` output carries neither of them -- it has the mains/non-mains
+    routes' tokens. Widening that output is a contract change, so it is #53C item 5, and until
+    then the fact carries a reading the rule cannot yet express.
+
+    The three reduction outputs below are the mains and non-mains routes' concern; this route
+    fills them with a fixed, uninformative value only because all three routes still share one
+    declared output tuple. Right-sizing that per route is #53C item 5 as well.
     """
 
     return DecisionRow(
         matchers=(
-            Matcher(input="device_placement", op="any"),
+            Matcher(
+                input="device_placement",
+                op="equals",
+                values=(fact.device_placement,),
+            ),
             Matcher(input="insulation_class", op="any"),
             Matcher(input="device_degradable", op="any"),
             Matcher(
