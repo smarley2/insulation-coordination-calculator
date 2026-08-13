@@ -1114,7 +1114,7 @@ def _semantic_blocker(
 
 
 def _clause_fact_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
-    """Refuse a supply route whose reviewed clause facts are absent, incomplete or stale.
+    """Refuse a route whose clause facts are absent, not its own, incomplete or stale.
 
     Gated per fragment the draft actually carries: a draft that never extracted a supply
     clause gives the maintainer nothing to author from, so it must not be blocked for facts
@@ -1126,6 +1126,7 @@ def _clause_fact_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, .
         SUPPLY_CLAUSES,
     )
     from insulation_coordination.rules.importer.review import (
+        clause_fact_defect,
         fact_set_sha256,
         live_evidence_sha256,
     )
@@ -1141,12 +1142,24 @@ def _clause_fact_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, .
         completions = tuple(
             item for item in draft.clause_fact_completions if item.rule_route == route
         )
+        # Identity before evidence, the order ``axis_review_is_current`` keeps: a fact of the
+        # wrong family, or one resting on someone else's clause, has perfectly current digests.
+        defects = tuple(
+            defect
+            for item in reviews
+            if (defect := clause_fact_defect(route, item.fact)) is not None
+        )
         if not reviews:
             reason = "carries no authored clause fact"
+        elif defects:
+            reason = f"has a fact that {defects[0]}"
         elif len(completions) != 1:
             reason = "lacks one exact fact-set completion record"
-        elif completions[0].fragment_sha256 != fragment.raw_sha256:
-            reason = "was completed against a superseded fragment"
+        elif (
+            completions[0].fragment_id != fragment.id
+            or completions[0].fragment_sha256 != fragment.raw_sha256
+        ):
+            reason = "was completed against a superseded or foreign fragment"
         elif completions[0].fact_set_sha256 != fact_set_sha256(
             tuple(item.fact for item in reviews)
         ):

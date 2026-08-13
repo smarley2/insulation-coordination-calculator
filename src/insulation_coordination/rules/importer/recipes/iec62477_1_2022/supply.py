@@ -123,6 +123,22 @@ SUPPLY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
 #: deliberately left here and tracked as #53C item 3 instead.
 LEGACY_BRANCH_AUTHORITY_RULE_IDS = frozenset({ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION})
 
+#: The one fact family each route's reviewed statements may belong to, by ``fact_kind``. Declared
+#: beside the clause specs because it is the same reviewed reading: which clause states what kind
+#: of rule. Authoring and the approval gate both enforce it, so a fact that cannot express a
+#: route's branches cannot certify that route as reviewed, and a projector reading a route's facts
+#: knows their type without inspecting them. Propagation is declared for completeness even though
+#: it is the legacy route the gate skips.
+SUPPLY_FACT_FAMILY_BY_ROUTE: dict[str, str] = {
+    ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: "system_voltage",
+    ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION: "propagation_step",
+    ids.SUPPLY_VERIFIED_BARRIER_TRANSFER: "barrier_transfer",
+    f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains": "spd_reduction",
+    f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains": "spd_reduction",
+    f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring": "spd_monitoring",
+    ids.SUPPLY_HF_TRANSFORMER_ATTENUATION: "hf_attenuation",
+}
+
 #: Reviewed structural contract per projection: (node kind, node count).
 _SYSTEM_VOLTAGE_SHAPE = ("bullet", 3)
 _PROPAGATION_SHAPE = ("bullet", 4)
@@ -863,6 +879,7 @@ __all__ = [
     "CLAUSE_PROJECTORS",
     "LEGACY_BRANCH_AUTHORITY_RULE_IDS",
     "SUPPLY_CLAUSES",
+    "SUPPLY_FACT_FAMILY_BY_ROUTE",
     "project_hf_transformer_attenuation",
     "project_multiple_source_propagation",
     "project_spd_reduction_requirements",

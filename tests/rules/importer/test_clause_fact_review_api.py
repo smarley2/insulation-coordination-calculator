@@ -2,10 +2,23 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
-from insulation_coordination.rules.importer.approval import ApprovalError, approval_blockers
-from insulation_coordination.rules.importer.clause_facts import CitedNode, HfAttenuationFact
+from insulation_coordination.rules.importer.approval import (
+    ApprovalError,
+    approval_blockers,
+    record_correction,
+)
+from insulation_coordination.rules.importer.clause_facts import (
+    CitedNode,
+    ClauseFactReview,
+    HfAttenuationFact,
+    SpdReductionFact,
+    SupplyFact,
+    evidence_sha256,
+)
 from insulation_coordination.rules.importer.extract import (
     ImportedRuleDraft,
     canonical_model_sha256,
@@ -13,6 +26,8 @@ from insulation_coordination.rules.importer.extract import (
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
     LEGACY_BRANCH_AUTHORITY_RULE_IDS,
+    SUPPLY_CLAUSES,
+    SUPPLY_FACT_FAMILY_BY_ROUTE,
 )
 from insulation_coordination.rules.importer.review import (
     author_clause_fact,
@@ -23,28 +38,98 @@ from insulation_coordination.rules.importer.review import (
 
 HF_ROUTE = ids.SUPPLY_HF_TRANSFORMER_ATTENUATION
 HF_FRAGMENT_ID = f"raw-{HF_ROUTE}"
+MAINS_ROUTE = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains"
+NON_MAINS_ROUTE = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains"
 
 
-def _hf_fact(draft: ImportedRuleDraft, *, statement_index: int) -> HfAttenuationFact:
+def _cited(draft: ImportedRuleDraft, fragment_id: str) -> CitedNode:
+    """A citation of one fragment's own first node, matching its current content."""
+
+    fragment = next(item for item in draft.raw_clause_fragments if item.id == fragment_id)
+    node = fragment.nodes[0]
+    return CitedNode(
+        fragment_id=fragment.id,
+        node_order=node.order,
+        node_sha256=canonical_model_sha256(node),
+    )
+
+
+def _hf_fact(
+    draft: ImportedRuleDraft,
+    *,
+    statement_index: int,
+    fragment_id: str = HF_FRAGMENT_ID,
+) -> HfAttenuationFact:
     """One authored statement citing the synthetic HF fragment's own first node."""
 
-    fragment = next(item for item in draft.raw_clause_fragments if item.id == HF_FRAGMENT_ID)
-    node = fragment.nodes[0]
     return HfAttenuationFact(
         statement_index=statement_index,
-        node_references=(
-            CitedNode(
-                fragment_id=fragment.id,
-                node_order=node.order,
-                node_sha256=canonical_model_sha256(node),
-            ),
-        ),
+        node_references=(_cited(draft, fragment_id),),
         obligation="requirement",
         dvc_gate="dvc_as",
         evidence_kind="test",
         threshold_reference=ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC,
         comparison_required=True,
     )
+
+
+def _reduction_fact(draft: ImportedRuleDraft, *, fragment_id: str) -> SpdReductionFact:
+    """One reduction statement, citing whichever fragment the caller names."""
+
+    return SpdReductionFact(
+        statement_index=0,
+        node_references=(_cited(draft, fragment_id),),
+        obligation="permission",
+        supply_kind="non_mains",
+        source_ovc="ovc_iii",
+        target_ovc="ovc_ii",
+        insulation_class="basic",
+        degradable=True,
+        monitoring_obligation="required",
+        monitoring_reference=f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring",
+    )
+
+
+def _hand_built(
+    draft: ImportedRuleDraft, *, rule_route: str, fact: SupplyFact
+) -> ImportedRuleDraft:
+    """A draft carrying one review the authoring API refuses, completed for that route.
+
+    Every digest in it is honestly computed, which is the point: the gate has to refuse on the
+    fact's identity, because nothing about its hashes is stale.
+    """
+
+    review = ClauseFactReview(
+        rule_route=rule_route,
+        statement_index=fact.statement_index,
+        fact=fact,
+        fact_sha256=canonical_model_sha256(fact),
+        evidence_sha256=evidence_sha256(fact.node_references),
+        actor="tester",
+        recorded_at=datetime.now(UTC),
+        notes="hand built",
+    )
+    injected = record_correction(
+        draft,
+        draft.model_copy(update={"clause_fact_reviews": (review,)}),
+        actor="tester",
+        notes="inject a review the authoring API refuses",
+    )
+    return record_fact_completion(
+        injected,
+        rule_route=rule_route,
+        fragment_id=f"raw-{rule_route}",
+        actor="tester",
+        notes="complete",
+    )
+
+
+def _blocked(draft: ImportedRuleDraft) -> set[str]:
+    return {
+        item.semantic_id
+        for item in approval_blockers(draft)
+        if item.code == "CLAUSE_FACT_REVIEW_REQUIRED"
+    }
 
 
 @pytest.fixture
@@ -99,26 +184,14 @@ def test_facts_plus_completion_clear_the_gate_for_that_route(
         notes="complete for this route",
     )
 
-    blocked = {
-        item.semantic_id
-        for item in approval_blockers(draft)
-        if item.code == "CLAUSE_FACT_REVIEW_REQUIRED"
-    }
-
-    assert HF_ROUTE not in blocked
+    assert HF_ROUTE not in _blocked(draft)
 
 
 def test_the_legacy_branch_authority_route_is_never_gated(draft_with_supply_fragments) -> None:
     """Its contract is an ordinal category comparison no honest reviewed fact can express."""
 
-    blocked = {
-        item.semantic_id
-        for item in approval_blockers(draft_with_supply_fragments)
-        if item.code == "CLAUSE_FACT_REVIEW_REQUIRED"
-    }
-
     assert LEGACY_BRANCH_AUTHORITY_RULE_IDS
-    assert not blocked & LEGACY_BRANCH_AUTHORITY_RULE_IDS
+    assert not _blocked(draft_with_supply_fragments) & LEGACY_BRANCH_AUTHORITY_RULE_IDS
 
 
 def test_completion_recorded_before_a_later_fact_goes_stale(
@@ -211,4 +284,144 @@ def test_a_fact_citing_a_node_that_does_not_exist_is_refused(
             fact=invented,
             actor="tester",
             notes="bad citation",
+        )
+
+
+def test_every_gated_route_declares_the_family_its_facts_must_belong_to() -> None:
+    """A route the map forgets could be certified by a fact of any family at all."""
+
+    assert set(SUPPLY_FACT_FAMILY_BY_ROUTE) == {spec.semantic_id for spec in SUPPLY_CLAUSES}
+
+
+def test_a_fact_of_the_wrong_family_cannot_be_authored_on_a_route(
+    draft_with_supply_fragments,
+) -> None:
+    """An HF attenuation fact cannot state a category step, so it cannot stand for reduction.
+
+    It cites the mains fragment's own node, so the family is the only thing wrong with it.
+    """
+
+    foreign_family = _hf_fact(
+        draft_with_supply_fragments, statement_index=0, fragment_id=f"raw-{MAINS_ROUTE}"
+    )
+
+    with pytest.raises(ValueError, match="hf_attenuation"):
+        author_clause_fact(
+            draft_with_supply_fragments,
+            rule_route=MAINS_ROUTE,
+            fact=foreign_family,
+            actor="tester",
+            notes="wrong family",
+        )
+
+
+def test_a_hand_built_wrong_family_review_still_blocks_the_route(
+    draft_with_supply_fragments,
+) -> None:
+    """The gate cannot trust the authoring API to have been the only writer."""
+
+    foreign_family = _hf_fact(
+        draft_with_supply_fragments, statement_index=0, fragment_id=f"raw-{MAINS_ROUTE}"
+    )
+
+    draft = _hand_built(draft_with_supply_fragments, rule_route=MAINS_ROUTE, fact=foreign_family)
+
+    assert MAINS_ROUTE in _blocked(draft)
+
+
+def test_a_fact_resting_only_on_another_clause_cannot_be_authored(
+    draft_with_supply_fragments,
+) -> None:
+    """Otherwise reprinting the cited clause blocks a route whose rule it never stated."""
+
+    elsewhere = _reduction_fact(draft_with_supply_fragments, fragment_id=HF_FRAGMENT_ID)
+
+    with pytest.raises(ValueError, match=f"raw-{NON_MAINS_ROUTE}"):
+        author_clause_fact(
+            draft_with_supply_fragments,
+            rule_route=NON_MAINS_ROUTE,
+            fact=elsewhere,
+            actor="tester",
+            notes="cites someone else's clause only",
+        )
+
+
+def test_a_hand_built_review_resting_only_on_another_clause_still_blocks(
+    draft_with_supply_fragments,
+) -> None:
+    elsewhere = _reduction_fact(draft_with_supply_fragments, fragment_id=HF_FRAGMENT_ID)
+
+    draft = _hand_built(draft_with_supply_fragments, rule_route=NON_MAINS_ROUTE, fact=elsewhere)
+
+    assert NON_MAINS_ROUTE in _blocked(draft)
+
+
+def test_a_fact_may_cite_a_second_fragment_as_well_as_its_own(
+    draft_with_supply_fragments,
+) -> None:
+    """The requirement is 'at least one', not 'all': a statement may rest on two clauses."""
+
+    both = _reduction_fact(draft_with_supply_fragments, fragment_id=f"raw-{NON_MAINS_ROUTE}")
+    both = both.model_copy(
+        update={
+            "node_references": (
+                *both.node_references,
+                _cited(draft_with_supply_fragments, HF_FRAGMENT_ID),
+            )
+        }
+    )
+
+    draft = author_clause_fact(
+        draft_with_supply_fragments,
+        rule_route=NON_MAINS_ROUTE,
+        fact=both,
+        actor="tester",
+        notes="rests on two clauses",
+    )
+    draft = record_fact_completion(
+        draft,
+        rule_route=NON_MAINS_ROUTE,
+        fragment_id=f"raw-{NON_MAINS_ROUTE}",
+        actor="tester",
+        notes="complete",
+    )
+
+    assert NON_MAINS_ROUTE not in _blocked(draft)
+
+
+def test_an_undeclared_rule_route_is_refused_rather_than_recorded(
+    draft_with_supply_fragments, hf_fact
+) -> None:
+    """The gate only walks declared routes, so a typo would file a review nothing ever reads."""
+
+    with pytest.raises(ValueError, match="undeclared rule route"):
+        author_clause_fact(
+            draft_with_supply_fragments,
+            rule_route=f"{HF_ROUTE}.typo",
+            fact=hf_fact,
+            actor="tester",
+            notes="misfiled",
+        )
+
+
+def test_a_completion_must_name_its_own_route_fragment(
+    draft_with_supply_fragments, hf_fact
+) -> None:
+    """Completion binds a fragment hash to a route; a foreign fragment binds the wrong region."""
+
+    draft = author_clause_fact(
+        draft_with_supply_fragments,
+        rule_route=HF_ROUTE,
+        fact=hf_fact,
+        actor="tester",
+        notes="authored",
+    )
+
+    with pytest.raises(ValueError, match=f"raw-{HF_ROUTE}"):
+        record_fact_completion(
+            draft,
+            rule_route=HF_ROUTE,
+            fragment_id=f"raw-{MAINS_ROUTE}",
+            actor="tester",
+            notes="complete against the wrong clause",
         )

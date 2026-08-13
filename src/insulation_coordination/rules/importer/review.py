@@ -2111,6 +2111,35 @@ def live_evidence_sha256(draft: ImportedRuleDraft, nodes: tuple[CitedNode, ...])
     return evidence_sha256(tuple(live))
 
 
+def clause_fact_defect(rule_route: str, fact: SupplyFact) -> str | None:
+    """Why one fact cannot stand for one route, or ``None`` if it can.
+
+    Identity rather than evidence, the half ``axis_review_is_current`` keeps for an axis position
+    and the digests alone cannot: the route must be one the recipe declares, the fact must belong
+    to the family that route's clause states, and it must cite that route's own fragment. Without
+    all three a fact that cannot express a route's branches -- or one resting entirely on another
+    clause -- certifies the route as reviewed, and reprinting the cited clause blocks a route whose
+    rule it never stated.
+
+    Citing the route's own fragment is required *as well as*, never instead of: a statement that
+    genuinely rests on a second fragment may cite it too. Authoring raises on a defect and the
+    approval gate blocks on one, so a hand-built draft cannot bypass what authoring enforces.
+    """
+
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        SUPPLY_FACT_FAMILY_BY_ROUTE,
+    )
+
+    family = SUPPLY_FACT_FAMILY_BY_ROUTE.get(rule_route)
+    if family is None:
+        return f"is authored on an undeclared rule route: {rule_route}"
+    if fact.fact_kind != family:
+        return f"is a {fact.fact_kind} fact where {rule_route} states {family}"
+    if not any(cited.fragment_id == f"raw-{rule_route}" for cited in fact.node_references):
+        return f"cites no node of its own clause fragment raw-{rule_route}"
+    return None
+
+
 def author_clause_fact(
     draft: ImportedRuleDraft,
     *,
@@ -2127,6 +2156,9 @@ def author_clause_fact(
 
     if not actor.strip() or not notes.strip():
         raise ApprovalError("clause fact actor and notes are required")
+    defect = clause_fact_defect(rule_route, fact)
+    if defect is not None:
+        raise ValueError(f"clause fact {defect}")
     for cited in fact.node_references:
         fragment = next(
             (item for item in draft.raw_clause_fragments if item.id == cited.fragment_id), None
@@ -2166,10 +2198,16 @@ def record_fact_completion(
     actor: str,
     notes: str,
 ) -> ImportedRuleDraft:
-    """Assert that one route's fact set is complete for the current fragment."""
+    """Assert that one route's fact set is complete for the current fragment.
+
+    The fragment must be the route's own. Completion is what binds a fragment hash to a route, so
+    naming any other fragment would bind the route to a document region that does not state it.
+    """
 
     if not actor.strip() or not notes.strip():
         raise ApprovalError("completion actor and notes are required")
+    if fragment_id != f"raw-{rule_route}":
+        raise ValueError(f"{rule_route} completes against raw-{rule_route}, not {fragment_id}")
     fragment = next((item for item in draft.raw_clause_fragments if item.id == fragment_id), None)
     if fragment is None:
         raise ValueError(f"unknown fragment: {fragment_id}")
