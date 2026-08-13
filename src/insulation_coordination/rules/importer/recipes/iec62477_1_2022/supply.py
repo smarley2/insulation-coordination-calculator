@@ -449,6 +449,10 @@ def project_multiple_source_propagation(
 # --- verified barrier transfer -----------------------------------------------------
 
 _ISOLATION_EVIDENCE_KINDS = ("none", "test", "calculation", "construction")
+#: Every declared evidence kind except the absence of one. What this route asks about is a
+#: *verified* barrier, which is this rule's own input name: a barrier claimed with no evidence at
+#: all is not one, so the isolation-present statement is not answered for it.
+_VERIFYING_EVIDENCE_KINDS = tuple(kind for kind in _ISOLATION_EVIDENCE_KINDS if kind != "none")
 _DOWNSTREAM_CONNECTION_KINDS = ("no_isolation", "verified_galvanic_isolation")
 
 
@@ -460,10 +464,18 @@ def project_verified_barrier_transfer(
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the isolation and no-isolation paths into a decision.
 
-    Every row comes from one reviewed ``BarrierTransferFact``. ``transfer_permitted`` and
-    ``propagates_to_connected_circuits`` are not independently authored content: a verified
-    barrier is what makes the transfer permitted and what stops it propagating to circuits
-    connected without isolation, so both mirror ``isolation_present`` by definition.
+    Every row comes from one reviewed ``BarrierTransferFact``, and matches on both dimensions the
+    statement is scoped to: the barrier and the kind of connection downstream of it. A row that
+    matched every connection kind would answer for one the clause excludes -- the source scopes
+    its propagation statement to circuits connected without galvanic isolation.
+
+    ``transfer_permitted`` and ``propagates_to_connected_circuits`` are not independently authored
+    content: a verified barrier is what makes the transfer permitted and what stops it propagating
+    to circuits connected without isolation, so both mirror ``isolation_present`` by definition.
+    Nor is the evidence a statement requires: the source states no evidence kinds at all, and
+    ``_ISOLATION_EVIDENCE_KINDS`` is this recipe's own question vocabulary, so authoring one would
+    be inventing source content. What "verified" excludes is the absence of evidence, and that
+    much follows from the rule's own input name.
     """
 
     label = "supply verified barrier transfer"
@@ -511,8 +523,11 @@ def project_verified_barrier_transfer(
                         op="equals",
                         boolean=fact.isolation_present,
                     ),
-                    Matcher(input="isolation_evidence_kind", op="any"),
-                    Matcher(input="downstream_connection_kind", op="any"),
+                    _matcher(
+                        "isolation_evidence_kind",
+                        _VERIFYING_EVIDENCE_KINDS if fact.isolation_present else None,
+                    ),
+                    _matcher("downstream_connection_kind", (fact.downstream_connection_kind,)),
                 ),
                 values=(
                     DecisionValue(name="transfer_permitted", boolean=fact.isolation_present),

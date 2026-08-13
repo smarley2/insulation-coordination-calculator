@@ -66,8 +66,18 @@ class PropagationStepFact(_Fact):
 
 
 class BarrierTransferFact(_Fact):
+    """One transfer statement, scoped to the barrier it is about and the connection downstream.
+
+    The source scopes its propagation statement to circuits connected to the combined circuit
+    *without* galvanic isolation, so a statement carrying no connection kind answers for a
+    connection its own clause excludes.
+    """
+
     fact_kind: Literal["barrier_transfer"] = "barrier_transfer"
     isolation_present: bool
+    #: Spelled as the rule's own ``downstream_connection_kind`` vocabulary, because these mean
+    #: the same thing -- the same reasoning ``SpdMonitoringFact.device_placement`` records.
+    downstream_connection_kind: Literal["no_isolation", "verified_galvanic_isolation"]
     combined_circuit_rule: Literal["more_severe_of_both_sides", "side_specific_from_transfer"]
 
 

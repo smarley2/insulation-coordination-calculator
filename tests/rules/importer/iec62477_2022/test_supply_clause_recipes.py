@@ -166,15 +166,25 @@ def _barrier_fact(
     *,
     index: int = 0,
     isolation_present: bool,
+    connection: str | None = None,
     combined_rule: str,
 ) -> BarrierTransferFact:
-    """Invented values only: a synthetic reviewed statement, never real clause content."""
+    """Invented values only: a synthetic reviewed statement, never real clause content.
 
+    ``connection`` defaults to the kind that pairs with the barrier: a statement about an absent
+    barrier is scoped to a connection without isolation, and one about a present barrier to a
+    connection through it.
+    """
+
+    downstream = connection or (
+        "verified_galvanic_isolation" if isolation_present else "no_isolation"
+    )
     return BarrierTransferFact(
         statement_index=index,
         node_references=(_cited_node(fragment),),
         obligation="requirement",
         isolation_present=isolation_present,
+        downstream_connection_kind=downstream,  # type: ignore[arg-type]
         combined_circuit_rule=combined_rule,  # type: ignore[arg-type]
     )
 
@@ -183,10 +193,16 @@ def _confirmed_barrier_facts(
     *,
     combined_rule: str,
     isolation_present: bool = False,
+    connection: str | None = None,
     fragment: RawClauseFragment | None = None,
 ) -> ConfirmedFacts:
     frag = fragment if fragment is not None else _barrier_fragment()
-    fact = _barrier_fact(frag, isolation_present=isolation_present, combined_rule=combined_rule)
+    fact = _barrier_fact(
+        frag,
+        isolation_present=isolation_present,
+        connection=connection,
+        combined_rule=combined_rule,
+    )
     return ConfirmedFacts(by_route={ids.SUPPLY_VERIFIED_BARRIER_TRANSFER: (fact,)})
 
 
@@ -720,6 +736,56 @@ def test_barrier_transfer_follows_the_reviewed_facts() -> None:
     }
 
     assert emitted == {"side_specific_from_transfer"}
+
+
+def test_a_connection_kind_the_statement_excludes_is_not_answered_for() -> None:
+    """The propagation statement is scoped to a connection made without galvanic isolation.
+
+    Matching every connection kind did not merely lose a refusal, it answered a different
+    question: it reported the combined circuit's rating as propagating into a circuit connected
+    through a verified barrier, which is the case the clause excludes.
+    """
+
+    fragment = _barrier_fragment()
+    facts = _confirmed_barrier_facts(
+        fragment=fragment,
+        isolation_present=False,
+        connection="no_isolation",
+        combined_rule="more_severe_of_both_sides",
+    )
+    rule = _project_barrier(fragment, facts)
+
+    assert (
+        _lookup(
+            rule,
+            galvanic_isolation_verified=False,
+            isolation_evidence_kind="test",
+            downstream_connection_kind="verified_galvanic_isolation",
+        )
+        is None
+    )
+
+
+def test_isolation_claimed_without_any_evidence_stays_uncovered() -> None:
+    """A deliberate refusal: the consumer blocks rather than inheriting a guessed outcome."""
+
+    fragment = _barrier_fragment()
+    facts = _confirmed_barrier_facts(
+        fragment=fragment,
+        isolation_present=True,
+        combined_rule="side_specific_from_transfer",
+    )
+    rule = _project_barrier(fragment, facts)
+
+    assert (
+        _lookup(
+            rule,
+            galvanic_isolation_verified=True,
+            isolation_evidence_kind="none",
+            downstream_connection_kind="verified_galvanic_isolation",
+        )
+        is None
+    )
 
 
 def test_barrier_transfer_refuses_to_project_without_facts() -> None:
