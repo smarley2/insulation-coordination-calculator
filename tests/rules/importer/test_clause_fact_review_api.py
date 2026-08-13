@@ -28,6 +28,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply impor
     LEGACY_BRANCH_AUTHORITY_RULE_IDS,
     SUPPLY_CLAUSES,
     SUPPLY_FACT_FAMILY_BY_ROUTE,
+    _require_declared_fact_families,
 )
 from insulation_coordination.rules.importer.review import (
     author_clause_fact,
@@ -295,6 +296,20 @@ def test_every_gated_route_declares_the_family_its_facts_must_belong_to() -> Non
     """A route the map forgets could be certified by a fact of any family at all."""
 
     assert set(SUPPLY_FACT_FAMILY_BY_ROUTE) == {spec.semantic_id for spec in SUPPLY_CLAUSES}
+
+
+def test_a_clause_spec_with_no_fact_family_is_refused_at_import() -> None:
+    """Otherwise a forgotten entry deadlocks approval instead of failing where it was made.
+
+    The gate blocks the route for want of facts while authoring one is refused as an undeclared
+    route, so the draft becomes unapprovable with nothing naming the cause. Importing the recipe
+    runs this check over the real pair, so the deadlock cannot be shipped.
+    """
+
+    invented = SUPPLY_CLAUSES[0].model_copy(update={"semantic_id": "invented.route"})
+
+    with pytest.raises(ValueError, match="invented.route"):
+        _require_declared_fact_families((*SUPPLY_CLAUSES, invented), SUPPLY_FACT_FAMILY_BY_ROUTE)
 
 
 def test_a_fact_of_the_wrong_family_cannot_be_authored_on_a_route(

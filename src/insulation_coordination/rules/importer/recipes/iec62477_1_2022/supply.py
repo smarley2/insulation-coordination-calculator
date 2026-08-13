@@ -150,6 +150,30 @@ SUPPLY_FACT_FAMILY_BY_ROUTE: dict[str, str] = {
     ids.SUPPLY_HF_TRANSFORMER_ATTENUATION: "hf_attenuation",
 }
 
+
+def _require_declared_fact_families(
+    specs: tuple[ClauseAuditSpec, ...], families: dict[str, str]
+) -> None:
+    """Refuse, at import, a clause spec inventory and a fact family map that disagree.
+
+    The approval gate blocks any declared supply route carrying no authored fact, while authoring
+    and resolution both refuse a route this map forgets. A spec added without its entry is
+    therefore unapprovable and unauthorable at once -- blocked for want of facts, and refused when
+    a maintainer authors one -- with nothing saying so until someone tries both. The two are one
+    reviewed reading, of which clause states what kind of rule, so they are checked where they are
+    declared rather than trusted to stay in step.
+    """
+
+    declared = {spec.semantic_id for spec in specs}
+    disagreement = declared.symmetric_difference(families)
+    if disagreement:
+        raise ValueError(
+            f"supply clause specs and fact families disagree on: {sorted(disagreement)}"
+        )
+
+
+_require_declared_fact_families(SUPPLY_CLAUSES, SUPPLY_FACT_FAMILY_BY_ROUTE)
+
 #: A ported projector's default when its call site supplies nothing: still refuses to
 #: project, through the same "no facts for this route" check as a caller-supplied empty
 #: result -- never a second, quieter way to get the old fallback.
