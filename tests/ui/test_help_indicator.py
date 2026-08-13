@@ -231,6 +231,23 @@ def test_badge_width_does_not_move_when_the_state_changes(qtbot) -> None:
     assert narrow >= badge.fontMetrics().horizontalAdvance("Verified override")
 
 
+def test_help_controls_carry_no_hardcoded_colours() -> None:
+    """Dark and light platform palettes can only restyle a control nothing paints over.
+
+    The help component never names a colour, so every theme the platform applies —
+    dark, light, or high-contrast — reaches it untouched. A stylesheet or QColor
+    anywhere in the module would silently pin one theme's colours under the other.
+    """
+    import inspect
+
+    from insulation_coordination.ui import help_indicator as module
+
+    source = inspect.getsource(module)
+    assert "setStyleSheet" not in source
+    assert "QColor" not in source
+    assert "setPalette" not in source
+
+
 def test_the_dialog_title_names_the_field(qtbot) -> None:
     dialog = GuidanceDialog(VoltageGuidanceId.RECURRING_PEAK)
     qtbot.addWidget(dialog)
