@@ -36,6 +36,7 @@ from insulation_coordination.rules.importer.clause_facts import (
     HfAttenuationFact,
     SpdMonitoringFact,
     SpdReductionFact,
+    SupplyFact,
     SystemVoltageFact,
 )
 from insulation_coordination.rules.importer.clauses import RawClauseFragment
@@ -208,6 +209,33 @@ def _matcher(name: str, values: tuple[str, ...] | None) -> Matcher:
     return Matcher(input=name, op="in", values=values)
 
 
+def _require_distinct_branches(
+    label: str, facts: tuple[SupplyFact, ...], rows: tuple[DecisionRow, ...]
+) -> None:
+    """Refuse two reviewed statements of one route whose branch dimensions are identical.
+
+    ``evaluate_decision`` serves the first row whose matchers fit, so two statements projecting
+    equal matchers leave the second unreachable and its contradicting values unserved, with no
+    error, no warning and a ``fact_set_sha256`` that covers both happily. That is the hazard
+    ``_require_distinct_selectors`` refuses for two axis positions confirmed as the same selector.
+
+    Expressed over the projected matchers rather than over the facts, and so living here rather
+    than in ``resolve_confirmed_clause_facts`` with the other refusals: which fields are branch
+    dimensions and which are answers is the projector's own reading, and comparing facts would
+    miss exactly the pair that matters -- two reduction statements agreeing on every dimension
+    while naming different target categories.
+    """
+
+    seen: dict[tuple[Matcher, ...], int] = {}
+    for fact, row in zip(facts, rows, strict=True):
+        if row.matchers in seen:
+            raise ClauseStructureError(
+                f"{label} statements {seen[row.matchers]} and {fact.statement_index} "
+                f"state the same branch"
+            )
+        seen[row.matchers] = fact.statement_index
+
+
 def _proposal(
     rule: DecisionRule | GuidanceRule,
     rule_kind: RuleKind,
@@ -280,6 +308,21 @@ def project_system_voltage_resolution(
         )
     )
     measures = tuple(dict.fromkeys(fact.measure for fact in system_voltage_facts))
+    rows = tuple(
+        DecisionRow(
+            matchers=(
+                Matcher(input="supply_kind", op="any"),
+                _matcher("phase_system", (fact.phase_system,)),
+                _matcher("earthing_arrangement", (fact.earthing,)),
+                Matcher(input="input_topology", op="any"),
+                _purpose_matcher(fact.purpose),
+            ),
+            values=(DecisionValue(name="system_voltage_measure", categorical=fact.measure),),
+            source=fragment.nodes[0].source,
+        )
+        for fact in system_voltage_facts
+    )
+    _require_distinct_branches(label, system_voltage_facts, rows)
 
     rule = DecisionRule(
         id=ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,
@@ -307,20 +350,7 @@ def project_system_voltage_resolution(
                 allowed_values=measures,
             ),
         ),
-        rows=tuple(
-            DecisionRow(
-                matchers=(
-                    Matcher(input="supply_kind", op="any"),
-                    _matcher("phase_system", (fact.phase_system,)),
-                    _matcher("earthing_arrangement", (fact.earthing,)),
-                    Matcher(input="input_topology", op="any"),
-                    _purpose_matcher(fact.purpose),
-                ),
-                values=(DecisionValue(name="system_voltage_measure", categorical=fact.measure),),
-                source=fragment.nodes[0].source,
-            )
-            for fact in system_voltage_facts
-        ),
+        rows=rows,
         exhaustive=False,
         source=fragment.source,
     )
@@ -490,6 +520,36 @@ def project_verified_barrier_transfer(
         raise ValueError(f"{label} projection requires barrier transfer facts")
 
     requirements = tuple(dict.fromkeys(fact.combined_circuit_rule for fact in barrier_facts))
+    rows = tuple(
+        DecisionRow(
+            matchers=(
+                Matcher(
+                    input="galvanic_isolation_verified",
+                    op="equals",
+                    boolean=fact.isolation_present,
+                ),
+                _matcher(
+                    "isolation_evidence_kind",
+                    _VERIFYING_EVIDENCE_KINDS if fact.isolation_present else None,
+                ),
+                _matcher("downstream_connection_kind", (fact.downstream_connection_kind,)),
+            ),
+            values=(
+                DecisionValue(name="transfer_permitted", boolean=fact.isolation_present),
+                DecisionValue(
+                    name="combined_circuit_requirement",
+                    categorical=fact.combined_circuit_rule,
+                ),
+                DecisionValue(
+                    name="propagates_to_connected_circuits",
+                    boolean=not fact.isolation_present,
+                ),
+            ),
+            source=fragment.nodes[0].source,
+        )
+        for fact in barrier_facts
+    )
+    _require_distinct_branches(label, barrier_facts, rows)
 
     rule = DecisionRule(
         id=ids.SUPPLY_VERIFIED_BARRIER_TRANSFER,
@@ -515,35 +575,7 @@ def project_verified_barrier_transfer(
             ),
             DecisionOutput(name="propagates_to_connected_circuits", kind="boolean"),
         ),
-        rows=tuple(
-            DecisionRow(
-                matchers=(
-                    Matcher(
-                        input="galvanic_isolation_verified",
-                        op="equals",
-                        boolean=fact.isolation_present,
-                    ),
-                    _matcher(
-                        "isolation_evidence_kind",
-                        _VERIFYING_EVIDENCE_KINDS if fact.isolation_present else None,
-                    ),
-                    _matcher("downstream_connection_kind", (fact.downstream_connection_kind,)),
-                ),
-                values=(
-                    DecisionValue(name="transfer_permitted", boolean=fact.isolation_present),
-                    DecisionValue(
-                        name="combined_circuit_requirement",
-                        categorical=fact.combined_circuit_rule,
-                    ),
-                    DecisionValue(
-                        name="propagates_to_connected_circuits",
-                        boolean=not fact.isolation_present,
-                    ),
-                ),
-                source=fragment.nodes[0].source,
-            )
-            for fact in barrier_facts
-        ),
+        rows=rows,
         exhaustive=False,
         source=fragment.source,
     )
@@ -702,12 +734,14 @@ def project_spd_reduction_requirements(
         if len(monitoring_facts) != len(facts):
             raise ValueError(f"{label} projection requires SPD monitoring facts")
         rows = tuple(_spd_monitoring_row(fact, fragment) for fact in monitoring_facts)
+        _require_distinct_branches(label, monitoring_facts, rows)
         reduced_categories: tuple[str, ...] = (_NOT_REDUCED,)
     else:
         reduction_facts = tuple(fact for fact in facts if isinstance(fact, SpdReductionFact))
         if len(reduction_facts) != len(facts):
             raise ValueError(f"{label} projection requires SPD reduction facts")
         rows = tuple(_spd_reduction_row(fact, fragment) for fact in reduction_facts)
+        _require_distinct_branches(label, reduction_facts, rows)
         reduced_categories = tuple(dict.fromkeys(fact.target_ovc for fact in reduction_facts))
 
     rule = DecisionRule(
@@ -871,6 +905,9 @@ def project_hf_transformer_attenuation(
         )
         for fact in attenuation_facts
     )
+    # Over the per-statement rows only: the outstanding-showing rows are one per distinct gate
+    # and so distinct by construction, and they carry no statement to name in a refusal.
+    _require_distinct_branches(label, attenuation_facts, shown)
 
     rule = DecisionRule(
         id=ids.SUPPLY_HF_TRANSFORMER_ATTENUATION,

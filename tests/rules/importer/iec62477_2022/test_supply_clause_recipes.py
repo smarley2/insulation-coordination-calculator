@@ -821,6 +821,28 @@ def test_a_barrier_fragment_with_extra_nodes_blocks() -> None:
         )
 
 
+def test_two_statements_stating_the_same_branch_are_refused() -> None:
+    """A second statement with identical branch dimensions is unreachable, and contradicts.
+
+    ``evaluate_decision`` serves the first row whose matchers fit, so nothing would report that
+    the later statement's values are never served -- the hazard ``_require_distinct_selectors``
+    already refuses for two axis positions confirmed as the same selector.
+    """
+
+    fragment = _bullet_fragment()
+    facts = ConfirmedFacts(
+        by_route={
+            ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: (
+                _system_voltage_fact(fragment, index=0, measure="phase_to_artificial_neutral_rms"),
+                _system_voltage_fact(fragment, index=1, measure="phase_to_phase_rms"),
+            )
+        }
+    )
+
+    with pytest.raises(ClauseStructureError, match="same branch"):
+        _project_system_voltage(fragment, facts)
+
+
 # --- Task 6: SPD reduction/monitoring routes and HF attenuation follow reviewed facts ---
 
 
@@ -1055,6 +1077,40 @@ def test_the_external_monitoring_obligation_keeps_its_qualifier() -> None:
     assert qualified is not None
     assert _value(qualified, "monitoring_required") is True
     assert _lookup(rule, **_spd_inputs(device_placement="external_to_pecs")) is None
+
+
+def test_two_reduction_statements_stating_the_same_branch_are_refused() -> None:
+    """The pair a fact-level comparison would miss: same dimensions, different answers.
+
+    ``target_ovc`` is an answer rather than a branch dimension, so these two facts are not equal
+    and only their projected matchers are. The refusal therefore has to be expressed over the
+    rows, which is why it lives in the projector rather than in resolution.
+    """
+
+    fragment = _spd_fragment("mains")
+    facts = ConfirmedFacts(
+        by_route={
+            _SPD_MAINS_ID: (
+                _spd_reduction_fact(
+                    fragment,
+                    index=0,
+                    supply_kind="mains",
+                    source_ovc="ovc_iv",
+                    target_ovc="ovc_iii",
+                ),
+                _spd_reduction_fact(
+                    fragment,
+                    index=1,
+                    supply_kind="mains",
+                    source_ovc="ovc_iv",
+                    target_ovc="ovc_ii",
+                ),
+            )
+        }
+    )
+
+    with pytest.raises(ClauseStructureError, match="same branch"):
+        _project_spd(fragment, facts)
 
 
 def test_spd_keeps_its_declared_contract() -> None:
