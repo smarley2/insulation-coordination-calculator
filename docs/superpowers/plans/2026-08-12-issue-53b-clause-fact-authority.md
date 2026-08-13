@@ -1016,15 +1016,31 @@ def test_an_uncited_sibling_node_changing_keeps_its_siblings_reviews_current(
     System voltage extracts as three bullet nodes, so a fact citing the first can be shown to
     survive a change to the third. Propagation is the only other multi-node route and the
     resolver skips it as the legacy exception, so this is the one route that can carry this.
+
+    Both directions are asserted against the *changed* draft, and through
+    ``live_evidence_sha256``. Comparing a review's stored digest with
+    ``evidence_sha256(review.fact.node_references)`` proves nothing: both sides read the citation
+    records stored inside the fact, so every review ``author_clause_fact`` ever produced satisfies
+    it whatever happened to the document -- the exact tautology ``live_evidence_sha256`` exists to
+    break. And only the ``!=`` half catches an implementation that recomputed at fragment
+    granularity by mistake, which is the way this property is actually lost.
     """
 
-    current = [
-        review
-        for review in completed_system_voltage_draft.clause_fact_reviews
-        if review.evidence_sha256 == evidence_sha256(review.fact.node_references)
-    ]
+    changed_draft = completed_system_voltage_draft.model_copy(
+        update={"raw_clause_fragments": (system_voltage_fragment_with_changed_third_node,)}
+    )
+    by_cited_node = {
+        review.fact.node_references[0].node_order: review
+        for review in changed_draft.clause_fact_reviews
+    }
+    unchanged, moved = by_cited_node[0], by_cited_node[2]
 
-    assert current, "a fact citing an unchanged node keeps its own review current"
+    assert unchanged.evidence_sha256 == live_evidence_sha256(
+        changed_draft, unchanged.fact.node_references
+    ), "a fact citing an unchanged node keeps its own review current"
+    assert moved.evidence_sha256 != live_evidence_sha256(
+        changed_draft, moved.fact.node_references
+    ), "a fact citing the changed node goes stale"
 
 
 def test_facts_come_back_ordered_by_statement_index(completed_draft, hf_spec, hf_fragment) -> None:
@@ -1049,11 +1065,19 @@ review invalidation is node-granular.
 So the two properties are asserted at the levels where they actually hold:
 
 - **Node granularity, at the review level.** A fact citing an unchanged node keeps its own review
-  current when a sibling node changes. Assert it by recomputing `evidence_sha256` over the stored
-  citations, not by resolving the route.
+  current when a sibling node changes, and a fact citing the changed node does not. Assert both
+  through `live_evidence_sha256` against the draft carrying the changed fragment, never through
+  `evidence_sha256(review.fact.node_references)` — that recomputes from the citation records
+  stored inside the fact, so it is a tautology no document change can break, and it is why
+  `live_evidence_sha256` exists.
 - **Fragment granularity, at the route level.** Add a test that a fragment which gained a node
   makes the route's completion stale and the resolver refuse, naming re-assertion of completeness
   as the reason.
+
+`completed_system_voltage_draft` therefore has to carry at least two authored facts on the system
+voltage route, one citing node 0 and one citing node 2, and
+`system_voltage_fragment_with_changed_third_node` is that route's fragment with node 2's text
+changed and its `raw_sha256` recomputed. One fact is not enough to assert both directions.
 
 Single-node routes (`hf_transformer_attenuation`, `verified_barrier_transfer`, all three SPD
 routes) cannot distinguish the two levels at all, so they assert the simpler property: changing
@@ -1093,7 +1117,7 @@ def resolve_confirmed_clause_facts(
         if not reviews:
             raise ClauseFactResolutionError(f"{route} has no authored facts")
         for review in reviews:
-            if review.evidence_sha256 != evidence_sha256(review.fact.node_references):
+            if review.evidence_sha256 != live_evidence_sha256(draft, review.fact.node_references):
                 raise ClauseFactResolutionError(
                     f"{route} statement {review.statement_index} cites evidence that has moved"
                 )
@@ -1111,8 +1135,10 @@ def resolve_confirmed_clause_facts(
     return ConfirmedFacts(by_route=by_route)
 ```
 
-Note the evidence check recomputes from the stored citations, so a citation whose node content
-changed fails at authoring time (Task 3) and one whose stored digest was tampered with fails here.
+Note the evidence check recomputes from the draft's own current nodes, the same way the approval
+gate Task 3 shipped does. Recomputing from the stored citations instead would compare a digest
+with itself: the citation records live inside the fact, so nothing a reprint does to the document
+could ever make that comparison fail.
 
 Then, at `review.py:1235`, resolve before projecting:
 

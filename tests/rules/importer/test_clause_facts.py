@@ -97,8 +97,8 @@ def test_a_fact_must_cite_at_least_one_node() -> None:
             target_ovc="ovc_iii",
             insulation_class="basic",
             degradable=True,
-            participates_in_reduction=True,
             monitoring_obligation="required",
+            monitoring_reference="iec62477_2022.supply.spd_reduction_requirements.monitoring",
         )
 
 
