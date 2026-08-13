@@ -310,24 +310,51 @@ def _matcher(name: str, values: tuple[str, ...] | None) -> Matcher:
     return Matcher(input=name, op="in", values=values)
 
 
+def _matcher_value_set(matcher: Matcher) -> frozenset[str] | None:
+    """The categorical value set a matcher restricts its input to, or ``None`` otherwise.
+
+    ``None`` for a boolean or numeric/range matcher: those keep the old strict-equality
+    comparison in ``_rows_overlap`` rather than a value-set intersection.
+    """
+
+    if matcher.op in ("equals", "in") and matcher.boolean is None:
+        return frozenset(matcher.values)
+    return None
+
+
 def _rows_overlap(first: tuple[Matcher, ...], second: tuple[Matcher, ...]) -> bool:
     """Whether some input tuple both rows would match.
 
-    Two rows overlap when, for every input, their matchers are either equal or one of them
-    matches any value: an ``op="any"`` matcher is what an unrestricted statement projects, and
-    an unrestricted statement covers every value the specific one covers. Equality alone is not
-    the test -- a statement stated without a purpose and one stated for a single purpose are
-    never equal and still both answer the same question.
+    Two rows overlap when, for every input, some value satisfies both matchers. An ``op="any"``
+    matcher matches every value the other side matches, so it never discriminates. A categorical
+    ``equals``/``in`` matcher is compared by the *set* of values it accepts rather than by
+    equality: an ``in`` row that accepts several evidence kinds and an ``equals`` row that
+    accepts one of the same kinds are not equal and neither is ``any``, and equality alone would
+    miss that they both answer for that one kind -- the ``in`` row would shadow the ``equals``
+    row over exactly the value they share. Boolean and numeric/range matchers keep strict
+    equality: a boolean's two values are already fully enumerated by ``equals``, and a partial
+    numeric overlap is not the hazard this guards against.
     """
 
-    return all(
-        one == other or one.op == "any" or other.op == "any"
-        for one, other in zip(first, second, strict=True)
-    )
+    for one, other in zip(first, second, strict=True):
+        if one.op == "any" or other.op == "any":
+            continue
+        one_values = _matcher_value_set(one)
+        other_values = _matcher_value_set(other)
+        if one_values is not None and other_values is not None:
+            if not (one_values & other_values):
+                return False
+            continue
+        if one != other:
+            return False
+    return True
 
 
 def _require_distinct_branches(
-    label: str, facts: tuple[SupplyFact, ...], rows: tuple[DecisionRow, ...]
+    label: str,
+    facts: tuple[SupplyFact, ...],
+    rows: tuple[DecisionRow, ...],
+    scopes: tuple[str, ...] | None = None,
 ) -> None:
     """Refuse two reviewed statements of one route whose branches are not disjoint.
 
@@ -349,17 +376,30 @@ def _require_distinct_branches(
     dimensions and which are answers is the projector's own reading, and comparing facts would
     miss exactly the pair that matters -- two reduction statements agreeing on every dimension
     while naming different target categories.
+
+    ``scopes`` names, per fact in the same order, which route or subclause it was reviewed
+    under. A caller merging two routes' facts into one route's rows -- system voltage's mains
+    and non-mains subclauses -- passes it so a collision names which subclause each colliding
+    statement came from; ``statement_index`` alone is per-route and a mains statement 0 and a
+    non-mains statement 0 would otherwise both report as "statement 0", naming no subclause. A
+    single-route caller passes nothing and keeps the plain, statement-only message.
     """
 
-    seen: list[tuple[tuple[Matcher, ...], int]] = []
-    for fact, row in zip(facts, rows, strict=True):
-        for matchers, statement_index in seen:
+    seen: list[tuple[tuple[Matcher, ...], int, str | None]] = []
+    for index, (fact, row) in enumerate(zip(facts, rows, strict=True)):
+        scope = scopes[index] if scopes is not None else None
+        for matchers, statement_index, seen_scope in seen:
             if _rows_overlap(matchers, row.matchers):
-                raise ClauseStructureError(
-                    f"{label} statements {statement_index} and {fact.statement_index} "
-                    f"state branches that are not disjoint"
+                first = (
+                    statement_index if seen_scope is None else f"{statement_index} ({seen_scope})"
                 )
-        seen.append((row.matchers, fact.statement_index))
+                second = (
+                    fact.statement_index if scope is None else f"{fact.statement_index} ({scope})"
+                )
+                raise ClauseStructureError(
+                    f"{label} statements {first} and {second} state branches that are not disjoint"
+                )
+        seen.append((row.matchers, fact.statement_index, scope))
 
 
 def _proposal(
@@ -512,15 +552,20 @@ def project_system_voltage_resolution(
     _require_shape(fragment, _SYSTEM_VOLTAGE_SHAPE, label)
     evidence = _system_voltage_evidence_fragment(draft, identity, label)
 
-    facts = (
-        *confirmed_facts.for_route(ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION),
-        *confirmed_facts.for_route(SUPPLY_SYSTEM_VOLTAGE_NON_MAINS),
-    )
+    mains_facts = confirmed_facts.for_route(ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION)
+    evidence_facts = confirmed_facts.for_route(SUPPLY_SYSTEM_VOLTAGE_NON_MAINS)
+    facts = (*mains_facts, *evidence_facts)
     if not facts:
         raise ClauseStructureError(f"{label} needs reviewed clause facts for its route")
     system_voltage_facts = tuple(fact for fact in facts if isinstance(fact, SystemVoltageFact))
     if len(system_voltage_facts) != len(facts):
         raise ValueError(f"{label} projection requires system voltage facts")
+    # Two routes' facts share this one route's statement-index numbering, so a collision
+    # between them needs its own scope named -- see `_require_distinct_branches`.
+    scopes = (
+        *((ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,) * len(mains_facts)),
+        *((SUPPLY_SYSTEM_VOLTAGE_NON_MAINS,) * len(evidence_facts)),
+    )
 
     grounding = (fragment,) if evidence is None else (fragment, evidence)
     measures = tuple(dict.fromkeys(fact.measure for fact in system_voltage_facts))
@@ -535,7 +580,7 @@ def project_system_voltage_resolution(
         )
         for fact in system_voltage_facts
     )
-    _require_distinct_branches(label, system_voltage_facts, rows)
+    _require_distinct_branches(label, system_voltage_facts, rows, scopes=scopes)
 
     rule = DecisionRule(
         id=ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,

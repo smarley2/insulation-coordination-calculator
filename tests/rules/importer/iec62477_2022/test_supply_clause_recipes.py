@@ -169,7 +169,7 @@ def _system_voltage_fact(
     fragment: RawClauseFragment,
     *,
     index: int = 0,
-    supply_kind: str = "any_supply_kind",
+    supply_kind: str = "mains",
     phase_system: str = "three_phase_it",
     earthing: str = "it",
     input_topology: str = "any_input_topology",
@@ -699,6 +699,25 @@ def test_system_voltage_keeps_its_declared_contract() -> None:
         "calculation_purpose",
     }
     assert {item.name for item in rule.outputs} == {"system_voltage_measure"}
+    assert _declared_vocabularies(rule) == {
+        "supply_kind": ("mains", "non_mains"),
+        "phase_system": (
+            "three_phase_star",
+            "three_phase_delta",
+            "three_phase_it",
+            "single_phase_it",
+            "single_phase",
+            "unspecified",
+        ),
+        "earthing_arrangement": ("tn", "tt", "it", "unspecified"),
+        "input_topology": (
+            "direct",
+            "rectified_dc",
+            "series_rectifier_bridges",
+            "isolated_secondary",
+        ),
+        "calculation_purpose": ("impulse", "temporary_overvoltage"),
+    }
 
 
 def test_a_fragment_whose_node_kinds_differ_blocks() -> None:
@@ -1442,6 +1461,22 @@ def test_one_statement_may_accept_every_evidence_route_it_names() -> None:
     assert _value(outstanding, "working_voltage_basis_permitted") is False
 
 
+def test_an_any_evidence_statement_overlapping_a_specific_one_is_refused() -> None:
+    """Two statements under one gate, sharing one accepted evidence kind between them.
+
+    Equality alone would miss this: the ``in`` row this ``any_evidence`` statement projects and
+    the ``equals`` row the ``test`` statement projects are never equal and neither is ``any``, so
+    a comparison by equality would call them disjoint even though both answer for ``test`` -- the
+    ``in`` row would then shadow the ``equals`` row over that value permanently.
+    """
+
+    fragment = _hf_fragment(("42", "kHz"))
+    facts = _confirmed_hf_facts(evidence_kinds=("any_evidence", "test"), fragment=fragment)
+
+    with pytest.raises(ClauseStructureError, match="not disjoint"):
+        _project_hf_transformer(fragment, facts)
+
+
 def test_a_dvc_gate_no_fact_states_is_not_covered() -> None:
     """No fallback: a DVC designation no reviewed fact gates through is left uncovered.
 
@@ -1684,6 +1719,42 @@ def test_both_evidence_scopes_reach_the_one_projected_rule() -> None:
         mains_fragment.nodes[0].source.page,
         evidence_fragment.nodes[0].source.page,
     ]
+
+
+def test_a_two_scope_collision_names_which_scope_each_statement_came_from() -> None:
+    """A mains statement and a non-mains statement can share one statement_index.
+
+    ``statement_index`` is numbered per route, so a mains statement 0 and a non-mains statement
+    0 that overlap would otherwise both report as "statement 0", naming no subclause.
+    """
+
+    mains_fragment = _bullet_fragment()
+    evidence_fragment = _non_mains_evidence_fragment()
+    facts = ConfirmedFacts(
+        by_route={
+            ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: (
+                _system_voltage_fact(mains_fragment, index=0, measure="phase_to_phase_rms"),
+            ),
+            SUPPLY_SYSTEM_VOLTAGE_NON_MAINS: (
+                _system_voltage_fact(
+                    evidence_fragment, index=0, measure="phase_to_artificial_neutral_rms"
+                ),
+            ),
+        }
+    )
+
+    with pytest.raises(ClauseStructureError) as excinfo:
+        project_system_voltage_resolution(
+            mains_fragment,
+            IDENTITY,
+            _StubDraft((mains_fragment, evidence_fragment)),
+            facts,
+        )
+
+    message = str(excinfo.value)
+    assert "not disjoint" in message
+    assert ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION in message
+    assert SUPPLY_SYSTEM_VOLTAGE_NON_MAINS in message
 
 
 def test_the_proposal_is_grounded_in_both_fragments() -> None:
