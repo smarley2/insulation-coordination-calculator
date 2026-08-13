@@ -48,6 +48,10 @@ from insulation_coordination.rules.importer.axis_selectors import (
     AxisSelectorReview,
     selector_sha256,
 )
+from insulation_coordination.rules.importer.clause_facts import (
+    ClauseFactCompletion,
+    ClauseFactReview,
+)
 
 if TYPE_CHECKING:
     from insulation_coordination.rules.importer.clauses import RawClauseFragment
@@ -105,6 +109,7 @@ __all__ = [
     "SemanticReferenceToken",
     "StandardRecipe",
     "TableAuditSpec",
+    "aggregate_artifact_sha256",
     "apply_table_structure",
     "axis_evidence_sha256",
     "axis_positions",
@@ -139,6 +144,21 @@ def canonical_model_sha256(value: FrozenModel) -> str:
     return hashlib.sha256(
         _canonical_json(value.model_dump(mode="json", warnings=False))
     ).hexdigest()
+
+
+def aggregate_artifact_sha256(pairs: tuple[tuple[str, str], ...]) -> str:
+    """One source-artifact digest for the ``(artifact id, digest)`` pairs a rule rests on.
+
+    A rule read from several artifacts is grounded in all of them, so its proposal carries one
+    digest over the ordered set. Lives here rather than in ``review.py`` because a projection
+    that reads several artifacts has to produce exactly the digest the approval gate re-derives
+    from the draft, and two implementations of "the same aggregate" is how they drift apart.
+    """
+
+    ordered = tuple(sorted(pairs))
+    if len(ordered) == 1:
+        return ordered[0][1]
+    return hashlib.sha256(_canonical_json(ordered)).hexdigest()
 
 
 class ImportReviewItem(FrozenModel):
@@ -634,6 +654,8 @@ class ImportedRuleDraft(DraftRulePackage):
     curve_variant_reviews: tuple[CurveVariantReview, ...] = ()
     axis_selector_proposals: tuple[AxisSelectorProposal, ...] = ()
     axis_selector_reviews: tuple[AxisSelectorReview, ...] = ()
+    clause_fact_reviews: tuple[ClauseFactReview, ...] = ()
+    clause_fact_completions: tuple[ClauseFactCompletion, ...] = ()
     extracted_equations: tuple[ExtractedEquation, ...] = ()
     semantic_proposals: tuple[SemanticProposal, ...] = ()
     source_identities: tuple[StandardIdentity, ...]
@@ -660,6 +682,8 @@ def _content_digest(
     curve_variant_reviews: tuple[CurveVariantReview, ...] = (),
     axis_selector_proposals: tuple[AxisSelectorProposal, ...] = (),
     axis_selector_reviews: tuple[AxisSelectorReview, ...] = (),
+    clause_fact_reviews: tuple[ClauseFactReview, ...] = (),
+    clause_fact_completions: tuple[ClauseFactCompletion, ...] = (),
 ) -> str:
     payload = {
         "tables": [item.model_dump(mode="json") for item in tables],
@@ -686,6 +710,10 @@ def _content_digest(
             item.model_dump(mode="json") for item in axis_selector_proposals
         ],
         "axis_selector_reviews": [item.model_dump(mode="json") for item in axis_selector_reviews],
+        "clause_fact_reviews": [item.model_dump(mode="json") for item in clause_fact_reviews],
+        "clause_fact_completions": [
+            item.model_dump(mode="json") for item in clause_fact_completions
+        ],
     }
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
 
@@ -722,6 +750,8 @@ def draft_content_digest(draft: DraftRulePackage) -> str:
         curve_variant_reviews=imported.curve_variant_reviews if imported else (),
         axis_selector_proposals=imported.axis_selector_proposals if imported else (),
         axis_selector_reviews=imported.axis_selector_reviews if imported else (),
+        clause_fact_reviews=imported.clause_fact_reviews if imported else (),
+        clause_fact_completions=imported.clause_fact_completions if imported else (),
     )
 
 
@@ -757,7 +787,14 @@ def _recipe(identity: StandardIdentity) -> StandardRecipe:
         for mapping in recipe.mappings
     )
     clauses = tuple(
-        clause.model_copy(update={"page_number": clause.page_number + offset})
+        clause.model_copy(
+            update={
+                "segments": tuple(
+                    segment.model_copy(update={"page_number": segment.page_number + offset})
+                    for segment in clause.segments
+                )
+            }
+        )
         for clause in recipe.clauses
     )
     curves = tuple(
@@ -1666,7 +1703,7 @@ def _manual_review_items(
             kind="clause",
             source=_source(
                 identity,
-                page_number=spec.page_number,
+                page_number=spec.segments[0].page_number,
                 clause=spec.clause,
             ),
             expected_contract=(
@@ -1705,8 +1742,7 @@ def _extract_real_layout(
                 for spec in recipe.tables
             )
             fragments = tuple(
-                extract_clause_fragment(pdf.pages[spec.page_number - 1], spec, identity)
-                for spec in recipe.clauses
+                extract_clause_fragment(pdf, spec, identity) for spec in recipe.clauses
             )
     except ExtractionError:
         raise

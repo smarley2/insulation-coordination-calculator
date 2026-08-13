@@ -43,6 +43,7 @@ from insulation_coordination.rules.importer.extract import (
 )
 from insulation_coordination.rules.importer.identify import (
     ClauseAuditSpec,
+    ClauseSegmentSpec,
     CurveAuditSpec,
     StandardIdentity,
 )
@@ -77,9 +78,13 @@ IDENTITY = StandardIdentity(
 SPEC = ClauseAuditSpec(
     semantic_id=ids.DVC_FAULT_APPLICABILITY,
     clause="9.9.9",
-    page_number=44,
-    expected_bbox=(70.0, 660.0, 524.0, 760.0),
-    expected_root_kind="paragraph",
+    segments=(
+        ClauseSegmentSpec(
+            page_number=44,
+            expected_bbox=(70.0, 660.0, 524.0, 760.0),
+            expected_root_kind="paragraph",
+        ),
+    ),
     output_kind="decision",
 )
 CURVE_VARIANT_ID = f"{ids.DVC_FAULT_TIME_VOLTAGE}.SF-1.1"
@@ -432,7 +437,7 @@ def test_source_jump_uses_typed_page_and_bbox(built_draft) -> None:
     model = SemanticReviewModel(built_draft)
     target = model.source_target(ids.DVC_FAULT_APPLICABILITY)
     assert target.page == 44
-    assert target.bbox == SPEC.expected_bbox
+    assert target.bbox == SPEC.segments[0].expected_bbox
     assert target.clause == "9.9.9"
     assert target.document_id == "synthetic-clause"
 

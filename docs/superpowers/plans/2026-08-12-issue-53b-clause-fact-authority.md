@@ -112,7 +112,7 @@ Modify:
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `SystemVoltageFact`, `PropagationStepFact`, `BarrierTransferFact`, `SpdReductionFact`, `HfAttenuationFact`, the `SupplyFact` union, `CitedNode`, `evidence_sha256`, `ClauseFactReview`, `ClauseFactCompletion`, `ConfirmedFacts`, and the draft fields `clause_fact_reviews` / `clause_fact_completions`.
+- Produces: `SystemVoltageFact`, `PropagationStepFact`, `BarrierTransferFact`, `SpdReductionFact`, `SpdMonitoringFact`, `HfAttenuationFact`, the `SupplyFact` union, `CitedNode`, `evidence_sha256`, `ClauseFactReview`, `ClauseFactCompletion`, `ConfirmedFacts`, and the draft fields `clause_fact_reviews` / `clause_fact_completions`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -343,8 +343,20 @@ class SpdReductionFact(_Fact):
     target_ovc: Literal["ovc_i", "ovc_ii", "ovc_iii", "ovc_iv"]
     insulation_class: Literal["functional", "basic", "supplementary", "double", "reinforced"]
     degradable: bool
-    participates_in_reduction: bool
     monitoring_obligation: Literal["required", "not_required"]
+    monitoring_reference: Identifier
+
+
+#: Monitoring is its own normative concern, not a dimension of reduction. Verified against the
+#: licensed clauses: placement and participation are dimensions only the monitoring clause's
+#: readings carry, while a reduction reading refers to the monitoring route rather than restating
+#: it. A placement field on SpdReductionFact would be a dimension its own clause never scopes.
+class SpdMonitoringFact(_Fact):
+    fact_kind: Literal["spd_monitoring"] = "spd_monitoring"
+    device_placement: Literal["internal_to_pecs", "external_to_pecs"]
+    participates_in_reduction: bool
+    monitoring_required: bool
+    compliance_evidence: Literal["visual_inspection", "monitoring_test", "not_required"]
 
 
 class HfAttenuationFact(_Fact):
@@ -360,6 +372,7 @@ SupplyFact = Annotated[
     | PropagationStepFact
     | BarrierTransferFact
     | SpdReductionFact
+    | SpdMonitoringFact
     | HfAttenuationFact,
     Field(discriminator="fact_kind"),
 ]
@@ -637,7 +650,7 @@ def test_a_route_without_facts_blocks_approval(draft_with_supply_fragments) -> N
 def test_facts_without_a_completion_record_still_block(
     draft_with_supply_fragments, hf_fact
 ) -> None:
-    """Authoring three statements where the source states four would silently narrow the rule."""
+    """Authoring fewer statements than the clause carries would silently narrow the rule."""
 
     draft = author_clause_fact(
         draft_with_supply_fragments,
@@ -993,14 +1006,39 @@ def test_a_changed_cited_node_refuses(completed_draft, hf_spec, hf_fragment) -> 
         resolve_confirmed_clause_facts(hf_spec, hf_fragment, draft)
 
 
-def test_an_uncited_sibling_node_changing_resolves_unaffected(
-    completed_draft, hf_spec, hf_fragment_with_extra_node
+def test_an_uncited_sibling_node_changing_keeps_its_siblings_reviews_current(
+    completed_system_voltage_draft, system_voltage_fragment_with_changed_third_node
 ) -> None:
-    """Only the facts that cited the changed node go stale, never the rest of the route."""
+    """Selective invalidation, on a route whose fragment really has several nodes.
 
-    facts = resolve_confirmed_clause_facts(hf_spec, hf_fragment_with_extra_node, completed_draft)
+    System voltage extracts as three bullet nodes, so a fact citing the first can be shown to
+    survive a change to the third. Propagation is the only other multi-node route and the
+    resolver skips it as the legacy exception, so this is the one route that can carry this.
 
-    assert facts.for_route("iec62477_2022.supply.hf_transformer_attenuation")
+    Both directions are asserted against the *changed* draft, and through
+    ``live_evidence_sha256``. Comparing a review's stored digest with
+    ``evidence_sha256(review.fact.node_references)`` proves nothing: both sides read the citation
+    records stored inside the fact, so every review ``author_clause_fact`` ever produced satisfies
+    it whatever happened to the document -- the exact tautology ``live_evidence_sha256`` exists to
+    break. And only the ``!=`` half catches an implementation that recomputed at fragment
+    granularity by mistake, which is the way this property is actually lost.
+    """
+
+    changed_draft = completed_system_voltage_draft.model_copy(
+        update={"raw_clause_fragments": (system_voltage_fragment_with_changed_third_node,)}
+    )
+    by_cited_node = {
+        review.fact.node_references[0].node_order: review
+        for review in changed_draft.clause_fact_reviews
+    }
+    unchanged, moved = by_cited_node[0], by_cited_node[2]
+
+    assert unchanged.evidence_sha256 == live_evidence_sha256(
+        changed_draft, unchanged.fact.node_references
+    ), "a fact citing an unchanged node keeps its own review current"
+    assert moved.evidence_sha256 != live_evidence_sha256(
+        changed_draft, moved.fact.node_references
+    ), "a fact citing the changed node goes stale"
 
 
 def test_facts_come_back_ordered_by_statement_index(completed_draft, hf_spec, hf_fragment) -> None:
@@ -1013,9 +1051,35 @@ def test_facts_come_back_ordered_by_statement_index(completed_draft, hf_spec, hf
     assert indexes == sorted(indexes)
 ```
 
-`hf_fragment_with_extra_node` is the same fragment with one **uncited** node appended, so the
-fragment's own `raw_sha256` changes while every cited node's identity and content stay the same.
-That test is the whole point of node-level binding: it must pass, not raise.
+**Correction to this plan's earlier shape, made before implementation.** The original test here
+resolved a fragment with one **uncited** node appended and asserted the route still resolves. That
+cannot pass, and not because node-level binding fails: appending a node changes the fragment's own
+`raw_sha256`, and the completion record binds exactly that hash, so the resolver refuses at the
+completion check before any fact's evidence is consulted. That refusal is correct — a fragment that
+gained a node may have gained a normative statement, so "this fact set is complete" has to be
+re-asserted — but it means route-level resolution is fragment-granular by design even though
+review invalidation is node-granular.
+
+So the two properties are asserted at the levels where they actually hold:
+
+- **Node granularity, at the review level.** A fact citing an unchanged node keeps its own review
+  current when a sibling node changes, and a fact citing the changed node does not. Assert both
+  through `live_evidence_sha256` against the draft carrying the changed fragment, never through
+  `evidence_sha256(review.fact.node_references)` — that recomputes from the citation records
+  stored inside the fact, so it is a tautology no document change can break, and it is why
+  `live_evidence_sha256` exists.
+- **Fragment granularity, at the route level.** Add a test that a fragment which gained a node
+  makes the route's completion stale and the resolver refuse, naming re-assertion of completeness
+  as the reason.
+
+`completed_system_voltage_draft` therefore has to carry at least two authored facts on the system
+voltage route, one citing node 0 and one citing node 2, and
+`system_voltage_fragment_with_changed_third_node` is that route's fragment with node 2's text
+changed and its `raw_sha256` recomputed. One fact is not enough to assert both directions.
+
+Single-node routes (`hf_transformer_attenuation`, `verified_barrier_transfer`, all three SPD
+routes) cannot distinguish the two levels at all, so they assert the simpler property: changing
+their one cited node makes both the fact review and the route completion stale.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -1051,7 +1115,7 @@ def resolve_confirmed_clause_facts(
         if not reviews:
             raise ClauseFactResolutionError(f"{route} has no authored facts")
         for review in reviews:
-            if review.evidence_sha256 != evidence_sha256(review.fact.node_references):
+            if review.evidence_sha256 != live_evidence_sha256(draft, review.fact.node_references):
                 raise ClauseFactResolutionError(
                     f"{route} statement {review.statement_index} cites evidence that has moved"
                 )
@@ -1069,8 +1133,10 @@ def resolve_confirmed_clause_facts(
     return ConfirmedFacts(by_route=by_route)
 ```
 
-Note the evidence check recomputes from the stored citations, so a citation whose node content
-changed fails at authoring time (Task 3) and one whose stored digest was tampered with fails here.
+Note the evidence check recomputes from the draft's own current nodes, the same way the approval
+gate Task 3 shipped does. Recomputing from the stored citations instead would compare a digest
+with itself: the citation records live inside the fact, so nothing a reprint does to the document
+could ever make that comparison fail.
 
 Then, at `review.py:1235`, resolve before projecting:
 
@@ -1103,8 +1169,10 @@ feat(rules): resolve reviewed clause facts before projecting (#53)
 
 Resolution turns current reviews into ConfirmedFacts and owns every refusal: no
 facts, no completion, a completion bound to an older fragment or an older fact
-set, or a fact whose cited evidence has moved. Node-level binding means a change
-to an uncited sibling node re-opens nothing.
+set, or a fact whose cited evidence has moved. Review invalidation is node-level,
+so a fact citing an unchanged node keeps its review when a sibling changes; route
+completion stays fragment-level, because a fragment that gained a node may have
+gained a statement and completeness has to be re-asserted.
 
 ClauseProjector takes ConfirmedFacts as a fourth parameter, uniformly.
 
@@ -1373,9 +1441,16 @@ Expected: `TypeError` on the fourth argument, then assertion failures naming the
 
 `project_hf_transformer_attenuation` derives its rows from its route's `HfAttenuationFact`s,
 matching on `dvc_gate` and emitting `evidence_kind` values; it raises `ClauseStructureError`
-without facts. Delete `_ATTENUATION_EVIDENCE_KINDS` and `_REQUIRED_EVIDENCE_KINDS`; keep
-`_DVC_DESIGNATIONS` and `_HF_TRANSFORMER_DVC_GATE` only if they remain a declared vocabulary
-rather than a branch list. The `threshold_reference` and `comparison_required` fields are carried
+without facts.
+
+**Correction, after this step was first written and then reviewed against the document:** this text
+said to delete `_ATTENUATION_EVIDENCE_KINDS` and `_REQUIRED_EVIDENCE_KINDS`. Deleting the first was
+wrong and was reverted. It is the declared vocabulary of an *input*, and an input's vocabulary is
+the consumer's question space, not the reviewed answer space — driving it from the authored facts
+dropped `none` from the domain, so the first question a consumer asks, designing before the
+attenuation is shown, raised instead of answering. Derive the **rows** from facts and leave both
+vocabularies declared. Keep `_DVC_DESIGNATIONS` and `_HF_TRANSFORMER_DVC_GATE` on the same
+grounds. The `threshold_reference` and `comparison_required` fields are carried
 but not yet executable: #53C item 4 turns them into the verification-result contract, and this
 task must not.
 
@@ -1406,6 +1481,220 @@ without them.
 Carried but not yet executable: the attenuation threshold reference and the
 comparison requirement, which #53C item 4 turns into a verification result, and
 the full reduction context, which is #53C item 5.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+```
+
+---
+
+### Task 6B: One clause, several physical segments
+
+**Inserted after Task 6 was written, and it corrects Task 5.** Reading clause 4.4.7.1.7 in full
+against the licensed document showed the system voltage route's evidence model is wrong, not its
+rule. The subclause for mains supply spans a page break — part of it sits at the foot of one page
+and the rest continues on the next — and the recipe's single `(page_number, expected_bbox)`
+reaches only the region inside its one rectangle. A separate subclause then covers non-mains
+supply, and had no spec at all. Task 5 deleted a branch constant and left a fact family unable to
+express every reviewed case, with no citable evidence for the statements outside the rectangle —
+which the public suite cannot see, because every fixture is synthetic.
+
+`ClauseAuditSpec` assumed *one semantic clause = one rectangle on one page*. The source disproves
+that assumption, so the fix belongs in the extraction model. Structural locators are permitted
+public content, which is exactly why a generic multi-segment mechanism is the right correction.
+
+**Files:**
+- Modify: `src/insulation_coordination/rules/importer/identify.py` (`ClauseAuditSpec`, new `ClauseSegmentSpec`)
+- Modify: `src/insulation_coordination/rules/importer/clauses.py` (fragment assembly and digest)
+- Modify: `src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/supply.py` and every other recipe declaring clause specs
+- Modify: `src/insulation_coordination/rules/importer/clause_facts.py` (`SystemVoltageFact`)
+- Test: `tests/rules/importer/` clause extraction and supply recipe modules; `tests/private/` for the real inventory
+
+**Interfaces:**
+- Produces: `ClauseSegmentSpec(page_number, expected_bbox, ...)`, `ClauseAuditSpec.segments`, a `system_voltage_resolution` evidence scope per subclause, and a widened `SystemVoltageFact`.
+
+- [ ] **Step 1: Multi-segment clause specs**
+
+`ClauseSegmentSpec` carries one page number and one bbox, plus any segment-local shape expectation.
+`ClauseAuditSpec` replaces `page_number` and `expected_bbox` with `segments: tuple[ClauseSegmentSpec, ...]`,
+minimum length one. A simple clause declares one segment; the mains system voltage subclause declares
+two. Every existing spec becomes a one-segment spec — mechanical, and it must not change any
+extracted fragment.
+
+Extraction concatenates each segment's nodes **in declared segment order**, and every node keeps its
+own page and segment provenance rather than inheriting the spec's first page. The fragment digest
+covers the ordered segment inventory *and* the extracted nodes, so changing either physical part
+makes the right evidence stale.
+
+- [ ] **Step 2: Two evidence scopes, one rule**
+
+Keep one reviewed fragment per subclause: the mains subclause is one fragment of two segments, the
+non-mains subclause a separate fragment. Do **not** merge them into a fragment whose nominal clause
+is one subclause while quietly carrying material from the other, and do **not** let physical
+pagination create runtime routes — the consumer still wants a single
+`supply.system_voltage_resolution` rule.
+
+Completion is already scoped per `(clause, rule route)`, so the rule now has two evidence scopes,
+both of which must be reviewed and complete before it projects.
+
+**Binding: do not solve this by declaring the same projected rule on two ordinary clause specs.**
+Two current behaviours make that unsafe, both verified against the code:
+
+- `_source_semantic_id` (`review.py`) resolves a projected route to a spec by returning the **first**
+  match. Worse, it short-circuits before the loop when the proposal's own identifier is itself a
+  declared spec id — which `supply.system_voltage_resolution` is — so the mains spec would win
+  before declaration order even mattered.
+- `_required_review_items` builds its gating set from `{proposal.semantic_id,
+  _source_semantic_id(proposal)}`, so the second fragment's review items would never gate the
+  proposal.
+- `package_expectations` derives typed results per clause spec from `projected_rule_ids`.
+
+Two declared evidence owners for one rule would therefore give one silent winner and a second
+fragment that contributes nothing to proposal grounding — undoing exactly what this task exists to
+fix.
+
+Introduce an explicit distinction in the generic clause model instead, along the lines of
+`projection_role = "rule" | "evidence"`:
+
+```text
+mains 4.4.7.1.7.1     role = rule       segments = [three regions]   projects the rule
+non-mains 4.4.7.1.7.2 role = evidence   segments = [one region]      contributes facts only
+```
+
+**"One segment per page" is wrong, and a literal reading of it would silently drop part of the
+clause.** Measured against the document: one region sits at the foot of the previous page, one is
+the current rectangle on the following page, and a further region sits on that *same* page
+**below** the rectangle. So the mains subclause needs **three** segments, two of them on one page,
+and the segment tuple must be ordered by reading order rather than by page. The non-mains
+subclause starts on that same page again, which is why it is its own fragment.
+
+**`_require_shape` cannot express the result as it stands.** It takes one `(kind, count)` pair and
+rejects any node whose kind differs, while the mains subclause's later region is paragraphs
+following bullets. Either give each `ClauseSegmentSpec` its own shape expectation and check
+segment-wise, or replace the pair with an ordered per-node kind sequence. Do not relax the check
+into "any kind" — the shape guard is what makes a reflowed clause stop the build.
+
+Then refine the projector validator deliberately rather than loosening it: a rule-producing clause
+requires **exactly one** projector, and an evidence-only clause **prohibits** one. "Projector
+optional for anything" is the wrong weakening, and a dummy no-op projector for the second fragment
+is the wrong dodge.
+
+The projected rule and its `SemanticProposal` must be grounded in the **aggregate** of both
+completed fact scopes, never in whichever spec a first-match lookup happens to reach. Either update
+that source-resolution mechanism for multi-fragment rules, or bypass it with an explicit aggregate
+over the exact confirmed fact and evidence sets the projector consumed. Exactly one `DecisionRule`
+and one `SemanticProposal` come out.
+
+- [ ] **Step 3: Rebuild `SystemVoltageFact` against the rule's declared inputs**
+
+Widening is not enough — a review of Tasks 4-6 verified against the document that the family is
+wrong in a way widening cannot fix. **Four of `phase_system`'s six tokens are not phase systems at
+all:** `series_rectifier_bridges` and `isolated_secondary` are verbatim members of
+`_INPUT_TOPOLOGIES`, `rectified_from_mains` is a second spelling of that tuple's `rectified_dc`,
+and `non_mains` is a member of `_SUPPLY_KINDS`. Authoring any of the four raises immediately, since
+the projector emits them as a `phase_system` matcher:
+
+```text
+three_phase_it, single_phase_it   -> project
+the other four                   -> ValidationError: Matcher on 'phase_system' uses values
+                                    outside its allowed values
+```
+
+Meanwhile the projector wires `supply_kind` and `input_topology` to `op="any"`, so both are
+declared-but-dead in every row with no fact field able to revive them. One field collapsed three
+declared inputs. This is the same defect `080f1fa` fixed for `device_placement`, four times over.
+
+So: give `SystemVoltageFact` its own `supply_kind` and `input_topology` fields drawn from the
+rule's own tuples, each with an explicit "not stated" token, keep `phase_system` to actual phase
+systems (adding the earthed arrangements stated before the page break), and emit real matchers
+for all four dimensions. Then check every value — new and existing — against the projected rule's
+declared `allowed_values`.
+
+**Also fix the empty-vocabulary crash this exposes.** The projector filters `any_purpose` out
+before feeding `calculation_purposes` into a categorical `DecisionInput`, so a fact set where every
+statement is `any_purpose` yields an empty tuple and `DecisionRule` refuses with "a categorical
+input must declare its allowed values". That is not hypothetical: **several of the clause's
+statements restrict no purpose**, so a maintainer authoring those first hits a crash naming a
+pydantic field rather than their mistake. Declare `("impulse", "temporary_overvoltage")` as a
+constant input vocabulary and derive only the rows — a declared input's vocabulary is the
+consumer's question space, not the reviewed answer space.
+
+**Do not restore `not_derived_from_mains_supply`.** The review checked the source: that deleted
+token stood for the isolated-secondary case, and the source states there that such voltages *are*
+system voltages for impulse determination. That is an applicability statement, not a measure, so it
+cannot be expressed as one — it needs its own shape or it belongs to a later slice. Say which in
+your report rather than forcing it into `measure`.
+
+Do **not** restore the deleted branch constant. The shape is
+`full source evidence -> reviewed SystemVoltageFacts -> rule rows`, never
+`partial source evidence + a public branch inventory -> rule rows`.
+
+Do **not** add system voltage to `LEGACY_BRANCH_AUTHORITY_RULE_IDS`. That set has exactly one
+member, and #53C's first acceptance criterion is removing it; a second member would mean merging
+#53B knowing its reviewed-fact authority is incomplete.
+
+- [ ] **Step 4: Tests, public then private**
+
+Public, synthetic, and written before the mechanism:
+
+- A two-segment clause spec whose segments carry nodes 1-2 and 3-4 extracts **one** fragment with a
+  stable ordered node inventory, and each node retains its own segment and page provenance.
+- The fragment digest changes when the segment inventory changes, not only when node content does.
+- Changing a segment-1 node leaves a fact citing only segment-2 nodes current at the review level,
+  while a fact citing a segment-1 node goes stale. This is where node-level evidence finally earns
+  its keep — every single-node route so far could not distinguish it. Assert currency at the review
+  level via `live_evidence_sha256`; route-level resolution still refuses, because the fragment's own
+  hash changed and completeness must be re-asserted.
+- Every pre-existing one-segment spec extracts exactly the fragment it extracted before.
+
+The two-scope arrangement needs its own four:
+
+```text
+both scopes complete        -> exactly one system_voltage_resolution rule and one proposal
+mains scope incomplete      -> no projection
+non-mains scope incomplete  -> no projection
+either fragment or fact set changes -> that single rule and proposal go stale
+```
+
+And one more that kills the class of bug rather than the instance: **reverse the order of the two
+clause specs in the recipe and prove the projected rule and its provenance are identical.** Any
+accidental "first declared spec wins" dependency fails that test, which is the whole reason the
+explicit role exists instead of two look-alike specs.
+
+Private, licensed: prove the real system voltage evidence inventory is complete across both scopes,
+by fact family and typed identity. Keep the count and the per-route inventory private, consistent
+with the decision already recorded for the other routes.
+
+- [ ] **Step 5: Gates and commit**
+
+```text
+feat(rules): one clause may span several physical segments (#53)
+
+ClauseAuditSpec assumed one semantic clause is one rectangle on one page. The
+mains system-voltage subclause disproves it: its first cases sit at the foot of
+one page, the next continue at the head of the following one, and the rest resume
+on that same later page below the declared rectangle, so the single rectangle
+reached only the middle region, and the sibling non-mains subclause had no spec
+at all. A slice whose premise is that the licensed clause is the authority cannot
+read one region of it.
+
+ClauseAuditSpec now declares an ordered tuple of segments, each one page and one
+bbox. Extraction concatenates their nodes in declared order, every node keeps its
+own segment and page provenance, and the fragment digest covers the segment
+inventory as well as the nodes, so changing either physical part re-opens the
+right evidence. Every other clause declares a single segment and extracts exactly
+what it did before.
+
+The two subclauses stay two reviewed fragments feeding one rule, rather than one
+fragment spanning both or one runtime route per page: completion is scoped per
+clause and rule route, so the rule now has two evidence scopes and needs both.
+Physical pagination is provenance, not application semantics.
+
+SystemVoltageFact widens to express every reviewed case rather than only those
+the partial fragment happened to reach. The deleted branch inventory is not
+restored: the authority is the evidence, not a constant standing in for the part
+of the clause nobody extracted.
+
+Refs #53
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 ```
@@ -1604,10 +1893,42 @@ with reviews but no current completion, `stale` when a completion's digests no l
 `canonical_model_sha256(node)` so the reviewer's citation is exact.
 
 `ClauseFactReviewDialog` is a four-column table — route, authored count, status, fragment — plus a
-node pane showing `nodes(...)` for the selected route, and a Close button. Authoring a fact's
-typed fields is the next increment; this task's deliverable is that the reviewer can see every
-route, read its nodes, and that `author`/`complete` are the seam the editor will call. Do not add
-an editor that is not tested.
+node pane showing `nodes(...)` for the selected route.
+
+**The fact editor ships here, in this task.** An earlier draft deferred it, and that repeats the
+mistake #53A made: its axis dialog shipped without a confirm affordance, so the gate could only be
+satisfied from test code, and the affordance had to be retrofitted before merge. #53B's whole claim
+is that a maintainer is the authority for normative facts. A slice that ends with a gate only an API
+call can clear is architecturally present and operationally incomplete, and it would let Task 9
+"prove" the workflow while the shipped surface cannot perform it.
+
+Minimum usable surface, and no more:
+
+```text
+route / fact inventory
+source-node reader
+fact-family selector
+typed field editor
+author / replace / delete fact
+completion action
+status + stale indicators
+```
+
+No wizard, no automation, no source-derived suggestions, no clever defaults. The form may be
+family-specific and boring — six families, each with a handful of `Literal` dimensions, so a combo
+per field read from the model's own annotations is enough. Reuse the pattern `ui/axis_review.py`
+already uses for exactly this, including its rule that a dimension starts unchosen and the confirm
+action stays disabled until every dimension has a value: a reviewer must never record a reading they
+did not pick.
+
+The model keeps every mutation behind `author_clause_fact` and `record_fact_completion`, so Qt holds
+no review logic and every refusal a reviewer can trigger — wrong family for the route, a citation to
+another clause's node, a duplicate statement — surfaces from the importer rather than being
+re-implemented in the dialog.
+
+So #53B finishes as `licensed PDF -> extracted evidence -> maintainer authors typed facts in the UI
+-> completion -> fact-derived rules -> approved package`, rather than `licensed PDF -> test code
+authors facts -> package passes`.
 
 `raw_text` reaches the UI because a reviewer must read the licensed clause to author a statement —
 it is displayed from the private draft and never written to a committed file.

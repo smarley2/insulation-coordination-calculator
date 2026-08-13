@@ -34,7 +34,9 @@ Per-family payloads, fixed by the source reading that preceded this design:
 SystemVoltageFact    phase_system, earthing, purpose, measure
 PropagationStepFact  step, evaluated_side, operation, rating_source_side
 SpdReductionFact     supply_kind, source_ovc, target_ovc, insulation_class,
-                     degradable, participates_in_reduction, monitoring_obligation
+                     degradable, monitoring_obligation, monitoring_reference
+SpdMonitoringFact    device_placement, participates_in_reduction, monitoring_required,
+                     compliance_evidence
 HfAttenuationFact    dvc_gate, evidence_kind, threshold_reference, comparison_required
 BarrierTransferFact  isolation_present, combined_circuit_rule
 ```
@@ -96,15 +98,32 @@ class ClauseFactReview(FrozenModel):
 ```
 
 `evidence_sha256` is the canonical digest over the sorted tuple of
-`(fragment_id, node_order, canonical_model_sha256(node))` for every node the fact cites. A fact
-may therefore rest on more than one fragment, which the SPD routes require: the reduction
-statements rest on their own clause, and the monitoring-obligation statement additionally cites
-the monitoring clause.
+`(fragment_id, node_order, canonical_model_sha256(node))` for every node the fact cites. The model
+therefore permits a fact to rest on more than one fragment, where a statement genuinely does.
 
-The granularity is deliberate. If the monitoring clause changes while the reduction clause does
-not, exactly the facts citing the monitoring clause go stale. A change to an uncited sibling node
-in the same fragment re-opens nothing, because no fact ever rested on it. Reordering nodes does
-invalidate, because a node's order is part of the identity a fact cited.
+The SPD routes are not such a case, which the family split settled: the reduction clause refers to
+the monitoring obligation, it does not restate it, so `SpdReductionFact.monitoring_reference` is an
+`Identifier` naming the monitoring route rather than a citation of it. A reduction fact cites only
+its own clause. Every fact must cite its own route's fragment, and may cite a second only in
+addition — never instead.
+
+The granularity is deliberate. Reprinting the monitoring clause re-opens the `.monitoring` route
+alone: `monitoring_obligation="required"` stays current on the mains and non-mains reduction facts,
+because their own clause still says monitoring is required per that clause. What changed is what
+the monitoring clause *requires*, and the monitoring route re-opens to carry it. Reordering nodes
+does invalidate, because a node's order is part of the identity a fact cited.
+
+How much that granularity buys depends on the route, and the claim is narrower than it first
+looks: node-level evidence permits **selective** invalidation only where a route's fragment
+carries several independently citable nodes. Measured against the licensed document, only
+`supply.system_voltage_resolution` (three bullet nodes) and `supply.multiple_source_propagation`
+(four) do — and propagation is the legacy route resolution skips. Every other supply route
+extracts as a single paragraph node, so for those routes node-level and fragment-level
+invalidation are the same thing. Nothing is lost by that; the mechanism is simply not doing extra
+work where a clause has one node. It does mean a regression test for selective invalidation
+belongs on a genuinely multi-node route, and that a single-node route should instead prove the
+property it actually has: changing its one cited node makes both the fact review and the route's
+completion stale.
 
 ### Completeness: a reviewed assertion, not a published number
 
@@ -183,12 +202,15 @@ belongs to #53C. It therefore keeps legacy branch authority in #53B, recorded in
 3. **Completion gating**, one case each: facts authored with no completion record; completion bound
    to a stale fragment hash; completion bound to a stale fact-set digest; no facts at all. All
    block approval.
-4. **Evidence granularity.** Changing a cited node re-opens exactly the facts citing it; changing
-   an uncited node in the same fragment re-opens nothing; reordering nodes re-opens the facts that
-   cited the moved nodes.
-5. **The provenance correction.** The SPD identifier's two routes read the mains and non-mains
-   fragments; the monitoring clause remains extracted and is cited by the monitoring-obligation
-   fact rather than being the reduction's source.
+4. **Evidence granularity.** Changing a cited node re-opens exactly the facts citing it, and
+   reordering nodes re-opens the facts that cited the moved nodes. Selective invalidation — an
+   uncited node changing in the same fragment re-opening nothing — is asserted on a route whose
+   fragment really has several nodes, which means `supply.system_voltage_resolution`, since
+   propagation is the legacy route resolution skips. Single-node routes assert instead that
+   changing their one cited node makes both the fact review and the route completion stale.
+5. **The provenance correction.** The SPD identifier's reduction routes read the mains and
+   non-mains fragments, each citing only its own clause; the monitoring clause is no longer the
+   reduction's source but the `.monitoring` route's own fragment, carrying its own fact family.
 6. **Private, licensed.** Per-route expected statement inventory by fact family and typed identity,
    and a reviewed, completed licensed draft projecting the three faithfully-ported rules
    identically to today.

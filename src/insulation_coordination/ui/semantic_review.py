@@ -128,13 +128,21 @@ class SemanticReviewModel:
 
         bboxes: list[tuple[float, float, float, float]] = []
         for recipe in RECIPES:
-            clause_matches = tuple(
-                spec.expected_bbox for spec in recipe.clauses if spec.semantic_id == semantic_id
-            )
-            table_matches = tuple(
+            for clause_spec in recipe.clauses:
+                if clause_spec.semantic_id != semantic_id:
+                    continue
+                # A clause may occupy several regions across two pages, and the jump shows one:
+                # the first region on the page the rule's own source names, which is where the
+                # clause starts reading.
+                on_page = [
+                    segment.expected_bbox
+                    for segment in clause_spec.segments
+                    if segment.page_number == source.page
+                ]
+                bboxes.append(on_page[0] if on_page else clause_spec.segments[0].expected_bbox)
+            bboxes.extend(
                 spec.expected_bbox for spec in recipe.tables if spec.semantic_id == semantic_id
             )
-            bboxes.extend(clause_matches + table_matches)
         if len(set(bboxes)) > 1:
             raise ValueError(f"conflicting recipe bboxes for {semantic_id}")
         if bboxes:

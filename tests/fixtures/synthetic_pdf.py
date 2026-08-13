@@ -164,6 +164,56 @@ def create_clause_pdf(path: Path) -> None:
         writer.write(target)
 
 
+def create_multi_segment_clause_pdf(path: Path) -> None:
+    """Three-page synthetic document whose one clause occupies three regions.
+
+    Neutral content only. Page 2 carries the clause's first two bullets at its foot, page 3
+    the next two at its head, and page 3 again a paragraph region further down -- the shape a
+    subclause takes when it runs across a page break and then resumes below an intervening
+    region. Coordinates are pdfplumber "top" space; PDF y = 792 - top.
+    """
+
+    writer = PdfWriter()
+    for page_index in range(3):
+        page = writer.add_blank_page(width=_PAGE_WIDTH, height=_PAGE_HEIGHT)
+        page[NameObject("/Resources")] = DictionaryObject(
+            {
+                NameObject("/Font"): DictionaryObject(
+                    {
+                        NameObject("/F1"): DictionaryObject(
+                            {
+                                NameObject("/Type"): NameObject("/Font"),
+                                NameObject("/Subtype"): NameObject("/Type1"),
+                                NameObject("/BaseFont"): NameObject("/Helvetica"),
+                            }
+                        )
+                    }
+                )
+            }
+        )
+        if page_index == 1:
+            # Tops 592 and 612, inside a foot region (70, 560)-(540, 640).
+            commands = [
+                _text_command(80, 200, "SYMBOL first neutral condition not exceeding 30 s"),
+                _text_command(80, 180, "SYMBOL second neutral condition"),
+            ]
+        elif page_index == 2:
+            # Tops 92 and 112 in a head region, and 392 in a later paragraph region.
+            commands = [
+                _text_command(80, 700, "SYMBOL third neutral condition"),
+                _text_command(80, 680, "SYMBOL fourth neutral condition"),
+                _text_command(80, 400, "Neutral running prose after the conditions."),
+            ]
+        else:
+            commands = [_text_command(72, 700, f"synthetic filler page {page_index + 1}")]
+        stream = DecodedStreamObject()
+        stream.set_data(b"\n".join(commands))
+        page[NameObject("/Contents")] = writer._add_object(stream)
+    writer.add_metadata({"/Title": "synthetic segments fixture", "/ICC-Synthetic": "true"})
+    with path.open("wb") as target:
+        writer.write(target)
+
+
 def create_paragraph_clause_pdf(path: Path) -> None:
     """Three-page synthetic document with one wrapped paragraph and figure slots."""
 

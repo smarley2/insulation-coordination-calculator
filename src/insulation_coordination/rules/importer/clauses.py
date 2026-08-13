@@ -25,6 +25,7 @@ from insulation_coordination.rules.importer.extract import (
 )
 from insulation_coordination.rules.importer.identify import (
     ClauseAuditSpec,
+    ClauseSegmentSpec,
     StandardIdentity,
 )
 
@@ -53,6 +54,10 @@ class ClauseNode(FrozenModel):
     order: int = Field(ge=0)
     kind: Literal["paragraph", "bullet", "alternative"]
     raw_text: str = Field(max_length=4_000)
+    #: Which of the clause's declared segments this node was read from. Provenance, never
+    #: application semantics: a node keeps the page and region it came from so a fact citing
+    #: it says which physical part of the clause it rests on.
+    segment_index: int = Field(default=0, ge=0)
     source: SourceReference
 
 
@@ -68,6 +73,11 @@ class RawClauseFragment(FrozenModel):
     raw_sha256: str = Field(pattern=r"[0-9a-f]{64}")
     nodes: tuple[ClauseNode, ...] = Field(min_length=1)
     tokens: tuple[ClauseToken, ...]
+    #: The ordered physical regions this fragment was read from, so the fragment's own hash
+    #: covers the segment inventory as well as the extracted nodes: a clause re-declared over
+    #: a different region re-opens its facts even where the text it reached is unchanged.
+    #: Empty only for a fragment nothing extracted -- a synthetic one built in a test.
+    segments: tuple[ClauseSegmentSpec, ...] = ()
     source: SourceReference
 
     @model_validator(mode="after")
@@ -163,62 +173,101 @@ def _tokens_for_node(
     return tuple(tokens)
 
 
-def extract_clause_fragment(
+def _segment_nodes(
     page: pdfplumber.page.Page,
-    spec: ClauseAuditSpec,
-    identity: StandardIdentity,
-) -> RawClauseFragment:
-    """Extract one recipe-declared clause fragment, failing closed on surprises."""
+    semantic_id: str,
+    segment: ClauseSegmentSpec,
+    segment_index: int,
+    base: SourceReference,
+) -> list[ClauseNode]:
+    """Every node of one declared region, failing closed on a shape surprise.
 
-    base = SourceReference(
-        document_id=identity.recipe_id,
-        standard=identity.standard,
-        edition=identity.edition,
-        page=spec.page_number,
-        clause=spec.clause,
-    )
-    lines = _lines(page, spec.expected_bbox)
+    Checked per region rather than per clause: a clause whose parts are a bullet list and
+    then running prose would pass no single root-shape check, and relaxing the check into
+    "any kind" is what would let a reflowed clause project silently.
+    """
+
+    lines = _lines(page, segment.expected_bbox)
     if not lines:
-        raise ExtractionError(f"clause structure mismatch for {spec.semantic_id}: bbox is empty")
+        raise ExtractionError(
+            f"clause structure mismatch for {semantic_id}: segment {segment_index} bbox is empty"
+        )
     bullets = [line for line in lines if _is_bullet(line.text)]
-    if spec.expected_root_kind == "bullets":
+    if segment.expected_root_kind == "bullets":
         if len(bullets) < 2:
             raise ExtractionError(
-                f"clause structure mismatch for {spec.semantic_id}: expected bullet list"
+                f"clause structure mismatch for {semantic_id}: segment {segment_index} "
+                "expected bullet list"
             )
     elif bullets:
         raise ExtractionError(
-            f"clause structure mismatch for {spec.semantic_id}: expected a paragraph"
+            f"clause structure mismatch for {semantic_id}: segment {segment_index} "
+            "expected a paragraph"
         )
 
     nodes: list[ClauseNode] = []
-    if spec.expected_root_kind == "paragraph":
+    if segment.expected_root_kind == "paragraph":
         nodes.append(
             ClauseNode(
                 order=0,
                 kind="paragraph",
                 raw_text=" ".join(line.text.strip() for line in lines),
+                segment_index=segment_index,
                 source=base.model_copy(
                     update={"row": f"paragraph starting at line top {lines[0].top:.1f}"}
                 ),
             )
         )
-    else:
-        seen_bullet = False
-        for line in lines:
-            if _is_bullet(line.text):
-                seen_bullet = True
-                nodes.append(
-                    ClauseNode(
-                        order=len(nodes),
-                        kind="bullet",
-                        raw_text=_strip_bullet(line.text),
-                        source=base.model_copy(update={"row": f"line top {line.top:.1f}"}),
-                    )
+        return nodes
+    seen_bullet = False
+    for line in lines:
+        if _is_bullet(line.text):
+            seen_bullet = True
+            nodes.append(
+                ClauseNode(
+                    order=len(nodes),
+                    kind="bullet",
+                    raw_text=_strip_bullet(line.text),
+                    segment_index=segment_index,
+                    source=base.model_copy(update={"row": f"line top {line.top:.1f}"}),
                 )
-            elif seen_bullet and nodes:
-                merged = f"{nodes[-1].raw_text} {line.text.strip()}"
-                nodes[-1] = nodes[-1].model_copy(update={"raw_text": merged})
+            )
+        elif seen_bullet and nodes:
+            merged = f"{nodes[-1].raw_text} {line.text.strip()}"
+            nodes[-1] = nodes[-1].model_copy(update={"raw_text": merged})
+    return nodes
+
+
+def extract_clause_fragment(
+    pdf: pdfplumber.pdf.PDF,
+    spec: ClauseAuditSpec,
+    identity: StandardIdentity,
+) -> RawClauseFragment:
+    """Extract one recipe-declared clause fragment, failing closed on surprises.
+
+    One fragment per semantic clause however many physical regions it occupies: the declared
+    segments are read in declared order, their nodes concatenated in that order, and every
+    node keeps the page and segment it came from rather than inheriting the clause's first.
+    """
+
+    fragment_source = SourceReference(
+        document_id=identity.recipe_id,
+        standard=identity.standard,
+        edition=identity.edition,
+        page=spec.segments[0].page_number,
+        clause=spec.clause,
+    )
+    nodes: list[ClauseNode] = []
+    for segment_index, segment in enumerate(spec.segments):
+        nodes.extend(
+            _segment_nodes(
+                pdf.pages[segment.page_number - 1],
+                spec.semantic_id,
+                segment,
+                segment_index,
+                fragment_source.model_copy(update={"page": segment.page_number}),
+            )
+        )
     nodes = [node.model_copy(update={"order": order}) for order, node in enumerate(nodes)]
     tokens = tuple(token for node in nodes for token in _tokens_for_node(node, node.source))
     fragment = RawClauseFragment(
@@ -226,7 +275,8 @@ def extract_clause_fragment(
         raw_sha256="0" * 64,
         nodes=tuple(nodes),
         tokens=tokens,
-        source=base,
+        segments=spec.segments,
+        source=fragment_source,
     )
     return fragment.model_copy(update={"raw_sha256": canonical_model_sha256(fragment)})
 

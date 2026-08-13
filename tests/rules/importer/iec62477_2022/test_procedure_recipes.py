@@ -220,7 +220,9 @@ def test_internal_spd_monitoring_references_the_supply_decision_rather_than_rest
     )
 
     procedure = next(rule for rule in rules if isinstance(rule, ProcedureRule))
-    assert procedure.applicability_rule_id == ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS
+    # A route the recipe actually projects. The bare identifier stopped being projected when the
+    # reduction rule split per supply kind, so referencing it would name no rule at all.
+    assert procedure.applicability_rule_id == f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring"
     assert procedure.applicability == ""
 
 

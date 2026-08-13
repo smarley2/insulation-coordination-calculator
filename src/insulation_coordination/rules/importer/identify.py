@@ -555,18 +555,35 @@ class CrossStandardCheckSpec(FrozenModel):
         return self
 
 
+class ClauseSegmentSpec(FrozenModel):
+    """One physical region of a semantic clause: one page, one bbox, one root shape.
+
+    A clause is a semantic unit; a page rectangle is not. A subclause whose statements
+    continue across a page break, or which resumes below an intervening region on the same
+    page, occupies several regions in reading order, and a spec declaring only one of them
+    extracts only the part inside it. Each region carries its own root shape because the
+    parts of one clause need not share one: a region of bullets may be followed by a region
+    of running prose.
+    """
+
+    page_number: int = Field(ge=1)
+    expected_bbox: tuple[float, float, float, float]
+    expected_root_kind: Literal["paragraph", "bullets"]
+
+
 class ClauseAuditSpec(FrozenModel):
     """Structural contract for one reviewed clause fragment.
 
-    Layout facts only: page, bbox, root shape, and output kind. The recipe never
+    Layout facts only: the ordered physical segments, and the output kind. The recipe never
     stores clause wording; extracted text stays in private raw fragments.
     """
 
     semantic_id: Identifier
     clause: ReferenceText
-    page_number: int = Field(ge=1)
-    expected_bbox: tuple[float, float, float, float]
-    expected_root_kind: Literal["paragraph", "bullets"]
+    #: The clause's physical regions in reading order, never in page order: two regions of
+    #: one page may be separated by a region belonging to another clause, and the later of
+    #: the two can still be the earlier reading.
+    segments: tuple[ClauseSegmentSpec, ...] = Field(min_length=1)
     output_kind: Literal["decision", "procedure"]
     #: The rules this clause projects, when they are not exactly one carrying the spec's own
     #: identifier -- the guidance a source NOTE becomes, or one route per gate where the
@@ -575,6 +592,27 @@ class ClauseAuditSpec(FrozenModel):
     #: Declared so a projected route inherits this clause's review inventory and source
     #: artifact, while an unrelated rule that merely starts with the same identifier does not.
     projected_rule_ids: tuple[Identifier, ...] = ()
+    #: ``"rule"`` projects this clause's fragment into typed rules. ``"evidence"`` contributes
+    #: reviewed facts to another clause's rule and projects nothing of its own. Two subclauses
+    #: may state one rule between them, and the alternative -- declaring the same projected
+    #: rule on two ordinary specs -- silently elects one of them: ``_source_semantic_id``
+    #: returns the first match, so the second fragment's review items would never gate the
+    #: rule's proposal and its facts would never reach the projection.
+    projection_role: Literal["rule", "evidence"] = "rule"
+    #: The evidence-only clause specs whose reviewed facts this clause's rule also rests on.
+    #: Every one of them must be reviewed and complete before the rule projects, and the
+    #: rule's proposal is grounded in the aggregate of their fragments as well as its own.
+    evidence_clause_ids: tuple[Identifier, ...] = ()
+
+    @model_validator(mode="after")
+    def _evidence_clauses_project_nothing(self) -> ClauseAuditSpec:
+        if self.projection_role == "evidence" and (
+            self.projected_rule_ids or self.evidence_clause_ids
+        ):
+            raise ValueError("an evidence-only clause spec projects no rule and owns no evidence")
+        if self.semantic_id in self.evidence_clause_ids:
+            raise ValueError("a clause spec cannot be its own evidence")
+        return self
 
 
 class CurveAuditSpec(FrozenModel):
@@ -615,9 +653,12 @@ type GridProjector = Callable[[Any, StandardIdentity, Any], tuple[tuple[Any, ...
 #: only the test cross-reference matrix carries, a preconditioning requirement stated in two
 #: clauses and a table row -- cannot be projected from one fragment alone, and reading the
 #: sibling artifacts from the draft keeps that cross-reading inside the projection instead of
-#: spreading a second mechanism across review.
+#: spreading a second mechanism across review. The fourth parameter carries the caller's
+#: already-resolved ``ConfirmedFacts`` for the spec's routes -- reviewed, complete and current,
+#: or empty for a route whose branch authority stays in its recipe -- uniformly across every
+#: registered projector, whether or not a given projector reads it yet.
 type ClauseProjector = Callable[
-    [Any, StandardIdentity, Any], tuple[tuple[Any, ...], tuple[Any, ...]]
+    [Any, StandardIdentity, Any, Any], tuple[tuple[Any, ...], tuple[Any, ...]]
 ]
 
 
@@ -653,11 +694,40 @@ class StandardRecipe(FrozenModel):
     @model_validator(mode="after")
     def _projectors_match_declared_specs(self) -> StandardRecipe:
         table_ids = {spec.semantic_id for spec in self.tables}
-        clause_ids = {spec.semantic_id for spec in self.clauses}
         if set(self.grid_projectors) - table_ids:
             raise ValueError("grid projector refers to an undeclared table spec")
-        if set(self.clause_projectors) != clause_ids:
-            raise ValueError("every clause spec needs exactly one projector")
+        # Refined per role rather than relaxed to "a projector is optional": a rule-producing
+        # clause needs exactly one, and an evidence-only clause must not have one at all --
+        # a no-op projector standing in for the second fragment of a two-fragment rule would
+        # put a second empty rule into the package.
+        evidence_ids = {
+            spec.semantic_id for spec in self.clauses if spec.projection_role == "evidence"
+        }
+        rule_ids = {spec.semantic_id for spec in self.clauses} - evidence_ids
+        if set(self.clause_projectors) & evidence_ids:
+            raise ValueError("an evidence-only clause spec must not register a projector")
+        if set(self.clause_projectors) != rule_ids:
+            raise ValueError("every rule-producing clause spec needs exactly one projector")
+        for clause_spec in self.clauses:
+            unknown = set(clause_spec.evidence_clause_ids) - evidence_ids
+            if unknown:
+                raise ValueError(
+                    "clause evidence must be a declared evidence-only clause spec of the "
+                    f"same recipe: {sorted(unknown)}"
+                )
+        # The converse of the check above: an evidence-only spec nobody's ``evidence_clause_ids``
+        # names is extracted, gated for facts and completion, and its facts reach no rule -- the
+        # silent-second-fragment hazard ``projection_role`` exists to close, left open in the one
+        # direction this check does not cover.
+        referenced_evidence_ids = {
+            evidence_id for spec in self.clauses for evidence_id in spec.evidence_clause_ids
+        }
+        orphaned = evidence_ids - referenced_evidence_ids
+        if orphaned:
+            raise ValueError(
+                "an evidence-only clause spec must be referenced by a rule-producing clause "
+                f"spec's evidence_clause_ids: {sorted(orphaned)}"
+            )
         for spec in self.tables:
             if spec.semantic_id in self.grid_projectors:
                 continue

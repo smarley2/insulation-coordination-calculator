@@ -54,6 +54,14 @@ from insulation_coordination.rules.importer.axis_selectors import (
     ConfirmedAxes,
     selector_sha256,
 )
+from insulation_coordination.rules.importer.clause_facts import (
+    CitedNode,
+    ClauseFactCompletion,
+    ClauseFactReview,
+    ConfirmedFacts,
+    SupplyFact,
+    evidence_sha256,
+)
 from insulation_coordination.rules.importer.curves import (
     ManualPlotCalibration,
     RawFigure,
@@ -69,12 +77,14 @@ from insulation_coordination.rules.importer.extract import (
     RawGrid,
     RawGridCell,
     SemanticProposal,
+    aggregate_artifact_sha256,
     axis_evidence_sha256,
     axis_positions,
     canonical_model_sha256,
     is_recipe_derived,
 )
 from insulation_coordination.rules.importer.identify import (
+    ClauseAuditSpec,
     CurveAuditSpec,
     FormulaAuditSpec,
     MappingAuditSpec,
@@ -158,12 +168,11 @@ def proposal_for(draft: ImportedRuleDraft, semantic_id: str) -> SemanticProposal
 def _aggregate_artifact_pairs(pairs: tuple[tuple[str, str], ...]) -> str:
     if not pairs:
         raise ApprovalError("semantic proposal has no current source artifact")
-    ordered = tuple(sorted(pairs))
-    if len({artifact_id for artifact_id, _ in ordered}) != len(ordered):
+    if len({artifact_id for artifact_id, _ in pairs}) != len(pairs):
         raise ApprovalError("semantic proposal has duplicate source artifact IDs")
-    if len(ordered) == 1:
-        return ordered[0][1]
-    return hashlib.sha256(_canonical_json(ordered)).hexdigest()
+    # Through the same function a multi-artifact projection grounds its own proposal with, so
+    # the gate cannot re-derive a different aggregate from the same artifacts.
+    return aggregate_artifact_sha256(pairs)
 
 
 def _review_item_artifact_id(item: ImportReviewItem) -> str:
@@ -203,12 +212,33 @@ def _source_semantic_id(proposal: SemanticProposal) -> str:
     return proposal.semantic_id
 
 
+def _clause_evidence_semantic_ids(source_semantic_id: str) -> frozenset[str]:
+    """The evidence-only clause specs the named clause spec's rule also rests on.
+
+    A rule read from two subclauses is grounded in both, so both fragments' review items gate
+    its proposal and both fragments' hashes enter its source digest. Without this the second
+    fragment would contribute nothing to the proposal's grounding, which is the whole hazard
+    ``projection_role`` exists to avoid.
+    """
+    from insulation_coordination.rules.importer.recipes import RECIPES
+
+    return frozenset(
+        evidence_id
+        for recipe in RECIPES
+        for spec in recipe.clauses
+        if spec.semantic_id == source_semantic_id
+        for evidence_id in spec.evidence_clause_ids
+    )
+
+
 def _required_review_items(
     draft: ImportedRuleDraft,
     proposal: SemanticProposal,
 ) -> tuple[ImportReviewItem, ...]:
     rule = _rule_for(draft, proposal)
-    semantic_ids = {proposal.semantic_id, _source_semantic_id(proposal)}
+    source_semantic_id = _source_semantic_id(proposal)
+    semantic_ids = {proposal.semantic_id, source_semantic_id}
+    semantic_ids.update(_clause_evidence_semantic_ids(source_semantic_id))
     if proposal.rule_kind == "curve":
         assert isinstance(rule, PiecewiseCurveRule)
         semantic_ids.update(variant.id for variant in rule.variants)
@@ -286,16 +316,21 @@ def _current_source_artifact_sha256(
     )
     if grids:
         return _aggregate_artifact_pairs(grids)
+    fragment_ids = {
+        proposal.semantic_id,
+        f"raw-{proposal.semantic_id}",
+        source_semantic_id,
+        f"raw-{source_semantic_id}",
+    }
+    # A rule two subclauses state between them is grounded in both fragments, never in
+    # whichever one the spec lookup above happens to reach first.
+    fragment_ids.update(
+        f"raw-{evidence_id}" for evidence_id in _clause_evidence_semantic_ids(source_semantic_id)
+    )
     fragments = tuple(
         (fragment.id, canonical_model_sha256(fragment))
         for fragment in draft.raw_clause_fragments
-        if fragment.id
-        in {
-            proposal.semantic_id,
-            f"raw-{proposal.semantic_id}",
-            source_semantic_id,
-            f"raw-{source_semantic_id}",
-        }
+        if fragment.id in fragment_ids
     )
     if fragments:
         return _aggregate_artifact_pairs(fragments)
@@ -1215,13 +1250,20 @@ def build_reviewed_draft(
             if mapping is not None:
                 mappings[mapping.id] = mapping
         for clause_spec in recipe.clauses:
+            if clause_spec.projection_role == "evidence":
+                # Its fragment is reviewed evidence for another clause's rule, and it projects
+                # nothing of its own. The recipe refuses to register a projector for it.
+                continue
             fragment = fragments.get(f"raw-{clause_spec.semantic_id}")
-            if fragment is None:
+            required = (clause_spec.semantic_id, *clause_spec.evidence_clause_ids)
+            if any(f"raw-{item}" not in fragments for item in required):
                 # A draft extracted before this clause recipe existed has no
                 # fragment; approval gating reports the missing required content.
                 continue
+            assert fragment is not None
+            confirmed_facts = resolve_confirmed_clause_facts(clause_spec, draft)
             projected, _proposals = recipe.clause_projectors[clause_spec.semantic_id](
-                fragment, identity, draft
+                fragment, identity, draft, confirmed_facts
             )
             collect(projected)
 
@@ -1373,7 +1415,7 @@ def required_content_report(draft: ImportedRuleDraft) -> tuple[RequiredContentSt
                     kind="clause",
                     semantic_id=clause_spec.semantic_id,
                     source_table=None,
-                    page_number=clause_spec.page_number,
+                    page_number=clause_spec.segments[0].page_number,
                     clause=clause_spec.clause,
                     present=f"raw-{clause_spec.semantic_id}" in fragment_ids,
                 )
@@ -2068,6 +2110,326 @@ def review_curve_variant(
     ):
         return mark_proposal_reviewed(changed, rule.id, actor=actor, notes=notes)
     return changed
+
+
+# --- reviewed clause facts ---------------------------------------------------------
+
+
+def fact_set_sha256(facts: tuple[SupplyFact, ...]) -> str:
+    """Digest of one route's authored fact set, so a completion record binds what it approved."""
+
+    members = sorted(canonical_model_sha256(fact) for fact in facts)
+    return hashlib.sha256("\n".join(members).encode("utf-8")).hexdigest()
+
+
+def live_evidence_sha256(draft: ImportedRuleDraft, nodes: tuple[CitedNode, ...]) -> str | None:
+    """One fact's evidence digest, recomputed from the draft's own current fragment nodes.
+
+    ``None`` for a citation this draft cannot resolve, which no recorded digest can equal, so
+    such a fact reads as stale rather than as silently current -- the same contract
+    ``live_axis_evidence_sha256`` keeps for an axis position.
+    """
+
+    live: list[CitedNode] = []
+    for cited in nodes:
+        fragment = next(
+            (item for item in draft.raw_clause_fragments if item.id == cited.fragment_id), None
+        )
+        node = (
+            next((item for item in fragment.nodes if item.order == cited.node_order), None)
+            if fragment is not None
+            else None
+        )
+        if node is None:
+            return None
+        live.append(cited.model_copy(update={"node_sha256": canonical_model_sha256(node)}))
+    return evidence_sha256(tuple(live))
+
+
+def clause_fact_defect(rule_route: str, fact: SupplyFact) -> str | None:
+    """Why one fact cannot stand for one route, or ``None`` if it can.
+
+    Identity rather than evidence, the half ``axis_review_is_current`` keeps for an axis position
+    and the digests alone cannot: the route must be one the recipe declares, the fact must belong
+    to the family that route's clause states, and it must cite that route's own fragment. Without
+    all three a fact that cannot express a route's branches -- or one resting entirely on another
+    clause -- certifies the route as reviewed, and reprinting the cited clause blocks a route whose
+    rule it never stated.
+
+    Citing the route's own fragment is required *as well as*, never instead of: a statement that
+    genuinely rests on a second fragment may cite it too. Authoring raises on a defect and the
+    approval gate blocks on one, so a hand-built draft cannot bypass what authoring enforces.
+    """
+
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        SUPPLY_FACT_FAMILY_BY_ROUTE,
+    )
+
+    family = SUPPLY_FACT_FAMILY_BY_ROUTE.get(rule_route)
+    if family is None:
+        return f"is authored on an undeclared rule route: {rule_route}"
+    if fact.fact_kind != family:
+        return f"is a {fact.fact_kind} fact where {rule_route} states {family}"
+    if not any(cited.fragment_id == f"raw-{rule_route}" for cited in fact.node_references):
+        return f"cites no node of its own clause fragment raw-{rule_route}"
+    return None
+
+
+def clause_fact_route_defect(draft: ImportedRuleDraft, route: str) -> str | None:
+    """Why one route's authored clause facts are not currently complete, or ``None`` if they are.
+
+    The approval gate and the clause fact review dialog must agree exactly on what blocks a
+    route, so both call this instead of each re-deriving the comparison -- the way
+    ``axis_review_is_current`` keeps the gate and the axis review dialog aligned on one axis
+    position. Every check reads the draft's own live state; no caller can supply a stored digest
+    in its place.
+
+    Identity before evidence, the order ``clause_fact_defect`` keeps for one fact: a fact of the
+    wrong family, or one resting entirely on another clause, has perfectly current digests. A
+    route this draft never extracted returns ``None`` here, the same as a route with nothing
+    wrong -- callers scope to fragments the draft actually carries, the way
+    ``missing_required_content`` finds the missing fragment.
+    """
+
+    fragment = next(
+        (item for item in draft.raw_clause_fragments if item.id == f"raw-{route}"), None
+    )
+    if fragment is None:
+        return None
+    reviews = tuple(item for item in draft.clause_fact_reviews if item.rule_route == route)
+    completions = tuple(item for item in draft.clause_fact_completions if item.rule_route == route)
+    defects = tuple(
+        defect for item in reviews if (defect := clause_fact_defect(route, item.fact)) is not None
+    )
+    if not reviews:
+        return "carries no authored clause fact"
+    if defects:
+        return f"has a fact that {defects[0]}"
+    # As ``axis_review_is_current`` verifies a review's ``proposal_sha256``: a written digest
+    # nothing reads is a digest a second writer can get wrong unnoticed.
+    if any(item.fact_sha256 != canonical_model_sha256(item.fact) for item in reviews):
+        return "has a review whose fact hash is not its fact's"
+    if len(completions) != 1:
+        return "lacks one exact fact-set completion record"
+    if (
+        completions[0].fragment_id != fragment.id
+        or completions[0].fragment_sha256 != fragment.raw_sha256
+    ):
+        return "was completed against a superseded or foreign fragment"
+    if completions[0].fact_set_sha256 != fact_set_sha256(tuple(item.fact for item in reviews)):
+        return "was completed against a different fact set"
+    if any(
+        item.evidence_sha256 != live_evidence_sha256(draft, item.fact.node_references)
+        for item in reviews
+    ):
+        return "has a fact whose cited evidence has moved"
+    return None
+
+
+def author_clause_fact(
+    draft: ImportedRuleDraft,
+    *,
+    rule_route: str,
+    fact: SupplyFact,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Record one maintainer-authored normative statement for a rule route.
+
+    Nothing proposes a statement: the reviewer reads the private fragment and authors it. The
+    review binds the fact's own hash and a digest of exactly the nodes it cites.
+    """
+
+    if not actor.strip() or not notes.strip():
+        raise ApprovalError("clause fact actor and notes are required")
+    defect = clause_fact_defect(rule_route, fact)
+    if defect is not None:
+        raise ValueError(f"clause fact {defect}")
+    for cited in fact.node_references:
+        fragment = next(
+            (item for item in draft.raw_clause_fragments if item.id == cited.fragment_id), None
+        )
+        if fragment is None:
+            raise ValueError(f"unknown fragment cited: {cited.fragment_id}")
+        node = next((node for node in fragment.nodes if node.order == cited.node_order), None)
+        if node is None or canonical_model_sha256(node) != cited.node_sha256:
+            raise ValueError(
+                f"citation does not match a current node: {cited.fragment_id} "
+                f"node {cited.node_order}"
+            )
+    review = ClauseFactReview(
+        rule_route=rule_route,
+        statement_index=fact.statement_index,
+        fact=fact,
+        fact_sha256=canonical_model_sha256(fact),
+        evidence_sha256=evidence_sha256(fact.node_references),
+        actor=actor.strip(),
+        recorded_at=datetime.now(UTC),
+        notes=notes.strip(),
+    )
+    kept = tuple(
+        item
+        for item in draft.clause_fact_reviews
+        if not (item.rule_route == rule_route and item.statement_index == fact.statement_index)
+    )
+    changed = draft.model_copy(update={"clause_fact_reviews": (*kept, review)})
+    return record_correction(draft, changed, actor=actor, notes=f"author clause fact: {notes}")
+
+
+def retract_clause_fact(
+    draft: ImportedRuleDraft,
+    *,
+    rule_route: str,
+    statement_index: int,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Remove one authored statement from a route's reviewed fact set.
+
+    The statement must exist: retracting an unknown one would append an audited correction
+    that corrected nothing. Any completion for the route is left in place, where the changed
+    fact-set digest makes it stale -- completeness must be re-asserted by the reviewer, never
+    silently repaired by the deletion that invalidated it.
+    """
+
+    if not actor.strip() or not notes.strip():
+        raise ApprovalError("clause fact actor and notes are required")
+    kept = tuple(
+        item
+        for item in draft.clause_fact_reviews
+        if not (item.rule_route == rule_route and item.statement_index == statement_index)
+    )
+    if len(kept) == len(draft.clause_fact_reviews):
+        raise ValueError(f"{rule_route} has no authored statement {statement_index}")
+    changed = draft.model_copy(update={"clause_fact_reviews": kept})
+    return record_correction(draft, changed, actor=actor, notes=f"retract clause fact: {notes}")
+
+
+def record_fact_completion(
+    draft: ImportedRuleDraft,
+    *,
+    rule_route: str,
+    fragment_id: str,
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Assert that one route's fact set is complete for the current fragment.
+
+    The fragment must be the route's own. Completion is what binds a fragment hash to a route, so
+    naming any other fragment would bind the route to a document region that does not state it.
+    """
+
+    if not actor.strip() or not notes.strip():
+        raise ApprovalError("completion actor and notes are required")
+    if fragment_id != f"raw-{rule_route}":
+        raise ValueError(f"{rule_route} completes against raw-{rule_route}, not {fragment_id}")
+    fragment = next((item for item in draft.raw_clause_fragments if item.id == fragment_id), None)
+    if fragment is None:
+        raise ValueError(f"unknown fragment: {fragment_id}")
+    facts = tuple(item.fact for item in draft.clause_fact_reviews if item.rule_route == rule_route)
+    if not facts:
+        raise ApprovalError("a route with no authored facts cannot be complete")
+    completion = ClauseFactCompletion(
+        rule_route=rule_route,
+        fragment_id=fragment_id,
+        fragment_sha256=fragment.raw_sha256,
+        fact_set_sha256=fact_set_sha256(facts),
+        actor=actor.strip(),
+        recorded_at=datetime.now(UTC),
+        notes=notes.strip(),
+    )
+    kept = tuple(item for item in draft.clause_fact_completions if item.rule_route != rule_route)
+    changed = draft.model_copy(update={"clause_fact_completions": (*kept, completion)})
+    return record_correction(
+        draft, changed, actor=actor, notes=f"record clause fact completion: {notes}"
+    )
+
+
+class ClauseFactResolutionError(RulePackageError):
+    """A route's reviewed facts are missing, incomplete or stale."""
+
+
+def resolve_confirmed_clause_facts(
+    spec: ClauseAuditSpec,
+    draft: ImportedRuleDraft,
+) -> ConfirmedFacts:
+    """Current reviewed facts for every route one clause spec's rules rest on, or an exception.
+
+    Resolution owns every refusal so a projector receives a complete context and never inspects
+    review state itself. A route no fact family is declared for resolves to nothing rather than
+    refusing -- every clause outside the supply set, and the guidance route a supply clause also
+    projects, keeps its authority in its recipe -- the way ``resolve_confirmed_axis_selectors``
+    returns an empty result for a spec declaring no axis selectors.
+
+    Each route is resolved against its own fragment rather than against one passed in: a rule two
+    subclauses state between them has one evidence scope per subclause, and each scope's
+    completion binds the fragment of the clause that states it.
+    """
+
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        LEGACY_BRANCH_AUTHORITY_RULE_IDS,
+        SUPPLY_FACT_FAMILY_BY_ROUTE,
+    )
+
+    fragments = {item.id: item for item in draft.raw_clause_fragments}
+    by_route: dict[str, tuple[SupplyFact, ...]] = {}
+    for route in (
+        *(spec.projected_rule_ids or (spec.semantic_id,)),
+        *spec.evidence_clause_ids,
+    ):
+        if route not in SUPPLY_FACT_FAMILY_BY_ROUTE or route in LEGACY_BRANCH_AUTHORITY_RULE_IDS:
+            continue
+        fragment = fragments.get(f"raw-{route}")
+        if fragment is None:
+            raise ClauseFactResolutionError(f"{route} has no extracted fragment")
+        reviews = sorted(
+            (item for item in draft.clause_fact_reviews if item.rule_route == route),
+            key=lambda item: item.statement_index,
+        )
+        if not reviews:
+            raise ClauseFactResolutionError(f"{route} has no authored facts")
+        # Identity before evidence, the order the approval gate keeps, and through the same
+        # function the authoring API refuses on: resolution must not accept a fact
+        # ``author_clause_fact`` would have rejected, and a fact of the wrong family or one
+        # resting entirely on another clause has perfectly current digests.
+        for review in reviews:
+            defect = clause_fact_defect(route, review.fact)
+            if defect is not None:
+                raise ClauseFactResolutionError(
+                    f"{route} statement {review.statement_index} {defect}"
+                )
+            # Projection runs before approval, so a review whose recorded hash no longer matches
+            # the fact beside it would project a rule and only be caught at the gate. Resolution
+            # owns every refusal, this one included.
+            if review.fact_sha256 != canonical_model_sha256(review.fact):
+                raise ClauseFactResolutionError(
+                    f"{route} statement {review.statement_index} carries a review whose recorded "
+                    f"hash is not its fact"
+                )
+        facts = tuple(review.fact for review in reviews)
+        completion = next(
+            (item for item in draft.clause_fact_completions if item.rule_route == route), None
+        )
+        if completion is None:
+            raise ClauseFactResolutionError(f"{route} has no completion record")
+        # Route resolution is fragment-granular even though review invalidation below is
+        # node-granular, and deliberately so: a fragment that gained or lost a node may have
+        # gained or lost a normative statement, so completeness has to be re-asserted rather
+        # than inferred from the nodes that survived.
+        if completion.fragment_sha256 != fragment.raw_sha256:
+            raise ClauseFactResolutionError(f"{route} completion is bound to an older fragment")
+        if completion.fact_set_sha256 != fact_set_sha256(facts):
+            raise ClauseFactResolutionError(f"{route} completion predates its current fact set")
+        # Against the draft's own live nodes, never against the citations stored inside the fact:
+        # those are what the recorded digest was computed from, so comparing the two could only
+        # catch a hand-edited review and never a node this draft has since moved or corrected.
+        for review in reviews:
+            if review.evidence_sha256 != live_evidence_sha256(draft, review.fact.node_references):
+                raise ClauseFactResolutionError(
+                    f"{route} statement {review.statement_index} cites evidence that has moved"
+                )
+        by_route[route] = facts
+    return ConfirmedFacts(by_route=by_route)
 
 
 class AxisResolutionError(RulePackageError):

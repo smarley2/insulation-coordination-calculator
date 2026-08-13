@@ -14,9 +14,11 @@ from insulation_coordination.rules.importer.extract import (
     draft_content_digest,
     propose_axis_selectors,
 )
+from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import SUPPLY_CLAUSES
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.tables import TABLE_2
 from tests.rules.importer.iec62477_2022.test_axis_proposals import _voltage_limits_grid
 from tests.rules.importer.iec62477_2022.test_procedure_recipes import _draft
+from tests.rules.importer.iec62477_2022.test_supply_clause_recipes import _fragment
 
 
 def _logged(draft: ImportedRuleDraft) -> ImportedRuleDraft:
@@ -55,6 +57,17 @@ def draft_with_axis_proposals(voltage_limits_grid: RawGrid) -> ImportedRuleDraft
     proposals = propose_axis_selectors(TABLE_2, voltage_limits_grid)
     draft = _draft(voltage_limits_grid).model_copy(update={"axis_selector_proposals": proposals})
     return _logged(draft)
+
+
+@pytest.fixture
+def draft_with_supply_fragments() -> ImportedRuleDraft:
+    """A draft carrying every supply clause fragment and no authored clause facts.
+
+    Synthetic fragments: invented neutral node text under the real recipe's fragment ids,
+    which is what the clause-fact gate matches a route's authored facts against.
+    """
+    fragments = tuple(_fragment(spec.semantic_id) for spec in SUPPLY_CLAUSES)
+    return _logged(_draft(fragments=fragments))
 
 
 @pytest.fixture

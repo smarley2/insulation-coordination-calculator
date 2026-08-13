@@ -22,6 +22,7 @@ from insulation_coordination.rules.importer.extract import (
 )
 from insulation_coordination.rules.importer.identify import (
     ClauseAuditSpec,
+    ClauseSegmentSpec,
     StandardIdentity,
 )
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
@@ -31,9 +32,13 @@ CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ClauseAuditSpec(
         semantic_id=ids.DVC_FAULT_APPLICABILITY,
         clause="4.4.2",
-        page_number=44,
-        expected_bbox=(70.9, 664.0, 524.4, 740.0),
-        expected_root_kind="paragraph",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=44,
+                expected_bbox=(70.9, 664.0, 524.4, 740.0),
+                expected_root_kind="paragraph",
+            ),
+        ),
         output_kind="decision",
     ),
 )
@@ -56,6 +61,7 @@ def project_dvc_fault_applicability(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     _draft: object = None,
+    _confirmed_facts: object = None,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project a reviewed DVC fault-applicability fragment into a typed decision."""
 

@@ -42,6 +42,10 @@ from insulation_coordination.rules.importer.approval import is_fully_resolved
 from insulation_coordination.rules.importer.extract import _REQUIRED_RECIPES, ImportedRuleDraft
 from insulation_coordination.rules.installation import install_rule_package
 from insulation_coordination.ui.axis_review import AxisReviewDialog, AxisReviewModel
+from insulation_coordination.ui.clause_fact_review import (
+    ClauseFactReviewDialog,
+    ClauseFactReviewModel,
+)
 from insulation_coordination.ui.curve_review import CurveReviewDialog
 from insulation_coordination.ui.equation_review import EquationReviewDialog
 from insulation_coordination.ui.raw_grid_review import RawGridReviewDialog, source_pdf_paths
@@ -148,6 +152,10 @@ class RulesManagerWindow(QWidget):
         self._review_curves_button.setEnabled(False)
         self._review_curves_button.clicked.connect(self._on_review_curves_clicked)
         review_actions.addWidget(self._review_curves_button)
+        self._review_clause_facts_button = QPushButton("Review clause facts…")
+        self._review_clause_facts_button.setEnabled(False)
+        self._review_clause_facts_button.clicked.connect(self._on_review_clause_facts_clicked)
+        review_actions.addWidget(self._review_clause_facts_button)
         self._review_axis_selectors_button = QPushButton("Review axis selectors…")
         self._review_axis_selectors_button.setEnabled(False)
         self._review_axis_selectors_button.clicked.connect(self._on_review_axis_selectors_clicked)
@@ -275,6 +283,10 @@ class RulesManagerWindow(QWidget):
         return self._review_curves_button.isEnabled()
 
     @property
+    def clause_fact_review_enabled(self) -> bool:
+        return self._review_clause_facts_button.isEnabled()
+
+    @property
     def axis_review_enabled(self) -> bool:
         return self._review_axis_selectors_button.isEnabled()
 
@@ -313,6 +325,7 @@ class RulesManagerWindow(QWidget):
             self._review_tables_button.setEnabled(False)
             self._review_equations_button.setEnabled(False)
             self._review_curves_button.setEnabled(False)
+            self._review_clause_facts_button.setEnabled(False)
             self._review_axis_selectors_button.setEnabled(False)
             return
         from insulation_coordination.rules.importer.review import (
@@ -333,6 +346,7 @@ class RulesManagerWindow(QWidget):
             tables_done and bool(equation_pending or mapping_pending)
         )
         self._review_curves_button.setEnabled(bool(self._draft.raw_figures))
+        self._review_clause_facts_button.setEnabled(bool(self._draft.raw_clause_fragments))
         self._review_axis_selectors_button.setEnabled(bool(self._draft.axis_selector_proposals))
         for item in table_pending:
             flagged = sum(
@@ -398,6 +412,14 @@ class RulesManagerWindow(QWidget):
         )
         dialog.draft_changed.connect(self.set_draft)
         dialog.exec()
+
+    def _on_review_clause_facts_clicked(self) -> None:
+        if self._draft is None:
+            return
+        model = ClauseFactReviewModel(self._draft)
+        dialog = ClauseFactReviewDialog(model)
+        dialog.exec()
+        self.set_draft(model.draft)
 
     def _on_review_axis_selectors_clicked(self) -> None:
         if self._draft is None:

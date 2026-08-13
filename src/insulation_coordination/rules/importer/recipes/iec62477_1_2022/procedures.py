@@ -38,6 +38,7 @@ from insulation_coordination.rules.importer.extract import (
 from insulation_coordination.rules.importer.identify import (
     ClauseAuditSpec,
     ClauseProjector,
+    ClauseSegmentSpec,
     StandardIdentity,
     TableAuditSpec,
     TableColumnSpec,
@@ -281,42 +282,58 @@ PROCEDURE_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ClauseAuditSpec(
         semantic_id=ids.TEST_WORKING_VOLTAGE_DETERMINATION,
         clause=_WORKING_VOLTAGE_CLAUSE,
-        page_number=142,
         #: The bullets only. The sentence above them states the requirement that refers this
         #: test, and the line below them points at an annex for waveform guidance; neither is
         #: a measurement condition, and including either would merge into a bullet's text.
-        expected_bbox=(65.0, 575.0, 535.0, 632.0),
-        expected_root_kind="bullets",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=142,
+                expected_bbox=(65.0, 575.0, 535.0, 632.0),
+                expected_root_kind="bullets",
+            ),
+        ),
         output_kind="procedure",
     ),
     ClauseAuditSpec(
         semantic_id=ids.TEST_INTERNAL_SPD_MONITORING,
         clause=_INTERNAL_SPD_CLAUSE,
-        page_number=142,
-        expected_bbox=(65.0, 680.0, 535.0, 730.0),
-        expected_root_kind="paragraph",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=142,
+                expected_bbox=(65.0, 680.0, 535.0, 730.0),
+                expected_root_kind="paragraph",
+            ),
+        ),
         output_kind="procedure",
     ),
     ClauseAuditSpec(
         semantic_id=ids.TEST_PRECONDITIONING,
         clause=_PRECONDITIONING_MATERIAL_CLAUSE,
-        page_number=143,
         #: The numbered steps only. The sentence above them states which requirements call for
         #: the test, which is the applicability the general clause below settles.
-        expected_bbox=(65.0, 158.0, 535.0, 218.0),
-        expected_root_kind="bullets",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=143,
+                expected_bbox=(65.0, 158.0, 535.0, 218.0),
+                expected_root_kind="bullets",
+            ),
+        ),
         output_kind="procedure",
         projected_rule_ids=(PRECONDITIONING_MATERIAL_ID,),
     ),
     ClauseAuditSpec(
         semantic_id=PRECONDITIONING_APPLICABILITY_ID,
         clause=_PRECONDITIONING_GENERAL_CLAUSE,
-        page_number=123,
         #: The general clause's preconditioning paragraph alone. The paragraphs on either side
         #: state the scope of the electrical tests and what may be tested in place of the
         #: complete equipment, neither of which is a preconditioning gate.
-        expected_bbox=(65.0, 274.0, 535.0, 310.0),
-        expected_root_kind="paragraph",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=123,
+                expected_bbox=(65.0, 274.0, 535.0, 310.0),
+                expected_root_kind="paragraph",
+            ),
+        ),
         output_kind="decision",
         #: This clause states both the gate and the electrical tests' own step inventory, so
         #: it projects the gate under its own identifier and that route beside it.
@@ -325,12 +342,16 @@ PROCEDURE_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ClauseAuditSpec(
         semantic_id=ids.TEST_ACCESSIBLE_SURFACE_FOIL,
         clause=_VOLTAGE_TEST_PERFORMANCE_CLAUSE,
-        page_number=130,
         #: The accessible-surface paragraph alone. The paragraph above it states what may be
         #: bridged or disconnected before testing and the one below what an opening permits,
         #: neither of which concerns an accessible surface.
-        expected_bbox=(65.0, 142.0, 535.0, 190.0),
-        expected_root_kind="paragraph",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=130,
+                expected_bbox=(65.0, 142.0, 535.0, 190.0),
+                expected_root_kind="paragraph",
+            ),
+        ),
         output_kind="procedure",
         #: The same paragraph states the gate, so this spec projects it beside the procedure
         #: rather than extracting the paragraph twice.
@@ -339,18 +360,25 @@ PROCEDURE_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ClauseAuditSpec(
         semantic_id=ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION,
         clause=_VOLTAGE_TEST_PERFORMANCE_CLAUSE,
-        page_number=130,
         #: The three conditions only. The sentence introducing them is above the first bullet,
         #: where the extractor drops it rather than merging it into a condition.
-        expected_bbox=(65.0, 326.0, 535.0, 378.0),
-        expected_root_kind="bullets",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=130,
+                expected_bbox=(65.0, 326.0, 535.0, 378.0),
+                expected_root_kind="bullets",
+            ),
+        ),
         output_kind="decision",
     ),
 )
 
-#: Reviewed structural contract per projection: (node kind, node count).
-_WORKING_VOLTAGE_SHAPE = ("bullet", 3)
-_INTERNAL_SPD_SHAPE = ("paragraph", 1)
+#: Reviewed structural contract per projection: the node kind expected at each position, in
+#: order -- the same contract ``supply.py``'s ``_require_shape`` uses, so a clause spec fed a
+#: second physical segment gets a shape refusal from either module instead of a
+#: ``(kind, count)`` pair's ``ValueError: too many values to unpack``.
+_WORKING_VOLTAGE_SHAPE = ("bullet",) * 3
+_INTERNAL_SPD_SHAPE = ("paragraph",) * 1
 
 
 def _block(message: str) -> NoReturn:
@@ -371,12 +399,11 @@ def _require_own_fragment(
 
 def _require_shape(
     fragment: RawClauseFragment,
-    shape: tuple[str, int],
+    shape: tuple[str, ...],
     label: str,
 ) -> None:
-    kind, count = shape
-    if len(fragment.nodes) != count or any(node.kind != kind for node in fragment.nodes):
-        _block(f"{label} expected {count} reviewed {kind} node(s)")
+    if tuple(node.kind for node in fragment.nodes) != shape:
+        _block(f"{label} expected {len(shape)} reviewed node(s) of kinds {shape}")
 
 
 def _proposal(
@@ -424,6 +451,7 @@ def project_working_voltage_determination(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     draft: ImportedRuleDraft,
+    _confirmed_facts: object = None,
 ) -> tuple[tuple[ProcedureRule, ...], tuple[SemanticProposal, ...]]:
     """Project the working-voltage determination clause into a reviewed procedure.
 
@@ -451,6 +479,7 @@ def project_internal_spd_monitoring(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     draft: ImportedRuleDraft,
+    _confirmed_facts: object = None,
 ) -> tuple[tuple[ProcedureRule, ...], tuple[SemanticProposal, ...]]:
     """Project the internal transient-limiter monitoring test into a reviewed procedure.
 
@@ -469,7 +498,10 @@ def project_internal_spd_monitoring(
         test_kind="internal_spd_monitoring",
         classifications=("type_test",),
         procedure_steps=_steps(fragment),
-        applicability_rule_id=ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS,
+        # The monitoring route specifically: the bare identifier stopped being projected when
+        # the reduction rule split into a route per supply kind, and monitoring is the
+        # obligation this test is gated on.
+        applicability_rule_id=f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring",
         source=fragment.source,
     )
     validate_classifications(matrix_grid(draft, label), procedure)
@@ -488,8 +520,8 @@ def project_internal_spd_monitoring(
 #: still no precedence rule: what blocks is a clause whose own inventory does not have the
 #: shape this recipe declares for it, and Table 26 stating an inventory of its own instead of
 #: deferring.
-_PRECONDITIONING_SHAPE = ("bullet", 3)
-_PRECONDITIONING_GENERAL_SHAPE = ("paragraph", 1)
+_PRECONDITIONING_SHAPE = ("bullet",) * 3
+_PRECONDITIONING_GENERAL_SHAPE = ("paragraph",) * 1
 #: How many preconditioning clauses the general clause names. Reviewed against the document.
 _PRECONDITIONING_ELECTRICAL_STEPS = 2
 #: The clause-reference shape of one of this standard's own preconditioning steps. Structural:
@@ -623,6 +655,7 @@ def project_preconditioning(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     draft: ImportedRuleDraft,
+    _confirmed_facts: object = None,
 ) -> tuple[tuple[ProcedureRule, ...], tuple[SemanticProposal, ...]]:
     """Project the material clause into the material preconditioning route.
 
@@ -652,6 +685,7 @@ def project_preconditioning_applicability(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     draft: ImportedRuleDraft,
+    _confirmed_facts: object = None,
 ) -> tuple[tuple[DecisionRule | ProcedureRule, ...], tuple[SemanticProposal, ...]]:
     """Project the general clause into the gate and the electrical-tests route.
 
@@ -761,7 +795,7 @@ def project_preconditioning_applicability(
 
 # --- accessible insulating surface, foil ---------------------------------------------
 
-_FOIL_SHAPE = ("paragraph", 1)
+_FOIL_SHAPE = ("paragraph",) * 1
 #: What the accessible-surface clause permits in place of the classification the matrix marks
 #: for the surrounding test. Named as a substitution rather than as a classification of its
 #: own: the matrix marks that test as a type and a routine test and does not mark a sample
@@ -774,6 +808,7 @@ def project_accessible_surface_foil(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     _draft: object = None,
+    _confirmed_facts: object = None,
 ) -> tuple[tuple[ProcedureRule | DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the accessible-surface paragraph into the foil procedure and its gate.
 
@@ -841,7 +876,7 @@ def project_accessible_surface_foil(
 
 # --- assembled-equipment routine test exemption ---------------------------------------
 
-_EXEMPTION_SHAPE = ("bullet", 3)
+_EXEMPTION_SHAPE = ("bullet",) * 3
 #: One input per reviewed condition, in source order. Neutral descriptions of what each
 #: condition asks about; the source states them as prose this file does not copy.
 _EXEMPTION_CONDITIONS = (
@@ -855,6 +890,7 @@ def project_assembled_routine_exemption(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     _draft: object = None,
+    _confirmed_facts: object = None,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the routine-test exemption for assembled equipment into a decision.
 
@@ -867,7 +903,7 @@ def project_assembled_routine_exemption(
     label = "assembled routine exemption"
     _require_own_fragment(fragment, identity, ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION, label)
     _require_shape(fragment, _EXEMPTION_SHAPE, label)
-    if len(_EXEMPTION_CONDITIONS) != _EXEMPTION_SHAPE[1]:  # pragma: no cover - guards the pair
+    if len(_EXEMPTION_CONDITIONS) != len(_EXEMPTION_SHAPE):  # pragma: no cover - guards the count
         _block(f"{label} declares a different number of inputs than reviewed conditions")
 
     rule = DecisionRule(
