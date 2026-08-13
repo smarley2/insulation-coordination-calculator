@@ -114,7 +114,12 @@ class SpdMonitoringFact(_Fact):
 class HfAttenuationFact(_Fact):
     fact_kind: Literal["hf_attenuation"] = "hf_attenuation"
     dvc_gate: Literal["dvc_as", "dvc_b"]
-    evidence_kind: Literal["test", "simulation", "calculation"]
+    #: ``any_evidence`` names a statement that accepts every evidence route its source names,
+    #: stated as one disjunction rather than one statement per route -- the same situation
+    #: ``any_purpose`` covers for a calculation purpose. Without it a maintainer authoring that
+    #: one statement has to pick a single route, and the other routes the source permits then
+    #: reach no row at all.
+    evidence_kind: Literal["test", "simulation", "calculation", "any_evidence"]
     threshold_reference: Identifier
     comparison_required: bool
 

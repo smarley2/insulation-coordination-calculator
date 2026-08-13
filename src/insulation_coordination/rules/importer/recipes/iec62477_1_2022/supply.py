@@ -725,9 +725,33 @@ def project_spd_reduction_requirements(
 #: no DVC A and no DVC D. Table 2 splits DVC As into a wet and a dry row, which changes the
 #: voltage limits, not the designation.
 _DVC_DESIGNATIONS = ("dvc_as", "dvc_b", "dvc_c")
+#: The consumer's question space for evidence, declared here and never derived from the reviewed
+#: facts. ``none`` -- no evidence yet -- is the first question a consumer asks and no authored
+#: statement can name it, so deriving this vocabulary from the facts would put that question
+#: outside the input's allowed values and raise instead of answering it.
+_ATTENUATION_EVIDENCE_KINDS = ("none", "test", "simulation", "calculation")
+#: The evidence routes a statement may accept: every declared kind except the absence of one.
+_SHOWN_EVIDENCE_KINDS = tuple(kind for kind in _ATTENUATION_EVIDENCE_KINDS if kind != "none")
+#: What a consumer must still show, never an echo of what it supplied.
+_REQUIRED_EVIDENCE_KINDS = ("test_or_simulation_or_calculation", "already_provided")
 #: Multipliers from a reviewed frequency unit token to hertz. Names the units the
 #: generic tokenizer emits; the threshold itself is read from the document.
 _FREQUENCY_UNIT_SCALES = {"Hz": 1, "kHz": 1_000, "MHz": 1_000_000}
+
+
+def _evidence_matcher(evidence_kind: str) -> Matcher:
+    """Match one authored evidence route, or every route the statement accepts.
+
+    Deliberately not ``op="any"`` for ``any_evidence``, unlike ``any_purpose``: there every
+    declared value of ``calculation_purpose`` is one the statement covers, while here the declared
+    vocabulary also carries ``none``, which is the one value the permission may never be granted
+    for. A kind this rule declares but no statement accepts falls through to no match, the way a
+    DVC designation no fact gates through does.
+    """
+
+    if evidence_kind == "any_evidence":
+        return _matcher("attenuation_evidence_kind", _SHOWN_EVIDENCE_KINDS)
+    return _matcher("attenuation_evidence_kind", (evidence_kind,))
 
 
 def _frequency_threshold_hz(fragment: RawClauseFragment, label: str) -> Decimal:
@@ -755,12 +779,17 @@ def project_hf_transformer_attenuation(
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the isolating-transformer attenuation clause into a decision.
 
-    Every row comes from one reviewed ``HfAttenuationFact``: it states the DVC gate the
-    clause applies to and one evidence kind it accepts. ``working_voltage_basis_permitted``
-    is not independently authored content -- an accepted evidence kind is what grants the
-    permission, so it mirrors the fact's presence, the same way a verified barrier's transfer
-    permission mirrors its own presence in ``project_verified_barrier_transfer``. The
-    frequency threshold stays read from the fragment's own tokens rather than declared: it is
+    Every row comes from one reviewed ``HfAttenuationFact``: it states the DVC gate the clause
+    applies to and the evidence route or routes it accepts.
+    ``working_voltage_basis_permitted`` is not independently authored content -- an accepted
+    evidence kind is what grants the permission, so it mirrors the fact's presence, the same way
+    a verified barrier's transfer permission mirrors its own presence in
+    ``project_verified_barrier_transfer``. Neither is the outstanding-showing row each gate also
+    gets: it is the same statement read from the other side, the route being an engineering-input
+    requirement until the attenuation is shown, never a permission. It comes first, so no
+    consumer reaches a permission by supplying no evidence.
+
+    The frequency threshold stays read from the fragment's own tokens rather than declared: it is
     a numeric source value, and an existing test pins that behaviour. A route with no
     reviewed facts refuses rather than falling back to an inventory nobody reviewed.
     """
@@ -777,7 +806,42 @@ def project_hf_transformer_attenuation(
     if len(attenuation_facts) != len(facts):
         raise ValueError(f"{label} projection requires HF attenuation facts")
 
-    evidence_kinds = tuple(dict.fromkeys(fact.evidence_kind for fact in attenuation_facts))
+    def _row(*, gate: str, evidence: Matcher, permitted: bool, required: str) -> DecisionRow:
+        return DecisionRow(
+            matchers=(
+                _matcher("circuit_dvc", (gate,)),
+                Matcher(input="transformer_frequency_hz", op="range", minimum=threshold_hz),
+                Matcher(input="isolation_provided", op="equals", boolean=True),
+                evidence,
+            ),
+            values=(
+                DecisionValue(name="working_voltage_basis_permitted", boolean=permitted),
+                DecisionValue(name="required_evidence_kinds", categorical=required),
+            ),
+            source=fragment.nodes[0].source,
+        )
+
+    # One outstanding-showing row per gate the facts state rather than per fact: several
+    # statements may accept different routes through one gate, and they all leave the same
+    # showing outstanding.
+    outstanding = tuple(
+        _row(
+            gate=gate,
+            evidence=_matcher("attenuation_evidence_kind", ("none",)),
+            permitted=False,
+            required="test_or_simulation_or_calculation",
+        )
+        for gate in dict.fromkeys(fact.dvc_gate for fact in attenuation_facts)
+    )
+    shown = tuple(
+        _row(
+            gate=fact.dvc_gate,
+            evidence=_evidence_matcher(fact.evidence_kind),
+            permitted=True,
+            required="already_provided",
+        )
+        for fact in attenuation_facts
+    )
 
     rule = DecisionRule(
         id=ids.SUPPLY_HF_TRANSFORMER_ATTENUATION,
@@ -788,7 +852,7 @@ def project_hf_transformer_attenuation(
             DecisionInput(
                 name="attenuation_evidence_kind",
                 kind="categorical",
-                allowed_values=evidence_kinds,
+                allowed_values=_ATTENUATION_EVIDENCE_KINDS,
             ),
         ),
         outputs=(
@@ -796,25 +860,10 @@ def project_hf_transformer_attenuation(
             DecisionOutput(
                 name="required_evidence_kinds",
                 kind="categorical",
-                allowed_values=evidence_kinds,
+                allowed_values=_REQUIRED_EVIDENCE_KINDS,
             ),
         ),
-        rows=tuple(
-            DecisionRow(
-                matchers=(
-                    _matcher("circuit_dvc", (fact.dvc_gate,)),
-                    Matcher(input="transformer_frequency_hz", op="range", minimum=threshold_hz),
-                    Matcher(input="isolation_provided", op="equals", boolean=True),
-                    _matcher("attenuation_evidence_kind", (fact.evidence_kind,)),
-                ),
-                values=(
-                    DecisionValue(name="working_voltage_basis_permitted", boolean=True),
-                    DecisionValue(name="required_evidence_kinds", categorical=fact.evidence_kind),
-                ),
-                source=fragment.nodes[0].source,
-            )
-            for fact in attenuation_facts
-        ),
+        rows=outstanding + shown,
         exhaustive=False,
         source=fragment.source,
     )

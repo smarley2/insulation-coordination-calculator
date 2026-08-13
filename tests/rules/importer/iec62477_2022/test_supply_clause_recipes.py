@@ -1012,13 +1012,14 @@ def test_hf_attenuation_follows_the_reviewed_facts() -> None:
     facts = _confirmed_hf_facts(evidence_kinds=("test", "simulation"), fragment=fragment)
     rule = _project_hf_transformer(fragment, facts)
 
-    emitted = {
-        value.categorical
+    accepted = {
+        matcher.values
         for row in rule.rows
-        for value in row.values
-        if value.name == "required_evidence_kinds"
+        for matcher in row.matchers
+        if matcher.input == "attenuation_evidence_kind"
     }
-    assert emitted == {"test", "simulation"}
+    # One row per reviewed statement, plus the one outstanding-showing row the gate carries.
+    assert accepted == {("test",), ("simulation",), ("none",)}
 
 
 def test_a_reviewed_evidence_kind_permits_the_working_voltage_basis() -> None:
@@ -1028,7 +1029,48 @@ def test_a_reviewed_evidence_kind_permits_the_working_voltage_basis() -> None:
     row = _lookup(rule, **_hf_inputs(attenuation_evidence_kind="test"))
     assert row is not None
     assert _value(row, "working_voltage_basis_permitted") is True
-    assert _value(row, "required_evidence_kinds") == "test"
+    assert _value(row, "required_evidence_kinds") == "already_provided"
+
+
+def test_no_evidence_yet_is_answered_rather_than_refused() -> None:
+    """The first question a consumer asks: nothing shown yet, so what must be shown?
+
+    ``none`` is part of this input's declared question space and no reviewed statement can name
+    it, so a vocabulary derived from the facts put the question outside the input's allowed
+    values and raised instead of answering. The route is an engineering-input requirement until
+    the attenuation is shown, never a permission.
+    """
+
+    fragment = _hf_fragment(("42", "kHz"))
+    facts = _confirmed_hf_facts(evidence_kinds=("test",), fragment=fragment)
+    rule = _project_hf_transformer(fragment, facts)
+    row = _lookup(rule, **_hf_inputs(attenuation_evidence_kind="none"))
+    assert row is not None
+    assert _value(row, "working_voltage_basis_permitted") is False
+    assert _value(row, "required_evidence_kinds") == "test_or_simulation_or_calculation"
+
+
+def test_one_statement_may_accept_every_evidence_route_it_names() -> None:
+    """The source states its evidence routes as one disjunction inside one statement.
+
+    Authoring it as one fact per route would record several statements where the source makes
+    one, and picking a single route would leave the others reaching no row at all.
+    """
+
+    fragment = _hf_fragment(("42", "kHz"))
+    facts = _confirmed_hf_facts(evidence_kinds=("any_evidence",), fragment=fragment)
+    rule = _project_hf_transformer(fragment, facts)
+
+    for kind in ("test", "simulation", "calculation"):
+        row = _lookup(rule, **_hf_inputs(attenuation_evidence_kind=kind))
+        assert row is not None, kind
+        assert _value(row, "working_voltage_basis_permitted") is True
+        assert _value(row, "required_evidence_kinds") == "already_provided"
+
+    # The absence of evidence is not one of the routes the statement accepts.
+    outstanding = _lookup(rule, **_hf_inputs(attenuation_evidence_kind="none"))
+    assert outstanding is not None
+    assert _value(outstanding, "working_voltage_basis_permitted") is False
 
 
 def test_a_dvc_gate_no_fact_states_is_not_covered() -> None:
