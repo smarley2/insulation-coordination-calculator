@@ -373,9 +373,12 @@ PROCEDURE_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ),
 )
 
-#: Reviewed structural contract per projection: (node kind, node count).
-_WORKING_VOLTAGE_SHAPE = ("bullet", 3)
-_INTERNAL_SPD_SHAPE = ("paragraph", 1)
+#: Reviewed structural contract per projection: the node kind expected at each position, in
+#: order -- the same contract ``supply.py``'s ``_require_shape`` uses, so a clause spec fed a
+#: second physical segment gets a shape refusal from either module instead of a
+#: ``(kind, count)`` pair's ``ValueError: too many values to unpack``.
+_WORKING_VOLTAGE_SHAPE = ("bullet",) * 3
+_INTERNAL_SPD_SHAPE = ("paragraph",) * 1
 
 
 def _block(message: str) -> NoReturn:
@@ -396,12 +399,11 @@ def _require_own_fragment(
 
 def _require_shape(
     fragment: RawClauseFragment,
-    shape: tuple[str, int],
+    shape: tuple[str, ...],
     label: str,
 ) -> None:
-    kind, count = shape
-    if len(fragment.nodes) != count or any(node.kind != kind for node in fragment.nodes):
-        _block(f"{label} expected {count} reviewed {kind} node(s)")
+    if tuple(node.kind for node in fragment.nodes) != shape:
+        _block(f"{label} expected {len(shape)} reviewed node(s) of kinds {shape}")
 
 
 def _proposal(
@@ -518,8 +520,8 @@ def project_internal_spd_monitoring(
 #: still no precedence rule: what blocks is a clause whose own inventory does not have the
 #: shape this recipe declares for it, and Table 26 stating an inventory of its own instead of
 #: deferring.
-_PRECONDITIONING_SHAPE = ("bullet", 3)
-_PRECONDITIONING_GENERAL_SHAPE = ("paragraph", 1)
+_PRECONDITIONING_SHAPE = ("bullet",) * 3
+_PRECONDITIONING_GENERAL_SHAPE = ("paragraph",) * 1
 #: How many preconditioning clauses the general clause names. Reviewed against the document.
 _PRECONDITIONING_ELECTRICAL_STEPS = 2
 #: The clause-reference shape of one of this standard's own preconditioning steps. Structural:
@@ -793,7 +795,7 @@ def project_preconditioning_applicability(
 
 # --- accessible insulating surface, foil ---------------------------------------------
 
-_FOIL_SHAPE = ("paragraph", 1)
+_FOIL_SHAPE = ("paragraph",) * 1
 #: What the accessible-surface clause permits in place of the classification the matrix marks
 #: for the surrounding test. Named as a substitution rather than as a classification of its
 #: own: the matrix marks that test as a type and a routine test and does not mark a sample
@@ -874,7 +876,7 @@ def project_accessible_surface_foil(
 
 # --- assembled-equipment routine test exemption ---------------------------------------
 
-_EXEMPTION_SHAPE = ("bullet", 3)
+_EXEMPTION_SHAPE = ("bullet",) * 3
 #: One input per reviewed condition, in source order. Neutral descriptions of what each
 #: condition asks about; the source states them as prose this file does not copy.
 _EXEMPTION_CONDITIONS = (
@@ -901,7 +903,7 @@ def project_assembled_routine_exemption(
     label = "assembled routine exemption"
     _require_own_fragment(fragment, identity, ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION, label)
     _require_shape(fragment, _EXEMPTION_SHAPE, label)
-    if len(_EXEMPTION_CONDITIONS) != _EXEMPTION_SHAPE[1]:  # pragma: no cover - guards the pair
+    if len(_EXEMPTION_CONDITIONS) != len(_EXEMPTION_SHAPE):  # pragma: no cover - guards the count
         _block(f"{label} declares a different number of inputs than reviewed conditions")
 
     rule = DecisionRule(
