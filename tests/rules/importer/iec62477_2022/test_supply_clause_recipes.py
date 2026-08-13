@@ -496,6 +496,23 @@ def _system_voltage_inputs(**overrides: str) -> dict[str, str]:
 # (propagation stays legacy branch authority; see LEGACY_BRANCH_AUTHORITY_RULE_IDS)
 
 
+def test_exactly_one_supply_rule_still_carries_legacy_branch_authority() -> None:
+    """Propagation is the sole exception, because porting it faithfully changes behaviour.
+
+    Its contract *is* an ordinal overvoltage-category comparison, which no reviewed fact can
+    honestly express -- only the branches it enumerates. #53C item 3 replaces the contract,
+    and removing this exception is #53C's first acceptance criterion; this test is what
+    records that it is still outstanding. Every other supply route's refusal to project
+    without facts has its own test beside its projector.
+    """
+
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        LEGACY_BRANCH_AUTHORITY_RULE_IDS,
+    )
+
+    assert LEGACY_BRANCH_AUTHORITY_RULE_IDS == frozenset({ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION})
+
+
 def test_every_reviewed_fact_is_reachable_and_unsupported_combinations_are_not() -> None:
     """Reachability now rests on the reviewed facts, not on a fixed nine-branch inventory."""
 
