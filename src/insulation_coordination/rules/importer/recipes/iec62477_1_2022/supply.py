@@ -552,7 +552,11 @@ def project_verified_barrier_transfer(
 
 # --- transient limiter (SPD) reduction requirements --------------------------------
 
-_DEVICE_PLACEMENTS = ("internal_to_pecs", "external_to_pecs")
+#: The consumer's question space for placement. ``bundled_external_to_pecs`` is its own question
+#: because the monitoring clause's external-device requirement reaches only a device the
+#: manufacturer bundles with their product: a consumer asking about any other external device gets
+#: no match, which is what the source states about it -- nothing.
+_DEVICE_PLACEMENTS = ("internal_to_pecs", "external_to_pecs", "bundled_external_to_pecs")
 _INSULATION_CLASSES = ("functional", "basic", "supplementary", "double", "reinforced")
 _VERIFICATION_REFERENCES = ("inspection_and_dielectric_verification", "not_required")
 
@@ -603,6 +607,20 @@ def _spd_reduction_row(fact: SpdReductionFact, fragment: RawClauseFragment) -> D
     )
 
 
+def _placement_matcher(placement: str) -> Matcher:
+    """Match one authored placement, or every placement the monitoring clause distinguishes.
+
+    ``any_placement`` names a statement the source makes once for the external-device monitoring
+    and the internal monitoring test together -- one statement, not two, the way ``any_purpose``
+    names one system voltage statement. Without it that statement cannot be authored at all: a
+    single required placement leaves whichever one the maintainer did not pick reaching no row.
+    """
+
+    if placement == "any_placement":
+        return Matcher(input="device_placement", op="any")
+    return _matcher("device_placement", (placement,))
+
+
 def _spd_monitoring_row(fact: SpdMonitoringFact, fragment: RawClauseFragment) -> DecisionRow:
     """One row for one reviewed monitoring statement.
 
@@ -623,11 +641,7 @@ def _spd_monitoring_row(fact: SpdMonitoringFact, fragment: RawClauseFragment) ->
 
     return DecisionRow(
         matchers=(
-            Matcher(
-                input="device_placement",
-                op="equals",
-                values=(fact.device_placement,),
-            ),
+            _placement_matcher(fact.device_placement),
             Matcher(input="insulation_class", op="any"),
             Matcher(input="device_degradable", op="any"),
             Matcher(

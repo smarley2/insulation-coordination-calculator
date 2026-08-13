@@ -287,11 +287,13 @@ def _confirmed_spd_monitoring_facts(
     *,
     monitoring_required: bool,
     participates_in_reduction: bool = True,
+    device_placement: str = "internal_to_pecs",
     fragment: RawClauseFragment | None = None,
 ) -> ConfirmedFacts:
     frag = fragment if fragment is not None else _spd_fragment("monitoring")
     fact = _spd_monitoring_fact(
         frag,
+        device_placement=device_placement,
         participates_in_reduction=participates_in_reduction,
         monitoring_required=monitoring_required,
     )
@@ -1005,6 +1007,54 @@ def test_the_monitoring_route_follows_its_own_reviewed_facts() -> None:
     excused_row = _lookup(excused, **_spd_inputs(part_of_category_reduction=False))
     assert excused_row is not None
     assert _value(excused_row, "monitoring_required") is False
+
+
+def test_one_exemption_statement_covers_every_placement_it_is_stated_for() -> None:
+    """The source states the exemption once, for both monitoring obligations together.
+
+    A required single placement matched with ``equals`` could not express that: authoring the one
+    statement left whichever placement the maintainer did not pick reaching no row, so the same
+    query answered for one placement and fell through for the other.
+    """
+
+    fragment = _spd_fragment("monitoring")
+    facts = _confirmed_spd_monitoring_facts(
+        fragment=fragment,
+        device_placement="any_placement",
+        participates_in_reduction=False,
+        monitoring_required=False,
+    )
+    rule = _project_spd(fragment, facts)
+
+    for placement in ("internal_to_pecs", "external_to_pecs", "bundled_external_to_pecs"):
+        row = _lookup(
+            rule,
+            **_spd_inputs(device_placement=placement, part_of_category_reduction=False),
+        )
+        assert row is not None, placement
+        assert _value(row, "monitoring_required") is False
+
+
+def test_the_external_monitoring_obligation_keeps_its_qualifier() -> None:
+    """The source's external-device requirement reaches only a device the manufacturer bundles.
+
+    Answering it for a bare external placement would make a claim wider than the clause, so the
+    qualifier is its own declared placement and an unqualified external device reaches no row.
+    """
+
+    fragment = _spd_fragment("monitoring")
+    facts = _confirmed_spd_monitoring_facts(
+        fragment=fragment,
+        device_placement="bundled_external_to_pecs",
+        participates_in_reduction=True,
+        monitoring_required=True,
+    )
+    rule = _project_spd(fragment, facts)
+
+    qualified = _lookup(rule, **_spd_inputs(device_placement="bundled_external_to_pecs"))
+    assert qualified is not None
+    assert _value(qualified, "monitoring_required") is True
+    assert _lookup(rule, **_spd_inputs(device_placement="external_to_pecs")) is None
 
 
 def test_spd_keeps_its_declared_contract() -> None:

@@ -115,7 +115,16 @@ class SpdMonitoringFact(_Fact):
     #: concepts -- Table 2's basis against the curve basis in #53A is the precedent -- but only
     #: with an explicit mapping. Two spellings of one concept and no mapping is just a field
     #: nothing can consume.
-    device_placement: Literal["internal_to_pecs", "external_to_pecs"]
+    #:
+    #: ``bundled_external_to_pecs`` rather than a bare external placement: the source's
+    #: requirement for an external device reaches only one the manufacturer bundles with their
+    #: product, so a statement claiming every external device would be wider than its clause. The
+    #: rule declares both tokens, and an external device nothing bundled reaches no row at all.
+    #:
+    #: ``any_placement`` names a statement that states its obligation for every placement its
+    #: clause distinguishes -- the exemption is stated once, for the external-device monitoring
+    #: and the internal monitoring test together, so it is one statement rather than two.
+    device_placement: Literal["internal_to_pecs", "bundled_external_to_pecs", "any_placement"]
     participates_in_reduction: bool
     monitoring_required: bool
     compliance_evidence: Literal["visual_inspection", "monitoring_test", "not_required"]
