@@ -90,18 +90,24 @@ in-flight #53 workstream.
 
 | Location | Class | Description | Assessment |
 | --- | --- | --- | --- |
-| `README.md:93` | manual | Altitude boundary value inside a workflow diagram | confirmed (finding H) |
-| `README.md:99-104` | value-near-table-id | Advisory threshold and treatment behavior stated with table identifiers | confirmed (finding H) |
-| `README.md:139,148-152` | value-near-table-id | Frequency boundary and reinforced treatment behavior stated directly | confirmed (finding H) |
-| `diff-readable.tex:49-84` (12 flagged lines) | value-near-table-id | Generated report diff pairing real calculated results with source table locators | confirmed (finding E); remove or regenerate from synthetic rules |
-| `docs/superpowers/plans/2026-08-02-project-defaults-netclass-ui.md:14,38-64` | text-numeric-series, value-near-table-id | Complete normative option series reproduced inline and as a list | confirmed (finding D) |
-| `docs/superpowers/specs/2026-08-02-project-defaults-netclass-ui-design.md:13,28` | manual | References the normative option series and one option label | confirmed (finding D) |
-| `docs/superpowers/plans/2026-08-01-pcb-iec-workflow-correction.md:529,588` | value-near-table-id | Normative boundary statements next to table identifiers | confirmed (finding D/G class) |
-| `docs/superpowers/specs/2026-08-01-pcb-iec-workflow-correction-design.md:66,72,200,251` | value-near-table-id | Normative boundary statements next to table identifiers | confirmed (finding D/G class) |
-| `docs/superpowers/plans/2026-08-02-a2-altitude-range-fix.md:5,7,36,37` | value-near-table-id | Boundary statements; line 37 additionally states a verified real-package factor value | confirmed (finding D/G class); line 37 is high priority |
+| `README.md:93` | manual | Altitude boundary value inside a workflow diagram | resolved (this slice; value neutralized) |
+| `README.md:99-104` | value-near-table-id | Advisory threshold and treatment behavior stated with table identifiers | resolved (this slice; values neutralized) |
+| `README.md:139,148-152` | value-near-table-id | Frequency boundary and reinforced treatment behavior stated directly | resolved (this slice; values and treatment wording neutralized) |
+| `diff-readable.tex:49-84` (12 flagged lines) | value-near-table-id | Generated report diff pairing real calculated results with source table locators | resolved (this slice; file deleted, finding E) |
+| `docs/superpowers/plans/2026-08-02-project-defaults-netclass-ui.md:14,38-64` | text-numeric-series, value-near-table-id | Complete normative option series reproduced inline and as a list | resolved (this slice; series replaced by pointers to the approved package, finding D) |
+| `docs/superpowers/specs/2026-08-02-project-defaults-netclass-ui-design.md:13,28` | manual | References the normative option series and one option label | resolved (this slice; finding D) |
+| `docs/superpowers/plans/2026-08-01-pcb-iec-workflow-correction.md:529,588` | value-near-table-id | Normative boundary statements next to table identifiers | resolved (this slice; boundaries neutralized, table identifiers retained) |
+| `docs/superpowers/specs/2026-08-01-pcb-iec-workflow-correction-design.md:66,72,200,251` | value-near-table-id | Normative boundary statements next to table identifiers | resolved (this slice; boundaries neutralized, table identifiers retained) |
+| `docs/superpowers/plans/2026-08-02-a2-altitude-range-fix.md:5,7,36,37` | value-near-table-id | Boundary statements; line 37 additionally stated a verified real-package factor value | resolved (this slice; the factor value formerly stated at line 37 now referenced only as package-defined) |
 | `docs/superpowers/plans/2026-08-10-iec62477-slice-d.md:680` | text-numeric-series | Source column index tuple | allowed-structural |
 | `docs/superpowers/specs/2026-08-07-iec62477-foundation-design.md:29` | text-numeric-series | Table identifier list | allowed-structural |
-| `docs/report-and-pairs-improvements-spec.md:80-81` | manual | Example report line with distances | verify-private (likely illustrative) |
+| `docs/report-and-pairs-improvements-spec.md:80-81` | manual | Example report line with distances | synthetic-ok (reviewed this slice: round invented example labels, no source locators, and they do not match any real generated output) |
+
+Resolved rows above were fixed by the issue #40 Task 6 documentation slice:
+stated boundaries, thresholds, factors, and the option series were replaced by
+neutral references to the approved `.icrules` package and its semantic rules;
+permitted structural locators (table/annex identifiers) were kept. Line
+references in resolved rows are historical and point at the neutralized text.
 
 ## Boundary properties not yet true
 
@@ -112,7 +118,9 @@ here instead of being asserted by `tests/test_content_boundaries.py`:
   #34 slice D content).
 - Reinforced policy values supplied entirely by a rules package (Task 4).
 - Public fixtures free of real table axes/cells (Task 5).
-- Public docs/README free of normative statements (Task 6).
+- Public docs/README free of normative statements (Task 6; the confirmed
+  Documents-section entries above are resolved, README restructuring stays
+  with issue #41).
 - Neutralized importer recipe labels (Task 7; collides with in-flight #53).
 - The scanner running with `--strict` in CI (Task 8 remainder/Task 11; only
   after the migrations above land).
