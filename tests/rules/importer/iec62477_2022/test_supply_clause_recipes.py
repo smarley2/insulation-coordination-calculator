@@ -398,21 +398,18 @@ def test_each_spd_route_is_projected_under_its_own_id() -> None:
         assert rule.id == route_id
 
 
-def test_only_the_monitoring_route_enforces_a_reviewed_shape() -> None:
-    """The mains/non_mains node shapes have not been measured yet (#53 Task 9).
+def test_every_reduction_route_enforces_its_reviewed_shape() -> None:
+    """All three routes' shapes are measured, so a reflowed clause blocks on any of them.
 
-    A malformed monitoring fragment still blocks; the same malformed shape on the other
-    two routes does not, because there is no reviewed contract there to check against.
+    Each route reads its own clause through its own bbox, so a reprint that splits one of
+    them across a different number of nodes must stop the build rather than project a rule
+    from a region nobody reviewed.
     """
 
-    malformed = _paragraph_fragment(_SPD_MONITORING_ID, count=2)
-    with pytest.raises(ClauseStructureError, match="AMBIGUOUS_CLAUSE_STRUCTURE"):
-        project_spd_reduction_requirements(malformed, IDENTITY)
-
-    for route_id in (_SPD_MAINS_ID, _SPD_NON_MAINS_ID):
-        same_shape = _paragraph_fragment(route_id, count=2)
-        rule = _project_spd(same_shape)
-        assert rule.id == route_id
+    for route_id in (_SPD_MONITORING_ID, _SPD_MAINS_ID, _SPD_NON_MAINS_ID):
+        malformed = _paragraph_fragment(route_id, count=2)
+        with pytest.raises(ClauseStructureError, match="AMBIGUOUS_CLAUSE_STRUCTURE"):
+            project_spd_reduction_requirements(malformed, IDENTITY)
 
 
 def test_the_transformer_route_needs_evidence_before_it_permits_anything() -> None:

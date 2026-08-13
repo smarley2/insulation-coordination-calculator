@@ -119,26 +119,16 @@ SUPPLY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
 _SYSTEM_VOLTAGE_SHAPE = ("bullet", 3)
 _PROPAGATION_SHAPE = ("bullet", 4)
 _BARRIER_SHAPE = ("paragraph", 1)
-#: Measured against the licensed document for the bare identifier before the SPD route
-#: split; that measurement was against what is now the monitoring route's own clause, so
-#: it is kept as that route's contract below rather than reused for the other two.
 _SPD_SHAPE = ("paragraph", 1)
 _HF_TRANSFORMER_SHAPE = ("paragraph", 1)
 
-#: NOT_YET_REVIEWED marks a route with no reviewed node-shape contract to check yet.
-#: Measuring one requires reading the licensed IEC 62477-1:2022 document, which this
-#: public repository does not carry -- that measurement is private licensed work, tracked
-#: as #53 Task 9. Until it lands, AMBIGUOUS_CLAUSE_STRUCTURE cannot fire for a malformed
-#: fragment on a NOT_YET_REVIEWED route. Grep this name to find every route still missing
-#: a contract.
-NOT_YET_REVIEWED: tuple[str, int] | None = None
-
-#: Reviewed structural contract per SPD reduction route. Only the monitoring route's shape
-#: has ever been measured (see the comment on ``_SPD_SHAPE`` above); the mains and
-#: non_mains routes are NOT_YET_REVIEWED.
-_SPD_SHAPE_BY_ROUTE: dict[str, tuple[str, int] | None] = {
-    f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains": NOT_YET_REVIEWED,
-    f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains": NOT_YET_REVIEWED,
+#: Reviewed structural contract per SPD reduction route. Each was measured against the
+#: licensed document from the fragment the recipe's own bbox extracts, so a reprint that
+#: reflows any of these three clauses across a different number of nodes stops the build
+#: instead of projecting a rule from a region nobody reviewed.
+_SPD_SHAPE_BY_ROUTE: dict[str, tuple[str, int]] = {
+    f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains": _SPD_SHAPE,
+    f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains": _SPD_SHAPE,
     f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring": _SPD_SHAPE,
 }
 
@@ -167,18 +157,6 @@ def _require_shape(
     kind, count = shape
     if len(fragment.nodes) != count or any(node.kind != kind for node in fragment.nodes):
         _fail(f"{label} expected {count} reviewed {kind} node(s)")
-
-
-def _require_shape_if_reviewed(
-    fragment: RawClauseFragment,
-    shape: tuple[str, int] | None,
-    label: str,
-) -> None:
-    """Like ``_require_shape``, but a NOT_YET_REVIEWED route is a deliberate no-op."""
-
-    if shape is None:  # NOT_YET_REVIEWED
-        return
-    _require_shape(fragment, shape, label)
 
 
 def _matcher(name: str, values: tuple[str, ...] | None) -> Matcher:
@@ -624,7 +602,7 @@ def project_spd_reduction_requirements(
     if rule_id is None:
         raise ValueError(f"{label} projection requires its own fragment")
     _require_own_fragment(fragment, identity, rule_id, label)
-    _require_shape_if_reviewed(fragment, _SPD_SHAPE_BY_ROUTE[rule_id], label)
+    _require_shape(fragment, _SPD_SHAPE_BY_ROUTE[rule_id], label)
 
     def _row(
         *,
