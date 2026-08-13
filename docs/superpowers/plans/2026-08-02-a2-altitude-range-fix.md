@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task with verification checkpoints.
 
-**Goal:** Ensure imported A.2 altitude tables declare their canonical row-axis range so calculations above 2,000 m work with checksum-valid rules packages.
+**Goal:** Ensure imported A.2 altitude tables declare their canonical row-axis range so calculations above the table's base altitude boundary work with checksum-valid rules packages.
 
-**Architecture:** Keep the calculation-side A.2 contract strict. Populate each imported table's supported range at the projection boundary from its typed row axis, then regenerate the pinned local rules archive and update the project pin. Add importer and 5,000 m regression coverage.
+**Architecture:** Keep the calculation-side A.2 contract strict. Populate each imported table's supported range at the projection boundary from its typed row axis, then regenerate the pinned local rules archive and update the project pin. Add importer and above-boundary altitude regression coverage.
 
 **Tech Stack:** Python 3.12, Pydantic rule models, pytest, deterministic `.icrules` archives.
 
@@ -28,13 +28,13 @@
 - [x] Add the shared `SupportedRange` projection to both normal and legacy table paths.
 - [x] Run the focused importer test and confirm it passes.
 
-### Task 2: Add the 5,000 m calculation regression
+### Task 2: Add the above-boundary altitude calculation regression
 
 **Files:**
 - Test: `tests/calculation/test_high_frequency.py`
 
-- [x] Extend the synthetic A.2 table through `5000 m` and add the altitude regression.
-- [x] Assert the synthetic A.2 factor is applied at `5000 m`; the real package is separately verified with factor `1.48`.
+- [x] Extend the synthetic A.2 table beyond its previous ceiling and add the altitude regression.
+- [x] Assert the synthetic A.2 factor is applied at the extended test altitude; the real package is separately verified in the private review against the factor the approved package defines.
 - [x] Run the focused calculation test.
 
 ### Task 3: Regenerate the local pinned rules package
@@ -46,7 +46,7 @@
 - [x] Add the row-axis range to the existing A.2 table through the typed package model.
 - [x] Write the archive with `write_rule_package` and verify it reloads and validates.
 - [x] Update the project SHA-256 pin to the regenerated archive digest.
-- [x] Verify the application package performs the 5,000 m calculation.
+- [x] Verify the application package performs the above-boundary altitude calculation.
 
 ### Task 4: Run the complete verification suite
 

@@ -63,14 +63,14 @@ not be treated as valid inputs to the corrected engine.
 | Table F.2 | Impulse-clearance lookup with field and pollution branches |
 | Table F.5, both pages | One joined PCB creepage table |
 | Table F.8 | Clearance for steady-state peak, temporary overvoltage, and recurring peak voltage |
-| Table A.2 | Clearance altitude correction above 2 000 m |
+| Table A.2 | Clearance altitude correction above the base altitude boundary |
 | Table F.9 | Partial-discharge advisory data |
 | Annex G / Clause 5.2 | Clearance workflow and branching contract |
 | Annex H / Clause 5.3 | PCB creepage workflow and branching contract |
 
 Table F.10 is not substituted for A.2. Annex G explicitly sends the
-above-2 000 m branch to A.2. Values at or below 2 000 m remain governed by the
-base clearance tables under the supported workflow.
+above-boundary altitude branch to A.2. Altitudes at or below that boundary
+remain governed by the base clearance tables under the supported workflow.
 
 ### IEC 60664-4:2005
 
@@ -194,11 +194,11 @@ For each net-class pair:
    prescribed percentage treatment; periodic stresses use the prescribed
    reinforced treatment. Functional insulation follows 5.2.4 without
    basic/reinforced scaling.
-6. If frequency exceeds 30 kHz, run the IEC 60664-4 clearance assessment
-   described below and add its result as another candidate.
+6. If frequency exceeds the high-frequency boundary, run the IEC 60664-4
+   clearance assessment described below and add its result as another candidate.
 7. Select the largest applicable clearance candidate.
-8. When altitude exceeds 2 000 m, interpolate the A.2 factor within its supported
-   range and apply it to the governing clearance.
+8. When altitude exceeds the A.2 base boundary, interpolate the A.2 factor
+   within its supported range and apply it to the governing clearance.
 9. Emit the required withstand-test and F.9 partial-discharge advisories without
    silently modifying the selected result.
 
@@ -208,8 +208,8 @@ interpolation, maximum selection, altitude factor, and advisory source.
 ## IEC 60664-4 Clearance Workflow
 
 The Part 4 threshold and the critical frequency are different decisions.
-Frequency above 30 kHz activates the assessment; it does not automatically
-produce a larger distance.
+Frequency above the boundary activates the assessment; it does not
+automatically produce a larger distance.
 
 For each applicable pair:
 
@@ -247,10 +247,12 @@ For each net-class pair:
 3. Select the joined F.5 printed-wiring branch and its pollution column.
 4. Apply only the source-permitted voltage interpolation.
 5. Use the selected distance directly for functional, basic, or supplementary
-   insulation. Apply twice the selected F.5 distance for reinforced insulation.
-6. If frequency exceeds 30 kHz, evaluate IEC 60664-4 Table 2 with its declared
-   frequency-column interpolation and pollution multiplier. Missing table
-   combinations or values outside the supported range block calculation.
+   insulation. Apply the approved reinforced treatment to the selected F.5
+   distance for reinforced insulation.
+6. If frequency exceeds the high-frequency boundary, evaluate IEC 60664-4
+   Table 2 with its declared frequency-column interpolation and pollution
+   multiplier. Missing table combinations or values outside the supported
+   range block calculation.
 7. Select the largest of the Part 1 creepage, Part 4 creepage, and final
    clearance floor.
 
@@ -379,7 +381,7 @@ the final equivalent function rather than preserving a misleading name.
 - radius criterion and the second recalculation pass;
 - Part 4 inhomogeneous Table 1 route;
 - F.5 PCB pollution-degree branches across both pages;
-- reinforced creepage doubling and clearance floor;
+- the reinforced creepage treatment and clearance floor;
 - Part 4 Table 2 frequency behavior and pollution multipliers; and
 - every declared unsupported PCB condition and out-of-range combination.
 

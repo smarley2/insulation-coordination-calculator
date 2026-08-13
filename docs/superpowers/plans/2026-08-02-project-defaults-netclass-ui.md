@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Keep the project PCB-only pollution choices to `1` and `2`.
-- Use impulse options represented by IEC F.2: `0.33, 0.40, 0.50, 0.60, 0.80, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10, 12, 15, 20, 25, 30, 40, 50, 60, 80, 100 kV`.
+- Use the impulse option series carried by the approved rules package (the preferred impulse-withstand levels; source locator IEC 60664-1 Table F.2). The values are deliberately not restated in this public record.
 - Keep an empty first option for unset defaults.
 - Store impulse selections as volts (`Decimal`), not display strings.
 - Preserve a loaded legacy value by adding it as a marked compatibility item instead of silently changing it.
@@ -34,34 +34,13 @@
 ```python
 def test_project_default_dropdown_choices(qtbot, qtbot_project):
     page = qtbot_project
+    # The impulse expectation originally reproduced the full preferred
+    # impulse-withstand option series inline. That series is licensed
+    # content; it lives in the approved `.icrules` package and is
+    # referenced here only through its labels.
     assert [page._impulse_combo.itemText(i) for i in range(page._impulse_combo.count())] == [
         "",
-        "0.33 kV",
-        "0.40 kV",
-        "0.50 kV",
-        "0.60 kV",
-        "0.80 kV",
-        "1.0 kV",
-        "1.2 kV",
-        "1.5 kV",
-        "2.0 kV",
-        "2.5 kV",
-        "3.0 kV",
-        "4.0 kV",
-        "5.0 kV",
-        "6.0 kV",
-        "8.0 kV",
-        "10 kV",
-        "12 kV",
-        "15 kV",
-        "20 kV",
-        "25 kV",
-        "30 kV",
-        "40 kV",
-        "50 kV",
-        "60 kV",
-        "80 kV",
-        "100 kV",
+        *EXPECTED_IMPULSE_LABELS,  # from the approved package's option series
     ]
     assert [page._pollution_combo.itemText(i) for i in range(page._pollution_combo.count())] == [
         "",
@@ -82,10 +61,12 @@ def test_project_default_dropdown_choices(qtbot, qtbot_project):
 ```python
 def test_project_default_dropdowns_update_existing_model(qtbot, qtbot_project):
     page = qtbot_project
-    page._impulse_combo.setCurrentText("2.5 kV")
+    # SELECTED_LABEL/SELECTED_VOLTS are one label/value pair taken from the
+    # approved package's option series (not restated in this public record).
+    page._impulse_combo.setCurrentText(SELECTED_LABEL)
     page._pollution_combo.setCurrentText("2")
     page._cti_combo.setCurrentText("IIIa")
-    assert page.project.defaults.impulse_v == Decimal("2500")
+    assert page.project.defaults.impulse_v == SELECTED_VOLTS
     assert page.project.defaults.pollution_degree == 2
     assert page.project.defaults.cti_or_material_group == "IIIa"
     page._impulse_combo.setCurrentIndex(0)
@@ -136,34 +117,12 @@ Expected: FAIL because the current implementation exposes line edits rather than
 Use tuples of `(display_text, value)` where impulse values are `Decimal` volts:
 
 ```python
-_IMPULSE_OPTIONS = (
-    ("0.33 kV", Decimal("330")),
-    ("0.40 kV", Decimal("400")),
-    ("0.50 kV", Decimal("500")),
-    ("0.60 kV", Decimal("600")),
-    ("0.80 kV", Decimal("800")),
-    ("1.0 kV", Decimal("1000")),
-    ("1.2 kV", Decimal("1200")),
-    ("1.5 kV", Decimal("1500")),
-    ("2.0 kV", Decimal("2000")),
-    ("2.5 kV", Decimal("2500")),
-    ("3.0 kV", Decimal("3000")),
-    ("4.0 kV", Decimal("4000")),
-    ("5.0 kV", Decimal("5000")),
-    ("6.0 kV", Decimal("6000")),
-    ("8.0 kV", Decimal("8000")),
-    ("10 kV", Decimal("10000")),
-    ("12 kV", Decimal("12000")),
-    ("15 kV", Decimal("15000")),
-    ("20 kV", Decimal("20000")),
-    ("25 kV", Decimal("25000")),
-    ("30 kV", Decimal("30000")),
-    ("40 kV", Decimal("40000")),
-    ("50 kV", Decimal("50000")),
-    ("60 kV", Decimal("60000")),
-    ("80 kV", Decimal("80000")),
-    ("100 kV", Decimal("100000")),
-)
+# _IMPULSE_OPTIONS originally reproduced the full preferred
+# impulse-withstand series here as (display kV label, Decimal volts)
+# pairs. The series is licensed content and now comes from the approved
+# `.icrules` package's option-series rule instead of being restated in
+# this public record.
+_IMPULSE_OPTIONS = tuple(impulse_options_from_approved_package())
 _POLLUTION_OPTIONS = (("1", 1), ("2", 2))
 _MATERIAL_OPTIONS = (("I", "I"), ("II", "II"), ("IIIa", "IIIa"), ("IIIb", "IIIb"))
 ```
@@ -176,7 +135,7 @@ Create each combo with `addItem("", None)`, then add its option text and typed d
 
 - [ ] **Step 3: Load and restore values without emitting changes**
 
-Block signals while loading. Select by `findData(default_value)`. If a non-`None` loaded value is not in the approved options, append a compatibility item such as `"3 (legacy)"` or `"2.5 kV (legacy)"` with the original typed value, then select it. This preserves old projects while keeping all newly entered values constrained.
+Block signals while loading. Select by `findData(default_value)`. If a non-`None` loaded value is not in the approved options, append a compatibility item such as `"3 (legacy)"` or `"<kV label> (legacy)"` with the original typed value, then select it. This preserves old projects while keeping all newly entered values constrained.
 
 - [ ] **Step 4: Remove the obsolete handlers only for these fields**
 
