@@ -4,7 +4,7 @@
 
 **Goal:** Replace the generic PDF-number workflow with reviewed semantic IEC rules and calculate PCB clearance and creepage per net-class pair using IEC 60664-1 Annex G/H plus the applicable IEC 60664-4 high-frequency branches.
 
-**Architecture:** Keep the existing manual per-pair stress boundary. Extract only the approved source inventory into semantic raw tables/equations, review those artifacts before projection, then build typed sparse tables and explicit route mappings. The calculation engine evaluates Part 1 candidates first, performs a pair-specific critical-frequency check above 30 kHz, applies the bounded Part 4 second pass when required, and emits a complete trace.
+**Architecture:** Keep the existing manual per-pair stress boundary. Extract only the approved source inventory into semantic raw tables/equations, review those artifacts before projection, then build typed sparse tables and explicit route mappings. The calculation engine evaluates Part 1 candidates first, performs a pair-specific critical-frequency check above the high-frequency applicability boundary, applies the bounded Part 4 second pass when required, and emits a complete trace.
 
 **Tech Stack:** Python 3.12, Pydantic frozen models, Decimal arithmetic, pdfplumber, PySide6, pytest, pytest-qt.
 
@@ -479,7 +479,7 @@ git commit -m "feat: calculate Annex G Part 1 clearance"
 
 - [ ] **Step 1: Write failing critical-frequency boundary tests**
 
-For two pairs with different Part 1 clearances but the same frequency, assert different computed critical frequencies and possibly different selected branches. Cover exactly 30 kHz (Part 4 inactive), above 30 kHz but below `fcritical`, between `fcritical` and reviewed minimum frequency, and at/above minimum frequency.
+For two pairs with different Part 1 clearances but the same frequency, assert different computed critical frequencies and possibly different selected branches. Cover exactly the high-frequency boundary (Part 4 inactive), above the boundary but below `fcritical`, between `fcritical` and reviewed minimum frequency, and at/above minimum frequency.
 
 - [ ] **Step 2: Write failing field and second-pass tests**
 
@@ -525,8 +525,8 @@ git commit -m "fix: apply pair specific IEC critical frequency"
 
 **Interfaces:**
 - Move altitude logic to `apply_a2_altitude_correction(effective, governing_clearance, rules)`.
-- At/below 2,000 m, return the base clearance and a trace explaining no factor applies.
-- Above 2,000 m, interpolate the reviewed A.2 factor only inside its supported range and apply it after the maximum clearance candidate is chosen.
+- At or below the A.2 base altitude boundary, return the base clearance and a trace explaining no factor applies.
+- Above that boundary, interpolate the reviewed A.2 factor only inside its supported range and apply it after the maximum clearance candidate is chosen.
 - Add source-backed F.9 partial-discharge and withstand-test advisories without altering the numeric result.
 
 - [ ] **Step 1: Write failing altitude/advisory tests**
@@ -573,11 +573,11 @@ git commit -m "feat: apply IEC altitude and discharge guidance"
 - Add `select_f5_pcb_creepage(effective, rules)` over the joined F.5 table.
 - Add `select_part4_table2_creepage(effective, rules)` with reviewed voltage-row and frequency-column policies plus the applicable pollution multiplier.
 - Final creepage is `max(part1_f5, optional_part4_table2, final_clearance)`.
-- Reinforced insulation doubles the selected F.5 distance; functional/basic/supplementary use it directly.
+- Reinforced insulation scales the selected F.5 distance by the approved reinforced treatment; functional/basic/supplementary use it directly.
 
 - [ ] **Step 1: Write failing F.5 tests**
 
-Cover PCB pollution degree 1 and 2, exact voltage rows, permitted interpolation across the F.5 page boundary, functional/basic/supplementary, reinforced doubling, and the final-clearance floor. Assert values above/below the joined table range and PCB pollution degree 3/4 block rather than selecting non-PCB columns.
+Cover PCB pollution degree 1 and 2, exact voltage rows, permitted interpolation across the F.5 page boundary, functional/basic/supplementary, the reinforced treatment, and the final-clearance floor. Assert values above/below the joined table range and PCB pollution degree 3/4 block rather than selecting non-PCB columns.
 
 - [ ] **Step 2: Write failing unsupported-condition tests**
 
@@ -585,7 +585,7 @@ Assert explicit errors for coating/potting, rib reduction, split materials/pollu
 
 - [ ] **Step 3: Write failing Table 2 tests**
 
-Cover frequency at/below 30 kHz (no Part 4 creepage candidate), exact frequency columns, permitted between-column interpolation, conservative/non-interpolated voltage-row behavior, pollution multiplier, sparse missing combinations, and supported-range failures. Assert Part 4 Table 2 can govern over both F.5 and the clearance floor.
+Cover frequency at or below the high-frequency applicability boundary (no Part 4 creepage candidate), exact frequency columns, permitted between-column interpolation, conservative/non-interpolated voltage-row behavior, pollution multiplier, sparse missing combinations, and supported-range failures. Assert Part 4 Table 2 can govern over both F.5 and the clearance floor.
 
 - [ ] **Step 4: Run creepage tests and verify RED**
 
@@ -595,7 +595,7 @@ Expected: current creepage routes are backed by F.4/Table 5 and lack joined-tabl
 
 - [ ] **Step 5: Implement Annex H selection and validation**
 
-Validate PCB scope before lookup. Select only the reviewed printed-wiring branches, use only source-permitted interpolation, apply reinforced doubling after the F.5 selection, and add a source-backed trace for every transformation. At high frequency, evaluate Table 2 independently and then take the maximum with final clearance.
+Validate PCB scope before lookup. Select only the reviewed printed-wiring branches, use only source-permitted interpolation, apply the reinforced treatment after the F.5 selection, and add a source-backed trace for every transformation. At high frequency, evaluate Table 2 independently and then take the maximum with final clearance.
 
 - [ ] **Step 6: Run creepage, engine, and grouping tests and verify GREEN**
 
@@ -669,7 +669,7 @@ git commit -m "fix: reject obsolete IEC rule packages"
 
 **Interfaces:**
 - One private helper performs: identify → extract → accept tables → accept equations/mappings → build → approve.
-- The approved package passes semantic validation and can calculate representative PCB pairs below and above 30 kHz.
+- The approved package passes semantic validation and can calculate representative PCB pairs below and above the high-frequency boundary.
 - Private assertions may inspect licensed values at runtime, but no extracted value snapshots are committed.
 
 - [ ] **Step 1: Write the failing end-to-end acceptance test**
@@ -817,7 +817,7 @@ Using local IEC PDFs, verify:
 7. stage counts are understandable and reach zero pending;
 8. build and approval enable in order;
 9. an approved package calculates representative PCB pairs;
-10. above 30 kHz, each pair trace shows its own clearance, `fcritical`, comparison, branch, and second-pass state.
+10. above the high-frequency boundary, each pair trace shows its own clearance, `fcritical`, comparison, branch, and second-pass state.
 
 - [ ] **Step 5: Inspect repository hygiene**
 

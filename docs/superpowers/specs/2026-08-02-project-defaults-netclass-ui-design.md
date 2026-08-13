@@ -10,8 +10,9 @@ make the visible Add button reliably add a net class through its dialog path.
 - Replace the project-default impulse voltage, pollution degree, and CTI/material
   group line edits with non-editable `QComboBox` controls.
 - Keep an empty first option for an unset default.
-- Populate impulse voltage with the approved IEC F.2 values, displayed in kV and
-  stored as volts.
+- Populate impulse voltage with the option series carried by the approved rules
+  package (source locator IEC 60664-1 Table F.2; the values are not restated in
+  this public record), displayed in kV and stored as volts.
 - Populate pollution degree with `1` and `2`.
 - Populate material group with `I`, `II`, `IIIa`, and `IIIb`.
 - Preserve existing project serialization and `ProjectDefaults` types.
@@ -25,8 +26,8 @@ make the visible Add button reliably add a net class through its dialog path.
 
 `ProjectPage` owns the widgets and converts combo-box user data directly into the
 existing domain values. The impulse combo stores `Decimal` volts as item data while
-displaying values such as `0.33 kV`; pollution stores integers; material stores the
-group string. Selecting the blank item writes `None` through the same immutable
+displaying the package-supplied kV labels; pollution stores integers; material stores
+the group string. Selecting the blank item writes `None` through the same immutable
 `ProjectDefaults.model_validate()` update path used today.
 
 The Add button continues to open the existing `QInputDialog`. The regression test

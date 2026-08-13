@@ -90,7 +90,7 @@ flowchart TD
     I --> F8["F.8 steady, recurring, and temporary peak candidates"]
     F2 --> M["Maximum clearance candidate"]
     F8 --> M
-    M --> A2{"Altitude above 2,000 m?"}
+    M --> A2{"Altitude above the A.2 base boundary?"}
     A2 -- "No" --> C["Part 1 clearance"]
     A2 -- "Yes" --> AF["Apply A.2 factor after maximum"]
     AF --> C
@@ -99,14 +99,16 @@ flowchart TD
 F.2 uses impulse withstand voltage. F.8 evaluates every applicable periodic peak;
 blank required stresses block calculation, while explicitly not-applicable stresses
 remain traceable omissions. The largest candidate governs. A.2 is applied once, after
-that maximum. At 2.5 kV peak and above, F.9 produces a partial-discharge review
-advisory for inhomogeneous fields; it does not replace the governing distance.
+that maximum. At and above the peak-voltage threshold defined by the applicable rule,
+F.9 produces a partial-discharge review advisory for inhomogeneous fields; it does
+not replace the governing distance.
 Homogeneous Case B also carries a withstand-test verification requirement.
 
 ## Pair-specific critical-frequency flow
 
-Above 30 kHz, `fcritical` is computed independently for every pair from its governing
-periodic Part 1 clearance; impulse clearance is not used as the Equation (1) input.
+Above the high-frequency boundary, `fcritical` is computed independently for every pair
+from its governing periodic Part 1 clearance; impulse clearance is not used as the
+Equation (1) input.
 
 ```mermaid
 flowchart TD
@@ -136,7 +138,7 @@ passes are allowed.
 ```mermaid
 flowchart TD
     V["Long-term RMS voltage"] --> F5["F.5 PCB creepage: pollution degree 1 or 2"]
-    F["Frequency above 30 kHz"] --> T2["IEC 60664-4 Table 2 frequency creepage"]
+    F["Frequency above the high-frequency boundary"] --> T2["IEC 60664-4 Table 2 frequency creepage"]
     C["Final clearance"] --> FLOOR["Clearance floor"]
     F5 --> MAX["Maximum creepage candidate"]
     T2 --> MAX
@@ -145,11 +147,12 @@ flowchart TD
 ```
 
 F.5 interpolates only along its normalized voltage axis and selects the PCB pollution
-branch exactly. Reinforced insulation doubles the F.5 result. Above 30 kHz, Table 2
-adds a voltage-ceiling/frequency-linear candidate; 30–100 kHz uses its 100 kHz band,
-and pollution degree 2 applies its declared multiplier. Sparse unavailable source
-combinations block instead of being guessed. Final creepage is the maximum of F.5,
-Table 2 when applicable, and final clearance.
+branch exactly. Reinforced insulation applies the treatment defined by the approved
+rule to the F.5 result. Above the high-frequency boundary, Table 2 adds a
+voltage-ceiling/frequency-linear candidate using the band structure and pollution
+multiplier the table declares. Sparse unavailable source combinations block instead
+of being guessed. Final creepage is the maximum of F.5, Table 2 when applicable, and
+final clearance.
 
 ## Unsupported PCB conditions
 
