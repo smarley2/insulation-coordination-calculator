@@ -1443,9 +1443,16 @@ Expected: `TypeError` on the fourth argument, then assertion failures naming the
 
 `project_hf_transformer_attenuation` derives its rows from its route's `HfAttenuationFact`s,
 matching on `dvc_gate` and emitting `evidence_kind` values; it raises `ClauseStructureError`
-without facts. Delete `_ATTENUATION_EVIDENCE_KINDS` and `_REQUIRED_EVIDENCE_KINDS`; keep
-`_DVC_DESIGNATIONS` and `_HF_TRANSFORMER_DVC_GATE` only if they remain a declared vocabulary
-rather than a branch list. The `threshold_reference` and `comparison_required` fields are carried
+without facts.
+
+**Correction, after this step was first written and then reviewed against the document:** this text
+said to delete `_ATTENUATION_EVIDENCE_KINDS` and `_REQUIRED_EVIDENCE_KINDS`. Deleting the first was
+wrong and was reverted. It is the declared vocabulary of an *input*, and an input's vocabulary is
+the consumer's question space, not the reviewed answer space — driving it from the authored facts
+dropped `none` from the domain, so the first question a consumer asks, designing before the
+attenuation is shown, raised instead of answering. Derive the **rows** from facts and leave both
+vocabularies declared. Keep `_DVC_DESIGNATIONS` and `_HF_TRANSFORMER_DVC_GATE` on the same
+grounds. The `threshold_reference` and `comparison_required` fields are carried
 but not yet executable: #53C item 4 turns them into the verification-result contract, and this
 task must not.
 
