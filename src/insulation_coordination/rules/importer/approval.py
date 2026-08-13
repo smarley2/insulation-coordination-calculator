@@ -1153,6 +1153,10 @@ def _clause_fact_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, .
             reason = "carries no authored clause fact"
         elif defects:
             reason = f"has a fact that {defects[0]}"
+        # As ``axis_review_is_current`` verifies a review's ``proposal_sha256``: a written digest
+        # nothing reads is a digest a second writer can get wrong unnoticed.
+        elif any(item.fact_sha256 != canonical_model_sha256(item.fact) for item in reviews):
+            reason = "has a review whose fact hash is not its fact's"
         elif len(completions) != 1:
             reason = "lacks one exact fact-set completion record"
         elif (

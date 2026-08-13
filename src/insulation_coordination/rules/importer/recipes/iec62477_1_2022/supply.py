@@ -619,14 +619,12 @@ def project_spd_reduction_requirements(
     """
 
     label = "supply SPD reduction requirements"
-    rule_id = next(
-        (route_id for route_id in _SPD_SHAPE_BY_ROUTE if fragment.id == f"raw-{route_id}"),
-        None,
-    )
-    if rule_id is None:
+    rule_id = fragment.id.removeprefix("raw-")
+    shape = _SPD_SHAPE_BY_ROUTE.get(rule_id)
+    if shape is None:
         raise ValueError(f"{label} projection requires its own fragment")
     _require_own_fragment(fragment, identity, rule_id, label)
-    _require_shape(fragment, _SPD_SHAPE_BY_ROUTE[rule_id], label)
+    _require_shape(fragment, shape, label)
 
     def _row(
         *,

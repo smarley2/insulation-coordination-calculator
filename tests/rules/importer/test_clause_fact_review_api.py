@@ -91,19 +91,23 @@ def _reduction_fact(draft: ImportedRuleDraft, *, fragment_id: str) -> SpdReducti
 
 
 def _hand_built(
-    draft: ImportedRuleDraft, *, rule_route: str, fact: SupplyFact
+    draft: ImportedRuleDraft,
+    *,
+    rule_route: str,
+    fact: SupplyFact,
+    fact_sha256: str | None = None,
 ) -> ImportedRuleDraft:
     """A draft carrying one review the authoring API refuses, completed for that route.
 
-    Every digest in it is honestly computed, which is the point: the gate has to refuse on the
-    fact's identity, because nothing about its hashes is stale.
+    Every digest in it is honestly computed unless the caller says otherwise, which is the point:
+    the gate has to refuse on the fact's identity, because nothing about its hashes is stale.
     """
 
     review = ClauseFactReview(
         rule_route=rule_route,
         statement_index=fact.statement_index,
         fact=fact,
-        fact_sha256=canonical_model_sha256(fact),
+        fact_sha256=fact_sha256 or canonical_model_sha256(fact),
         evidence_sha256=evidence_sha256(fact.node_references),
         actor="tester",
         recorded_at=datetime.now(UTC),
@@ -402,6 +406,24 @@ def test_an_undeclared_rule_route_is_refused_rather_than_recorded(
             actor="tester",
             notes="misfiled",
         )
+
+
+def test_a_review_whose_fact_hash_is_not_its_facts_blocks(
+    draft_with_supply_fragments, hf_fact
+) -> None:
+    """Task 8's dialog becomes a second writer of fact_sha256, so the gate has to read it.
+
+    The symmetry ``axis_review_is_current`` already keeps for a review's ``proposal_sha256``.
+    """
+
+    draft = _hand_built(
+        draft_with_supply_fragments,
+        rule_route=HF_ROUTE,
+        fact=hf_fact,
+        fact_sha256="0" * 64,
+    )
+
+    assert HF_ROUTE in _blocked(draft)
 
 
 def test_a_completion_must_name_its_own_route_fragment(
