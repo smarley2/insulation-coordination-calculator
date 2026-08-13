@@ -1529,11 +1529,42 @@ pagination create runtime routes — the consumer still wants a single
 `supply.system_voltage_resolution` rule.
 
 Completion is already scoped per `(clause, rule route)`, so the rule now has two evidence scopes,
-both of which must be reviewed and complete before it projects. Exactly one spec may project the
-rule; the other contributes evidence only. Read `StandardRecipe`'s own validation before choosing
-the mechanism — it requires a registered projector per spec and checks produced ids against
-declared ones — and pick the arrangement that satisfies it without weakening a validator. Report
-which you chose and why.
+both of which must be reviewed and complete before it projects.
+
+**Binding: do not solve this by declaring the same projected rule on two ordinary clause specs.**
+Two current behaviours make that unsafe, both verified against the code:
+
+- `_source_semantic_id` (`review.py`) resolves a projected route to a spec by returning the **first**
+  match. Worse, it short-circuits before the loop when the proposal's own identifier is itself a
+  declared spec id — which `supply.system_voltage_resolution` is — so the mains spec would win
+  before declaration order even mattered.
+- `_required_review_items` builds its gating set from `{proposal.semantic_id,
+  _source_semantic_id(proposal)}`, so the second fragment's review items would never gate the
+  proposal.
+- `package_expectations` derives typed results per clause spec from `projected_rule_ids`.
+
+Two declared evidence owners for one rule would therefore give one silent winner and a second
+fragment that contributes nothing to proposal grounding — undoing exactly what this task exists to
+fix.
+
+Introduce an explicit distinction in the generic clause model instead, along the lines of
+`projection_role = "rule" | "evidence"`:
+
+```text
+mains 4.4.7.1.7.1     role = rule       segments = [page A, page B]   projects the rule
+non-mains 4.4.7.1.7.2 role = evidence   segments = [page B]           contributes facts only
+```
+
+Then refine the projector validator deliberately rather than loosening it: a rule-producing clause
+requires **exactly one** projector, and an evidence-only clause **prohibits** one. "Projector
+optional for anything" is the wrong weakening, and a dummy no-op projector for the second fragment
+is the wrong dodge.
+
+The projected rule and its `SemanticProposal` must be grounded in the **aggregate** of both
+completed fact scopes, never in whichever spec a first-match lookup happens to reach. Either update
+that source-resolution mechanism for multi-fragment rules, or bypass it with an explicit aggregate
+over the exact confirmed fact and evidence sets the projector consumed. Exactly one `DecisionRule`
+and one `SemanticProposal` come out.
 
 - [ ] **Step 3: Widen `SystemVoltageFact` to every reviewed case**
 
@@ -1564,6 +1595,20 @@ Public, synthetic, and written before the mechanism:
   level via `live_evidence_sha256`; route-level resolution still refuses, because the fragment's own
   hash changed and completeness must be re-asserted.
 - Every pre-existing one-segment spec extracts exactly the fragment it extracted before.
+
+The two-scope arrangement needs its own four:
+
+```text
+both scopes complete        -> exactly one system_voltage_resolution rule and one proposal
+mains scope incomplete      -> no projection
+non-mains scope incomplete  -> no projection
+either fragment or fact set changes -> that single rule and proposal go stale
+```
+
+And one more that kills the class of bug rather than the instance: **reverse the order of the two
+clause specs in the recipe and prove the projected rule and its provenance are identical.** Any
+accidental "first declared spec wins" dependency fails that test, which is the whole reason the
+explicit role exists instead of two look-alike specs.
 
 Private, licensed: prove the real system voltage evidence inventory is complete across both scopes,
 by fact family and typed identity. Keep the count and the per-route inventory private, consistent
