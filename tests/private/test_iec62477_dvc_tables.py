@@ -37,6 +37,9 @@ from insulation_coordination.rules.importer.review import (
     unresolved_raw_review_items,
     unresolved_table_items,
 )
+from tests.private.test_iec62477_supply_clause_facts import (
+    author_placeholder_supply_clause_facts,
+)
 
 pytestmark = pytest.mark.private_standard
 
@@ -212,6 +215,10 @@ def _review_all_c2_proposals(draft):
             notes="Reviewed clause fragment.",
         )
     reviewed = _review_all_axis_selectors(reviewed)
+    # Every non-legacy supply route takes its branches from a reviewed clause fact, so the
+    # review pass has to author them before anything can be projected. The statements are
+    # local placeholders and live beside the clause-fact lifecycle tests; see that module.
+    reviewed = author_placeholder_supply_clause_facts(reviewed)
     built = build_reviewed_draft(reviewed, actor="Maintainer", notes="Build rules.")
     for proposal in tuple(built.semantic_proposals):
         if proposal.semantic_id == ids.DVC_FAULT_TIME_VOLTAGE:
