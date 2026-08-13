@@ -8,9 +8,10 @@ letting a projection guess a branch.
 
 Each ``ClauseAuditSpec`` carries one page and one bbox, so a projection is grounded in
 exactly one page region. A ported route's branch content comes from its reviewed clause
-facts (system voltage resolution, verified barrier transfer): the fragment anchors the
-clause structurally and a maintainer-authored fact states the branch. A route not yet
-ported still declares its branch inventory here, the same way the DVC fault-applicability
+facts (system voltage resolution, verified barrier transfer, the SPD reduction and
+monitoring routes, HF transformer attenuation): the fragment anchors the clause
+structurally and a maintainer-authored fact states the branch. A route not yet ported
+still declares its branch inventory here, the same way the DVC fault-applicability
 projection derives its selectors from the maintained curve recipes.
 """
 
@@ -32,6 +33,9 @@ from insulation_coordination.domain.rules import (
 from insulation_coordination.rules.importer.clause_facts import (
     BarrierTransferFact,
     ConfirmedFacts,
+    HfAttenuationFact,
+    SpdMonitoringFact,
+    SpdReductionFact,
     SystemVoltageFact,
 )
 from insulation_coordination.rules.importer.clauses import RawClauseFragment
@@ -535,27 +539,112 @@ def project_verified_barrier_transfer(
 
 _DEVICE_PLACEMENTS = ("internal_to_pecs", "external_to_pecs")
 _INSULATION_CLASSES = ("functional", "basic", "supplementary", "double", "reinforced")
-#: Classes the source forbids reducing below the unreduced basic requirement.
-_FLOORED_INSULATION_CLASSES = ("double", "reinforced")
-_REDUCIBLE_INSULATION_CLASSES = ("functional", "basic", "supplementary")
-_REDUCED_CATEGORIES = ("one_level_lower", "not_reduced")
 _VERIFICATION_REFERENCES = ("inspection_and_dielectric_verification", "not_required")
+
+_SPD_MONITORING_ROUTE = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring"
+
+#: The monitoring route's own clause states no category step at all (``SpdMonitoringFact``
+#: carries no OVC field), so its rows fill this shared output with this one fixed token
+#: rather than a value borrowed from the mains/non-mains routes' vocabulary.
+_NOT_REDUCED = "not_reduced"
+
+
+def _spd_reduction_row(fact: SpdReductionFact, fragment: RawClauseFragment) -> DecisionRow:
+    """One row for one reviewed mains/non-mains reduction statement.
+
+    ``reduction_permitted`` and ``reduced_category`` both come from comparing the fact's own
+    ``source_ovc`` and ``target_ovc``: a statement whose target differs from its source is a
+    permitted reduction to that category, one whose target repeats its source is the
+    unreduced floor -- not independently authored content, the same way a verified barrier
+    mirrors its own presence in ``project_verified_barrier_transfer``.
+    """
+
+    reduced = fact.target_ovc != fact.source_ovc
+    monitoring_required = fact.monitoring_obligation == "required"
+    return DecisionRow(
+        matchers=(
+            # The source requires monitoring for an internal and a qualifying external
+            # device alike, so placement is declared but does not discriminate.
+            Matcher(input="device_placement", op="any"),
+            _matcher("insulation_class", (fact.insulation_class,)),
+            Matcher(input="device_degradable", op="equals", boolean=fact.degradable),
+            Matcher(input="part_of_category_reduction", op="equals", boolean=True),
+        ),
+        values=(
+            DecisionValue(name="reduction_permitted", boolean=reduced),
+            DecisionValue(name="reduced_category", categorical=fact.target_ovc),
+            DecisionValue(name="monitoring_required", boolean=monitoring_required),
+            DecisionValue(name="status_indication_required", boolean=monitoring_required),
+            DecisionValue(
+                name="verification_reference",
+                categorical="inspection_and_dielectric_verification",
+            ),
+            DecisionValue(
+                name="reinforced_floor_applies",
+                boolean=fact.insulation_class in ("double", "reinforced"),
+            ),
+        ),
+        source=fragment.nodes[0].source,
+    )
+
+
+def _spd_monitoring_row(fact: SpdMonitoringFact, fragment: RawClauseFragment) -> DecisionRow:
+    """One row for one reviewed monitoring statement.
+
+    Only ``participates_in_reduction`` is read as a branch value: neither ``device_placement``
+    nor ``compliance_evidence`` shares its vocabulary with this rule's declared
+    ``device_placement`` input or ``verification_reference`` output (``bundled_external``/
+    ``internal`` and ``visual_inspection``/``monitoring_test`` are not the mains/non-mains
+    routes' tokens), so neither is read as one here. The other three outputs are the
+    mains/non-mains routes' own concern; this route fills them with a fixed, uninformative
+    value only because all three routes still share one declared output tuple -- right-sizing
+    that per route is #53C item 5.
+    """
+
+    return DecisionRow(
+        matchers=(
+            Matcher(input="device_placement", op="any"),
+            Matcher(input="insulation_class", op="any"),
+            Matcher(input="device_degradable", op="any"),
+            Matcher(
+                input="part_of_category_reduction",
+                op="equals",
+                boolean=fact.participates_in_reduction,
+            ),
+        ),
+        values=(
+            DecisionValue(name="reduction_permitted", boolean=False),
+            DecisionValue(name="reduced_category", categorical=_NOT_REDUCED),
+            DecisionValue(name="monitoring_required", boolean=fact.monitoring_required),
+            DecisionValue(name="status_indication_required", boolean=fact.monitoring_required),
+            DecisionValue(
+                name="verification_reference",
+                categorical=(
+                    "inspection_and_dielectric_verification"
+                    if fact.monitoring_required
+                    else "not_required"
+                ),
+            ),
+            DecisionValue(name="reinforced_floor_applies", boolean=False),
+        ),
+        source=fragment.nodes[0].source,
+    )
 
 
 def project_spd_reduction_requirements(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     _draft: object = None,
-    # ponytail: ported in a later task of this slice
-    _confirmed_facts: object = None,
+    confirmed_facts: ConfirmedFacts = _NO_CONFIRMED_FACTS,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the transient-limiter monitoring and reduction clause into a decision.
 
     Registered for all three SPD reduction routes (mains, non_mains, monitoring) under one
-    function body: the fragment passed to a given call is that route's own fragment, and
-    its id says which route this call produces. The rows below are still the single
-    reviewed clause's rule, shared unchanged across routes -- #53 Task 6 gives each route
-    its own reviewed branch logic.
+    function body: the fragment passed to a given call is that route's own fragment, and its
+    id says which route this call produces. The mains and non-mains routes derive their rows
+    from their own reviewed ``SpdReductionFact``s; the monitoring route derives its rows from
+    its own reviewed ``SpdMonitoringFact``s. Every route refuses to project without its own
+    family's facts.
     """
 
     label = "supply SPD reduction requirements"
@@ -566,42 +655,22 @@ def project_spd_reduction_requirements(
     _require_own_fragment(fragment, identity, rule_id, label)
     _require_shape(fragment, shape, label)
 
-    def _row(
-        *,
-        part_of_reduction: bool,
-        classes: tuple[str, ...] | None,
-        degradable: bool | None,
-        permitted: bool,
-        reduced: str,
-        monitoring: bool,
-        indication: bool,
-        verification: str,
-        floor: bool,
-    ) -> DecisionRow:
-        matchers = [
-            Matcher(input="part_of_category_reduction", op="equals", boolean=part_of_reduction),
-            # The source requires monitoring for an internal and a qualifying external
-            # device alike, so placement is declared but does not discriminate.
-            Matcher(input="device_placement", op="any"),
-            _matcher("insulation_class", classes),
-        ]
-        matchers.append(
-            Matcher(input="device_degradable", op="any")
-            if degradable is None
-            else Matcher(input="device_degradable", op="equals", boolean=degradable)
-        )
-        return DecisionRow(
-            matchers=tuple(matchers),
-            values=(
-                DecisionValue(name="reduction_permitted", boolean=permitted),
-                DecisionValue(name="reduced_category", categorical=reduced),
-                DecisionValue(name="monitoring_required", boolean=monitoring),
-                DecisionValue(name="status_indication_required", boolean=indication),
-                DecisionValue(name="verification_reference", categorical=verification),
-                DecisionValue(name="reinforced_floor_applies", boolean=floor),
-            ),
-            source=fragment.nodes[0].source,
-        )
+    facts = confirmed_facts.for_route(rule_id)
+    if not facts:
+        raise ClauseStructureError(f"{label} needs reviewed clause facts for its route")
+
+    if rule_id == _SPD_MONITORING_ROUTE:
+        monitoring_facts = tuple(fact for fact in facts if isinstance(fact, SpdMonitoringFact))
+        if len(monitoring_facts) != len(facts):
+            raise ValueError(f"{label} projection requires SPD monitoring facts")
+        rows = tuple(_spd_monitoring_row(fact, fragment) for fact in monitoring_facts)
+        reduced_categories: tuple[str, ...] = (_NOT_REDUCED,)
+    else:
+        reduction_facts = tuple(fact for fact in facts if isinstance(fact, SpdReductionFact))
+        if len(reduction_facts) != len(facts):
+            raise ValueError(f"{label} projection requires SPD reduction facts")
+        rows = tuple(_spd_reduction_row(fact, fragment) for fact in reduction_facts)
+        reduced_categories = tuple(dict.fromkeys(fact.target_ovc for fact in reduction_facts))
 
     rule = DecisionRule(
         id=rule_id,
@@ -622,7 +691,7 @@ def project_spd_reduction_requirements(
             DecisionOutput(
                 name="reduced_category",
                 kind="categorical",
-                allowed_values=_REDUCED_CATEGORIES,
+                allowed_values=reduced_categories,
             ),
             DecisionOutput(name="monitoring_required", kind="boolean"),
             DecisionOutput(name="status_indication_required", kind="boolean"),
@@ -633,65 +702,7 @@ def project_spd_reduction_requirements(
             ),
             DecisionOutput(name="reinforced_floor_applies", kind="boolean"),
         ),
-        # Row order mirrors the source: the exemption for a device outside a category
-        # reduction first, then the double/reinforced floor, then the reducible classes.
-        rows=(
-            _row(
-                part_of_reduction=False,
-                classes=None,
-                degradable=None,
-                permitted=False,
-                reduced="not_reduced",
-                monitoring=False,
-                indication=False,
-                verification="not_required",
-                floor=False,
-            ),
-            _row(
-                part_of_reduction=True,
-                classes=_FLOORED_INSULATION_CLASSES,
-                degradable=True,
-                permitted=False,
-                reduced="not_reduced",
-                monitoring=True,
-                indication=True,
-                verification="inspection_and_dielectric_verification",
-                floor=True,
-            ),
-            _row(
-                part_of_reduction=True,
-                classes=_FLOORED_INSULATION_CLASSES,
-                degradable=False,
-                permitted=False,
-                reduced="not_reduced",
-                monitoring=False,
-                indication=False,
-                verification="inspection_and_dielectric_verification",
-                floor=True,
-            ),
-            _row(
-                part_of_reduction=True,
-                classes=_REDUCIBLE_INSULATION_CLASSES,
-                degradable=True,
-                permitted=True,
-                reduced="one_level_lower",
-                monitoring=True,
-                indication=True,
-                verification="inspection_and_dielectric_verification",
-                floor=False,
-            ),
-            _row(
-                part_of_reduction=True,
-                classes=_REDUCIBLE_INSULATION_CLASSES,
-                degradable=False,
-                permitted=True,
-                reduced="one_level_lower",
-                monitoring=False,
-                indication=False,
-                verification="inspection_and_dielectric_verification",
-                floor=False,
-            ),
-        ),
+        rows=rows,
         exhaustive=False,
         source=fragment.source,
     )
@@ -705,10 +716,6 @@ def project_spd_reduction_requirements(
 #: no DVC A and no DVC D. Table 2 splits DVC As into a wet and a dry row, which changes the
 #: voltage limits, not the designation.
 _DVC_DESIGNATIONS = ("dvc_as", "dvc_b", "dvc_c")
-#: The clause's own DVC gate.
-_HF_TRANSFORMER_DVC_GATE = ("dvc_as", "dvc_b")
-_ATTENUATION_EVIDENCE_KINDS = ("none", "test", "simulation", "calculation")
-_REQUIRED_EVIDENCE_KINDS = ("test_or_simulation_or_calculation", "already_provided")
 #: Multipliers from a reviewed frequency unit token to hertz. Names the units the
 #: generic tokenizer emits; the threshold itself is read from the document.
 _FREQUENCY_UNIT_SCALES = {"Hz": 1, "kHz": 1_000, "MHz": 1_000_000}
@@ -735,35 +742,33 @@ def project_hf_transformer_attenuation(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
     _draft: object = None,
-    # ponytail: ported in a later task of this slice
-    _confirmed_facts: object = None,
+    confirmed_facts: ConfirmedFacts = _NO_CONFIRMED_FACTS,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
-    """Project the isolating-transformer attenuation clause into a decision."""
+    """Project the isolating-transformer attenuation clause into a decision.
+
+    Every row comes from one reviewed ``HfAttenuationFact``: it states the DVC gate the
+    clause applies to and one evidence kind it accepts. ``working_voltage_basis_permitted``
+    is not independently authored content -- an accepted evidence kind is what grants the
+    permission, so it mirrors the fact's presence, the same way a verified barrier's transfer
+    permission mirrors its own presence in ``project_verified_barrier_transfer``. The
+    frequency threshold stays read from the fragment's own tokens rather than declared: it is
+    a numeric source value, and an existing test pins that behaviour. A route with no
+    reviewed facts refuses rather than falling back to an inventory nobody reviewed.
+    """
 
     label = "supply high-frequency transformer attenuation"
     _require_own_fragment(fragment, identity, ids.SUPPLY_HF_TRANSFORMER_ATTENUATION, label)
     _require_shape(fragment, _HF_TRANSFORMER_SHAPE, label)
     threshold_hz = _frequency_threshold_hz(fragment, label)
 
-    def _row(
-        *,
-        evidence: tuple[str, ...],
-        permitted: bool,
-        required: str,
-    ) -> DecisionRow:
-        return DecisionRow(
-            matchers=(
-                _matcher("circuit_dvc", _HF_TRANSFORMER_DVC_GATE),
-                Matcher(input="transformer_frequency_hz", op="range", minimum=threshold_hz),
-                Matcher(input="isolation_provided", op="equals", boolean=True),
-                _matcher("attenuation_evidence_kind", evidence),
-            ),
-            values=(
-                DecisionValue(name="working_voltage_basis_permitted", boolean=permitted),
-                DecisionValue(name="required_evidence_kinds", categorical=required),
-            ),
-            source=fragment.nodes[0].source,
-        )
+    facts = confirmed_facts.for_route(ids.SUPPLY_HF_TRANSFORMER_ATTENUATION)
+    if not facts:
+        raise ClauseStructureError(f"{label} needs reviewed clause facts for its route")
+    attenuation_facts = tuple(fact for fact in facts if isinstance(fact, HfAttenuationFact))
+    if len(attenuation_facts) != len(facts):
+        raise ValueError(f"{label} projection requires HF attenuation facts")
+
+    evidence_kinds = tuple(dict.fromkeys(fact.evidence_kind for fact in attenuation_facts))
 
     rule = DecisionRule(
         id=ids.SUPPLY_HF_TRANSFORMER_ATTENUATION,
@@ -774,7 +779,7 @@ def project_hf_transformer_attenuation(
             DecisionInput(
                 name="attenuation_evidence_kind",
                 kind="categorical",
-                allowed_values=_ATTENUATION_EVIDENCE_KINDS,
+                allowed_values=evidence_kinds,
             ),
         ),
         outputs=(
@@ -782,22 +787,24 @@ def project_hf_transformer_attenuation(
             DecisionOutput(
                 name="required_evidence_kinds",
                 kind="categorical",
-                allowed_values=_REQUIRED_EVIDENCE_KINDS,
+                allowed_values=evidence_kinds,
             ),
         ),
-        # Missing evidence first: the route is an engineering-input requirement until
-        # the attenuation is shown, never a permission.
-        rows=(
-            _row(
-                evidence=("none",),
-                permitted=False,
-                required="test_or_simulation_or_calculation",
-            ),
-            _row(
-                evidence=("test", "simulation", "calculation"),
-                permitted=True,
-                required="already_provided",
-            ),
+        rows=tuple(
+            DecisionRow(
+                matchers=(
+                    _matcher("circuit_dvc", (fact.dvc_gate,)),
+                    Matcher(input="transformer_frequency_hz", op="range", minimum=threshold_hz),
+                    Matcher(input="isolation_provided", op="equals", boolean=True),
+                    _matcher("attenuation_evidence_kind", (fact.evidence_kind,)),
+                ),
+                values=(
+                    DecisionValue(name="working_voltage_basis_permitted", boolean=True),
+                    DecisionValue(name="required_evidence_kinds", categorical=fact.evidence_kind),
+                ),
+                source=fragment.nodes[0].source,
+            )
+            for fact in attenuation_facts
         ),
         exhaustive=False,
         source=fragment.source,

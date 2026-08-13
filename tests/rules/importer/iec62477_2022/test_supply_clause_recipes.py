@@ -18,6 +18,9 @@ from insulation_coordination.rules.importer.clause_facts import (
     BarrierTransferFact,
     CitedNode,
     ConfirmedFacts,
+    HfAttenuationFact,
+    SpdMonitoringFact,
+    SpdReductionFact,
     SystemVoltageFact,
 )
 from insulation_coordination.rules.importer.clauses import (
@@ -185,6 +188,132 @@ def _confirmed_barrier_facts(
     frag = fragment if fragment is not None else _barrier_fragment()
     fact = _barrier_fact(frag, isolation_present=isolation_present, combined_rule=combined_rule)
     return ConfirmedFacts(by_route={ids.SUPPLY_VERIFIED_BARRIER_TRANSFER: (fact,)})
+
+
+def _spd_fragment(route: str) -> RawClauseFragment:
+    return _paragraph_fragment(f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.{route}")
+
+
+def _spd_reduction_fact(
+    fragment: RawClauseFragment,
+    *,
+    index: int = 0,
+    supply_kind: str,
+    source_ovc: str,
+    target_ovc: str,
+    insulation_class: str = "basic",
+    degradable: bool = False,
+    monitoring_obligation: str = "not_required",
+) -> SpdReductionFact:
+    """Invented values only: a synthetic reviewed statement, never real clause content."""
+
+    return SpdReductionFact(
+        statement_index=index,
+        node_references=(_cited_node(fragment),),
+        obligation="requirement",
+        supply_kind=supply_kind,  # type: ignore[arg-type]
+        source_ovc=source_ovc,  # type: ignore[arg-type]
+        target_ovc=target_ovc,  # type: ignore[arg-type]
+        insulation_class=insulation_class,  # type: ignore[arg-type]
+        degradable=degradable,
+        monitoring_obligation=monitoring_obligation,  # type: ignore[arg-type]
+        monitoring_reference=f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring",
+    )
+
+
+def _confirmed_spd_facts(
+    route: str,
+    *,
+    source_ovc: str,
+    target_ovc: str,
+    insulation_class: str = "basic",
+    degradable: bool = False,
+    monitoring_obligation: str = "not_required",
+    fragment: RawClauseFragment | None = None,
+) -> ConfirmedFacts:
+    frag = fragment if fragment is not None else _spd_fragment(route)
+    fact = _spd_reduction_fact(
+        frag,
+        supply_kind=route,
+        source_ovc=source_ovc,
+        target_ovc=target_ovc,
+        insulation_class=insulation_class,
+        degradable=degradable,
+        monitoring_obligation=monitoring_obligation,
+    )
+    route_id = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.{route}"
+    return ConfirmedFacts(by_route={route_id: (fact,)})
+
+
+def _spd_monitoring_fact(
+    fragment: RawClauseFragment,
+    *,
+    index: int = 0,
+    device_placement: str = "internal",
+    participates_in_reduction: bool = True,
+    monitoring_required: bool = True,
+    compliance_evidence: str = "monitoring_test",
+) -> SpdMonitoringFact:
+    """Invented values only: a synthetic reviewed statement, never real clause content."""
+
+    return SpdMonitoringFact(
+        statement_index=index,
+        node_references=(_cited_node(fragment),),
+        obligation="requirement",
+        device_placement=device_placement,  # type: ignore[arg-type]
+        participates_in_reduction=participates_in_reduction,
+        monitoring_required=monitoring_required,
+        compliance_evidence=compliance_evidence,  # type: ignore[arg-type]
+    )
+
+
+def _confirmed_spd_monitoring_facts(
+    *,
+    monitoring_required: bool,
+    participates_in_reduction: bool = True,
+    fragment: RawClauseFragment | None = None,
+) -> ConfirmedFacts:
+    frag = fragment if fragment is not None else _spd_fragment("monitoring")
+    fact = _spd_monitoring_fact(
+        frag,
+        participates_in_reduction=participates_in_reduction,
+        monitoring_required=monitoring_required,
+    )
+    route_id = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring"
+    return ConfirmedFacts(by_route={route_id: (fact,)})
+
+
+def _hf_attenuation_fact(
+    fragment: RawClauseFragment,
+    *,
+    index: int = 0,
+    dvc_gate: str = "dvc_b",
+    evidence_kind: str,
+) -> HfAttenuationFact:
+    """Invented values only: a synthetic reviewed statement, never real clause content."""
+
+    return HfAttenuationFact(
+        statement_index=index,
+        node_references=(_cited_node(fragment),),
+        obligation="requirement",
+        dvc_gate=dvc_gate,  # type: ignore[arg-type]
+        evidence_kind=evidence_kind,  # type: ignore[arg-type]
+        threshold_reference=ids.SUPPLY_HF_TRANSFORMER_ATTENUATION,
+        comparison_required=True,
+    )
+
+
+def _confirmed_hf_facts(
+    *,
+    evidence_kinds: tuple[str, ...],
+    dvc_gate: str = "dvc_b",
+    fragment: RawClauseFragment,
+) -> ConfirmedFacts:
+    facts = tuple(
+        _hf_attenuation_fact(fragment, index=index, dvc_gate=dvc_gate, evidence_kind=kind)
+        for index, kind in enumerate(evidence_kinds)
+    )
+    return ConfirmedFacts(by_route={ids.SUPPLY_HF_TRANSFORMER_ATTENUATION: facts})
 
 
 _EMPTY_FACTS = ConfirmedFacts()
@@ -624,7 +753,7 @@ def test_a_barrier_fragment_with_extra_nodes_blocks() -> None:
         )
 
 
-# --- Task 7: transient limiter and high-frequency transformer ----------------------
+# --- Task 6: SPD reduction/monitoring routes and HF attenuation follow reviewed facts ---
 
 
 def _spd_inputs(**overrides: str | bool) -> dict[str, str | bool]:
@@ -643,8 +772,10 @@ _SPD_NON_MAINS_ID = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains"
 _SPD_MONITORING_ID = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring"
 
 
-def _project_spd(fragment: RawClauseFragment) -> DecisionRule:
-    rules, _proposals = project_spd_reduction_requirements(fragment, IDENTITY)
+def _project_spd(fragment: RawClauseFragment, facts: ConfirmedFacts = _EMPTY_FACTS) -> DecisionRule:
+    rules, _proposals = project_spd_reduction_requirements(
+        fragment, IDENTITY, confirmed_facts=facts
+    )
     # The produced rule's id is whichever route the fragment names -- there is no
     # longer one bare id to look up.
     return _decision(rules, fragment.id.removeprefix("raw-"))
@@ -676,8 +807,12 @@ def _hf_fragment(*pairs: tuple[str, str]) -> RawClauseFragment:
     )
 
 
-def _project_hf_transformer(fragment: RawClauseFragment) -> DecisionRule:
-    rules, _proposals = project_hf_transformer_attenuation(fragment, IDENTITY)
+def _project_hf_transformer(
+    fragment: RawClauseFragment, facts: ConfirmedFacts = _EMPTY_FACTS
+) -> DecisionRule:
+    rules, _proposals = project_hf_transformer_attenuation(
+        fragment, IDENTITY, confirmed_facts=facts
+    )
     return _decision(rules, ids.SUPPLY_HF_TRANSFORMER_ATTENUATION)
 
 
@@ -693,41 +828,160 @@ def _hf_inputs(**overrides: Decimal | str | bool) -> dict[str, Decimal | str | b
 
 
 def test_double_and_reinforced_insulation_keep_the_unreduced_floor() -> None:
-    rule = _project_spd(_paragraph_fragment(_SPD_MAINS_ID))
+    """A reviewed statement whose target repeats its source is the unreduced floor."""
+
+    fragment = _spd_fragment("mains")
+    facts = _confirmed_spd_facts(
+        "mains",
+        source_ovc="ovc_iii",
+        target_ovc="ovc_iii",
+        insulation_class="reinforced",
+        fragment=fragment,
+    )
+    rule = _project_spd(fragment, facts)
     row = _lookup(rule, **_spd_inputs(insulation_class="reinforced"))
     assert row is not None
     assert _value(row, "reinforced_floor_applies") is True
     assert _value(row, "reduction_permitted") is False
-    assert _value(row, "reduced_category") == "not_reduced"
+    assert _value(row, "reduced_category") == "ovc_iii"
 
 
 def test_a_degradable_device_requires_monitoring_and_indication() -> None:
-    rule = _project_spd(_paragraph_fragment(_SPD_MAINS_ID))
+    fragment = _spd_fragment("mains")
+    facts = _confirmed_spd_facts(
+        "mains",
+        source_ovc="ovc_iii",
+        target_ovc="ovc_ii",
+        degradable=True,
+        monitoring_obligation="required",
+        fragment=fragment,
+    )
+    rule = _project_spd(fragment, facts)
     row = _lookup(rule, **_spd_inputs(device_degradable=True))
     assert row is not None
     assert _value(row, "monitoring_required") is True
     assert _value(row, "status_indication_required") is True
     assert _value(row, "reduction_permitted") is True
+    assert _value(row, "reduced_category") == "ovc_ii"
 
 
-def test_a_device_outside_a_category_reduction_is_exempt() -> None:
-    rule = _project_spd(_paragraph_fragment(_SPD_MAINS_ID))
+def test_a_device_outside_a_category_reduction_is_not_covered() -> None:
+    """The exemption moved from an explicit false-valued row to non-exhaustive coverage.
+
+    No reviewed statement addresses a device outside a category reduction, so the rule
+    leaves the branch uncovered rather than asserting an outcome nobody reviewed for it.
+    """
+
+    fragment = _spd_fragment("mains")
+    facts = _confirmed_spd_facts(
+        "mains", source_ovc="ovc_iii", target_ovc="ovc_ii", degradable=True, fragment=fragment
+    )
+    rule = _project_spd(fragment, facts)
     row = _lookup(rule, **_spd_inputs(device_degradable=True, part_of_category_reduction=False))
+    assert row is None
+
+
+def test_each_supply_kind_route_projects_its_own_rule() -> None:
+    """The source states the reduction twice, so one route cannot answer for both."""
+
+    mains_fragment = _spd_fragment("mains")
+    mains, _ = project_spd_reduction_requirements(
+        mains_fragment,
+        IDENTITY,
+        confirmed_facts=_confirmed_spd_facts(
+            "mains", source_ovc="ovc_iv", target_ovc="ovc_iii", fragment=mains_fragment
+        ),
+    )
+    non_mains_fragment = _spd_fragment("non_mains")
+    non_mains, _ = project_spd_reduction_requirements(
+        non_mains_fragment,
+        IDENTITY,
+        confirmed_facts=_confirmed_spd_facts(
+            "non_mains", source_ovc="ovc_iii", target_ovc="ovc_ii", fragment=non_mains_fragment
+        ),
+    )
+
+    assert mains[0].id == _SPD_MAINS_ID
+    assert non_mains[0].id == _SPD_NON_MAINS_ID
+
+
+def test_the_reduced_category_comes_from_the_reviewed_fact() -> None:
+    fragment = _spd_fragment("non_mains")
+    facts = _confirmed_spd_facts(
+        "non_mains", source_ovc="ovc_ii", target_ovc="ovc_i", fragment=fragment
+    )
+    rules, _ = project_spd_reduction_requirements(fragment, IDENTITY, confirmed_facts=facts)
+
+    emitted = {
+        value.categorical
+        for row in rules[0].rows
+        for value in row.values
+        if value.name == "reduced_category"
+    }
+    assert emitted == {"ovc_i"}
+
+
+def test_the_monitoring_route_follows_its_own_reviewed_facts() -> None:
+    fragment = _spd_fragment("monitoring")
+    facts = _confirmed_spd_monitoring_facts(
+        monitoring_required=True, participates_in_reduction=True, fragment=fragment
+    )
+    rule = _project_spd(fragment, facts)
+    row = _lookup(rule, **_spd_inputs(part_of_category_reduction=True))
     assert row is not None
-    assert _value(row, "monitoring_required") is False
-    assert _value(row, "reduction_permitted") is False
-    assert _value(row, "verification_reference") == "not_required"
+    assert _value(row, "monitoring_required") is True
+    assert _value(row, "status_indication_required") is True
+
+    not_participating = _confirmed_spd_monitoring_facts(
+        monitoring_required=False, participates_in_reduction=False, fragment=fragment
+    )
+    excused = _project_spd(fragment, not_participating)
+    excused_row = _lookup(excused, **_spd_inputs(part_of_category_reduction=False))
+    assert excused_row is not None
+    assert _value(excused_row, "monitoring_required") is False
+
+
+def test_spd_keeps_its_declared_contract() -> None:
+    fragment = _spd_fragment("mains")
+    facts = _confirmed_spd_facts(
+        "mains", source_ovc="ovc_iii", target_ovc="ovc_ii", fragment=fragment
+    )
+    rule = _project_spd(fragment, facts)
+
+    assert {item.name for item in rule.inputs} == {
+        "device_placement",
+        "insulation_class",
+        "device_degradable",
+        "part_of_category_reduction",
+    }
+    assert {item.name for item in rule.outputs} == {
+        "reduction_permitted",
+        "reduced_category",
+        "monitoring_required",
+        "status_indication_required",
+        "verification_reference",
+        "reinforced_floor_applies",
+    }
 
 
 def test_each_spd_route_is_projected_under_its_own_id() -> None:
-    """The projector is registered once per route and shares one body (Task 6 splits it).
+    """The projector is registered once per route and shares one body.
 
     Each route's fragment must still come back out under that route's own rule id.
     """
 
-    for route_id in (_SPD_MAINS_ID, _SPD_NON_MAINS_ID, _SPD_MONITORING_ID):
-        rule = _project_spd(_paragraph_fragment(route_id))
-        assert rule.id == route_id
+    for route in ("mains", "non_mains"):
+        fragment = _spd_fragment(route)
+        facts = _confirmed_spd_facts(
+            route, source_ovc="ovc_iii", target_ovc="ovc_ii", fragment=fragment
+        )
+        rule = _project_spd(fragment, facts)
+        assert rule.id == f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.{route}"
+
+    fragment = _spd_fragment("monitoring")
+    facts = _confirmed_spd_monitoring_facts(monitoring_required=True, fragment=fragment)
+    rule = _project_spd(fragment, facts)
+    assert rule.id == _SPD_MONITORING_ID
 
 
 def test_every_reduction_route_enforces_its_reviewed_shape() -> None:
@@ -735,7 +989,8 @@ def test_every_reduction_route_enforces_its_reviewed_shape() -> None:
 
     Each route reads its own clause through its own bbox, so a reprint that splits one of
     them across a different number of nodes must stop the build rather than project a rule
-    from a region nobody reviewed.
+    from a region nobody reviewed. The shape check fires before the facts check, so no
+    facts need to be supplied here.
     """
 
     for route_id in (_SPD_MONITORING_ID, _SPD_MAINS_ID, _SPD_NON_MAINS_ID):
@@ -744,22 +999,83 @@ def test_every_reduction_route_enforces_its_reviewed_shape() -> None:
             project_spd_reduction_requirements(malformed, IDENTITY)
 
 
-def test_the_transformer_route_needs_evidence_before_it_permits_anything() -> None:
-    rule = _project_hf_transformer(_hf_fragment(("42", "kHz")))
-    without = _lookup(rule, **_hf_inputs(attenuation_evidence_kind="none"))
-    assert without is not None
-    assert _value(without, "working_voltage_basis_permitted") is False
-    assert set(str(_value(without, "required_evidence_kinds")).split("_or_")) == {
-        "test",
-        "simulation",
-        "calculation",
+def test_spd_refuses_to_project_without_facts() -> None:
+    for route_id in (_SPD_MAINS_ID, _SPD_NON_MAINS_ID, _SPD_MONITORING_ID):
+        with pytest.raises(ClauseStructureError):
+            project_spd_reduction_requirements(
+                _paragraph_fragment(route_id), IDENTITY, confirmed_facts=ConfirmedFacts()
+            )
+
+
+def test_hf_attenuation_follows_the_reviewed_facts() -> None:
+    fragment = _hf_fragment(("42", "kHz"))
+    facts = _confirmed_hf_facts(evidence_kinds=("test", "simulation"), fragment=fragment)
+    rule = _project_hf_transformer(fragment, facts)
+
+    emitted = {
+        value.categorical
+        for row in rule.rows
+        for value in row.values
+        if value.name == "required_evidence_kinds"
+    }
+    assert emitted == {"test", "simulation"}
+
+
+def test_a_reviewed_evidence_kind_permits_the_working_voltage_basis() -> None:
+    fragment = _hf_fragment(("42", "kHz"))
+    facts = _confirmed_hf_facts(evidence_kinds=("test",), fragment=fragment)
+    rule = _project_hf_transformer(fragment, facts)
+    row = _lookup(rule, **_hf_inputs(attenuation_evidence_kind="test"))
+    assert row is not None
+    assert _value(row, "working_voltage_basis_permitted") is True
+    assert _value(row, "required_evidence_kinds") == "test"
+
+
+def test_a_dvc_gate_no_fact_states_is_not_covered() -> None:
+    """No fallback: a DVC designation no reviewed fact gates through is left uncovered.
+
+    ``circuit_dvc`` keeps its full declared vocabulary (``_DVC_DESIGNATIONS``) independent of
+    the reviewed facts, so a designation the rule does declare but no fact's ``dvc_gate``
+    names -- ``dvc_as`` here, against a fact stating ``dvc_b`` -- still needs to fall through
+    to no match rather than a guessed one.
+    """
+
+    fragment = _hf_fragment(("42", "kHz"))
+    facts = _confirmed_hf_facts(evidence_kinds=("test",), dvc_gate="dvc_b", fragment=fragment)
+    rule = _project_hf_transformer(fragment, facts)
+    assert _lookup(rule, **_hf_inputs(circuit_dvc="dvc_as")) is None
+
+
+def test_hf_attenuation_refuses_to_project_without_facts() -> None:
+    with pytest.raises(ClauseStructureError):
+        project_hf_transformer_attenuation(
+            _hf_fragment(("42", "kHz")), IDENTITY, confirmed_facts=ConfirmedFacts()
+        )
+
+
+def test_hf_attenuation_keeps_its_declared_contract() -> None:
+    fragment = _hf_fragment(("42", "kHz"))
+    facts = _confirmed_hf_facts(evidence_kinds=("test",), fragment=fragment)
+    rule = _project_hf_transformer(fragment, facts)
+
+    assert {item.name for item in rule.inputs} == {
+        "circuit_dvc",
+        "transformer_frequency_hz",
+        "isolation_provided",
+        "attenuation_evidence_kind",
+    }
+    assert {item.name for item in rule.outputs} == {
+        "working_voltage_basis_permitted",
+        "required_evidence_kinds",
     }
 
 
 def test_the_transformer_threshold_is_read_from_the_fragment_not_declared() -> None:
     bounds = {}
     for quantity, unit, expected in (("42", "kHz", "42000"), ("3", "MHz", "3000000")):
-        rule = _project_hf_transformer(_hf_fragment((quantity, unit)))
+        fragment = _hf_fragment((quantity, unit))
+        facts = _confirmed_hf_facts(evidence_kinds=("test",), fragment=fragment)
+        rule = _project_hf_transformer(fragment, facts)
         matcher = next(
             matcher
             for row in rule.rows
@@ -772,7 +1088,9 @@ def test_the_transformer_threshold_is_read_from_the_fragment_not_declared() -> N
 
 
 def test_a_frequency_below_the_extracted_threshold_is_not_covered() -> None:
-    rule = _project_hf_transformer(_hf_fragment(("42", "kHz")))
+    fragment = _hf_fragment(("42", "kHz"))
+    facts = _confirmed_hf_facts(evidence_kinds=("test",), fragment=fragment)
+    rule = _project_hf_transformer(fragment, facts)
     assert _lookup(rule, **_hf_inputs(transformer_frequency_hz=Decimal(100))) is None
 
 
