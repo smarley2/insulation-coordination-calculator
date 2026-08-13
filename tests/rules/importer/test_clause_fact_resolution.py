@@ -220,6 +220,23 @@ def test_a_stale_fact_set_digest_refuses(completed_draft, hf_spec, hf_fragment) 
         resolve_confirmed_clause_facts(hf_spec, hf_fragment, draft)
 
 
+def test_a_review_whose_hash_is_not_its_fact_refuses(completed_draft, hf_spec, hf_fragment) -> None:
+    """Projection runs before approval, so resolution must catch this rather than the gate.
+
+    Every other digest here would still be current: the fact set is what it always was and the
+    cited nodes have not moved. Only the review's own record of which fact it approved is wrong.
+    """
+
+    tampered = tuple(
+        item.model_copy(update={"fact_sha256": "0" * 64})
+        for item in completed_draft.clause_fact_reviews
+    )
+    draft = completed_draft.model_copy(update={"clause_fact_reviews": tampered})
+
+    with pytest.raises(ClauseFactResolutionError):
+        resolve_confirmed_clause_facts(hf_spec, hf_fragment, draft)
+
+
 def test_a_changed_cited_node_refuses(completed_draft, hf_spec, hf_fragment) -> None:
     """Changing evidence a fact rests on must re-open that fact."""
 

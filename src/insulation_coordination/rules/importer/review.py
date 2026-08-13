@@ -2277,6 +2277,14 @@ def resolve_confirmed_clause_facts(
                 raise ClauseFactResolutionError(
                     f"{route} statement {review.statement_index} {defect}"
                 )
+            # Projection runs before approval, so a review whose recorded hash no longer matches
+            # the fact beside it would project a rule and only be caught at the gate. Resolution
+            # owns every refusal, this one included.
+            if review.fact_sha256 != canonical_model_sha256(review.fact):
+                raise ClauseFactResolutionError(
+                    f"{route} statement {review.statement_index} carries a review whose recorded "
+                    f"hash is not its fact"
+                )
         facts = tuple(review.fact for review in reviews)
         completion = next(
             (item for item in draft.clause_fact_completions if item.rule_route == route), None
