@@ -28,7 +28,11 @@ from insulation_coordination.rules.importer.extract import (
     _content_digest,
     canonical_model_sha256,
 )
-from insulation_coordination.rules.importer.identify import ClauseAuditSpec, StandardIdentity
+from insulation_coordination.rules.importer.identify import (
+    ClauseAuditSpec,
+    ClauseSegmentSpec,
+    StandardIdentity,
+)
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
     RECIPE as IEC_RECIPE,
@@ -61,9 +65,13 @@ IDENTITY = StandardIdentity(
 SPEC = ClauseAuditSpec(
     semantic_id=ids.DVC_FAULT_APPLICABILITY,
     clause="9.9.9",
-    page_number=44,
-    expected_bbox=(70.0, 660.0, 524.0, 760.0),
-    expected_root_kind="paragraph",
+    segments=(
+        ClauseSegmentSpec(
+            page_number=44,
+            expected_bbox=(70.0, 660.0, 524.0, 760.0),
+            expected_root_kind="paragraph",
+        ),
+    ),
     output_kind="decision",
 )
 

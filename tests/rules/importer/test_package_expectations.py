@@ -53,11 +53,28 @@ def test_every_declared_spec_has_a_typed_expectation_entry() -> None:
     declared = (
         {spec.semantic_id for _recipe, spec in TABLE_SPECS}
         | EXPECTATIONS.clause_rule_ids
+        | EXPECTATIONS.evidence_clause_ids
         | EXPECTATIONS.curve_rule_ids
         | EXPECTATIONS.formula_ids
     )
 
     assert set(EXPECTATIONS.typed_results) == declared
+
+
+def test_an_evidence_only_clause_is_expected_to_yield_a_fragment_and_no_rule() -> None:
+    """One rule stated by two subclauses: the second is reviewed evidence, not a second rule.
+
+    Registering a projector for it would put an extra rule into the package, and expecting a
+    typed result from it would make every draft look incomplete.
+    """
+
+    assert EXPECTATIONS.evidence_clause_ids
+    assert not EXPECTATIONS.evidence_clause_ids & EXPECTATIONS.clause_rule_ids
+    assert not EXPECTATIONS.evidence_clause_ids & EXPECTATIONS.projected_rule_ids
+    for semantic_id in EXPECTATIONS.evidence_clause_ids:
+        assert semantic_id in EXPECTATIONS.raw_artifact_ids
+        assert EXPECTATIONS.typed_results[semantic_id] == frozenset()
+        assert not any(semantic_id in recipe.clause_projectors for recipe in RECIPES), semantic_id
 
 
 def test_expectation_sets_do_not_contradict_each_other() -> None:
@@ -76,6 +93,7 @@ def test_expectation_sets_do_not_contradict_each_other() -> None:
     assert EXPECTATIONS.raw_artifact_ids == (
         {spec.semantic_id for _recipe, spec in TABLE_SPECS}
         | EXPECTATIONS.clause_rule_ids
+        | EXPECTATIONS.evidence_clause_ids
         | EXPECTATIONS.curve_rule_ids
     )
     assert not EXPECTATIONS.raw_artifact_ids & EXPECTATIONS.formula_ids

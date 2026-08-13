@@ -109,6 +109,7 @@ __all__ = [
     "SemanticReferenceToken",
     "StandardRecipe",
     "TableAuditSpec",
+    "aggregate_artifact_sha256",
     "apply_table_structure",
     "axis_evidence_sha256",
     "axis_positions",
@@ -143,6 +144,21 @@ def canonical_model_sha256(value: FrozenModel) -> str:
     return hashlib.sha256(
         _canonical_json(value.model_dump(mode="json", warnings=False))
     ).hexdigest()
+
+
+def aggregate_artifact_sha256(pairs: tuple[tuple[str, str], ...]) -> str:
+    """One source-artifact digest for the ``(artifact id, digest)`` pairs a rule rests on.
+
+    A rule read from several artifacts is grounded in all of them, so its proposal carries one
+    digest over the ordered set. Lives here rather than in ``review.py`` because a projection
+    that reads several artifacts has to produce exactly the digest the approval gate re-derives
+    from the draft, and two implementations of "the same aggregate" is how they drift apart.
+    """
+
+    ordered = tuple(sorted(pairs))
+    if len(ordered) == 1:
+        return ordered[0][1]
+    return hashlib.sha256(_canonical_json(ordered)).hexdigest()
 
 
 class ImportReviewItem(FrozenModel):
@@ -771,7 +787,14 @@ def _recipe(identity: StandardIdentity) -> StandardRecipe:
         for mapping in recipe.mappings
     )
     clauses = tuple(
-        clause.model_copy(update={"page_number": clause.page_number + offset})
+        clause.model_copy(
+            update={
+                "segments": tuple(
+                    segment.model_copy(update={"page_number": segment.page_number + offset})
+                    for segment in clause.segments
+                )
+            }
+        )
         for clause in recipe.clauses
     )
     curves = tuple(
@@ -1680,7 +1703,7 @@ def _manual_review_items(
             kind="clause",
             source=_source(
                 identity,
-                page_number=spec.page_number,
+                page_number=spec.segments[0].page_number,
                 clause=spec.clause,
             ),
             expected_contract=(
@@ -1719,8 +1742,7 @@ def _extract_real_layout(
                 for spec in recipe.tables
             )
             fragments = tuple(
-                extract_clause_fragment(pdf.pages[spec.page_number - 1], spec, identity)
-                for spec in recipe.clauses
+                extract_clause_fragment(pdf, spec, identity) for spec in recipe.clauses
             )
     except ExtractionError:
         raise

@@ -46,6 +46,9 @@ class PackageExpectations(FrozenModel):
     evidence_grid_ids: frozenset[str]
     formula_ids: frozenset[str]
     clause_rule_ids: frozenset[str]
+    #: Clause specs extracted as reviewed evidence for another clause's rule. Their fragment
+    #: must be present and they yield no rule, exactly as a comparison-only grid does.
+    evidence_clause_ids: frozenset[str]
     curve_rule_ids: frozenset[str]
     declared_mapping_ids: frozenset[str]
     declared_mapping_routes: frozenset[str]
@@ -68,6 +71,7 @@ def package_expectations(recipes: tuple[StandardRecipe, ...]) -> PackageExpectat
     evidence_grid_ids: set[str] = set()
     formula_ids: set[str] = set()
     clause_rule_ids: set[str] = set()
+    evidence_clause_ids: set[str] = set()
     curve_rule_ids: set[str] = set()
     typed_results: dict[str, frozenset[str]] = {}
     for recipe in recipes:
@@ -101,8 +105,15 @@ def package_expectations(recipes: tuple[StandardRecipe, ...]) -> PackageExpectat
                 table_rule_ids.add(semantic_id)
                 typed_results[semantic_id] = frozenset({semantic_id})
         for clause_spec in recipe.clauses:
-            clause_rule_ids.add(clause_spec.semantic_id)
             raw_artifact_ids.add(clause_spec.semantic_id)
+            if clause_spec.projection_role == "evidence":
+                # Reviewed evidence for another clause's rule, exactly as a comparison-only
+                # grid is evidence for a cross-standard check: its fragment must be present
+                # and it becomes no rule of its own.
+                evidence_clause_ids.add(clause_spec.semantic_id)
+                typed_results[clause_spec.semantic_id] = frozenset()
+                continue
+            clause_rule_ids.add(clause_spec.semantic_id)
             # A clause that declares routes declares all of them, exactly as a projected
             # table does: a source stating one requirement under two gates yields a route
             # per gate and no rule under the bare identifier, so the routes are the typed
@@ -127,6 +138,7 @@ def package_expectations(recipes: tuple[StandardRecipe, ...]) -> PackageExpectat
         evidence_grid_ids=frozenset(evidence_grid_ids),
         formula_ids=frozenset(formula_ids),
         clause_rule_ids=frozenset(clause_rule_ids),
+        evidence_clause_ids=frozenset(evidence_clause_ids),
         curve_rule_ids=frozenset(curve_rule_ids),
         declared_mapping_ids=frozenset(spec.id for recipe in recipes for spec in recipe.mappings),
         declared_mapping_routes=frozenset(

@@ -32,6 +32,7 @@ from insulation_coordination.rules.importer.extract import SemanticProposal
 from insulation_coordination.rules.importer.identify import (
     ClauseAuditSpec,
     ClauseProjector,
+    ClauseSegmentSpec,
     StandardIdentity,
 )
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
@@ -55,15 +56,19 @@ HIGH_FREQUENCY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ClauseAuditSpec(
         semantic_id=ids.HIGH_FREQUENCY_APPLICABILITY,
         clause="F.1",
-        page_number=195,
-        expected_bbox=(70.7, 260.0, 524.5, 302.0),
-        expected_root_kind="paragraph",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=195,
+                expected_bbox=(70.7, 260.0, 524.5, 302.0),
+                expected_root_kind="paragraph",
+            ),
+        ),
         output_kind="decision",
     ),
 )
 
 #: Reviewed structural contract: one paragraph node.
-_APPLICABILITY_SHAPE = ("paragraph", 1)
+_APPLICABILITY_SHAPE = ("paragraph",)
 
 #: Which spacing is being dimensioned. The four members mirror the four design situations
 #: the annex lists, one each.

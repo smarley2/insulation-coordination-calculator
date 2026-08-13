@@ -38,6 +38,7 @@ from insulation_coordination.rules.importer.extract import (
 from insulation_coordination.rules.importer.identify import (
     ClauseAuditSpec,
     ClauseProjector,
+    ClauseSegmentSpec,
     StandardIdentity,
     TableAuditSpec,
     TableColumnSpec,
@@ -281,42 +282,58 @@ PROCEDURE_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ClauseAuditSpec(
         semantic_id=ids.TEST_WORKING_VOLTAGE_DETERMINATION,
         clause=_WORKING_VOLTAGE_CLAUSE,
-        page_number=142,
         #: The bullets only. The sentence above them states the requirement that refers this
         #: test, and the line below them points at an annex for waveform guidance; neither is
         #: a measurement condition, and including either would merge into a bullet's text.
-        expected_bbox=(65.0, 575.0, 535.0, 632.0),
-        expected_root_kind="bullets",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=142,
+                expected_bbox=(65.0, 575.0, 535.0, 632.0),
+                expected_root_kind="bullets",
+            ),
+        ),
         output_kind="procedure",
     ),
     ClauseAuditSpec(
         semantic_id=ids.TEST_INTERNAL_SPD_MONITORING,
         clause=_INTERNAL_SPD_CLAUSE,
-        page_number=142,
-        expected_bbox=(65.0, 680.0, 535.0, 730.0),
-        expected_root_kind="paragraph",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=142,
+                expected_bbox=(65.0, 680.0, 535.0, 730.0),
+                expected_root_kind="paragraph",
+            ),
+        ),
         output_kind="procedure",
     ),
     ClauseAuditSpec(
         semantic_id=ids.TEST_PRECONDITIONING,
         clause=_PRECONDITIONING_MATERIAL_CLAUSE,
-        page_number=143,
         #: The numbered steps only. The sentence above them states which requirements call for
         #: the test, which is the applicability the general clause below settles.
-        expected_bbox=(65.0, 158.0, 535.0, 218.0),
-        expected_root_kind="bullets",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=143,
+                expected_bbox=(65.0, 158.0, 535.0, 218.0),
+                expected_root_kind="bullets",
+            ),
+        ),
         output_kind="procedure",
         projected_rule_ids=(PRECONDITIONING_MATERIAL_ID,),
     ),
     ClauseAuditSpec(
         semantic_id=PRECONDITIONING_APPLICABILITY_ID,
         clause=_PRECONDITIONING_GENERAL_CLAUSE,
-        page_number=123,
         #: The general clause's preconditioning paragraph alone. The paragraphs on either side
         #: state the scope of the electrical tests and what may be tested in place of the
         #: complete equipment, neither of which is a preconditioning gate.
-        expected_bbox=(65.0, 274.0, 535.0, 310.0),
-        expected_root_kind="paragraph",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=123,
+                expected_bbox=(65.0, 274.0, 535.0, 310.0),
+                expected_root_kind="paragraph",
+            ),
+        ),
         output_kind="decision",
         #: This clause states both the gate and the electrical tests' own step inventory, so
         #: it projects the gate under its own identifier and that route beside it.
@@ -325,12 +342,16 @@ PROCEDURE_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ClauseAuditSpec(
         semantic_id=ids.TEST_ACCESSIBLE_SURFACE_FOIL,
         clause=_VOLTAGE_TEST_PERFORMANCE_CLAUSE,
-        page_number=130,
         #: The accessible-surface paragraph alone. The paragraph above it states what may be
         #: bridged or disconnected before testing and the one below what an opening permits,
         #: neither of which concerns an accessible surface.
-        expected_bbox=(65.0, 142.0, 535.0, 190.0),
-        expected_root_kind="paragraph",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=130,
+                expected_bbox=(65.0, 142.0, 535.0, 190.0),
+                expected_root_kind="paragraph",
+            ),
+        ),
         output_kind="procedure",
         #: The same paragraph states the gate, so this spec projects it beside the procedure
         #: rather than extracting the paragraph twice.
@@ -339,11 +360,15 @@ PROCEDURE_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ClauseAuditSpec(
         semantic_id=ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION,
         clause=_VOLTAGE_TEST_PERFORMANCE_CLAUSE,
-        page_number=130,
         #: The three conditions only. The sentence introducing them is above the first bullet,
         #: where the extractor drops it rather than merging it into a condition.
-        expected_bbox=(65.0, 326.0, 535.0, 378.0),
-        expected_root_kind="bullets",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=130,
+                expected_bbox=(65.0, 326.0, 535.0, 378.0),
+                expected_root_kind="bullets",
+            ),
+        ),
         output_kind="decision",
     ),
 )

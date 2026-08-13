@@ -40,21 +40,55 @@ class _Fact(FrozenModel):
 
 
 class SystemVoltageFact(_Fact):
+    """One statement of which measure is the system voltage, on four stated dimensions.
+
+    One field per dimension the projected rule declares as an input, each drawn from that
+    input's own vocabulary. The four were once collapsed into ``phase_system``, whose token
+    list mixed two phase systems with a supply kind and two input topologies: three of those
+    four raised at projection because the rule's ``phase_system`` never declared them, and the
+    ``supply_kind`` and ``input_topology`` inputs sat declared but unreachable behind matchers
+    that accepted anything. A statement's dimensions are separate readings and need separate
+    fields.
+
+    ``any_*`` on a dimension names a statement its source leaves unrestricted -- one normative
+    statement covering every value, not one statement per value, the same reading ``any_purpose``
+    records for the calculation purpose. Where the source states a general rule and a narrower
+    one over the same values, the narrower statement's own dimension is what separates them, and
+    the projector refuses a pair that overlaps rather than serving whichever row comes first.
+
+    Known gap, disclosed rather than dropped: this family states which measure applies, and one
+    statement of the mains subclause instead states that a class of internally generated voltage
+    counts as a system voltage at all, for one determination only. That is applicability, not a
+    measure, and the projected rule declares no applicability output to carry it -- forcing it
+    into ``measure`` would answer a question about which measure applies with a statement that
+    names none. It belongs with the other contract changes in #53C; completion is asserted per
+    (clause, rule route), so a statement belonging to a rule outside this route does not make
+    this route's fact set incomplete.
+    """
+
     fact_kind: Literal["system_voltage"] = "system_voltage"
+    supply_kind: Literal["mains", "non_mains", "any_supply_kind"]
     phase_system: Literal[
+        "three_phase_star",
+        "three_phase_delta",
         "three_phase_it",
         "single_phase_it",
-        "rectified_from_mains",
+        "any_phase_system",
+    ]
+    earthing: Literal["tn", "tt", "it", "unspecified", "any_earthing"]
+    input_topology: Literal[
+        "direct",
+        "rectified_dc",
         "series_rectifier_bridges",
         "isolated_secondary",
-        "non_mains",
+        "any_input_topology",
     ]
-    earthing: Literal["tn", "tt", "it", "unspecified"]
     #: ``any_purpose`` names a statement that fixes its measure without restricting which
     #: calculation purpose it applies to -- one normative statement, not two, so it needs its
     #: own token rather than being authored as a separate fact per purpose.
     purpose: Literal["impulse", "temporary_overvoltage", "any_purpose"]
     measure: Literal[
+        "phase_to_earth_rms",
         "phase_to_artificial_neutral_rms",
         "phase_to_phase_rms",
         "between_supply_conductors_rms",

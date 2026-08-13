@@ -114,8 +114,9 @@ def _value(result: object, name: str) -> object:
 def test_the_clause_locator_is_structural_only() -> None:
     (spec,) = HIGH_FREQUENCY_CLAUSES
     assert spec.semantic_id == ids.HIGH_FREQUENCY_APPLICABILITY
-    assert (spec.clause, spec.page_number) == ("F.1", 195)
-    assert spec.expected_root_kind == "paragraph"
+    (segment,) = spec.segments
+    assert (spec.clause, segment.page_number) == ("F.1", 195)
+    assert segment.expected_root_kind == "paragraph"
     assert spec.output_kind == "decision"
     assert CLAUSE_PROJECTORS == {
         ids.HIGH_FREQUENCY_APPLICABILITY: project_high_frequency_applicability

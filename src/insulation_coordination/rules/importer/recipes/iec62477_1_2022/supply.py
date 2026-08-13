@@ -6,13 +6,14 @@ note, or clause prose lives in this file. A reviewed fragment whose node shape f
 outside the declared contract blocks with ``AMBIGUOUS_CLAUSE_STRUCTURE`` rather than
 letting a projection guess a branch.
 
-Each ``ClauseAuditSpec`` carries one page and one bbox, so a projection is grounded in
-exactly one page region. A ported route's branch content comes from its reviewed clause
-facts (system voltage resolution, verified barrier transfer, the SPD reduction and
-monitoring routes, HF transformer attenuation): the fragment anchors the clause
-structurally and a maintainer-authored fact states the branch. A route not yet ported
-still declares its branch inventory here, the same way the DVC fault-applicability
-projection derives its selectors from the maintained curve recipes.
+Each ``ClauseAuditSpec`` carries the ordered physical regions of one semantic clause, so a
+projection is grounded in the whole clause rather than in whichever rectangle reached part
+of it. A ported route's branch content comes from its reviewed clause facts (system voltage
+resolution, verified barrier transfer, the SPD reduction and monitoring routes, HF
+transformer attenuation): the fragment anchors the clause structurally and a
+maintainer-authored fact states the branch. A route not yet ported still declares its branch
+inventory here, the same way the DVC fault-applicability projection derives its selectors
+from the maintained curve recipes.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from insulation_coordination.domain.rules import (
     GuidanceRule,
     Matcher,
     RuleKind,
+    SourceReference,
 )
 from insulation_coordination.rules.importer.clause_facts import (
     BarrierTransferFact,
@@ -42,10 +44,12 @@ from insulation_coordination.rules.importer.clause_facts import (
 from insulation_coordination.rules.importer.clauses import RawClauseFragment
 from insulation_coordination.rules.importer.extract import (
     SemanticProposal,
+    aggregate_artifact_sha256,
     canonical_model_sha256,
 )
 from insulation_coordination.rules.importer.identify import (
     ClauseAuditSpec,
+    ClauseSegmentSpec,
     StandardIdentity,
 )
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
@@ -53,15 +57,42 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.clauses impo
     ClauseStructureError,
 )
 
+#: The non-mains system voltage subclause. Its statement belongs to the same rule the mains
+#: subclause states, so it is declared as that rule's evidence rather than as a second route:
+#: physical pagination and clause numbering are provenance, not application semantics, and a
+#: consumer still asks one ``supply.system_voltage_resolution`` question.
+SUPPLY_SYSTEM_VOLTAGE_NON_MAINS = f"{ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION}.non_mains_evidence"
+
 #: Measured with pdfplumber against the licensed document; the x range excludes the
 #: licence watermark columns at either margin.
 SUPPLY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ClauseAuditSpec(
         semantic_id=ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,
         clause="4.4.7.1.7.1",
-        page_number=64,
-        expected_bbox=(65.0, 80.0, 535.0, 232.0),
-        expected_root_kind="bullets",
+        #: Three regions in reading order, not one rectangle and not one per page. The
+        #: subclause opens at the foot of the earlier page, continues at the head of the next,
+        #: and resumes on that same later page below the region it opened there. A single
+        #: rectangle reached the middle region only, so the statements before and after it were
+        #: never extracted and could not be cited by any reviewed fact.
+        segments=(
+            ClauseSegmentSpec(
+                page_number=63,
+                expected_bbox=(65.0, 725.0, 535.0, 792.0),
+                expected_root_kind="bullets",
+            ),
+            ClauseSegmentSpec(
+                page_number=64,
+                expected_bbox=(65.0, 80.0, 535.0, 232.0),
+                expected_root_kind="bullets",
+            ),
+            #: Running prose rather than bullets, which is why the root shape is per segment:
+            #: one contract for the whole clause could not describe both.
+            ClauseSegmentSpec(
+                page_number=64,
+                expected_bbox=(65.0, 232.0, 535.0, 382.0),
+                expected_root_kind="paragraph",
+            ),
+        ),
         output_kind="decision",
         #: The clause's NOTEs become guidance rather than executable branches, and that
         #: guidance is grounded in this same fragment. A clause that declares routes declares
@@ -70,38 +101,71 @@ SUPPLY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
             ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,
             f"{ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION}.guidance",
         ),
+        evidence_clause_ids=(SUPPLY_SYSTEM_VOLTAGE_NON_MAINS,),
+    ),
+    #: The sibling subclause, its own reviewed fragment and its own evidence scope, feeding
+    #: the rule above. Kept apart from that fragment rather than merged into it: a fragment
+    #: whose nominal clause is one subclause must not quietly carry another's statements.
+    ClauseAuditSpec(
+        semantic_id=SUPPLY_SYSTEM_VOLTAGE_NON_MAINS,
+        clause="4.4.7.1.7.2",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=64,
+                expected_bbox=(65.0, 410.0, 535.0, 445.0),
+                expected_root_kind="paragraph",
+            ),
+        ),
+        output_kind="decision",
+        projection_role="evidence",
     ),
     ClauseAuditSpec(
         semantic_id=ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION,
         clause="4.4.7.2.5",
-        page_number=66,
-        expected_bbox=(65.0, 630.0, 535.0, 792.0),
-        expected_root_kind="bullets",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=66,
+                expected_bbox=(65.0, 630.0, 535.0, 792.0),
+                expected_root_kind="bullets",
+            ),
+        ),
         output_kind="decision",
     ),
     ClauseAuditSpec(
         semantic_id=ids.SUPPLY_VERIFIED_BARRIER_TRANSFER,
         clause="4.4.7.2.5",
-        page_number=67,
-        expected_bbox=(65.0, 80.0, 535.0, 180.0),
-        expected_root_kind="paragraph",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=67,
+                expected_bbox=(65.0, 80.0, 535.0, 180.0),
+                expected_root_kind="paragraph",
+            ),
+        ),
         output_kind="decision",
     ),
     ClauseAuditSpec(
         semantic_id=f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains",
         clause="4.4.7.2.3",
-        page_number=65,
-        expected_bbox=(65.0, 390.0, 535.0, 518.0),
-        expected_root_kind="paragraph",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=65,
+                expected_bbox=(65.0, 390.0, 535.0, 518.0),
+                expected_root_kind="paragraph",
+            ),
+        ),
         output_kind="decision",
         projected_rule_ids=(f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains",),
     ),
     ClauseAuditSpec(
         semantic_id=f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains",
         clause="4.4.7.2.4",
-        page_number=66,
-        expected_bbox=(65.0, 385.0, 535.0, 512.0),
-        expected_root_kind="paragraph",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=66,
+                expected_bbox=(65.0, 385.0, 535.0, 512.0),
+                expected_root_kind="paragraph",
+            ),
+        ),
         output_kind="decision",
         projected_rule_ids=(f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains",),
     ),
@@ -110,18 +174,26 @@ SUPPLY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ClauseAuditSpec(
         semantic_id=f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring",
         clause="4.4.7.2.2",
-        page_number=65,
-        expected_bbox=(65.0, 110.0, 535.0, 258.0),
-        expected_root_kind="paragraph",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=65,
+                expected_bbox=(65.0, 110.0, 535.0, 258.0),
+                expected_root_kind="paragraph",
+            ),
+        ),
         output_kind="decision",
         projected_rule_ids=(f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring",),
     ),
     ClauseAuditSpec(
         semantic_id=ids.SUPPLY_HF_TRANSFORMER_ATTENUATION,
         clause="4.4.7.2.6",
-        page_number=67,
-        expected_bbox=(65.0, 185.0, 535.0, 350.0),
-        expected_root_kind="paragraph",
+        segments=(
+            ClauseSegmentSpec(
+                page_number=67,
+                expected_bbox=(65.0, 185.0, 535.0, 350.0),
+                expected_root_kind="paragraph",
+            ),
+        ),
         output_kind="decision",
     ),
 )
@@ -142,6 +214,7 @@ LEGACY_BRANCH_AUTHORITY_RULE_IDS = frozenset({ids.SUPPLY_MULTIPLE_SOURCE_PROPAGA
 #: it is the legacy route the gate skips.
 SUPPLY_FACT_FAMILY_BY_ROUTE: dict[str, str] = {
     ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: "system_voltage",
+    SUPPLY_SYSTEM_VOLTAGE_NON_MAINS: "system_voltage",
     ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION: "propagation_step",
     ids.SUPPLY_VERIFIED_BARRIER_TRANSFER: "barrier_transfer",
     f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains": "spd_reduction",
@@ -179,18 +252,23 @@ _require_declared_fact_families(SUPPLY_CLAUSES, SUPPLY_FACT_FAMILY_BY_ROUTE)
 #: result -- never a second, quieter way to get the old fallback.
 _NO_CONFIRMED_FACTS = ConfirmedFacts()
 
-#: Reviewed structural contract per projection: (node kind, node count).
-_SYSTEM_VOLTAGE_SHAPE = ("bullet", 3)
-_PROPAGATION_SHAPE = ("bullet", 4)
-_BARRIER_SHAPE = ("paragraph", 1)
-_SPD_SHAPE = ("paragraph", 1)
-_HF_TRANSFORMER_SHAPE = ("paragraph", 1)
+#: Reviewed structural contract per projection: the node kind expected at each position, in
+#: order. An ordered sequence rather than one (kind, count) pair because a clause spanning
+#: several regions need not read as one kind throughout -- the system voltage clause is five
+#: bullets and then one paragraph -- and "any kind" is the one weakening that would let a
+#: reflowed clause project silently.
+_SYSTEM_VOLTAGE_SHAPE = ("bullet", "bullet", "bullet", "bullet", "bullet", "paragraph")
+_SYSTEM_VOLTAGE_NON_MAINS_SHAPE = ("paragraph",)
+_PROPAGATION_SHAPE = ("bullet", "bullet", "bullet", "bullet")
+_BARRIER_SHAPE = ("paragraph",)
+_SPD_SHAPE = ("paragraph",)
+_HF_TRANSFORMER_SHAPE = ("paragraph",)
 
 #: Reviewed structural contract per SPD reduction route. Each was measured against the
 #: licensed document from the fragment the recipe's own bbox extracts, so a reprint that
 #: reflows any of these three clauses across a different number of nodes stops the build
 #: instead of projecting a rule from a region nobody reviewed.
-_SPD_SHAPE_BY_ROUTE: dict[str, tuple[str, int]] = {
+_SPD_SHAPE_BY_ROUTE: dict[str, tuple[str, ...]] = {
     f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains": _SPD_SHAPE,
     f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains": _SPD_SHAPE,
     f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring": _SPD_SHAPE,
@@ -215,12 +293,11 @@ def _require_own_fragment(
 
 def _require_shape(
     fragment: RawClauseFragment,
-    shape: tuple[str, int],
+    shape: tuple[str, ...],
     label: str,
 ) -> None:
-    kind, count = shape
-    if len(fragment.nodes) != count or any(node.kind != kind for node in fragment.nodes):
-        _fail(f"{label} expected {count} reviewed {kind} node(s)")
+    if tuple(node.kind for node in fragment.nodes) != shape:
+        _fail(f"{label} expected {len(shape)} reviewed node(s) of kinds {shape}")
 
 
 def _matcher(name: str, values: tuple[str, ...] | None) -> Matcher:
@@ -233,15 +310,39 @@ def _matcher(name: str, values: tuple[str, ...] | None) -> Matcher:
     return Matcher(input=name, op="in", values=values)
 
 
+def _rows_overlap(first: tuple[Matcher, ...], second: tuple[Matcher, ...]) -> bool:
+    """Whether some input tuple both rows would match.
+
+    Two rows overlap when, for every input, their matchers are either equal or one of them
+    matches any value: an ``op="any"`` matcher is what an unrestricted statement projects, and
+    an unrestricted statement covers every value the specific one covers. Equality alone is not
+    the test -- a statement stated without a purpose and one stated for a single purpose are
+    never equal and still both answer the same question.
+    """
+
+    return all(
+        one == other or one.op == "any" or other.op == "any"
+        for one, other in zip(first, second, strict=True)
+    )
+
+
 def _require_distinct_branches(
     label: str, facts: tuple[SupplyFact, ...], rows: tuple[DecisionRow, ...]
 ) -> None:
-    """Refuse two reviewed statements of one route whose branch dimensions are identical.
+    """Refuse two reviewed statements of one route whose branches are not disjoint.
 
     ``evaluate_decision`` serves the first row whose matchers fit, so two statements projecting
-    equal matchers leave the second unreachable and its contradicting values unserved, with no
-    error, no warning and a ``fact_set_sha256`` that covers both happily. That is the hazard
-    ``_require_distinct_selectors`` refuses for two axis positions confirmed as the same selector.
+    overlapping matchers leave the later one shadowed over the overlap and its contradicting
+    values unserved, with no error, no warning and a ``fact_set_sha256`` that covers both
+    happily. That is the hazard ``_require_distinct_selectors`` refuses for two axis positions
+    confirmed as the same selector.
+
+    Overlap rather than equality, because equality catches only the narrowest case: an
+    ``any_placement`` or ``any_purpose`` statement that also covers a specific one projects
+    matchers that are never equal to it, and row order alone would decide which reading a
+    consumer receives. Where the source really states a general rule and a special case, the
+    special case's own dimension is what distinguishes them, and a set of statements this
+    refuses is one whose distinguishing dimension nobody authored.
 
     Expressed over the projected matchers rather than over the facts, and so living here rather
     than in ``resolve_confirmed_clause_facts`` with the other refusals: which fields are branch
@@ -250,27 +351,38 @@ def _require_distinct_branches(
     while naming different target categories.
     """
 
-    seen: dict[tuple[Matcher, ...], int] = {}
+    seen: list[tuple[tuple[Matcher, ...], int]] = []
     for fact, row in zip(facts, rows, strict=True):
-        if row.matchers in seen:
-            raise ClauseStructureError(
-                f"{label} statements {seen[row.matchers]} and {fact.statement_index} "
-                f"state the same branch"
-            )
-        seen[row.matchers] = fact.statement_index
+        for matchers, statement_index in seen:
+            if _rows_overlap(matchers, row.matchers):
+                raise ClauseStructureError(
+                    f"{label} statements {statement_index} and {fact.statement_index} "
+                    f"state branches that are not disjoint"
+                )
+        seen.append((row.matchers, fact.statement_index))
 
 
 def _proposal(
     rule: DecisionRule | GuidanceRule,
     rule_kind: RuleKind,
-    fragment: RawClauseFragment,
+    *fragments: RawClauseFragment,
 ) -> SemanticProposal:
+    """One proposal grounded in every fragment the rule was read from.
+
+    Several fragments aggregate through ``aggregate_artifact_sha256``, which is the function the
+    approval gate re-derives a proposal's current source digest with, so a rule two subclauses
+    state between them goes stale when either fragment changes. One fragment aggregates to its
+    own digest, so a single-clause rule is grounded exactly as before.
+    """
+
     return SemanticProposal(
         semantic_id=rule.id,
         rule_kind=rule_kind,
         state="proposed",
         rule_sha256=canonical_model_sha256(rule),
-        source_artifact_sha256=canonical_model_sha256(fragment),
+        source_artifact_sha256=aggregate_artifact_sha256(
+            tuple((item.id, canonical_model_sha256(item)) for item in fragments)
+        ),
     )
 
 
@@ -292,57 +404,134 @@ _INPUT_TOPOLOGIES = (
     "series_rectifier_bridges",
     "isolated_secondary",
 )
+#: The consumer's question space for the calculation purpose, declared here and never derived
+#: from the reviewed facts. A declared input's vocabulary is the question space, not the
+#: reviewed answer space: several of the clause's statements restrict no purpose at all, so a
+#: fact set of only those would derive an empty tuple and ``DecisionRule`` would refuse the
+#: whole rule with a message about a categorical input rather than about the authoring.
+_CALCULATION_PURPOSES = ("impulse", "temporary_overvoltage")
+
+#: Which fact field feeds which declared input, and the token that means "this statement
+#: restricts this dimension to nothing". Every dimension gets a real matcher: two of these
+#: inputs were once wired to ``op="any"`` on every row, which left them declared, asked about
+#: by consumers, and unable to affect any answer.
+_SYSTEM_VOLTAGE_DIMENSIONS = (
+    ("supply_kind", "supply_kind", "any_supply_kind"),
+    ("phase_system", "phase_system", "any_phase_system"),
+    ("earthing_arrangement", "earthing", "any_earthing"),
+    ("input_topology", "input_topology", "any_input_topology"),
+    ("calculation_purpose", "purpose", "any_purpose"),
+)
+
+
+def _system_voltage_evidence_fragment(
+    draft: object,
+    identity: StandardIdentity,
+    label: str,
+) -> RawClauseFragment | None:
+    """The non-mains subclause's fragment from the reviewed draft, or ``None`` without one.
+
+    Read from the draft the way the preconditioning projection reads its sibling artifacts: the
+    rule rests on two subclauses, and the fragment argument carries only the one whose identifier
+    the rule bears. Resolution has already refused unless both scopes are reviewed and complete,
+    so a draft reaching here holds both fragments; a caller supplying no draft grounds the
+    proposal in the fragment it did supply.
+    """
+
+    fragments: tuple[RawClauseFragment, ...] = getattr(draft, "raw_clause_fragments", ())
+    evidence = next(
+        (item for item in fragments if item.id == f"raw-{SUPPLY_SYSTEM_VOLTAGE_NON_MAINS}"),
+        None,
+    )
+    if evidence is None:
+        return None
+    _require_own_fragment(evidence, identity, SUPPLY_SYSTEM_VOLTAGE_NON_MAINS, label)
+    _require_shape(evidence, _SYSTEM_VOLTAGE_NON_MAINS_SHAPE, label)
+    return evidence
+
+
+def _statement_source(
+    fact: SystemVoltageFact,
+    fragments: tuple[RawClauseFragment, ...],
+) -> SourceReference:
+    """Where one statement was read: the first node it cites, in whichever fragment holds it.
+
+    Two subclauses on two pages feed this one rule, and a node keeps the page it came from, so a
+    row citing the rule's own fragment's first node unconditionally would name a page its
+    statement is not on.
+    """
+
+    by_id = {item.id: item for item in fragments}
+    for cited in fact.node_references:
+        fragment = by_id.get(cited.fragment_id)
+        node = (
+            next((item for item in fragment.nodes if item.order == cited.node_order), None)
+            if fragment is not None
+            else None
+        )
+        if node is not None:
+            return node.source
+    return fragments[0].nodes[0].source
+
+
+def _dimension_matcher(input_name: str, value: str, unrestricted: str) -> Matcher:
+    """Match one authored dimension value, or every value where the statement states none.
+
+    A statement its source leaves unrestricted on a dimension is one statement covering every
+    value, not one per value, so it projects ``op="any"`` rather than being authored repeatedly.
+    Unlike the attenuation clause's evidence kinds, none of these vocabularies carries a value
+    the statement must be kept away from -- there is no "no supply kind yet" to accidentally
+    answer for -- so the whole declared vocabulary is what an unrestricted statement covers.
+    """
+
+    if value == unrestricted:
+        return Matcher(input=input_name, op="any")
+    return _matcher(input_name, (value,))
 
 
 def project_system_voltage_resolution(
     fragment: RawClauseFragment,
     identity: StandardIdentity,
-    _draft: object = None,
+    draft: object = None,
     confirmed_facts: ConfirmedFacts = _NO_CONFIRMED_FACTS,
 ) -> tuple[tuple[DecisionRule | GuidanceRule, ...], tuple[SemanticProposal, ...]]:
-    """Project the reviewed mains/non-mains system voltage clause into a decision.
+    """Project the reviewed mains and non-mains system voltage subclauses into one decision.
 
     Every row comes from one reviewed ``SystemVoltageFact``: the clause states the branch,
     this projection only shapes it into the rule's declared inputs and outputs. A route with
     no reviewed facts refuses rather than falling back to an inventory nobody reviewed.
+
+    Two subclauses state this one rule between them, so the facts come from two evidence
+    scopes and the rule's proposal is grounded in the aggregate of both fragments. One
+    ``DecisionRule`` and one ``SemanticProposal`` come out regardless: pagination and clause
+    numbering are provenance, and a consumer asks one question.
     """
 
     label = "supply system voltage resolution"
     _require_own_fragment(fragment, identity, ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION, label)
     _require_shape(fragment, _SYSTEM_VOLTAGE_SHAPE, label)
+    evidence = _system_voltage_evidence_fragment(draft, identity, label)
 
-    facts = confirmed_facts.for_route(ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION)
+    facts = (
+        *confirmed_facts.for_route(ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION),
+        *confirmed_facts.for_route(SUPPLY_SYSTEM_VOLTAGE_NON_MAINS),
+    )
     if not facts:
         raise ClauseStructureError(f"{label} needs reviewed clause facts for its route")
     system_voltage_facts = tuple(fact for fact in facts if isinstance(fact, SystemVoltageFact))
     if len(system_voltage_facts) != len(facts):
         raise ValueError(f"{label} projection requires system voltage facts")
 
-    def _purpose_matcher(purpose: str) -> Matcher:
-        # ``any_purpose`` names a statement that fixes its measure without restricting the
-        # calculation purpose -- one normative statement, not two -- so it matches both
-        # purposes rather than being authored twice.
-        if purpose == "any_purpose":
-            return Matcher(input="calculation_purpose", op="any")
-        return _matcher("calculation_purpose", (purpose,))
-
-    calculation_purposes = tuple(
-        dict.fromkeys(
-            fact.purpose for fact in system_voltage_facts if fact.purpose != "any_purpose"
-        )
-    )
+    grounding = (fragment,) if evidence is None else (fragment, evidence)
     measures = tuple(dict.fromkeys(fact.measure for fact in system_voltage_facts))
     rows = tuple(
         DecisionRow(
-            matchers=(
-                Matcher(input="supply_kind", op="any"),
-                _matcher("phase_system", (fact.phase_system,)),
-                _matcher("earthing_arrangement", (fact.earthing,)),
-                Matcher(input="input_topology", op="any"),
-                _purpose_matcher(fact.purpose),
+            matchers=tuple(
+                _dimension_matcher(input_name, getattr(fact, field), unrestricted)
+                for input_name, field, unrestricted in _SYSTEM_VOLTAGE_DIMENSIONS
             ),
             values=(DecisionValue(name="system_voltage_measure", categorical=fact.measure),),
-            source=fragment.nodes[0].source,
+            source=_statement_source(fact, grounding),
         )
         for fact in system_voltage_facts
     )
@@ -364,7 +553,7 @@ def project_system_voltage_resolution(
             DecisionInput(
                 name="calculation_purpose",
                 kind="categorical",
-                allowed_values=calculation_purposes,
+                allowed_values=_CALCULATION_PURPOSES,
             ),
         ),
         outputs=(
@@ -396,8 +585,8 @@ def project_system_voltage_resolution(
         source=fragment.source,
     )
     return (rule, guidance), (
-        _proposal(rule, "decision", fragment),
-        _proposal(guidance, "guidance", fragment),
+        _proposal(rule, "decision", *grounding),
+        _proposal(guidance, "guidance", *grounding),
     )
 
 
@@ -975,6 +1164,7 @@ __all__ = [
     "LEGACY_BRANCH_AUTHORITY_RULE_IDS",
     "SUPPLY_CLAUSES",
     "SUPPLY_FACT_FAMILY_BY_ROUTE",
+    "SUPPLY_SYSTEM_VOLTAGE_NON_MAINS",
     "project_hf_transformer_attenuation",
     "project_multiple_source_propagation",
     "project_spd_reduction_requirements",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from decimal import Decimal
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -28,7 +29,10 @@ from insulation_coordination.rules.importer.clauses import (
     ClauseToken,
     RawClauseFragment,
 )
-from insulation_coordination.rules.importer.extract import canonical_model_sha256
+from insulation_coordination.rules.importer.extract import (
+    aggregate_artifact_sha256,
+    canonical_model_sha256,
+)
 from insulation_coordination.rules.importer.identify import StandardIdentity
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
@@ -39,6 +43,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.clauses impo
 )
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
     SUPPLY_CLAUSES,
+    SUPPLY_SYSTEM_VOLTAGE_NON_MAINS,
     project_hf_transformer_attenuation,
     project_multiple_source_propagation,
     project_spd_reduction_requirements,
@@ -62,21 +67,25 @@ IDENTITY = StandardIdentity(
 )
 
 
-def _fragment(
+def _mixed_fragment(
     semantic_id: str,
-    *,
-    kind: str = "bullet",
-    count: int = 1,
+    kinds: tuple[str, ...],
     tokens: tuple[ClauseToken, ...] = (),
 ) -> RawClauseFragment:
+    """A synthetic fragment whose nodes carry the given kinds, in order.
+
+    Several kinds because one clause may span regions that read differently -- the system
+    voltage subclause is bullets and then running prose.
+    """
+
     nodes = tuple(
         ClauseNode(
             order=order,
-            kind=kind,
+            kind=kind,  # type: ignore[arg-type]
             raw_text=f"synthetic neutral {kind} node {order}",
             source=SOURCE.model_copy(update={"row": f"node {order}"}),
         )
-        for order in range(count)
+        for order, kind in enumerate(kinds)
     )
     fragment = RawClauseFragment(
         id=f"raw-{semantic_id}",
@@ -88,8 +97,46 @@ def _fragment(
     return fragment.model_copy(update={"raw_sha256": canonical_model_sha256(fragment)})
 
 
-def _bullet_fragment(*, count: int = 3) -> RawClauseFragment:
-    return _fragment(ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION, kind="bullet", count=count)
+def _fragment(
+    semantic_id: str,
+    *,
+    kind: str = "bullet",
+    count: int = 1,
+    tokens: tuple[ClauseToken, ...] = (),
+) -> RawClauseFragment:
+    return _mixed_fragment(semantic_id, (kind,) * count, tokens)
+
+
+#: The reviewed shape of the mains system voltage subclause: five bullets across two regions
+#: and one paragraph region after them.
+_SYSTEM_VOLTAGE_KINDS = ("bullet", "bullet", "bullet", "bullet", "bullet", "paragraph")
+
+
+def _bullet_fragment() -> RawClauseFragment:
+    return _mixed_fragment(ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION, _SYSTEM_VOLTAGE_KINDS)
+
+
+def _non_mains_evidence_fragment() -> RawClauseFragment:
+    """The sibling subclause's fragment, on a page of its own so provenance is visible."""
+
+    source = SOURCE.model_copy(update={"page": 10})
+    fragment = _fragment(SUPPLY_SYSTEM_VOLTAGE_NON_MAINS, kind="paragraph", count=1)
+    nodes = tuple(
+        node.model_copy(update={"source": source.model_copy(update={"row": f"node {node.order}"})})
+        for node in fragment.nodes
+    )
+    rebuilt = fragment.model_copy(update={"nodes": nodes, "source": source, "raw_sha256": "0" * 64})
+    return rebuilt.model_copy(update={"raw_sha256": canonical_model_sha256(rebuilt)})
+
+
+class _StubDraft(NamedTuple):
+    """The one attribute a clause projection reads off the reviewed draft.
+
+    Building an ``ImportedRuleDraft`` here would add a manifest, identities and an audit chain
+    to a test about which fragments a projection reads.
+    """
+
+    raw_clause_fragments: tuple[RawClauseFragment, ...]
 
 
 def _lettered_fragment(*, count: int = 4) -> RawClauseFragment:
@@ -122,8 +169,10 @@ def _system_voltage_fact(
     fragment: RawClauseFragment,
     *,
     index: int = 0,
+    supply_kind: str = "any_supply_kind",
     phase_system: str = "three_phase_it",
     earthing: str = "it",
+    input_topology: str = "any_input_topology",
     purpose: str = "impulse",
     measure: str,
 ) -> SystemVoltageFact:
@@ -133,8 +182,10 @@ def _system_voltage_fact(
         statement_index=index,
         node_references=(_cited_node(fragment, node_order=index % len(fragment.nodes)),),
         obligation="requirement",
+        supply_kind=supply_kind,  # type: ignore[arg-type]
         phase_system=phase_system,  # type: ignore[arg-type]
         earthing=earthing,  # type: ignore[arg-type]
+        input_topology=input_topology,  # type: ignore[arg-type]
         purpose=purpose,  # type: ignore[arg-type]
         measure=measure,  # type: ignore[arg-type]
     )
@@ -650,9 +701,22 @@ def test_system_voltage_keeps_its_declared_contract() -> None:
     assert {item.name for item in rule.outputs} == {"system_voltage_measure"}
 
 
-def test_a_fragment_whose_bullet_count_differs_blocks() -> None:
+def test_a_fragment_whose_node_kinds_differ_blocks() -> None:
+    """The shape contract is the ordered node kinds, so a reflow of either kind stops here."""
+
     with pytest.raises(ClauseStructureError, match="AMBIGUOUS_CLAUSE_STRUCTURE"):
-        project_system_voltage_resolution(_bullet_fragment(count=7), IDENTITY)
+        project_system_voltage_resolution(
+            _fragment(ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION, kind="bullet", count=7), IDENTITY
+        )
+
+
+def test_a_fragment_whose_later_region_reflowed_into_a_bullet_blocks() -> None:
+    """Same node count, wrong kind at the last position: the ordered sequence catches it."""
+
+    with pytest.raises(ClauseStructureError, match="AMBIGUOUS_CLAUSE_STRUCTURE"):
+        project_system_voltage_resolution(
+            _fragment(ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION, kind="bullet", count=6), IDENTITY
+        )
 
 
 def test_a_foreign_fragment_cannot_be_projected() -> None:
@@ -856,8 +920,86 @@ def test_two_statements_stating_the_same_branch_are_refused() -> None:
         }
     )
 
-    with pytest.raises(ClauseStructureError, match="same branch"):
+    with pytest.raises(ClauseStructureError, match="not disjoint"):
         _project_system_voltage(fragment, facts)
+
+
+def test_an_unrestricted_statement_overlapping_a_specific_one_is_refused() -> None:
+    """Not identical, and still ambiguous: row order alone would pick the winner.
+
+    The unrestricted statement covers every value of the dimension the other one narrows, so a
+    consumer inside the narrower branch matches both rows and receives whichever the authoring
+    order happened to put first. Where the source really states a general rule and a special
+    case, the special case's own dimension separates them; a pair this refuses is one whose
+    separating dimension nobody authored.
+    """
+
+    fragment = _bullet_fragment()
+    facts = ConfirmedFacts(
+        by_route={
+            ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: (
+                _system_voltage_fact(
+                    fragment, index=0, purpose="any_purpose", measure="phase_to_phase_rms"
+                ),
+                _system_voltage_fact(
+                    fragment,
+                    index=1,
+                    purpose="impulse",
+                    measure="phase_to_artificial_neutral_rms",
+                ),
+            )
+        }
+    )
+
+    with pytest.raises(ClauseStructureError, match="not disjoint"):
+        _project_system_voltage(fragment, facts)
+
+
+def test_a_narrower_statement_on_its_own_dimension_is_not_refused() -> None:
+    """The general statement and the special case differ on the dimension that separates them."""
+
+    fragment = _bullet_fragment()
+    facts = ConfirmedFacts(
+        by_route={
+            ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: (
+                _system_voltage_fact(
+                    fragment,
+                    index=0,
+                    input_topology="direct",
+                    purpose="any_purpose",
+                    measure="phase_to_phase_rms",
+                ),
+                _system_voltage_fact(
+                    fragment,
+                    index=1,
+                    phase_system="any_phase_system",
+                    input_topology="rectified_dc",
+                    purpose="any_purpose",
+                    measure="pre_rectifier_ac_rms",
+                ),
+            )
+        }
+    )
+
+    rule = _project_system_voltage(fragment, facts)
+
+    direct = _lookup(
+        rule,
+        **_system_voltage_inputs(
+            phase_system="three_phase_it", earthing_arrangement="it", input_topology="direct"
+        ),
+    )
+    rectified = _lookup(
+        rule,
+        **_system_voltage_inputs(
+            phase_system="three_phase_it",
+            earthing_arrangement="it",
+            input_topology="rectified_dc",
+        ),
+    )
+    assert direct is not None and rectified is not None
+    assert _value(direct, "system_voltage_measure") == "phase_to_phase_rms"
+    assert _value(rectified, "system_voltage_measure") == "pre_rectifier_ac_rms"
 
 
 # --- Task 6: SPD reduction/monitoring routes and HF attenuation follow reviewed facts ---
@@ -1074,6 +1216,40 @@ def test_one_exemption_statement_covers_every_placement_it_is_stated_for() -> No
         assert _value(row, "monitoring_required") is False
 
 
+def test_an_any_placement_statement_overlapping_a_specific_one_is_refused() -> None:
+    """The other route where an unrestricted dimension can shadow a specific statement.
+
+    Both statements gate on participation, so only placement separates them, and one of them
+    restricts nothing: whichever was authored first would answer for the internal placement and
+    the other's obligation would never be served.
+    """
+
+    fragment = _spd_fragment("monitoring")
+    facts = ConfirmedFacts(
+        by_route={
+            _SPD_MONITORING_ID: (
+                _spd_monitoring_fact(
+                    fragment,
+                    index=0,
+                    device_placement="any_placement",
+                    participates_in_reduction=True,
+                    monitoring_required=False,
+                ),
+                _spd_monitoring_fact(
+                    fragment,
+                    index=1,
+                    device_placement="internal_to_pecs",
+                    participates_in_reduction=True,
+                    monitoring_required=True,
+                ),
+            )
+        }
+    )
+
+    with pytest.raises(ClauseStructureError, match="not disjoint"):
+        _project_spd(fragment, facts)
+
+
 def test_the_external_monitoring_obligation_keeps_its_qualifier() -> None:
     """The source's external-device requirement reaches only a device the manufacturer bundles.
 
@@ -1126,7 +1302,7 @@ def test_two_reduction_statements_stating_the_same_branch_are_refused() -> None:
         }
     )
 
-    with pytest.raises(ClauseStructureError, match="same branch"):
+    with pytest.raises(ClauseStructureError, match="not disjoint"):
         _project_spd(fragment, facts)
 
 
@@ -1363,10 +1539,14 @@ def test_no_supply_recipe_file_declares_a_frequency_threshold() -> None:
 
 def test_the_recipe_declares_and_registers_every_supply_clause() -> None:
     declared = {spec.semantic_id for spec in SUPPLY_CLAUSES}
+    rule_producing = {spec.semantic_id for spec in SUPPLY_CLAUSES if spec.projection_role == "rule"}
     assert declared <= {spec.semantic_id for spec in IEC_RECIPE.clauses}
-    assert declared <= set(IEC_RECIPE.clause_projectors)
+    assert rule_producing <= set(IEC_RECIPE.clause_projectors)
+    # The evidence-only clause contributes reviewed facts and must have no projector at all.
+    assert not (declared - rule_producing) & set(IEC_RECIPE.clause_projectors)
     assert {
         ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,
+        SUPPLY_SYSTEM_VOLTAGE_NON_MAINS,
         ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION,
         ids.SUPPLY_VERIFIED_BARRIER_TRANSFER,
         _SPD_MAINS_ID,
@@ -1375,7 +1555,9 @@ def test_the_recipe_declares_and_registers_every_supply_clause() -> None:
         ids.SUPPLY_HF_TRANSFORMER_ATTENUATION,
     } <= declared
     assert all(spec.output_kind == "decision" for spec in SUPPLY_CLAUSES)
-    assert all(65.0 <= spec.expected_bbox[0] for spec in SUPPLY_CLAUSES)
+    assert all(
+        65.0 <= segment.expected_bbox[0] for spec in SUPPLY_CLAUSES for segment in spec.segments
+    )
 
 
 def test_the_reduction_rule_is_read_from_the_clauses_that_state_it() -> None:
@@ -1389,9 +1571,9 @@ def test_the_reduction_rule_is_read_from_the_clauses_that_state_it() -> None:
     non_mains = by_id[_SPD_NON_MAINS_ID]
     monitoring = by_id[_SPD_MONITORING_ID]
 
-    assert (mains.clause, mains.page_number) == ("4.4.7.2.3", 65)
-    assert (non_mains.clause, non_mains.page_number) == ("4.4.7.2.4", 66)
-    assert (monitoring.clause, monitoring.page_number) == ("4.4.7.2.2", 65)
+    assert (mains.clause, mains.segments[0].page_number) == ("4.4.7.2.3", 65)
+    assert (non_mains.clause, non_mains.segments[0].page_number) == ("4.4.7.2.4", 66)
+    assert (monitoring.clause, monitoring.segments[0].page_number) == ("4.4.7.2.2", 65)
 
 
 def test_no_supply_route_reads_a_clause_that_does_not_state_its_rule() -> None:
@@ -1400,3 +1582,200 @@ def test_no_supply_route_reads_a_clause_that_does_not_state_its_rule() -> None:
     declared = {spec.semantic_id for spec in SUPPLY_CLAUSES}
 
     assert ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS not in declared
+
+
+# --- Task 6B: one rule, two subclauses, one physical clause in several segments ------
+
+
+def test_the_mains_subclause_declares_three_regions_in_reading_order() -> None:
+    """Measured against the licensed document: two pages, three regions, one clause.
+
+    A page-per-segment reading would reach the two statements before the page break and drop
+    the three after the middle region, while looking like a fix.
+    """
+
+    spec = next(
+        item for item in SUPPLY_CLAUSES if item.semantic_id == ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION
+    )
+
+    assert [segment.page_number for segment in spec.segments] == [63, 64, 64]
+    assert [segment.expected_root_kind for segment in spec.segments] == [
+        "bullets",
+        "bullets",
+        "paragraph",
+    ]
+    # Contiguous rather than overlapping on the shared page, so no line of the clause can fall
+    # between two of its own regions unnoticed.
+    assert spec.segments[1].expected_bbox[3] == spec.segments[2].expected_bbox[1]
+
+
+def test_the_non_mains_subclause_is_its_own_fragment_and_this_rules_evidence() -> None:
+    """Two subclauses, one rule: neither one fragment spanning both nor one route per page."""
+
+    by_id = {spec.semantic_id: spec for spec in SUPPLY_CLAUSES}
+    mains = by_id[ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION]
+    evidence = by_id[SUPPLY_SYSTEM_VOLTAGE_NON_MAINS]
+
+    assert mains.evidence_clause_ids == (SUPPLY_SYSTEM_VOLTAGE_NON_MAINS,)
+    assert evidence.projection_role == "evidence"
+    assert evidence.projected_rule_ids == ()
+    assert evidence.clause != mains.clause
+    assert SUPPLY_SYSTEM_VOLTAGE_NON_MAINS not in mains.projected_rule_ids
+
+
+def test_both_evidence_scopes_reach_the_one_projected_rule() -> None:
+    """One rule and one proposal out, whichever subclause a given statement came from."""
+
+    mains_fragment = _bullet_fragment()
+    evidence_fragment = _non_mains_evidence_fragment()
+    facts = ConfirmedFacts(
+        by_route={
+            ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: (
+                _system_voltage_fact(
+                    mains_fragment,
+                    index=0,
+                    supply_kind="mains",
+                    measure="phase_to_artificial_neutral_rms",
+                ),
+            ),
+            SUPPLY_SYSTEM_VOLTAGE_NON_MAINS: (
+                _system_voltage_fact(
+                    evidence_fragment,
+                    index=0,
+                    supply_kind="non_mains",
+                    phase_system="any_phase_system",
+                    earthing="any_earthing",
+                    purpose="any_purpose",
+                    measure="phase_to_phase_rms",
+                ),
+            ),
+        }
+    )
+
+    rules, proposals = project_system_voltage_resolution(
+        mains_fragment,
+        IDENTITY,
+        _StubDraft((mains_fragment, evidence_fragment)),
+        facts,
+    )
+    rule = _decision(rules, ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION)
+
+    assert len([item for item in rules if isinstance(item, DecisionRule)]) == 1
+    assert [proposal.semantic_id for proposal in proposals] == [
+        ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,
+        f"{ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION}.guidance",
+    ]
+    non_mains = _lookup(
+        rule,
+        **_system_voltage_inputs(supply_kind="non_mains", phase_system="single_phase"),
+    )
+    mains = _lookup(
+        rule,
+        **_system_voltage_inputs(
+            supply_kind="mains", phase_system="three_phase_it", earthing_arrangement="it"
+        ),
+    )
+    assert non_mains is not None and mains is not None
+    assert _value(non_mains, "system_voltage_measure") == "phase_to_phase_rms"
+    assert _value(mains, "system_voltage_measure") == "phase_to_artificial_neutral_rms"
+    # Each row cites the node its own statement rests on, so a row read from the sibling
+    # subclause does not name the page the rule's own fragment starts on.
+    assert [row.source.page for row in rule.rows] == [
+        mains_fragment.nodes[0].source.page,
+        evidence_fragment.nodes[0].source.page,
+    ]
+
+
+def test_the_proposal_is_grounded_in_both_fragments() -> None:
+    """Either fragment changing has to make the one rule's one proposal stale."""
+
+    mains_fragment = _bullet_fragment()
+    evidence_fragment = _non_mains_evidence_fragment()
+    facts = _confirmed_system_voltage_facts(
+        measures=("phase_to_phase_rms",), fragment=mains_fragment
+    )
+
+    def _proposal_digest(fragments: tuple[RawClauseFragment, ...]) -> str:
+        _rules, proposals = project_system_voltage_resolution(
+            mains_fragment, IDENTITY, _StubDraft(fragments), facts
+        )
+        return proposals[0].source_artifact_sha256
+
+    corrected_node = evidence_fragment.nodes[0].model_copy(
+        update={"raw_text": "synthetic neutral paragraph node 0 corrected"}
+    )
+    both = _proposal_digest((mains_fragment, evidence_fragment))
+    changed_evidence = _proposal_digest(
+        (mains_fragment, evidence_fragment.model_copy(update={"nodes": (corrected_node,)})),
+    )
+
+    assert both != canonical_model_sha256(mains_fragment)
+    assert both != changed_evidence
+    assert both == aggregate_artifact_sha256(
+        (
+            (mains_fragment.id, canonical_model_sha256(mains_fragment)),
+            (evidence_fragment.id, canonical_model_sha256(evidence_fragment)),
+        )
+    )
+
+
+def test_the_evidence_fragment_must_carry_its_own_reviewed_shape() -> None:
+    """The second fragment is read as evidence, so its shape is checked like the first's."""
+
+    mains_fragment = _bullet_fragment()
+    facts = _confirmed_system_voltage_facts(
+        measures=("phase_to_phase_rms",), fragment=mains_fragment
+    )
+    reflowed = _fragment(SUPPLY_SYSTEM_VOLTAGE_NON_MAINS, kind="bullet", count=2)
+
+    with pytest.raises(ClauseStructureError, match="AMBIGUOUS_CLAUSE_STRUCTURE"):
+        project_system_voltage_resolution(
+            mains_fragment, IDENTITY, _StubDraft((mains_fragment, reflowed)), facts
+        )
+
+
+def test_declaration_order_of_the_two_clause_specs_does_not_decide_the_rule() -> None:
+    """The explicit role is what makes this true, rather than "the first declared spec wins".
+
+    Reversing the two specs must leave the projected rule and its provenance identical: any
+    accidental first-match dependency in resolution or grounding fails here.
+    """
+
+    from insulation_coordination.rules.importer.identify import StandardRecipe
+
+    by_id = {spec.semantic_id: spec for spec in SUPPLY_CLAUSES}
+    mains = by_id[ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION]
+    evidence = by_id[SUPPLY_SYSTEM_VOLTAGE_NON_MAINS]
+    reversed_clauses = (
+        evidence,
+        mains,
+        *(
+            item
+            for item in IEC_RECIPE.clauses
+            if item.semantic_id not in {mains.semantic_id, evidence.semantic_id}
+        ),
+    )
+    # The recipe validator accepts either order, which is itself part of the claim.
+    reordered = StandardRecipe.model_validate(
+        {name: getattr(IEC_RECIPE, name) for name in type(IEC_RECIPE).model_fields}
+        | {"clauses": reversed_clauses}
+    )
+    assert [spec.semantic_id for spec in reordered.clauses][:2] == [
+        evidence.semantic_id,
+        mains.semantic_id,
+    ]
+
+    mains_fragment = _bullet_fragment()
+    evidence_fragment = _non_mains_evidence_fragment()
+    facts = _confirmed_system_voltage_facts(
+        measures=("phase_to_phase_rms",), fragment=mains_fragment
+    )
+    forward, forward_proposals = project_system_voltage_resolution(
+        mains_fragment, IDENTITY, _StubDraft((mains_fragment, evidence_fragment)), facts
+    )
+    backward, backward_proposals = project_system_voltage_resolution(
+        mains_fragment, IDENTITY, _StubDraft((evidence_fragment, mains_fragment)), facts
+    )
+
+    assert forward == backward
+    assert forward_proposals == backward_proposals

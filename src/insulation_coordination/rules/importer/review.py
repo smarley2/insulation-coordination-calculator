@@ -62,7 +62,6 @@ from insulation_coordination.rules.importer.clause_facts import (
     SupplyFact,
     evidence_sha256,
 )
-from insulation_coordination.rules.importer.clauses import RawClauseFragment
 from insulation_coordination.rules.importer.curves import (
     ManualPlotCalibration,
     RawFigure,
@@ -78,6 +77,7 @@ from insulation_coordination.rules.importer.extract import (
     RawGrid,
     RawGridCell,
     SemanticProposal,
+    aggregate_artifact_sha256,
     axis_evidence_sha256,
     axis_positions,
     canonical_model_sha256,
@@ -168,12 +168,11 @@ def proposal_for(draft: ImportedRuleDraft, semantic_id: str) -> SemanticProposal
 def _aggregate_artifact_pairs(pairs: tuple[tuple[str, str], ...]) -> str:
     if not pairs:
         raise ApprovalError("semantic proposal has no current source artifact")
-    ordered = tuple(sorted(pairs))
-    if len({artifact_id for artifact_id, _ in ordered}) != len(ordered):
+    if len({artifact_id for artifact_id, _ in pairs}) != len(pairs):
         raise ApprovalError("semantic proposal has duplicate source artifact IDs")
-    if len(ordered) == 1:
-        return ordered[0][1]
-    return hashlib.sha256(_canonical_json(ordered)).hexdigest()
+    # Through the same function a multi-artifact projection grounds its own proposal with, so
+    # the gate cannot re-derive a different aggregate from the same artifacts.
+    return aggregate_artifact_sha256(pairs)
 
 
 def _review_item_artifact_id(item: ImportReviewItem) -> str:
@@ -213,12 +212,33 @@ def _source_semantic_id(proposal: SemanticProposal) -> str:
     return proposal.semantic_id
 
 
+def _clause_evidence_semantic_ids(source_semantic_id: str) -> frozenset[str]:
+    """The evidence-only clause specs the named clause spec's rule also rests on.
+
+    A rule read from two subclauses is grounded in both, so both fragments' review items gate
+    its proposal and both fragments' hashes enter its source digest. Without this the second
+    fragment would contribute nothing to the proposal's grounding, which is the whole hazard
+    ``projection_role`` exists to avoid.
+    """
+    from insulation_coordination.rules.importer.recipes import RECIPES
+
+    return frozenset(
+        evidence_id
+        for recipe in RECIPES
+        for spec in recipe.clauses
+        if spec.semantic_id == source_semantic_id
+        for evidence_id in spec.evidence_clause_ids
+    )
+
+
 def _required_review_items(
     draft: ImportedRuleDraft,
     proposal: SemanticProposal,
 ) -> tuple[ImportReviewItem, ...]:
     rule = _rule_for(draft, proposal)
-    semantic_ids = {proposal.semantic_id, _source_semantic_id(proposal)}
+    source_semantic_id = _source_semantic_id(proposal)
+    semantic_ids = {proposal.semantic_id, source_semantic_id}
+    semantic_ids.update(_clause_evidence_semantic_ids(source_semantic_id))
     if proposal.rule_kind == "curve":
         assert isinstance(rule, PiecewiseCurveRule)
         semantic_ids.update(variant.id for variant in rule.variants)
@@ -296,16 +316,21 @@ def _current_source_artifact_sha256(
     )
     if grids:
         return _aggregate_artifact_pairs(grids)
+    fragment_ids = {
+        proposal.semantic_id,
+        f"raw-{proposal.semantic_id}",
+        source_semantic_id,
+        f"raw-{source_semantic_id}",
+    }
+    # A rule two subclauses state between them is grounded in both fragments, never in
+    # whichever one the spec lookup above happens to reach first.
+    fragment_ids.update(
+        f"raw-{evidence_id}" for evidence_id in _clause_evidence_semantic_ids(source_semantic_id)
+    )
     fragments = tuple(
         (fragment.id, canonical_model_sha256(fragment))
         for fragment in draft.raw_clause_fragments
-        if fragment.id
-        in {
-            proposal.semantic_id,
-            f"raw-{proposal.semantic_id}",
-            source_semantic_id,
-            f"raw-{source_semantic_id}",
-        }
+        if fragment.id in fragment_ids
     )
     if fragments:
         return _aggregate_artifact_pairs(fragments)
@@ -1225,12 +1250,18 @@ def build_reviewed_draft(
             if mapping is not None:
                 mappings[mapping.id] = mapping
         for clause_spec in recipe.clauses:
+            if clause_spec.projection_role == "evidence":
+                # Its fragment is reviewed evidence for another clause's rule, and it projects
+                # nothing of its own. The recipe refuses to register a projector for it.
+                continue
             fragment = fragments.get(f"raw-{clause_spec.semantic_id}")
-            if fragment is None:
+            required = (clause_spec.semantic_id, *clause_spec.evidence_clause_ids)
+            if any(f"raw-{item}" not in fragments for item in required):
                 # A draft extracted before this clause recipe existed has no
                 # fragment; approval gating reports the missing required content.
                 continue
-            confirmed_facts = resolve_confirmed_clause_facts(clause_spec, fragment, draft)
+            assert fragment is not None
+            confirmed_facts = resolve_confirmed_clause_facts(clause_spec, draft)
             projected, _proposals = recipe.clause_projectors[clause_spec.semantic_id](
                 fragment, identity, draft, confirmed_facts
             )
@@ -1384,7 +1415,7 @@ def required_content_report(draft: ImportedRuleDraft) -> tuple[RequiredContentSt
                     kind="clause",
                     semantic_id=clause_spec.semantic_id,
                     source_table=None,
-                    page_number=clause_spec.page_number,
+                    page_number=clause_spec.segments[0].page_number,
                     clause=clause_spec.clause,
                     present=f"raw-{clause_spec.semantic_id}" in fragment_ids,
                 )
@@ -2240,16 +2271,19 @@ class ClauseFactResolutionError(RulePackageError):
 
 def resolve_confirmed_clause_facts(
     spec: ClauseAuditSpec,
-    fragment: RawClauseFragment,
     draft: ImportedRuleDraft,
 ) -> ConfirmedFacts:
-    """Current reviewed facts for one clause spec's routes, or an exception.
+    """Current reviewed facts for every route one clause spec's rules rest on, or an exception.
 
     Resolution owns every refusal so a projector receives a complete context and never inspects
     review state itself. A route no fact family is declared for resolves to nothing rather than
     refusing -- every clause outside the supply set, and the guidance route a supply clause also
     projects, keeps its authority in its recipe -- the way ``resolve_confirmed_axis_selectors``
     returns an empty result for a spec declaring no axis selectors.
+
+    Each route is resolved against its own fragment rather than against one passed in: a rule two
+    subclauses state between them has one evidence scope per subclause, and each scope's
+    completion binds the fragment of the clause that states it.
     """
 
     from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
@@ -2257,10 +2291,17 @@ def resolve_confirmed_clause_facts(
         SUPPLY_FACT_FAMILY_BY_ROUTE,
     )
 
+    fragments = {item.id: item for item in draft.raw_clause_fragments}
     by_route: dict[str, tuple[SupplyFact, ...]] = {}
-    for route in spec.projected_rule_ids or (spec.semantic_id,):
+    for route in (
+        *(spec.projected_rule_ids or (spec.semantic_id,)),
+        *spec.evidence_clause_ids,
+    ):
         if route not in SUPPLY_FACT_FAMILY_BY_ROUTE or route in LEGACY_BRANCH_AUTHORITY_RULE_IDS:
             continue
+        fragment = fragments.get(f"raw-{route}")
+        if fragment is None:
+            raise ClauseFactResolutionError(f"{route} has no extracted fragment")
         reviews = sorted(
             (item for item in draft.clause_fact_reviews if item.rule_route == route),
             key=lambda item: item.statement_index,

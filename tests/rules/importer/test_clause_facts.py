@@ -47,8 +47,10 @@ def test_each_family_is_its_own_type_under_one_discriminator() -> None:
         statement_index=1,
         node_references=(CitedNode(fragment_id="raw-b", node_order=2, node_sha256="b" * 64),),
         obligation="requirement",
+        supply_kind="mains",
         phase_system="three_phase_it",
         earthing="it",
+        input_topology="any_input_topology",
         purpose="impulse",
         measure="phase_to_artificial_neutral_rms",
     )
