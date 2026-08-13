@@ -69,14 +69,38 @@ class BarrierTransferFact(_Fact):
 
 
 class SpdReductionFact(_Fact):
+    """One reduction statement: which category step this supply kind permits, and its floor.
+
+    Carries no device placement. The source states reduction and monitoring in separate
+    clauses, and a reduction statement refers to the monitoring one rather than restating it --
+    which is what ``monitoring_reference`` names. Placement belongs to
+    ``SpdMonitoringFact``, whose clause is the one that distinguishes it.
+    """
+
     fact_kind: Literal["spd_reduction"] = "spd_reduction"
     supply_kind: Literal["mains", "non_mains"]
     source_ovc: Literal["ovc_i", "ovc_ii", "ovc_iii", "ovc_iv"]
     target_ovc: Literal["ovc_i", "ovc_ii", "ovc_iii", "ovc_iv"]
     insulation_class: Literal["functional", "basic", "supplementary", "double", "reinforced"]
     degradable: bool
-    participates_in_reduction: bool
     monitoring_obligation: Literal["required", "not_required"]
+    #: The route whose statements the monitoring obligation defers to, never restated here.
+    monitoring_reference: Identifier
+
+
+class SpdMonitoringFact(_Fact):
+    """One monitoring statement, whose obligation turns on placement and on participation.
+
+    Its own normative concern, not a dimension of reduction: the source gates monitoring on
+    whether the device is bundled externally or internal to the equipment, and excuses it
+    entirely for a device that takes no part in a category reduction.
+    """
+
+    fact_kind: Literal["spd_monitoring"] = "spd_monitoring"
+    device_placement: Literal["bundled_external", "internal"]
+    participates_in_reduction: bool
+    monitoring_required: bool
+    compliance_evidence: Literal["visual_inspection", "monitoring_test", "not_required"]
 
 
 class HfAttenuationFact(_Fact):
@@ -92,6 +116,7 @@ SupplyFact = Annotated[
     | PropagationStepFact
     | BarrierTransferFact
     | SpdReductionFact
+    | SpdMonitoringFact
     | HfAttenuationFact,
     Field(discriminator="fact_kind"),
 ]
@@ -155,6 +180,7 @@ __all__ = [
     "HfAttenuationFact",
     "Obligation",
     "PropagationStepFact",
+    "SpdMonitoringFact",
     "SpdReductionFact",
     "SupplyFact",
     "SystemVoltageFact",

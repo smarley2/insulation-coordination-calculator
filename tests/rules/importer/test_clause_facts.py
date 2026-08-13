@@ -13,6 +13,7 @@ from insulation_coordination.rules.importer.clause_facts import (
     ClauseFactCompletion,
     ClauseFactReview,
     ConfirmedFacts,
+    SpdMonitoringFact,
     SpdReductionFact,
     SystemVoltageFact,
     evidence_sha256,
@@ -35,8 +36,8 @@ def _spd_fact() -> SpdReductionFact:
         target_ovc="ovc_iii",
         insulation_class="basic",
         degradable=True,
-        participates_in_reduction=True,
         monitoring_obligation="required",
+        monitoring_reference="iec62477_2022.supply.spd_reduction_requirements.monitoring",
     )
 
 
@@ -54,6 +55,33 @@ def test_each_family_is_its_own_type_under_one_discriminator() -> None:
 
     assert fact.fact_kind == "spd_reduction"
     assert system.fact_kind == "system_voltage"
+
+
+def test_monitoring_is_its_own_family_and_reduction_carries_no_placement() -> None:
+    """Placement is monitoring semantics. Reduction refers to monitoring, never restates it.
+
+    The source states reduction and monitoring in separate clauses: reduction defines the
+    permitted category step and its floor, monitoring gates the obligation on whether the
+    device is bundled externally or internal and on whether it takes part in a reduction at
+    all. A single family carrying both would give every reduction statement a placement field
+    its own clause never mentions.
+    """
+
+    monitoring = SpdMonitoringFact(
+        statement_index=0,
+        node_references=(CitedNode(fragment_id="raw-a", node_order=0, node_sha256="a" * 64),),
+        obligation="requirement",
+        device_placement="bundled_external",
+        participates_in_reduction=True,
+        monitoring_required=True,
+        compliance_evidence="visual_inspection",
+    )
+
+    assert monitoring.fact_kind == "spd_monitoring"
+    assert "device_placement" not in SpdReductionFact.model_fields
+    assert "participates_in_reduction" not in SpdReductionFact.model_fields
+    assert "device_placement" in SpdMonitoringFact.model_fields
+    assert _spd_fact().monitoring_reference.endswith(".monitoring")
 
 
 def test_a_fact_must_cite_at_least_one_node() -> None:

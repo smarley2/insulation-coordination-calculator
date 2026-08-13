@@ -112,7 +112,7 @@ Modify:
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `SystemVoltageFact`, `PropagationStepFact`, `BarrierTransferFact`, `SpdReductionFact`, `HfAttenuationFact`, the `SupplyFact` union, `CitedNode`, `evidence_sha256`, `ClauseFactReview`, `ClauseFactCompletion`, `ConfirmedFacts`, and the draft fields `clause_fact_reviews` / `clause_fact_completions`.
+- Produces: `SystemVoltageFact`, `PropagationStepFact`, `BarrierTransferFact`, `SpdReductionFact`, `SpdMonitoringFact`, `HfAttenuationFact`, the `SupplyFact` union, `CitedNode`, `evidence_sha256`, `ClauseFactReview`, `ClauseFactCompletion`, `ConfirmedFacts`, and the draft fields `clause_fact_reviews` / `clause_fact_completions`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -343,8 +343,22 @@ class SpdReductionFact(_Fact):
     target_ovc: Literal["ovc_i", "ovc_ii", "ovc_iii", "ovc_iv"]
     insulation_class: Literal["functional", "basic", "supplementary", "double", "reinforced"]
     degradable: bool
-    participates_in_reduction: bool
     monitoring_obligation: Literal["required", "not_required"]
+    monitoring_reference: Identifier
+
+
+#: Monitoring is its own normative concern, not a dimension of reduction. Verified against the
+#: licensed clauses: the reduction clauses state a permitted category step and its floor and then
+#: refer to the monitoring clause, while the monitoring clause is the one that distinguishes a
+#: bundled external device from an internal one and excuses monitoring for a device taking no part
+#: in a reduction. A placement field on SpdReductionFact would be irrelevant to every statement
+#: its own clause makes.
+class SpdMonitoringFact(_Fact):
+    fact_kind: Literal["spd_monitoring"] = "spd_monitoring"
+    device_placement: Literal["bundled_external", "internal"]
+    participates_in_reduction: bool
+    monitoring_required: bool
+    compliance_evidence: Literal["visual_inspection", "monitoring_test", "not_required"]
 
 
 class HfAttenuationFact(_Fact):
@@ -360,6 +374,7 @@ SupplyFact = Annotated[
     | PropagationStepFact
     | BarrierTransferFact
     | SpdReductionFact
+    | SpdMonitoringFact
     | HfAttenuationFact,
     Field(discriminator="fact_kind"),
 ]
@@ -993,14 +1008,23 @@ def test_a_changed_cited_node_refuses(completed_draft, hf_spec, hf_fragment) -> 
         resolve_confirmed_clause_facts(hf_spec, hf_fragment, draft)
 
 
-def test_an_uncited_sibling_node_changing_resolves_unaffected(
-    completed_draft, hf_spec, hf_fragment_with_extra_node
+def test_an_uncited_sibling_node_changing_keeps_its_siblings_reviews_current(
+    completed_system_voltage_draft, system_voltage_fragment_with_changed_third_node
 ) -> None:
-    """Only the facts that cited the changed node go stale, never the rest of the route."""
+    """Selective invalidation, on a route whose fragment really has several nodes.
 
-    facts = resolve_confirmed_clause_facts(hf_spec, hf_fragment_with_extra_node, completed_draft)
+    System voltage extracts as three bullet nodes, so a fact citing the first can be shown to
+    survive a change to the third. Propagation is the only other multi-node route and the
+    resolver skips it as the legacy exception, so this is the one route that can carry this.
+    """
 
-    assert facts.for_route("iec62477_2022.supply.hf_transformer_attenuation")
+    current = [
+        review
+        for review in completed_system_voltage_draft.clause_fact_reviews
+        if review.evidence_sha256 == evidence_sha256(review.fact.node_references)
+    ]
+
+    assert current, "a fact citing an unchanged node keeps its own review current"
 
 
 def test_facts_come_back_ordered_by_statement_index(completed_draft, hf_spec, hf_fragment) -> None:
@@ -1013,9 +1037,27 @@ def test_facts_come_back_ordered_by_statement_index(completed_draft, hf_spec, hf
     assert indexes == sorted(indexes)
 ```
 
-`hf_fragment_with_extra_node` is the same fragment with one **uncited** node appended, so the
-fragment's own `raw_sha256` changes while every cited node's identity and content stay the same.
-That test is the whole point of node-level binding: it must pass, not raise.
+**Correction to this plan's earlier shape, made before implementation.** The original test here
+resolved a fragment with one **uncited** node appended and asserted the route still resolves. That
+cannot pass, and not because node-level binding fails: appending a node changes the fragment's own
+`raw_sha256`, and the completion record binds exactly that hash, so the resolver refuses at the
+completion check before any fact's evidence is consulted. That refusal is correct — a fragment that
+gained a node may have gained a normative statement, so "this fact set is complete" has to be
+re-asserted — but it means route-level resolution is fragment-granular by design even though
+review invalidation is node-granular.
+
+So the two properties are asserted at the levels where they actually hold:
+
+- **Node granularity, at the review level.** A fact citing an unchanged node keeps its own review
+  current when a sibling node changes. Assert it by recomputing `evidence_sha256` over the stored
+  citations, not by resolving the route.
+- **Fragment granularity, at the route level.** Add a test that a fragment which gained a node
+  makes the route's completion stale and the resolver refuse, naming re-assertion of completeness
+  as the reason.
+
+Single-node routes (`hf_transformer_attenuation`, `verified_barrier_transfer`, all three SPD
+routes) cannot distinguish the two levels at all, so they assert the simpler property: changing
+their one cited node makes both the fact review and the route completion stale.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -1103,8 +1145,10 @@ feat(rules): resolve reviewed clause facts before projecting (#53)
 
 Resolution turns current reviews into ConfirmedFacts and owns every refusal: no
 facts, no completion, a completion bound to an older fragment or an older fact
-set, or a fact whose cited evidence has moved. Node-level binding means a change
-to an uncited sibling node re-opens nothing.
+set, or a fact whose cited evidence has moved. Review invalidation is node-level,
+so a fact citing an unchanged node keeps its review when a sibling changes; route
+completion stays fragment-level, because a fragment that gained a node may have
+gained a statement and completeness has to be re-asserted.
 
 ClauseProjector takes ConfirmedFacts as a fourth parameter, uniformly.
 

@@ -102,9 +102,20 @@ statements rest on their own clause, and the monitoring-obligation statement add
 the monitoring clause.
 
 The granularity is deliberate. If the monitoring clause changes while the reduction clause does
-not, exactly the facts citing the monitoring clause go stale. A change to an uncited sibling node
-in the same fragment re-opens nothing, because no fact ever rested on it. Reordering nodes does
-invalidate, because a node's order is part of the identity a fact cited.
+not, exactly the facts citing the monitoring clause go stale. Reordering nodes does invalidate,
+because a node's order is part of the identity a fact cited.
+
+How much that granularity buys depends on the route, and the claim is narrower than it first
+looks: node-level evidence permits **selective** invalidation only where a route's fragment
+carries several independently citable nodes. Measured against the licensed document, only
+`supply.system_voltage_resolution` (three bullet nodes) and `supply.multiple_source_propagation`
+(four) do — and propagation is the legacy route resolution skips. Every other supply route
+extracts as a single paragraph node, so for those routes node-level and fragment-level
+invalidation are the same thing. Nothing is lost by that; the mechanism is simply not doing extra
+work where a clause has one node. It does mean a regression test for selective invalidation
+belongs on a genuinely multi-node route, and that a single-node route should instead prove the
+property it actually has: changing its one cited node makes both the fact review and the route's
+completion stale.
 
 ### Completeness: a reviewed assertion, not a published number
 
@@ -183,9 +194,12 @@ belongs to #53C. It therefore keeps legacy branch authority in #53B, recorded in
 3. **Completion gating**, one case each: facts authored with no completion record; completion bound
    to a stale fragment hash; completion bound to a stale fact-set digest; no facts at all. All
    block approval.
-4. **Evidence granularity.** Changing a cited node re-opens exactly the facts citing it; changing
-   an uncited node in the same fragment re-opens nothing; reordering nodes re-opens the facts that
-   cited the moved nodes.
+4. **Evidence granularity.** Changing a cited node re-opens exactly the facts citing it, and
+   reordering nodes re-opens the facts that cited the moved nodes. Selective invalidation — an
+   uncited node changing in the same fragment re-opening nothing — is asserted on a route whose
+   fragment really has several nodes, which means `supply.system_voltage_resolution`, since
+   propagation is the legacy route resolution skips. Single-node routes assert instead that
+   changing their one cited node makes both the fact review and the route completion stale.
 5. **The provenance correction.** The SPD identifier's two routes read the mains and non-mains
    fragments; the monitoring clause remains extracted and is cited by the monitoring-obligation
    fact rather than being the reduction's source.
