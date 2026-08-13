@@ -30,6 +30,12 @@ class CitedNode(FrozenModel):
 class _Fact(FrozenModel):
     statement_index: int = Field(ge=0)
     node_references: tuple[CitedNode, ...] = Field(min_length=1)
+    #: Known gap, disclosed rather than dropped: no projector reads this yet. A statement's
+    #: obligation is part of what the maintainer read -- a permission and a requirement are not
+    #: interchangeable, and one clause states both -- but nothing in the projected rules
+    #: distinguishes them today. #53C item 4 is the first slice that acts on the distinction, when
+    #: the attenuation requirement becomes an executable verification result rather than sharing
+    #: one row with the permission it accompanies.
     obligation: Obligation
 
 
@@ -98,6 +104,12 @@ class SpdReductionFact(_Fact):
     degradable: bool
     monitoring_obligation: Literal["required", "not_required"]
     #: The route whose statements the monitoring obligation defers to, never restated here.
+    #:
+    #: Known gap, disclosed rather than dropped: no projector reads this yet. Following the
+    #: reference is what would let a consumer resolve the deferred obligation instead of reading
+    #: the flattened ``monitoring_required`` this route emits, and that is part of the full
+    #: reduction context #53C item 5 builds -- the same slice that right-sizes these three routes'
+    #: shared output tuple.
     monitoring_reference: Identifier
 
 
@@ -139,7 +151,16 @@ class HfAttenuationFact(_Fact):
     #: one statement has to pick a single route, and the other routes the source permits then
     #: reach no row at all.
     evidence_kind: Literal["test", "simulation", "calculation", "any_evidence"]
+    #: Known gap, disclosed rather than dropped: neither field is read by any projector yet. What
+    #: the source requires to be shown is a comparison against the impulse withstand the referenced
+    #: route resolves, so the executable contract is a verification *result*, not the evidence kind
+    #: this rule can express today. #53C item 4 turns both into it; until then the fact carries a
+    #: reading the rule cannot yet consume, the way ``SpdMonitoringFact.compliance_evidence`` does.
     threshold_reference: Identifier
+    #: Carried rather than dropped even though this clause states its comparison unconditionally,
+    #: so every statement of it authors the same value: it is the statement's own content, and a
+    #: field is not redundant for being constant across one clause's statements. #53C item 4 is
+    #: where a permission stated without a comparison would give it its second value.
     comparison_required: bool
 
 
