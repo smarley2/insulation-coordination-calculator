@@ -15,6 +15,8 @@ from insulation_coordination.domain.rules import (
     SourceReference,
 )
 from insulation_coordination.rules.evaluator import evaluate_decision
+from insulation_coordination.rules.importer import recipes as recipe_registry
+from insulation_coordination.rules.importer import review
 from insulation_coordination.rules.importer.clause_facts import (
     BarrierTransferFact,
     CitedNode,
@@ -30,10 +32,12 @@ from insulation_coordination.rules.importer.clauses import (
     RawClauseFragment,
 )
 from insulation_coordination.rules.importer.extract import (
+    ImportedRuleDraft,
+    ImportReviewItem,
     aggregate_artifact_sha256,
     canonical_model_sha256,
 )
-from insulation_coordination.rules.importer.identify import StandardIdentity
+from insulation_coordination.rules.importer.identify import StandardIdentity, StandardRecipe
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
     RECIPE as IEC_RECIPE,
@@ -50,6 +54,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply impor
     project_system_voltage_resolution,
     project_verified_barrier_transfer,
 )
+from tests.rules.importer.iec62477_2022.test_procedure_recipes import _draft as _empty_draft
 
 SOURCE = SourceReference(
     document_id="synthetic-supply",
@@ -137,6 +142,44 @@ class _StubDraft(NamedTuple):
     """
 
     raw_clause_fragments: tuple[RawClauseFragment, ...]
+
+
+def _clause_review_item(semantic_id: str) -> ImportReviewItem:
+    """A synthetic ``MANUAL_CLAUSE_DEFINITION_REQUIRED`` item for one clause spec.
+
+    The real importer emits exactly one of these per declared clause spec, rule-producing or
+    evidence-only alike (``extract.py``'s ``clause_items``); this stands in for that without
+    building a full extraction.
+    """
+
+    return ImportReviewItem(
+        code="MANUAL_CLAUSE_DEFINITION_REQUIRED",
+        semantic_id=semantic_id,
+        kind="clause",
+        source=SOURCE,
+        expected_contract=f"clause:{semantic_id}:test",
+    )
+
+
+def _grounded_draft(
+    rule: DecisionRule, fragments: tuple[RawClauseFragment, ...]
+) -> ImportedRuleDraft:
+    """A real ``ImportedRuleDraft`` carrying one projected rule and its fragments' review items.
+
+    Unlike ``_StubDraft``, this is enough for the approval gate's own lookups
+    (``review._required_review_items``, ``review._current_source_artifact_sha256``) to run: they
+    read ``draft.decisions`` and ``draft.review_items``, neither of which the projector itself
+    needs.
+    """
+
+    return _empty_draft(fragments=fragments).model_copy(
+        update={
+            "decisions": (rule,),
+            "review_items": tuple(
+                _clause_review_item(fragment.id.removeprefix("raw-")) for fragment in fragments
+            ),
+        }
+    )
 
 
 def _lettered_fragment(*, count: int = 4) -> RawClauseFragment:
@@ -1790,6 +1833,40 @@ def test_the_proposal_is_grounded_in_both_fragments() -> None:
     )
 
 
+def test_the_gate_grounds_a_two_scope_rule_in_both_the_digest_and_the_review_item() -> None:
+    """The approval gate's own lookups, not just the projector's output.
+
+    Deleting either the digest aggregation (``_current_source_artifact_sha256``) or the
+    evidence review-item gating (``_required_review_items``) leaves the projector's own tests
+    green: they only inspect what the projector returns, never what the gate recomputes from a
+    draft. This calls the gate's private lookups directly.
+    """
+
+    mains_fragment = _bullet_fragment()
+    evidence_fragment = _non_mains_evidence_fragment()
+    facts = _confirmed_system_voltage_facts(
+        measures=("phase_to_phase_rms",), fragment=mains_fragment
+    )
+    rules, proposals = project_system_voltage_resolution(
+        mains_fragment,
+        IDENTITY,
+        _StubDraft((mains_fragment, evidence_fragment)),
+        facts,
+    )
+    rule = _decision(rules, ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION)
+    proposal = next(
+        item for item in proposals if item.semantic_id == ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION
+    )
+    draft = _grounded_draft(rule, (mains_fragment, evidence_fragment))
+
+    required = review._required_review_items(draft, proposal)
+    assert any(item.semantic_id == SUPPLY_SYSTEM_VOLTAGE_NON_MAINS for item in required)
+
+    assert proposal.source_artifact_sha256 == review._current_source_artifact_sha256(
+        draft, proposal
+    )
+
+
 def test_the_evidence_fragment_must_carry_its_own_reviewed_shape() -> None:
     """The second fragment is read as evidence, so its shape is checked like the first's."""
 
@@ -1805,14 +1882,18 @@ def test_the_evidence_fragment_must_carry_its_own_reviewed_shape() -> None:
         )
 
 
-def test_declaration_order_of_the_two_clause_specs_does_not_decide_the_rule() -> None:
+def test_declaration_order_of_the_two_clause_specs_does_not_decide_the_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The explicit role is what makes this true, rather than "the first declared spec wins".
 
     Reversing the two specs must leave the projected rule and its provenance identical: any
-    accidental first-match dependency in resolution or grounding fails here.
+    accidental first-match dependency in resolution or grounding fails here. Varying only the
+    fragment order in a stub draft (below) cannot exercise that claim: the gate's own lookups
+    (``_source_semantic_id``, ``_current_source_artifact_sha256``, ``_required_review_items``)
+    walk ``recipes.RECIPES``, not a draft's fragment order, so they only run under the reversed
+    recipe when ``RECIPES`` itself is swapped.
     """
-
-    from insulation_coordination.rules.importer.identify import StandardRecipe
 
     by_id = {spec.semantic_id: spec for spec in SUPPLY_CLAUSES}
     mains = by_id[ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION]
@@ -1850,3 +1931,27 @@ def test_declaration_order_of_the_two_clause_specs_does_not_decide_the_rule() ->
 
     assert forward == backward
     assert forward_proposals == backward_proposals
+
+    rule = _decision(forward, ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION)
+    proposal = next(
+        item
+        for item in forward_proposals
+        if item.semantic_id == ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION
+    )
+    draft = _grounded_draft(rule, (mains_fragment, evidence_fragment))
+
+    def _gate_readings() -> tuple[str, str, tuple[str, ...]]:
+        return (
+            review._source_semantic_id(proposal),
+            review._current_source_artifact_sha256(draft, proposal),
+            tuple(item.semantic_id for item in review._required_review_items(draft, proposal)),
+        )
+
+    unreversed_readings = _gate_readings()
+    reversed_recipes = tuple(
+        reordered if item.id == IEC_RECIPE.id else item for item in recipe_registry.RECIPES
+    )
+    monkeypatch.setattr(recipe_registry, "RECIPES", reversed_recipes)
+    reversed_readings = _gate_readings()
+
+    assert unreversed_readings == reversed_readings
