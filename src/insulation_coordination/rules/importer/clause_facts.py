@@ -50,20 +50,18 @@ class SystemVoltageFact(_Fact):
     that accepted anything. A statement's dimensions are separate readings and need separate
     fields.
 
-    ``any_*`` on a dimension names a statement its source leaves unrestricted -- one normative
-    statement covering every value, not one statement per value, the same reading ``any_purpose``
-    records for the calculation purpose. Where the source states a general rule and a narrower
-    one over the same values, the narrower statement's own dimension is what separates them, and
-    the projector refuses a pair that overlaps rather than serving whichever row comes first.
+    ``any_*`` on a dimension records a reading that dimension does not restrict -- authored once
+    rather than once per value, the same shape ``any_purpose`` carries for the calculation purpose.
+    Where a general reading and a narrower one cover the same values, the narrower one's own
+    dimension is what separates them, and the projector refuses an overlapping pair rather than
+    serving whichever row comes first.
 
-    Known gap, disclosed rather than dropped: this family states which measure applies, and one
-    statement of the mains subclause instead states that a class of internally generated voltage
-    counts as a system voltage at all, for one determination only. That is applicability, not a
-    measure, and the projected rule declares no applicability output to carry it -- forcing it
-    into ``measure`` would answer a question about which measure applies with a statement that
-    names none. It belongs with the other contract changes in #53C; completion is asserted per
-    (clause, rule route), so a statement belonging to a rule outside this route does not make
-    this route's fact set incomplete.
+    Known gap, disclosed rather than dropped: this family answers which measure applies, and the
+    reviewed reading of one region is an applicability statement rather than a measure one. The
+    projected rule declares no applicability output to carry it, and forcing it into ``measure``
+    would answer "which measure" with a reading that names none. The contract change belongs to
+    #53C; completion is asserted per (clause, rule route), so a reading belonging to a rule
+    outside this route does not make this route's fact set incomplete.
     """
 
     fact_kind: Literal["system_voltage"] = "system_voltage"
@@ -108,9 +106,8 @@ class PropagationStepFact(_Fact):
 class BarrierTransferFact(_Fact):
     """One transfer statement, scoped to the barrier it is about and the connection downstream.
 
-    The source scopes its propagation statement to circuits connected to the combined circuit
-    *without* galvanic isolation, so a statement carrying no connection kind answers for a
-    connection its own clause excludes.
+    ``downstream_connection_kind`` is a dimension the reviewed reading scopes, so a statement
+    carrying none would answer for a connection outside its own scope.
     """
 
     fact_kind: Literal["barrier_transfer"] = "barrier_transfer"
@@ -124,10 +121,10 @@ class BarrierTransferFact(_Fact):
 class SpdReductionFact(_Fact):
     """One reduction statement: which category step this supply kind permits, and its floor.
 
-    Carries no device placement. The source states reduction and monitoring in separate
-    clauses, and a reduction statement refers to the monitoring one rather than restating it --
-    which is what ``monitoring_reference`` names. Placement belongs to
-    ``SpdMonitoringFact``, whose clause is the one that distinguishes it.
+    Carries no device placement. Reduction and monitoring are reviewed from separate clauses, and
+    a reduction statement refers to the monitoring route rather than restating it -- which is what
+    ``monitoring_reference`` names. Placement belongs to ``SpdMonitoringFact``, whose own clause
+    is where that dimension is read.
     """
 
     fact_kind: Literal["spd_reduction"] = "spd_reduction"
@@ -150,9 +147,8 @@ class SpdReductionFact(_Fact):
 class SpdMonitoringFact(_Fact):
     """One monitoring statement, whose obligation turns on placement and on participation.
 
-    Its own normative concern, not a dimension of reduction: the source gates monitoring on
-    whether the device is bundled externally or internal to the equipment, and excuses it
-    entirely for a device that takes no part in a category reduction.
+    Its own normative concern rather than a dimension of reduction: both dimensions are read from
+    the monitoring clause, and neither appears in the reduction clauses at all.
     """
 
     fact_kind: Literal["spd_monitoring"] = "spd_monitoring"
@@ -162,14 +158,14 @@ class SpdMonitoringFact(_Fact):
     #: with an explicit mapping. Two spellings of one concept and no mapping is just a field
     #: nothing can consume.
     #:
-    #: ``bundled_external_to_pecs`` rather than a bare external placement: the source's
-    #: requirement for an external device reaches only one the manufacturer bundles with their
-    #: product, so a statement claiming every external device would be wider than its clause. The
-    #: rule declares both tokens, and an external device nothing bundled reaches no row at all.
+    #: ``bundled_external_to_pecs`` rather than a bare external placement, because the reviewed
+    #: scope is narrower than every external device: a token claiming all of them would be wider
+    #: than the reading it records. The rule declares both tokens, so a placement outside the
+    #: reviewed scope reaches no row at all.
     #:
-    #: ``any_placement`` names a statement that states its obligation for every placement its
-    #: clause distinguishes -- the exemption is stated once, for the external-device monitoring
-    #: and the internal monitoring test together, so it is one statement rather than two.
+    #: ``any_placement`` records a reading whose obligation is not restricted by placement, so it
+    #: is authored once rather than once per placement -- the same shape ``any_purpose`` and
+    #: ``any_evidence`` carry for their own dimensions.
     device_placement: Literal["internal_to_pecs", "bundled_external_to_pecs", "any_placement"]
     participates_in_reduction: bool
     monitoring_required: bool
@@ -179,22 +175,20 @@ class SpdMonitoringFact(_Fact):
 class HfAttenuationFact(_Fact):
     fact_kind: Literal["hf_attenuation"] = "hf_attenuation"
     dvc_gate: Literal["dvc_as", "dvc_b"]
-    #: ``any_evidence`` names a statement that accepts every evidence route its source names,
-    #: stated as one disjunction rather than one statement per route -- the same situation
-    #: ``any_purpose`` covers for a calculation purpose. Without it a maintainer authoring that
-    #: one statement has to pick a single route, and the other routes the source permits then
-    #: reach no row at all.
+    #: ``any_evidence`` records a reading not restricted to one evidence route, authored once
+    #: rather than once per route -- the same shape ``any_purpose`` carries for a calculation
+    #: purpose. Without it, authoring such a reading forces a single route and the others reach
+    #: no row at all.
     evidence_kind: Literal["test", "simulation", "calculation", "any_evidence"]
-    #: Known gap, disclosed rather than dropped: neither field is read by any projector yet. What
-    #: the source requires to be shown is a comparison against the impulse withstand the referenced
-    #: route resolves, so the executable contract is a verification *result*, not the evidence kind
-    #: this rule can express today. #53C item 4 turns both into it; until then the fact carries a
-    #: reading the rule cannot yet consume, the way ``SpdMonitoringFact.compliance_evidence`` does.
+    #: Known gap, disclosed rather than dropped: neither field is read by any projector yet. The
+    #: executable contract this route needs is a verification *result* -- a comparison against the
+    #: requirement the referenced route resolves -- rather than the evidence kind the rule can
+    #: express today. #53C item 4 turns both into it; until then the fact carries a reading the
+    #: rule cannot yet consume, the way ``SpdMonitoringFact.compliance_evidence`` does.
     threshold_reference: Identifier
-    #: Carried rather than dropped even though this clause states its comparison unconditionally,
-    #: so every statement of it authors the same value: it is the statement's own content, and a
-    #: field is not redundant for being constant across one clause's statements. #53C item 4 is
-    #: where a permission stated without a comparison would give it its second value.
+    #: Carried rather than dropped even where every authored reading gives it the same value: it is
+    #: part of the reading, and a field is not redundant for being constant across a fact set.
+    #: #53C item 4 is where its second value becomes reachable.
     comparison_required: bool
 
 

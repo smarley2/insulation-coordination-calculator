@@ -753,9 +753,8 @@ def project_verified_barrier_transfer(
     """Project the isolation and no-isolation paths into a decision.
 
     Every row comes from one reviewed ``BarrierTransferFact``, and matches on both dimensions the
-    statement is scoped to: the barrier and the kind of connection downstream of it. A row that
-    matched every connection kind would answer for one the clause excludes -- the source scopes
-    its propagation statement to circuits connected without galvanic isolation.
+    reading is scoped to: the barrier and the kind of connection downstream of it. A row that
+    matched every connection kind would answer outside the scope its own fact records.
 
     ``transfer_permitted`` and ``propagates_to_connected_circuits`` are not independently authored
     content: a verified barrier is what makes the transfer permitted and what stops it propagating
@@ -898,12 +897,11 @@ def _spd_reduction_row(fact: SpdReductionFact, fragment: RawClauseFragment) -> D
 
 
 def _placement_matcher(placement: str) -> Matcher:
-    """Match one authored placement, or every placement the monitoring clause distinguishes.
+    """Match one authored placement, or every placement this rule declares.
 
-    ``any_placement`` names a statement the source makes once for the external-device monitoring
-    and the internal monitoring test together -- one statement, not two, the way ``any_purpose``
-    names one system voltage statement. Without it that statement cannot be authored at all: a
-    single required placement leaves whichever one the maintainer did not pick reaching no row.
+    ``any_placement`` records a reading placement does not restrict, the way ``any_purpose`` does
+    for a calculation purpose. Without it such a reading cannot be authored at all: a single
+    required placement leaves whichever one the maintainer did not pick reaching no row.
     """
 
     if placement == "any_placement":
@@ -914,15 +912,13 @@ def _placement_matcher(placement: str) -> Matcher:
 def _spd_monitoring_row(fact: SpdMonitoringFact, fragment: RawClauseFragment) -> DecisionRow:
     """One row for one reviewed monitoring statement.
 
-    ``device_placement`` and ``participates_in_reduction`` are both read as branch values: the
-    source gates the monitoring obligation on each of them, and the fact's placement vocabulary
-    is this rule's own.
+    ``device_placement`` and ``participates_in_reduction`` are both read as branch values: each is
+    a dimension the reviewed reading scopes, and the fact's placement vocabulary is this rule's own.
 
-    ``compliance_evidence`` is not, and that one is a real gap rather than an oversight. The
-    source names compliance routes for monitoring, while this rule's declared
-    ``verification_reference`` output carries none of them -- it has the mains/non-mains
-    routes' tokens. Widening that output is a contract change, so it is #53C item 5, and until
-    then the fact carries a reading the rule cannot yet express.
+    ``compliance_evidence`` is not, and that one is a real gap rather than an oversight. This rule's
+    declared ``verification_reference`` output carries none of that field's tokens -- it has the
+    mains/non-mains routes'. Widening the output is a contract change, so it is #53C item 5, and
+    until then the fact carries a reading the rule cannot yet express.
 
     The three reduction outputs below are the mains and non-mains routes' concern; this route
     fills them with a fixed, uninformative value only because all three routes still share one

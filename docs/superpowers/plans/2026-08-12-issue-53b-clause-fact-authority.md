@@ -348,11 +348,9 @@ class SpdReductionFact(_Fact):
 
 
 #: Monitoring is its own normative concern, not a dimension of reduction. Verified against the
-#: licensed clauses: the reduction clauses state a permitted category step and its floor and then
-#: refer to the monitoring clause, while the monitoring clause is the one that distinguishes a
-#: bundled external device from an internal one and excuses monitoring for a device taking no part
-#: in a reduction. A placement field on SpdReductionFact would be irrelevant to every statement
-#: its own clause makes.
+#: licensed clauses: placement and participation are dimensions only the monitoring clause's
+#: readings carry, while a reduction reading refers to the monitoring route rather than restating
+#: it. A placement field on SpdReductionFact would be a dimension its own clause never scopes.
 class SpdMonitoringFact(_Fact):
     fact_kind: Literal["spd_monitoring"] = "spd_monitoring"
     device_placement: Literal["internal_to_pecs", "external_to_pecs"]
@@ -652,7 +650,7 @@ def test_a_route_without_facts_blocks_approval(draft_with_supply_fragments) -> N
 def test_facts_without_a_completion_record_still_block(
     draft_with_supply_fragments, hf_fact
 ) -> None:
-    """Authoring three statements where the source states four would silently narrow the rule."""
+    """Authoring fewer statements than the clause carries would silently narrow the rule."""
 
     draft = author_clause_fact(
         draft_with_supply_fragments,

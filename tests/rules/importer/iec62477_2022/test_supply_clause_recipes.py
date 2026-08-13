@@ -632,10 +632,9 @@ def test_impulse_and_temporary_overvoltage_branches_stay_separate() -> None:
 def test_a_fact_stated_without_a_purpose_covers_both_purposes() -> None:
     """One reviewed statement that fixes its measure without restricting the purpose.
 
-    The coordinator's clarification for #53B Task 5: the source states this branch as one
-    bullet, not two, so authoring it as two facts differing only in purpose would record two
-    statements where the source makes one. The two purpose-specific facts still yield their
-    own, separate rows alongside it.
+    Authoring it as two facts differing only in purpose would record two readings where the
+    reviewer recorded one. The two purpose-specific facts still yield their own, separate rows
+    alongside it.
     """
 
     fragment = _bullet_fragment()
@@ -1210,7 +1209,7 @@ def test_a_device_outside_a_category_reduction_is_not_covered() -> None:
 
 
 def test_each_supply_kind_route_projects_its_own_rule() -> None:
-    """The source states the reduction twice, so one route cannot answer for both."""
+    """Each supply kind is reviewed from its own clause, so one route cannot answer for both."""
 
     mains_fragment = _spd_fragment("mains")
     mains, _ = project_spd_reduction_requirements(
@@ -1270,10 +1269,10 @@ def test_the_monitoring_route_follows_its_own_reviewed_facts() -> None:
 
 
 def test_one_exemption_statement_covers_every_placement_it_is_stated_for() -> None:
-    """The source states the exemption once, for both monitoring obligations together.
+    """A reading placement does not restrict is authored once, not once per placement.
 
-    A required single placement matched with ``equals`` could not express that: authoring the one
-    statement left whichever placement the maintainer did not pick reaching no row, so the same
+    A required single placement matched with ``equals`` could not express that: authoring such a
+    reading left whichever placement the maintainer did not pick reaching no row, so the same
     query answered for one placement and fell through for the other.
     """
 
@@ -1499,10 +1498,10 @@ def test_no_evidence_yet_is_answered_rather_than_refused() -> None:
 
 
 def test_one_statement_may_accept_every_evidence_route_it_names() -> None:
-    """The source states its evidence routes as one disjunction inside one statement.
+    """A reading not restricted to one evidence route is authored once, not once per route.
 
-    Authoring it as one fact per route would record several statements where the source makes
-    one, and picking a single route would leave the others reaching no row at all.
+    Authoring it per route would record several readings where the reviewer recorded one, and
+    picking a single route would leave the others reaching no row at all.
     """
 
     fragment = _hf_fragment(("42", "kHz"))
@@ -1658,8 +1657,8 @@ def test_the_recipe_declares_and_registers_every_supply_clause() -> None:
 def test_the_reduction_rule_is_read_from_the_clauses_that_state_it() -> None:
     """The identifier previously pointed at the monitoring clause, which does not state the rule.
 
-    The reduction is stated once for mains supply and once for non-mains supply, with different
-    permitted category steps, so it is two routes of one family rather than one rule.
+    Each supply kind is reviewed from its own clause, so the identifier carries a route per
+    supply kind rather than one rule answering for both.
     """
     by_id = {spec.semantic_id: spec for spec in SUPPLY_CLAUSES}
     mains = by_id[_SPD_MAINS_ID]
@@ -1685,8 +1684,8 @@ def test_no_supply_route_reads_a_clause_that_does_not_state_its_rule() -> None:
 def test_the_mains_subclause_declares_three_regions_in_reading_order() -> None:
     """Measured against the licensed document: two pages, three regions, one clause.
 
-    A page-per-segment reading would reach the two statements before the page break and drop
-    the three after the middle region, while looking like a fix.
+    A page-per-segment reading would reach only the middle region and drop the rest, while
+    looking like a fix.
     """
 
     spec = next(

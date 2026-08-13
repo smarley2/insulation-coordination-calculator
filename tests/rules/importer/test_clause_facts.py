@@ -62,11 +62,9 @@ def test_each_family_is_its_own_type_under_one_discriminator() -> None:
 def test_monitoring_is_its_own_family_and_reduction_carries_no_placement() -> None:
     """Placement is monitoring semantics. Reduction refers to monitoring, never restates it.
 
-    The source states reduction and monitoring in separate clauses: reduction defines the
-    permitted category step and its floor, monitoring gates the obligation on whether the
-    device is bundled externally or internal and on whether it takes part in a reduction at
-    all. A single family carrying both would give every reduction statement a placement field
-    its own clause never mentions.
+    Reduction and monitoring are reviewed from separate clauses, and placement is a dimension
+    only the monitoring clause's readings carry. A single family holding both would give every
+    reduction statement a field its own clause never scopes.
     """
 
     monitoring = SpdMonitoringFact(

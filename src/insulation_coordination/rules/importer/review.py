@@ -2175,6 +2175,57 @@ def clause_fact_defect(rule_route: str, fact: SupplyFact) -> str | None:
     return None
 
 
+def clause_fact_route_defect(draft: ImportedRuleDraft, route: str) -> str | None:
+    """Why one route's authored clause facts are not currently complete, or ``None`` if they are.
+
+    The approval gate and the clause fact review dialog must agree exactly on what blocks a
+    route, so both call this instead of each re-deriving the comparison -- the way
+    ``axis_review_is_current`` keeps the gate and the axis review dialog aligned on one axis
+    position. Every check reads the draft's own live state; no caller can supply a stored digest
+    in its place.
+
+    Identity before evidence, the order ``clause_fact_defect`` keeps for one fact: a fact of the
+    wrong family, or one resting entirely on another clause, has perfectly current digests. A
+    route this draft never extracted returns ``None`` here, the same as a route with nothing
+    wrong -- callers scope to fragments the draft actually carries, the way
+    ``missing_required_content`` finds the missing fragment.
+    """
+
+    fragment = next(
+        (item for item in draft.raw_clause_fragments if item.id == f"raw-{route}"), None
+    )
+    if fragment is None:
+        return None
+    reviews = tuple(item for item in draft.clause_fact_reviews if item.rule_route == route)
+    completions = tuple(item for item in draft.clause_fact_completions if item.rule_route == route)
+    defects = tuple(
+        defect for item in reviews if (defect := clause_fact_defect(route, item.fact)) is not None
+    )
+    if not reviews:
+        return "carries no authored clause fact"
+    if defects:
+        return f"has a fact that {defects[0]}"
+    # As ``axis_review_is_current`` verifies a review's ``proposal_sha256``: a written digest
+    # nothing reads is a digest a second writer can get wrong unnoticed.
+    if any(item.fact_sha256 != canonical_model_sha256(item.fact) for item in reviews):
+        return "has a review whose fact hash is not its fact's"
+    if len(completions) != 1:
+        return "lacks one exact fact-set completion record"
+    if (
+        completions[0].fragment_id != fragment.id
+        or completions[0].fragment_sha256 != fragment.raw_sha256
+    ):
+        return "was completed against a superseded or foreign fragment"
+    if completions[0].fact_set_sha256 != fact_set_sha256(tuple(item.fact for item in reviews)):
+        return "was completed against a different fact set"
+    if any(
+        item.evidence_sha256 != live_evidence_sha256(draft, item.fact.node_references)
+        for item in reviews
+    ):
+        return "has a fact whose cited evidence has moved"
+    return None
+
+
 def author_clause_fact(
     draft: ImportedRuleDraft,
     *,

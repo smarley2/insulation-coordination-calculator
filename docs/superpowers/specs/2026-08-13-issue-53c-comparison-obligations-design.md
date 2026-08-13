@@ -1,12 +1,12 @@
 # Issue #53C items 3-5 — permission only after a verified comparison
 
 Three supply rules grant permission from a proxy for a requirement instead of the requirement
-itself. Multiple-source propagation compares overvoltage-category ordinals where the source
-requires comparing resolved impulse ratings. HF-transformer attenuation permits working-voltage
-treatment because an evidence method exists, where the source requires the attenuation to be
-shown sufficient. SPD reduction subtracts a category level generically where the source states
-specific permitted steps, and treats the double/reinforced floor as an ignorable flag where the
-source states a comparison.
+itself, and #53 items 3-5 name each one. Multiple-source propagation compares overvoltage-category
+ordinals where the reviewed reading calls for comparing resolved impulse ratings. HF-transformer
+attenuation permits working-voltage treatment on the presence of an evidence method rather than on
+a demonstrated result. SPD reduction computes a category step by generic ordinal subtraction rather
+than validating the step against a reviewed statement, and carries the double/reinforced floor as
+an ignorable boolean output rather than as a comparison.
 
 This design fixes all three with one mechanism. It covers #53 items 3, 4 and 5.
 
@@ -181,8 +181,9 @@ no_match            unsupported reduction pair; ineligible verification query;
 Ported to reviewed facts; leaves `LEGACY_BRANCH_AUTHORITY_RULE_IDS`, which becomes the empty
 frozenset — #53C's first acceptance criterion.
 
-Every normative statement of the clause stays reviewed authority. Its statements read as two
-kinds — transfer statements and comparison statements — so the family has two variants under
+Every normative statement stays reviewed authority, including the comparison itself — the whole
+point of this item is that `TAKE_MORE_SEVERE` must come from a reviewed statement rather than from
+the projector knowing which route it is. So the family carries a variant per statement kind under
 `fact_kind="propagation_step"`:
 
 ```text
@@ -212,8 +213,8 @@ outputs   transferred_ovc (categorical, from the enumerated transition)
               destination_requirement    package_lookup, the destination side's own rating route
 ```
 
-`galvanic_isolation_verified=False` answers `no_match`: the source scopes the reduce-one-level
-step to verified isolation, and the unisolated case belongs to barrier transfer. The projector
+`galvanic_isolation_verified=False` answers `no_match`: the reviewed transfer statements are scoped
+to verified isolation, and the unisolated case is barrier transfer's route. The projector
 refuses (`ClauseStructureError`) to emit a bundle when the route's comparison fact is missing —
 a fact-derived comparison whose fact is absent is an incomplete review, not a default.
 
@@ -274,10 +275,10 @@ on the pair route it is a refusal; on the floor route it means no floor exists f
 
 Each floor route is projected by its own reduction clause spec through `projected_rule_ids`, so
 it is grounded in that clause's fragment with no shared-evidence scope. A new small fact family
-carries the floor statement — it is its own normative sentence in each reduction clause — and it
-is the **sole** floor authority: the `reinforced_floor_applies` output and the
-`_FLOORED_INSULATION_CLASSES` constant are deleted with it. Two normative authorities for one
-statement is the defect class this whole issue removes.
+carries the floor reading, and it becomes the **sole** floor authority: the
+`reinforced_floor_applies` output goes with it. (`_FLOORED_INSULATION_CLASSES` is already gone —
+#53B deleted it in `fbe8ab5`.) Two authorities for one reading is the defect class this whole
+issue removes.
 
 `reduced_category` is dropped as an output: the consumer proposed the target, and echoing it
 back is permission-shaped noise.
@@ -322,7 +323,8 @@ round-trip proves the three contracts project from real facts.
 #53C:       IEC_IMPORTER_VERSION  iec-pdf-7 -> iec-pdf-8
             LEGACY_BRANCH_AUTHORITY_RULE_IDS -> frozenset()
             removed:  working_voltage_basis_permitted, reduced_category,
-                      reinforced_floor_applies, _FLOORED_INSULATION_CLASSES
+                      reinforced_floor_applies
+                      (_FLOORED_INSULATION_CLASSES already deleted by #53B)
             added:    hf_transformer_attenuation.verification
                       spd_reduction_requirements.mains.floor
                       spd_reduction_requirements.non_mains.floor
