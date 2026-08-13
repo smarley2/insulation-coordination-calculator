@@ -715,6 +715,19 @@ class StandardRecipe(FrozenModel):
                     "clause evidence must be a declared evidence-only clause spec of the "
                     f"same recipe: {sorted(unknown)}"
                 )
+        # The converse of the check above: an evidence-only spec nobody's ``evidence_clause_ids``
+        # names is extracted, gated for facts and completion, and its facts reach no rule -- the
+        # silent-second-fragment hazard ``projection_role`` exists to close, left open in the one
+        # direction this check does not cover.
+        referenced_evidence_ids = {
+            evidence_id for spec in self.clauses for evidence_id in spec.evidence_clause_ids
+        }
+        orphaned = evidence_ids - referenced_evidence_ids
+        if orphaned:
+            raise ValueError(
+                "an evidence-only clause spec must be referenced by a rule-producing clause "
+                f"spec's evidence_clause_ids: {sorted(orphaned)}"
+            )
         for spec in self.tables:
             if spec.semantic_id in self.grid_projectors:
                 continue

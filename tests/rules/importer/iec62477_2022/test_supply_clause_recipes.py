@@ -1701,6 +1701,30 @@ def test_the_non_mains_subclause_is_its_own_fragment_and_this_rules_evidence() -
     assert SUPPLY_SYSTEM_VOLTAGE_NON_MAINS not in mains.projected_rule_ids
 
 
+def test_an_orphaned_evidence_only_spec_is_refused_at_import() -> None:
+    """An evidence-only spec nobody references is extracted, gated, and reaches no rule.
+
+    ``clause evidence must be a declared evidence-only clause spec`` already refuses the other
+    direction (a rule naming evidence that is not declared evidence-only); this is its converse.
+    """
+
+    mains = next(
+        spec
+        for spec in IEC_RECIPE.clauses
+        if spec.semantic_id == ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION
+    )
+    orphaning = mains.model_copy(update={"evidence_clause_ids": ()})
+    clauses = tuple(
+        orphaning if spec.semantic_id == mains.semantic_id else spec for spec in IEC_RECIPE.clauses
+    )
+
+    with pytest.raises(ValueError, match="referenced by a rule-producing clause"):
+        StandardRecipe.model_validate(
+            {name: getattr(IEC_RECIPE, name) for name in type(IEC_RECIPE).model_fields}
+            | {"clauses": clauses}
+        )
+
+
 def test_both_evidence_scopes_reach_the_one_projected_rule() -> None:
     """One rule and one proposal out, whichever subclause a given statement came from."""
 
