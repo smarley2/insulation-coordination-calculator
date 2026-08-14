@@ -141,9 +141,12 @@ def system_voltage_draft(draft_with_supply_fragments: ImportedRuleDraft) -> Impo
 
 
 def _complete_mains_scope(draft: ImportedRuleDraft) -> ImportedRuleDraft:
-    """Two authored statements on the mains route: one citing node 0, one citing node 2.
+    """One authored statement per bullet node of the mains route.
 
-    Authored out of statement order on purpose, so resolution has something to sort.
+    Authored out of statement order on purpose, so resolution has something to sort. Every node is
+    authored because the completion guard refuses a route that leaves a known statement of its
+    clause unauthored: the fragment's three bullets are three proposals, so two statements cannot
+    complete it.
     """
 
     draft = author_clause_fact(
@@ -159,6 +162,13 @@ def _complete_mains_scope(draft: ImportedRuleDraft) -> ImportedRuleDraft:
         fact=_system_voltage_fact(draft, statement_index=0, node_order=0),
         actor="tester",
         notes="the first bullet",
+    )
+    draft = author_clause_fact(
+        draft,
+        rule_route=SV_ROUTE,
+        fact=_system_voltage_fact(draft, statement_index=2, node_order=1),
+        actor="tester",
+        notes="the second bullet",
     )
     return record_fact_completion(
         draft,
@@ -413,7 +423,7 @@ def test_facts_come_back_ordered_by_statement_index(completed_system_voltage_dra
     facts = resolve_confirmed_clause_facts(_spec(SV_ROUTE), completed_system_voltage_draft)
     indexes = [fact.statement_index for fact in facts.for_route(SV_ROUTE)]
 
-    assert indexes == [0, 1]
+    assert indexes == [0, 1, 2]
 
 
 def test_a_route_a_clause_projects_without_facts_resolves_to_nothing(
@@ -451,7 +461,7 @@ def test_both_scopes_resolve_for_the_rule_that_rests_on_both(
 
     facts = resolve_confirmed_clause_facts(_spec(SV_ROUTE), completed_system_voltage_draft)
 
-    assert len(facts.for_route(SV_ROUTE)) == 2
+    assert len(facts.for_route(SV_ROUTE)) == 3
     assert len(facts.for_route(SUPPLY_SYSTEM_VOLTAGE_NON_MAINS)) == 1
 
 

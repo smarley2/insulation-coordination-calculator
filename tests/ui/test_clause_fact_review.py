@@ -1304,6 +1304,55 @@ def test_every_disabled_action_states_why_it_is_disabled(
     assert dialog.author_button.toolTip() == ""
 
 
+def test_a_blocked_completion_names_the_uncovered_statements_and_the_way_out(
+    qtbot, draft_with_a_multi_node_fragment
+) -> None:
+    """The completion guard on this surface: which statements are missing, and what clears it.
+
+    A disabled control with no path forward is the specific complaint an earlier iteration earned,
+    so the route row states the reason and the button itself carries the remedy. Once every known
+    statement is authored, completion becomes available -- and it still has to be pressed, because
+    consuming the drafts is a lower bound on review and never the assertion itself.
+    """
+
+    model = ClauseFactReviewModel(draft_with_a_multi_node_fragment)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    position = _route_position(model, HF_ROUTE)
+    dialog.table.selectRow(position)
+
+    assert dialog.complete_button.isEnabled() is False
+    tooltip = dialog.complete_button.toolTip()
+    for node_order in range(_SEEDED_NODE_COUNT):
+        assert f"node(s) {node_order}" in tooltip
+    assert "Record completion becomes available" in tooltip
+
+    # One statement per node, each from that node's own draft: the authored ones come first in the
+    # list, and these drafts settle no dimension so none of them ever leaves it.
+    for index in range(_SEEDED_NODE_COUNT):
+        dialog.facts_list.setCurrentRow(len(model.facts(HF_ROUTE)) + index)
+        _fill_hf_dimensions(dialog)
+        dialog.choose_scope("dvc_gate", "dvc_as" if index % 2 else "dvc_b")
+        dialog.author_selected()
+        if index == 0:
+            # Part-way through: the row itself names what is still missing, so a reviewer scanning
+            # the table sees the blocked completion without having to hover the button.
+            row_text = dialog.table.item(position, _STATUS_COLUMN).text()
+            assert row_text.startswith("needs_completion")
+            assert "node(s) 1" in row_text
+
+    dialog.table.selectRow(position)
+    assert model.uncovered(HF_ROUTE) == ()
+    assert dialog.complete_button.isEnabled() is True
+    assert dialog.complete_button.toolTip() == ""
+    # Available, not done: the maintainer's own assertion is still the thing that completes it.
+    assert dialog.table.item(position, _STATUS_COLUMN).text() == "needs_completion"
+
+    dialog.complete_selected()
+
+    assert dialog.table.item(position, _STATUS_COLUMN).text() == "complete"
+
+
 def test_selecting_a_partly_proposed_draft_names_the_dimensions_still_needed(
     qtbot, draft_with_supply_fragments
 ) -> None:
@@ -1405,7 +1454,8 @@ def test_the_suggestion_loads_one_drafts_values_and_its_citation(
     assert scope_wire(reviews[0].fact.dvc_gate) == proposal.chosen["dvc_gate"]
     assert reviews[0].actor == "maintainer"
     assert "proposal" in reviews[0].notes
-    assert dialog.table.item(position, _STATUS_COLUMN).text() == "needs_completion"
+    # The route's other drafts are still unauthored, which the completion guard names in the row.
+    assert dialog.table.item(position, _STATUS_COLUMN).text().startswith("needs_completion")
 
 
 def test_the_statement_the_grammar_could_not_settle_is_left_for_the_reviewer(

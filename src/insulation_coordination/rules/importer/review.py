@@ -54,6 +54,7 @@ from insulation_coordination.rules.importer.axis_selectors import (
     ConfirmedAxes,
     selector_sha256,
 )
+from insulation_coordination.rules.importer.clause_fact_proposals import clause_sentences
 from insulation_coordination.rules.importer.clause_facts import (
     CitedNode,
     ClauseFactCompletion,
@@ -63,6 +64,7 @@ from insulation_coordination.rules.importer.clause_facts import (
     evidence_sha256,
     same_clause_fact_reading,
 )
+from insulation_coordination.rules.importer.clauses import RawClauseFragment
 from insulation_coordination.rules.importer.curves import (
     ManualPlotCalibration,
     RawFigure,
@@ -2147,6 +2149,106 @@ def live_evidence_sha256(draft: ImportedRuleDraft, nodes: tuple[CitedNode, ...])
     return evidence_sha256(tuple(live))
 
 
+#: One source statement's coverage anchor: which fragment, which node, and that node's content,
+#: for every node the statement rests on. Route plus this set is the whole anchor -- amendment
+#: A5-C -- and nothing about the values anybody proposed or authored enters it.
+_StatementAnchor = frozenset[tuple[str, int, str]]
+
+
+def _statement_anchor(nodes: tuple[CitedNode, ...]) -> _StatementAnchor:
+    """The cited-evidence bundle a statement is anchored by.
+
+    Deliberately **not** the sentence index: the clause-region slice widens the extracted regions
+    and renumbers every sentence, which would silently orphan the coverage of statements nobody
+    touched. And deliberately not the proposed or authored dimensions: a maintainer who reads the
+    source, finds a suggestion wrong and authors corrected values must still have covered the
+    statement they corrected, or exercising judgement would block completion for ever.
+
+    This is the structural spelling of the same identity ``evidence_sha256`` digests, kept as a set
+    here because coverage has to ask whether one statement's evidence is *among* a fact's citations,
+    which a digest cannot answer.
+    """
+
+    return frozenset((node.fragment_id, node.node_order, node.node_sha256) for node in nodes)
+
+
+def _context_sentences(fragment: RawClauseFragment) -> frozenset[str]:
+    """Every sentence of one fragment that scopes the statements following it.
+
+    A clause's opening sentence introducing a list selects no branch: it is the modality source and
+    part of the evidence its bullets rest on, not a statement of its own, so it is no outstanding
+    obligation even while the proposal engine still offers a draft for it (amendment A4).
+    ``clause_sentences`` already records which stem each bullet completes, so this reads that
+    rather than re-deriving it -- a sentence no bullet completes is never treated as context.
+    """
+
+    return frozenset(item.stem_text for item in clause_sentences(fragment) if item.stem_text)
+
+
+def _statement_label(anchor: _StatementAnchor) -> str:
+    """One uncovered statement as the reviewer is told about it, by the nodes it rests on."""
+
+    orders = ", ".join(str(order) for _fragment, order, _digest in sorted(anchor))
+    return f"the statement resting on clause node(s) {orders}"
+
+
+def uncovered_clause_fact_statements(draft: ImportedRuleDraft, route: str) -> tuple[str, ...]:
+    """Every known source statement of one route that no authored fact covers.
+
+    The completion guard's lower bound on review (amendment A5): a route carrying a proposal whose
+    source statement no authored fact covers cannot be completed. Empty is a *permission* to
+    complete and never a completion -- completion stays the maintainer's own assertion that no
+    additional statement was missed, which is why both this and the completion record are required.
+
+    Coverage is per **anchor**, not per draft: several drafts of one evidence bundle are one
+    obligation, because the anchor is the cited evidence and never the sentence index. A fact covers
+    an anchor when it cites every node that anchor names -- which is what lets a statement completing
+    a list's opener cite the opener as well and still cover its own bullet -- and each fact covers at
+    most one anchor, so one authored fact can never mark two distinct source statements as reviewed.
+
+    Knowingly partial, and knowingly so by design: it cannot catch a statement no proposal ever
+    suggested, and it cannot tell one statement resting on two normative nodes from two statements
+    resting on one each. Both are why the maintainer's assertion remains the definition of
+    completion rather than being replaced by this count.
+
+    ponytail: greedy assignment, smallest citation first, rather than a bipartite matching. It can
+    report an anchor uncovered where a cleverer pairing exists, which errs towards blocking
+    completion; upgrade to a real matching if a route ever carries facts whose citations overlap in
+    a way this mis-pairs.
+    """
+
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        propose_supply_facts,
+    )
+
+    fragment = next(
+        (item for item in draft.raw_clause_fragments if item.id == f"raw-{route}"), None
+    )
+    if fragment is None:
+        return ()
+    context = _context_sentences(fragment)
+    obligations: dict[_StatementAnchor, list[str]] = {}
+    for proposal in propose_supply_facts(fragment, route):
+        obligations.setdefault(_statement_anchor(proposal.node_references), []).append(
+            proposal.sentence_text
+        )
+    unused = [
+        _statement_anchor(item.fact.node_references)
+        for item in draft.clause_fact_reviews
+        if item.rule_route == route
+    ]
+    uncovered: list[str] = []
+    for anchor in sorted(obligations, key=sorted):
+        if all(sentence in context for sentence in obligations[anchor]):
+            continue
+        covering = [cited for cited in unused if anchor <= cited]
+        if not covering:
+            uncovered.append(_statement_label(anchor))
+            continue
+        unused.remove(min(covering, key=len))
+    return tuple(uncovered)
+
+
 def clause_fact_defect(
     rule_route: str,
     fact: SupplyFact,
@@ -2265,6 +2367,12 @@ def clause_fact_route_defect(draft: ImportedRuleDraft, route: str) -> str | None
     # nothing reads is a digest a second writer can get wrong unnoticed.
     if any(item.fact_sha256 != canonical_model_sha256(item.fact) for item in reviews):
         return "has a review whose fact hash is not its fact's"
+    # The lower bound before the assertion, never instead of it: a route clears this *and* carries
+    # its own completion record, because no count of consumed proposals is the maintainer saying
+    # nothing further was missed.
+    uncovered = uncovered_clause_fact_statements(draft, route)
+    if uncovered:
+        return f"leaves a known statement unauthored: {'; '.join(uncovered)}"
     if len(completions) != 1:
         return "lacks one exact fact-set completion record"
     if (
@@ -2377,6 +2485,12 @@ def record_fact_completion(
 
     The fragment must be the route's own. Completion is what binds a fragment hash to a route, so
     naming any other fragment would bind the route to a document region that does not state it.
+
+    Refused while a known statement of the clause is unauthored (amendment A5): a route whose
+    fragment carries several normative statements could previously be completed with one authored,
+    because nothing compared the authored set against anything. Clearing that guard **permits** this
+    assertion and does not constitute it -- this record stays the maintainer's own statement that no
+    *additional* statement was missed, which is a claim no proposal count can make on their behalf.
     """
 
     if not actor.strip() or not notes.strip():
@@ -2389,6 +2503,12 @@ def record_fact_completion(
     facts = tuple(item.fact for item in draft.clause_fact_reviews if item.rule_route == rule_route)
     if not facts:
         raise ApprovalError("a route with no authored facts cannot be complete")
+    uncovered = uncovered_clause_fact_statements(draft, rule_route)
+    if uncovered:
+        raise ApprovalError(
+            f"{rule_route} cannot be complete while a known statement of its clause is "
+            f"unauthored: {'; '.join(uncovered)}"
+        )
     completion = ClauseFactCompletion(
         rule_route=rule_route,
         fragment_id=fragment_id,

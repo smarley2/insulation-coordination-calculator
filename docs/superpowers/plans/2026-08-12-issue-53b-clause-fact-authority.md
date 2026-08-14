@@ -2116,9 +2116,12 @@ for the remaining #53B work:
 - [ ] Grammar relocation, context-node handling, set/pair collections — **family 4's pair collection
       now lives here, or in whichever slice resolves the contract question below**
 - [ ] Variant editor: value-set widgets, repeating pair rows, `statement_kind` switching
-- [ ] Removal of multi-statement authoring; per-statement suggestion action
-- [ ] Completion guard
-- [ ] Private placeholder replacement, including the invalid positive-isolation placeholder
+- [x] Removal of multi-statement authoring; per-statement suggestion action — `0a7141d`
+- [x] Completion guard — coverage anchored on route + cited-node identity + evidence hash
+- [ ] Private placeholder replacement, including the invalid positive-isolation placeholder —
+      the guard forced part of this early: the private `_placeholder_facts` now returns a tuple per
+      route and the system voltage subclauses author one statement per fragment node, driven off the
+      node count rather than a written number. What remains is replacing the invented readings.
 - [ ] **Separate, separately reviewed, mandatory before #53B completes:** clause-region widening,
       with the private normative-paragraph inventory and the version inspection A6 requires
 

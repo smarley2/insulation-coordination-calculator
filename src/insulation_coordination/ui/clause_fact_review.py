@@ -72,6 +72,7 @@ from insulation_coordination.rules.importer.review import (
     live_evidence_sha256,
     record_fact_completion,
     retract_clause_fact,
+    uncovered_clause_fact_statements,
 )
 from insulation_coordination.ui.page_preview import PagePreview, Region
 
@@ -91,6 +92,23 @@ _DISABLED_REASONS = {
 _NO_SOURCE_REGION = (
     "Source region not available: re-extract from the licensed PDFs to see the clause's own page."
 )
+
+
+def _completion_blocked_text(uncovered: tuple[str, ...]) -> str:
+    """Why completion is unavailable, and the one action that makes it available.
+
+    Named statements and a next step, never a bare grey button: the reviewer has to be able to see
+    which statements the clause still carries unauthored, and that authoring them -- or re-authoring
+    one statement so it cites the nodes they rest on -- is what clears this.
+    """
+
+    return (
+        "Completion is blocked while this clause carries a statement no authored fact covers: "
+        f"{'; '.join(uncovered)}. Select each draft below, author a statement for it -- or "
+        "re-author one statement citing every node it rests on -- and Record completion becomes "
+        "available."
+    )
+
 
 #: The scope widget's explicit unrestricted row. Its own entry rather than "select every value",
 #: because the two are different readings: unrestricted projects over the reviewed domain, while a
@@ -152,9 +170,11 @@ class ClauseFactRouteRow(FrozenModel):
     fragment_id: str
     authored: int
     status: Literal["needs_facts", "needs_completion", "complete", "stale"]
-    #: Why ``status`` is ``stale``, straight from ``clause_fact_route_defect``; ``None`` for
-    #: every other status, ``needs_completion`` included -- that one names an ordinary next
-    #: step, not a defect.
+    #: Why this route is not complete, straight from ``clause_fact_route_defect``, for the two
+    #: statuses a reviewer cannot act on without being told: ``stale``, and the
+    #: ``needs_completion`` that the completion guard is blocking. ``None`` for a
+    #: ``needs_completion`` that only awaits the maintainer's own assertion -- that one names an
+    #: ordinary next step, not a defect.
     defect: str | None
 
 
@@ -247,6 +267,10 @@ class ClauseFactReviewModel:
                 status = "complete"
             elif not completions:
                 status = "needs_completion"
+                # The one reason a route short of completion needs stated in the table: the
+                # reviewer cannot record completion at all until it is cleared, so leaving it to
+                # a hover would be a route that simply refuses with no visible cause.
+                reason = defect if self.uncovered(route) else None
             else:
                 status = "stale"
                 reason = defect
@@ -349,6 +373,16 @@ class ClauseFactReviewModel:
         return tuple(
             item for item in self.proposals(rule_route) if self.covered_by(rule_route, item) is None
         )
+
+    def uncovered(self, rule_route: str) -> tuple[str, ...]:
+        """The known statements of one route no authored fact covers, for the reviewer.
+
+        The completion guard's own list, through the same function ``record_fact_completion`` and
+        the approval gate call, so this surface can never offer a completion the importer refuses
+        or withhold one it would accept.
+        """
+
+        return uncovered_clause_fact_statements(self._draft, rule_route)
 
     def next_statement_index(self, rule_route: str) -> int:
         """The first index this route's authored statements have not already used.
@@ -821,6 +855,7 @@ class ClauseFactReviewDialog(QDialog):
             self._set_enabled(self.author_button, False, "author")
             self._set_enabled(self.use_suggested_button, False, "use_suggested")
             self.complete_button.setEnabled(False)
+            self.complete_button.setToolTip("")
             self._set_enabled(self.retract_button, False, "retract")
             self._set_enabled(self.duplicate_button, False, "duplicate")
             return
@@ -858,7 +893,11 @@ class ClauseFactReviewDialog(QDialog):
         self._reset_statement_kind()
         self.statement_index.setValue(self._model.next_statement_index(row.rule_route))
         self._reset_dimensions(row.rule_route)
-        self.complete_button.setEnabled(True)
+        uncovered = self._model.uncovered(row.rule_route)
+        self.complete_button.setEnabled(not uncovered)
+        self.complete_button.setToolTip(
+            "" if not uncovered else _completion_blocked_text(uncovered)
+        )
         self._set_enabled(self.use_suggested_button, False, "use_suggested")
         self._set_enabled(self.retract_button, False, "retract")
         self._set_enabled(self.duplicate_button, False, "duplicate")
