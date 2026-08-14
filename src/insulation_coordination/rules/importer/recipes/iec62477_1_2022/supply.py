@@ -161,10 +161,21 @@ SUPPLY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ClauseAuditSpec(
         semantic_id=ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION,
         clause="4.4.7.2.5",
+        #: Two contiguous regions on one page: the scoping sentence the lettered alternatives
+        #: complete, and then the alternatives. Declared as its own ``paragraph`` region rather than
+        #: by lowering the list region's top edge, because a region states what its *list* reads as
+        #: and this stem is prose that opens above it. Without it the fragment showed the
+        #: alternatives and not the condition they hold under, so no reviewer could see from the
+        #: fragment what the branches are scoped by.
         segments=(
             ClauseSegmentSpec(
                 page_number=66,
-                expected_bbox=(65.0, 630.0, 535.0, 792.0),
+                expected_bbox=(65.0, 576.0, 535.0, 632.0),
+                expected_root_kind="paragraph",
+            ),
+            ClauseSegmentSpec(
+                page_number=66,
+                expected_bbox=(65.0, 632.0, 535.0, 792.0),
                 expected_root_kind="bullets",
             ),
         ),
@@ -502,7 +513,11 @@ _SYSTEM_VOLTAGE_SHAPE = (
     "paragraph",
 )
 _SYSTEM_VOLTAGE_NON_MAINS_SHAPE = ("paragraph",)
-_PROPAGATION_SHAPE = ("bullet", "bullet", "bullet", "bullet")
+#: The lettered alternatives, and before them the stem region that scopes them. The leading
+#: paragraph is part of the reviewed contract rather than incidental: it is the condition every
+#: alternative holds under, and a fragment showing four alternatives and not their scope is a
+#: fragment nobody can check the projection against.
+_PROPAGATION_SHAPE = ("paragraph", "bullet", "bullet", "bullet", "bullet")
 _BARRIER_SHAPE = ("paragraph",)
 _SPD_SHAPE = ("paragraph",)
 _HF_TRANSFORMER_SHAPE = ("paragraph",)

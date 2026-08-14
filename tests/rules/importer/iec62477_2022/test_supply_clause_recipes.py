@@ -205,7 +205,16 @@ def _grounded_draft(
 
 
 def _lettered_fragment(*, count: int = 4) -> RawClauseFragment:
-    return _fragment(ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION, kind="bullet", count=count)
+    """The propagation clause's reviewed shape: the stem region, then ``count`` alternatives.
+
+    The leading paragraph is the sentence the alternatives are scoped by, extracted since the
+    clause declared its own region for it. ``count`` still varies only the alternatives, so a
+    wrong-alternative-count case stays a wrong-alternative-count case.
+    """
+
+    return _mixed_fragment(
+        ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION, ("paragraph", *("bullet",) * count)
+    )
 
 
 def _paragraph_fragment(
