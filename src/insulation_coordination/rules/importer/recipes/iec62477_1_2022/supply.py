@@ -43,7 +43,8 @@ from insulation_coordination.rules.importer.clause_fact_proposals import (
     propose_clause_facts,
 )
 from insulation_coordination.rules.importer.clause_facts import (
-    BarrierTransferFact,
+    BarrierCombinedRequirementFact,
+    BarrierTransferStatement,
     ConfirmedFacts,
     DimensionScope,
     HfAttenuationFact,
@@ -315,6 +316,43 @@ def _require_declared_supply_kinds(
 
 _require_declared_supply_kinds(SUPPLY_FACT_FAMILY_BY_ROUTE, SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE)
 
+#: Whether the clause each barrier transfer route reads states the isolated or the unisolated case.
+#: Structural scope, not a reviewed choice: the whole fragment is scoped by that one condition, so
+#: every statement it carries is about it, and the isolated case is stated by a different clause
+#: altogether -- the propagation route's. As a reviewed field it made a positive-isolation statement
+#: authorable from the fragment that states the unisolated case, which nothing refused and the
+#: private placeholder did.
+#:
+#: The projection reads it for every answer that follows from it -- whether the barrier is verified,
+#: whether the transfer is permitted, which connection downstream this clause addresses, and whether
+#: the requirement reaches a circuit connected to the combined circuit -- and ``clause_fact_defect``
+#: reads it to refuse a statement naming the contradicting connection kind.
+SUPPLY_FACT_ISOLATION_BY_ROUTE: dict[str, bool] = {
+    ids.SUPPLY_VERIFIED_BARRIER_TRANSFER: False,
+}
+
+
+def _require_declared_isolation_scopes(
+    families: dict[str, str], expected_isolation: dict[str, bool]
+) -> None:
+    """Refuse, at import, a barrier transfer route with no declared isolation scope, or one
+    declared for a route of another family.
+
+    Without it a route added to this family and forgotten here would carry no structural scope at
+    all: its statements would be unrefusable and its projection would have no isolation state to
+    read -- the same hole ``_require_declared_supply_kinds`` closes for the supply kind.
+    """
+
+    needs_scope = {route for route, family in families.items() if family == "barrier_transfer"}
+    disagreement = needs_scope.symmetric_difference(expected_isolation)
+    if disagreement:
+        raise ValueError(
+            f"barrier transfer routes and isolation scopes disagree on: {sorted(disagreement)}"
+        )
+
+
+_require_declared_isolation_scopes(SUPPLY_FACT_FAMILY_BY_ROUTE, SUPPLY_FACT_ISOLATION_BY_ROUTE)
+
 
 # --- proposal grammars ---------------------------------------------------------------
 #
@@ -439,11 +477,15 @@ _SYSTEM_VOLTAGE_GRAMMAR = ClauseFactGrammar(
 
 _BARRIER_TRANSFER_GRAMMAR = ClauseFactGrammar(
     fact_kind="barrier_transfer",
+    # Combined-requirement statements only. The rating-resolution statement's sides and the
+    # inheritance statement's connection kind are dimensions of their own kinds of reading, so
+    # proposing them from this grammar would offer a reading of the wrong kind; they are authored by
+    # hand until the private grammar reaches them. The isolation rule that used to sit here is gone
+    # with the field: it is the route's declared structural scope now.
+    statement_kind="combined_requirement",
     keyword_rules=(
         *_OBLIGATION_RULES,
-        _keyword("isolation_present", "false", "not", "providing", "galvanic", "isolation"),
         _keyword("combined_circuit_rule", "more_severe_of_both_sides", "higher", "two"),
-        _keyword("downstream_connection_kind", "no_isolation", "without", "galvanic", "isolation"),
     ),
 )
 
@@ -1156,11 +1198,15 @@ def project_multiple_source_propagation(
 # --- verified barrier transfer -----------------------------------------------------
 
 _ISOLATION_EVIDENCE_KINDS = ("none", "test", "calculation", "construction")
-#: Every declared evidence kind except the absence of one. What this route asks about is a
-#: *verified* barrier, which is this rule's own input name: a barrier claimed with no evidence at
-#: all is not one, so the isolation-present statement is not answered for it.
-_VERIFYING_EVIDENCE_KINDS = tuple(kind for kind in _ISOLATION_EVIDENCE_KINDS if kind != "none")
 _DOWNSTREAM_CONNECTION_KINDS = ("no_isolation", "verified_galvanic_isolation")
+#: The connection downstream of a combined circuit that each isolation scope addresses. The route's
+#: structural scope decides it: a clause stating the unisolated case addresses the circuit connected
+#: to the combined circuit without isolation, and the isolated case's clause the one connected
+#: through the barrier.
+_DOWNSTREAM_CONNECTION_BY_ISOLATION = {
+    False: "no_isolation",
+    True: "verified_galvanic_isolation",
+}
 
 
 def project_verified_barrier_transfer(
@@ -1169,63 +1215,82 @@ def project_verified_barrier_transfer(
     _draft: object = None,
     confirmed_facts: ConfirmedFacts = _NO_CONFIRMED_FACTS,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
-    """Project the isolation and no-isolation paths into a decision.
+    """Project the combined-circuit requirement of one barrier scope into a decision.
 
-    Every row comes from one reviewed ``BarrierTransferFact``, and matches on both dimensions the
-    reading is scoped to: the barrier and the kind of connection downstream of it. A row that
-    matched every connection kind would answer outside the scope its own fact records.
+    Every row comes from one reviewed ``BarrierCombinedRequirementFact``, which is the one kind of
+    statement this rule's declared outputs can carry. The family's other two kinds are carried, not
+    projected: a rating-resolution statement defers each side's rating to that side's own supply
+    route, and an inheritance statement states what a circuit connected to the combined circuit
+    takes from it. Neither has a declared output here -- widening the contract to give them one is
+    #53C item 5 -- and both are resolved and covered by the route's fact-set digest, which is how
+    completion and the approval gate know the reviewer read them. A reviewed set carrying no
+    combined-circuit statement cannot answer the question this rule asks, so the projection refuses
+    rather than emitting a rule with no rows.
 
-    ``transfer_permitted`` and ``propagates_to_connected_circuits`` are not independently authored
-    content: a verified barrier is what makes the transfer permitted and what stops it propagating
-    to circuits connected without isolation, so both mirror ``isolation_present`` by definition.
+    Everything that follows from the barrier's isolation state is read from the route's declared
+    structural scope rather than from a fact -- see ``SUPPLY_FACT_ISOLATION_BY_ROUTE``. That is which
+    barrier the rule answers about, whether the transfer is permitted, which connection downstream
+    this clause addresses, and whether the requirement reaches a circuit connected to the combined
+    circuit. None of the four is independently authored content: they are one condition read four
+    ways, and as a reviewed field the condition could contradict the clause it was read from.
+
     Nor is the evidence a statement requires: the source states no evidence kinds at all, and
     ``_ISOLATION_EVIDENCE_KINDS`` is this recipe's own question vocabulary, so authoring one would
-    be inventing source content. What "verified" excludes is the absence of evidence, and that
-    much follows from the rule's own input name.
+    be inventing source content. The unisolated scope asks nothing of it, so the input is matched
+    over every kind rather than over a set no statement names.
     """
 
     label = "supply verified barrier transfer"
     _require_own_fragment(fragment, identity, ids.SUPPLY_VERIFIED_BARRIER_TRANSFER, label)
     _require_shape(fragment, _BARRIER_SHAPE, label)
 
+    isolation_present = SUPPLY_FACT_ISOLATION_BY_ROUTE[ids.SUPPLY_VERIFIED_BARRIER_TRANSFER]
     facts = confirmed_facts.for_route(ids.SUPPLY_VERIFIED_BARRIER_TRANSFER)
     if not facts:
         raise ClauseStructureError(f"{label} needs reviewed clause facts for its route")
-    barrier_facts = tuple(fact for fact in facts if isinstance(fact, BarrierTransferFact))
+    barrier_facts = tuple(fact for fact in facts if isinstance(fact, BarrierTransferStatement))
     if len(barrier_facts) != len(facts):
         raise ValueError(f"{label} projection requires barrier transfer facts")
+    combined = tuple(
+        fact for fact in barrier_facts if isinstance(fact, BarrierCombinedRequirementFact)
+    )
+    if not combined:
+        raise ClauseStructureError(
+            f"{label} reviewed statements state no combined circuit requirement, so they cannot "
+            "answer its question"
+        )
 
-    requirements = tuple(dict.fromkeys(fact.combined_circuit_rule for fact in barrier_facts))
+    requirements = tuple(dict.fromkeys(fact.combined_circuit_rule for fact in combined))
     rows = tuple(
         DecisionRow(
             matchers=(
                 Matcher(
                     input="galvanic_isolation_verified",
                     op="equals",
-                    boolean=fact.isolation_present,
+                    boolean=isolation_present,
                 ),
+                _matcher("isolation_evidence_kind", None),
                 _matcher(
-                    "isolation_evidence_kind",
-                    _VERIFYING_EVIDENCE_KINDS if fact.isolation_present else None,
+                    "downstream_connection_kind",
+                    (_DOWNSTREAM_CONNECTION_BY_ISOLATION[isolation_present],),
                 ),
-                _matcher("downstream_connection_kind", (fact.downstream_connection_kind,)),
             ),
             values=(
-                DecisionValue(name="transfer_permitted", boolean=fact.isolation_present),
+                DecisionValue(name="transfer_permitted", boolean=isolation_present),
                 DecisionValue(
                     name="combined_circuit_requirement",
                     categorical=fact.combined_circuit_rule,
                 ),
                 DecisionValue(
                     name="propagates_to_connected_circuits",
-                    boolean=not fact.isolation_present,
+                    boolean=not isolation_present,
                 ),
             ),
             source=fragment.nodes[0].source,
         )
-        for fact in barrier_facts
+        for fact in combined
     )
-    _require_distinct_branches(label, barrier_facts, rows)
+    _require_distinct_branches(label, combined, rows)
 
     rule = DecisionRule(
         id=ids.SUPPLY_VERIFIED_BARRIER_TRANSFER,
@@ -1706,6 +1771,7 @@ __all__ = [
     "LEGACY_BRANCH_AUTHORITY_RULE_IDS",
     "SUPPLY_CLAUSES",
     "SUPPLY_FACT_FAMILY_BY_ROUTE",
+    "SUPPLY_FACT_ISOLATION_BY_ROUTE",
     "SUPPLY_FACT_PROPOSAL_GRAMMARS",
     "SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE",
     "SUPPLY_SYSTEM_VOLTAGE_NON_MAINS",

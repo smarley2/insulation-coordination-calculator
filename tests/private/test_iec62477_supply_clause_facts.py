@@ -25,7 +25,7 @@ import pytest
 from insulation_coordination.rules.archive import load_rule_package, write_rule_package
 from insulation_coordination.rules.importer.approval import approval_blockers
 from insulation_coordination.rules.importer.clause_facts import (
-    BarrierTransferFact,
+    BarrierCombinedRequirementFact,
     CitedNode,
     DimensionScope,
     HfAttenuationFact,
@@ -126,12 +126,13 @@ def _placeholder_facts(draft: ImportedRuleDraft) -> dict[str, SupplyFact]:
             purpose="temporary_overvoltage",
             measure="between_supply_conductors_rms",
         ),
-        ids.SUPPLY_VERIFIED_BARRIER_TRANSFER: BarrierTransferFact(
+        # The isolation this clause is scoped by is route-declared now, so this placeholder can no
+        # longer state the positive-isolation reading it used to: that combination contradicted the
+        # fragment it cited, and nothing refused it.
+        ids.SUPPLY_VERIFIED_BARRIER_TRANSFER: BarrierCombinedRequirementFact(
             statement_index=0,
             node_references=_first_cited_node(draft, ids.SUPPLY_VERIFIED_BARRIER_TRANSFER),
             obligation="requirement",
-            isolation_present=True,
-            downstream_connection_kind="verified_galvanic_isolation",
             combined_circuit_rule="side_specific_from_transfer",
         ),
         SPD_MAINS_ROUTE: SpdReductionFact(

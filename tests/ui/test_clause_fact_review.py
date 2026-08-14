@@ -16,7 +16,9 @@ from insulation_coordination.rules.importer.clause_fact_proposals import (
     scope_wire,
 )
 from insulation_coordination.rules.importer.clause_facts import (
-    BarrierTransferFact,
+    BarrierCombinedRequirementFact,
+    BarrierDownstreamInheritanceFact,
+    BarrierRatingResolutionFact,
     CitedNode,
     DimensionScope,
     HfAttenuationFact,
@@ -73,7 +75,11 @@ _PREVIEW_SEGMENT = ClauseSegmentSpec(
 # no single model whose fields answer for all of it.
 _FACT_MODELS: dict[str, tuple[type[BaseModel], ...]] = {
     "system_voltage": (SystemVoltageMeasureFact, SystemVoltageApplicabilityFact),
-    "barrier_transfer": (BarrierTransferFact,),
+    "barrier_transfer": (
+        BarrierRatingResolutionFact,
+        BarrierCombinedRequirementFact,
+        BarrierDownstreamInheritanceFact,
+    ),
     "spd_reduction": (SpdReductionFact,),
     "spd_monitoring": (
         SpdMonitoringRequirementFact,

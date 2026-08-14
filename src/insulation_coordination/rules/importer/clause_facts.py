@@ -217,19 +217,97 @@ class PropagationStepFact(_Fact):
     rating_source_side: Literal["mains", "non_mains"]
 
 
-class BarrierTransferFact(_Fact):
-    """One transfer statement, scoped to the barrier it is about and the connection downstream.
+#: Which supply side a rating is resolved for. Its own alias because the scope's vocabulary is read
+#: back out of the annotation -- see ``scope_vocabulary``.
+SupplySide = Literal["mains", "non_mains"]
 
-    ``downstream_connection_kind`` is a dimension the reviewed reading scopes, so a statement
-    carrying none would answer for a connection outside its own scope.
+#: How a circuit downstream of a combined circuit is connected to it. Spelled as the rule's own
+#: ``downstream_connection_kind`` vocabulary, because these mean the same thing -- the same
+#: reasoning ``DevicePlacement`` records.
+DownstreamConnection = Literal["no_isolation", "verified_galvanic_isolation"]
+
+
+class BarrierTransferStatement(_Fact):
+    """What every barrier transfer statement shares, whichever kind of reading it is.
+
+    The family states three normatively different readings under one common condition -- how each
+    side's rating is resolved, which rating the combined circuit takes, and what a circuit connected
+    downstream inherits -- so it discriminates on ``statement_kind`` inside one ``fact_kind``.
+
+    The **isolation state is not a field here**. It is the condition the whole clause fragment is
+    scoped by, so it is route-declared structural scope, the way the supply kind already is: see
+    ``SUPPLY_FACT_ISOLATION_BY_ROUTE`` and ``clause_fact_defect``. As a field it was a reviewed
+    choice, which made a positive-isolation statement authorable from the fragment that states the
+    unisolated case -- a contradiction nothing refused, and one the private placeholder authored.
+    Now such a statement cannot be spelled at all, and the recipe's evidence-kind branch that only
+    it could reach is gone with it.
     """
 
     fact_kind: Literal["barrier_transfer"] = "barrier_transfer"
-    isolation_present: bool
-    #: Spelled as the rule's own ``downstream_connection_kind`` vocabulary, because these mean
-    #: the same thing -- the same reasoning ``SpdMonitoringFact.device_placement`` records.
-    downstream_connection_kind: Literal["no_isolation", "verified_galvanic_isolation"]
+
+
+class BarrierRatingResolutionFact(BarrierTransferStatement):
+    """One statement of where each side's own impulse withstand rating is resolved.
+
+    A carried-not-projected variant: it selects no rating and states no rule for the combined
+    circuit, so none of this route's declared outputs can carry it. It is resolved and covered by
+    the route's fact-set digest, which is how completion and the approval gate know the reviewer
+    read it.
+
+    ``rated_side`` is a scope because the statement names both sides in one reading rather than one
+    statement per side. It carries no downstream connection kind: which side's rating is resolved
+    and what a downstream circuit inherits are separate readings.
+    """
+
+    statement_kind: Literal["rating_resolution"] = "rating_resolution"
+    rated_side: DimensionScope[SupplySide]
+    #: The route family each side's own rating is resolved by, never restated here -- the same
+    #: deferral shape ``SpdReductionFact.monitoring_reference`` carries. The side and this
+    #: reference together name the route; the reference alone would have to be authored once per
+    #: side, which would split one reading in two.
+    rating_reference: Identifier
+
+
+class BarrierCombinedRequirementFact(BarrierTransferStatement):
+    """One statement of which requirement governs the whole combined circuit.
+
+    The projected variant. It carries **no** downstream connection kind: the requirement is stated
+    over the combined circuit itself, and scoping it to a connection would be a dimension the
+    reading does not make.
+
+    ``combined_circuit_rule`` is a reviewed semantic, not an executable comparison: naming the more
+    severe of two sides is what the source states, and resolving which of two ratings that is
+    belongs to the comparison contracts of #53C.
+    """
+
+    statement_kind: Literal["combined_requirement"] = "combined_requirement"
     combined_circuit_rule: Literal["more_severe_of_both_sides", "side_specific_from_transfer"]
+
+
+class BarrierDownstreamInheritanceFact(BarrierTransferStatement):
+    """One statement of what a circuit connected to the combined circuit inherits.
+
+    A carried-not-projected variant, and the reading that justifies this route's structural
+    derivation of ``propagates_to_connected_circuits``: it states that the combined circuit's rating
+    reaches a circuit connected to it, for the connection kind it names. It **restates no
+    more-severe selection** -- which rating the combined circuit carries is the combined
+    requirement statement's reading, and repeating it here would record one reading twice.
+
+    ``downstream_connection_kind`` is the dimension it does state, and it is checked against the
+    route's declared isolation scope: a statement naming an isolated connection on the route that
+    states the unisolated case is refused rather than merely undocumented.
+    """
+
+    statement_kind: Literal["downstream_inheritance"] = "downstream_inheritance"
+    downstream_connection_kind: DownstreamConnection
+    inherits_combined_circuit_rating: bool
+
+
+#: The family's three variants under one ``fact_kind``, discriminated by ``statement_kind``.
+BarrierTransferFact = Annotated[
+    BarrierRatingResolutionFact | BarrierCombinedRequirementFact | BarrierDownstreamInheritanceFact,
+    Field(discriminator="statement_kind"),
+]
 
 
 class SpdReductionFact(_Fact):
@@ -486,13 +564,18 @@ class ConfirmedFacts(FrozenModel):
 
 
 __all__ = [
+    "BarrierCombinedRequirementFact",
+    "BarrierDownstreamInheritanceFact",
+    "BarrierRatingResolutionFact",
     "BarrierTransferFact",
+    "BarrierTransferStatement",
     "CitedNode",
     "ClauseFactCompletion",
     "ClauseFactReview",
     "ConfirmedFacts",
     "DevicePlacement",
     "DimensionScope",
+    "DownstreamConnection",
     "DvcGate",
     "HfAttenuationFact",
     "MonitoringComplianceEvidence",
@@ -506,6 +589,7 @@ __all__ = [
     "SpdMonitoringStatement",
     "SpdReductionFact",
     "SupplyFact",
+    "SupplySide",
     "SystemVoltageApplicabilityFact",
     "SystemVoltageFact",
     "SystemVoltageMeasureFact",

@@ -25,7 +25,9 @@ from pydantic import Field, model_validator
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import Identifier, RulePackageError
 from insulation_coordination.rules.importer.clause_facts import (
-    BarrierTransferFact,
+    BarrierCombinedRequirementFact,
+    BarrierDownstreamInheritanceFact,
+    BarrierRatingResolutionFact,
     CitedNode,
     DimensionScope,
     HfAttenuationFact,
@@ -46,7 +48,9 @@ FactModel = type[
     SystemVoltageMeasureFact
     | SystemVoltageApplicabilityFact
     | PropagationStepFact
-    | BarrierTransferFact
+    | BarrierRatingResolutionFact
+    | BarrierCombinedRequirementFact
+    | BarrierDownstreamInheritanceFact
     | SpdReductionFact
     | SpdMonitoringRequirementFact
     | SpdMonitoringExemptionFact
@@ -64,7 +68,11 @@ FactModel = type[
 FACT_MODELS_BY_KIND: dict[str, tuple[FactModel, ...]] = {
     "system_voltage": (SystemVoltageMeasureFact, SystemVoltageApplicabilityFact),
     "propagation_step": (PropagationStepFact,),
-    "barrier_transfer": (BarrierTransferFact,),
+    "barrier_transfer": (
+        BarrierRatingResolutionFact,
+        BarrierCombinedRequirementFact,
+        BarrierDownstreamInheritanceFact,
+    ),
     "spd_reduction": (SpdReductionFact,),
     "spd_monitoring": (
         SpdMonitoringRequirementFact,

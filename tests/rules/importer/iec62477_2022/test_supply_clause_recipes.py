@@ -18,6 +18,9 @@ from insulation_coordination.rules.evaluator import evaluate_decision
 from insulation_coordination.rules.importer import recipes as recipe_registry
 from insulation_coordination.rules.importer import review
 from insulation_coordination.rules.importer.clause_facts import (
+    BarrierCombinedRequirementFact,
+    BarrierDownstreamInheritanceFact,
+    BarrierRatingResolutionFact,
     BarrierTransferFact,
     CitedNode,
     ConfirmedFacts,
@@ -296,45 +299,55 @@ def _barrier_fact(
     fragment: RawClauseFragment,
     *,
     index: int = 0,
-    isolation_present: bool,
-    connection: str | None = None,
-    combined_rule: str,
-) -> BarrierTransferFact:
+    combined_rule: str = "more_severe_of_both_sides",
+) -> BarrierCombinedRequirementFact:
     """Invented values only: a synthetic reviewed statement, never real clause content.
 
-    ``connection`` defaults to the kind that pairs with the barrier: a statement about an absent
-    barrier is scoped to a connection without isolation, and one about a present barrier to a
-    connection through it.
+    It states no isolation and no downstream connection: both follow from the route's declared
+    structural scope now.
     """
 
-    downstream = connection or (
-        "verified_galvanic_isolation" if isolation_present else "no_isolation"
-    )
-    return BarrierTransferFact(
+    return BarrierCombinedRequirementFact(
         statement_index=index,
         node_references=(_cited_node(fragment),),
         obligation="requirement",
-        isolation_present=isolation_present,
-        downstream_connection_kind=downstream,  # type: ignore[arg-type]
         combined_circuit_rule=combined_rule,  # type: ignore[arg-type]
     )
 
 
-def _confirmed_barrier_facts(
-    *,
-    combined_rule: str,
-    isolation_present: bool = False,
-    connection: str | None = None,
-    fragment: RawClauseFragment | None = None,
-) -> ConfirmedFacts:
-    frag = fragment if fragment is not None else _barrier_fragment()
-    fact = _barrier_fact(
-        frag,
-        isolation_present=isolation_present,
-        connection=connection,
-        combined_rule=combined_rule,
+def _barrier_rating_fact(
+    fragment: RawClauseFragment, *, index: int = 0
+) -> BarrierRatingResolutionFact:
+    """Invented values only: a carried kind, which selects no combined requirement at all."""
+
+    return BarrierRatingResolutionFact(
+        statement_index=index,
+        node_references=(_cited_node(fragment),),
+        obligation="requirement",
+        rated_side=DimensionScope.of("mains", "non_mains"),  # type: ignore[arg-type]
+        rating_reference=ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS,
     )
-    return ConfirmedFacts(by_route={ids.SUPPLY_VERIFIED_BARRIER_TRANSFER: (fact,)})
+
+
+def _barrier_inheritance_fact(
+    fragment: RawClauseFragment,
+    *,
+    index: int = 0,
+    connection: str = "no_isolation",
+) -> BarrierDownstreamInheritanceFact:
+    """Invented values only: the other carried kind, and the only one naming a connection."""
+
+    return BarrierDownstreamInheritanceFact(
+        statement_index=index,
+        node_references=(_cited_node(fragment),),
+        obligation="requirement",
+        downstream_connection_kind=connection,  # type: ignore[arg-type]
+        inherits_combined_circuit_rating=True,
+    )
+
+
+def _confirmed_barrier_facts(*facts: BarrierTransferFact) -> ConfirmedFacts:
+    return ConfirmedFacts(by_route={ids.SUPPLY_VERIFIED_BARRIER_TRANSFER: facts})
 
 
 def _spd_fragment(route: str) -> RawClauseFragment:
@@ -1067,9 +1080,7 @@ def test_a_propagation_fragment_with_the_wrong_alternative_count_blocks() -> Non
 
 def test_without_verified_isolation_the_combined_requirement_propagates() -> None:
     fragment = _barrier_fragment()
-    facts = _confirmed_barrier_facts(
-        fragment=fragment, isolation_present=False, combined_rule="more_severe_of_both_sides"
-    )
+    facts = _confirmed_barrier_facts(_barrier_fact(fragment))
     rule = _project_barrier(fragment, facts)
     row = _lookup(
         rule,
@@ -1083,85 +1094,104 @@ def test_without_verified_isolation_the_combined_requirement_propagates() -> Non
     assert _value(row, "combined_circuit_requirement") == "more_severe_of_both_sides"
 
 
-def test_verified_isolation_keeps_the_transfer_side_specific() -> None:
-    fragment = _barrier_fragment()
-    facts = _confirmed_barrier_facts(
-        fragment=fragment, isolation_present=True, combined_rule="side_specific_from_transfer"
-    )
-    rule = _project_barrier(fragment, facts)
-    row = _lookup(
-        rule,
-        galvanic_isolation_verified=True,
-        isolation_evidence_kind="test",
-        downstream_connection_kind="verified_galvanic_isolation",
-    )
-    assert row is not None
-    assert _value(row, "transfer_permitted") is True
-    assert _value(row, "propagates_to_connected_circuits") is False
+def test_the_isolation_a_barrier_row_answers_about_comes_from_the_route() -> None:
+    """The clause's own condition, read once and not authorable against it.
 
-
-def test_barrier_transfer_follows_the_reviewed_facts() -> None:
-    facts = _confirmed_barrier_facts(combined_rule="side_specific_from_transfer")
-    rule = _project_barrier(_barrier_fragment(), facts)
-
-    emitted = {
-        value.categorical
-        for row in rule.rows
-        for value in row.values
-        if value.name == "combined_circuit_requirement"
-    }
-
-    assert emitted == {"side_specific_from_transfer"}
-
-
-def test_a_connection_kind_the_statement_excludes_is_not_answered_for() -> None:
-    """The propagation statement is scoped to a connection made without galvanic isolation.
-
-    Matching every connection kind did not merely lose a refusal, it answered a different
-    question: it reported the combined circuit's rating as propagating into a circuit connected
-    through a verified barrier, which is the case the clause excludes.
+    The route reads the fragment that states the unisolated case, so every row it projects answers
+    about an unverified barrier -- whatever the reviewed statement says about the combined circuit.
+    As a reviewed field this was a choice, and the private placeholder chose the contradiction.
     """
 
     fragment = _barrier_fragment()
-    facts = _confirmed_barrier_facts(
-        fragment=fragment,
-        isolation_present=False,
-        connection="no_isolation",
-        combined_rule="more_severe_of_both_sides",
-    )
-    rule = _project_barrier(fragment, facts)
-
-    assert (
-        _lookup(
+    for combined_rule in ("more_severe_of_both_sides", "side_specific_from_transfer"):
+        rule = _project_barrier(
+            fragment, _confirmed_barrier_facts(_barrier_fact(fragment, combined_rule=combined_rule))
+        )
+        row = _lookup(
             rule,
             galvanic_isolation_verified=False,
-            isolation_evidence_kind="test",
-            downstream_connection_kind="verified_galvanic_isolation",
+            isolation_evidence_kind="none",
+            downstream_connection_kind="no_isolation",
         )
-        is None
-    )
+        assert row is not None, combined_rule
+        assert _value(row, "combined_circuit_requirement") == combined_rule
+        assert _value(row, "transfer_permitted") is False
+        # The scope the route does not state reaches no row, rather than borrowing this one's answer.
+        assert (
+            _lookup(
+                rule,
+                galvanic_isolation_verified=True,
+                isolation_evidence_kind="test",
+                downstream_connection_kind="verified_galvanic_isolation",
+            )
+            is None
+        )
 
 
-def test_isolation_claimed_without_any_evidence_stays_uncovered() -> None:
-    """A deliberate refusal: the consumer blocks rather than inheriting a guessed outcome."""
+def test_a_positive_isolation_statement_cannot_be_authored_on_this_route() -> None:
+    """A4's point: the contradiction becomes unspellable, and the one dimension left is refused.
+
+    No variant carries an isolation state at all, so the reading the private placeholder used to
+    author cannot be built. The inheritance statement is the only kind that still names a connection
+    kind, and naming the isolated one on the route scoped to the unisolated case is refused.
+    """
 
     fragment = _barrier_fragment()
-    facts = _confirmed_barrier_facts(
-        fragment=fragment,
-        isolation_present=True,
-        combined_rule="side_specific_from_transfer",
-    )
-    rule = _project_barrier(fragment, facts)
 
+    assert all(
+        "isolation_present" not in model.model_fields
+        for model in (
+            BarrierRatingResolutionFact,
+            BarrierCombinedRequirementFact,
+            BarrierDownstreamInheritanceFact,
+        )
+    )
     assert (
-        _lookup(
-            rule,
-            galvanic_isolation_verified=True,
-            isolation_evidence_kind="none",
-            downstream_connection_kind="verified_galvanic_isolation",
+        review.clause_fact_defect(
+            ids.SUPPLY_VERIFIED_BARRIER_TRANSFER,
+            _barrier_inheritance_fact(fragment, connection="verified_galvanic_isolation"),
+        )
+        is not None
+    )
+    assert (
+        review.clause_fact_defect(
+            ids.SUPPLY_VERIFIED_BARRIER_TRANSFER, _barrier_inheritance_fact(fragment)
         )
         is None
     )
+
+
+def test_the_carried_barrier_statements_change_no_row_and_no_output() -> None:
+    """Both other kinds are resolved and covered, and contribute nothing executable.
+
+    A rating-resolution statement defers each side's rating to that side's own supply route and a
+    downstream-inheritance statement states what a connected circuit takes; this rule declares no
+    output for either, and widening it is #53C item 5.
+    """
+
+    fragment = _barrier_fragment()
+    combined = _barrier_fact(fragment)
+    without = _project_barrier(fragment, _confirmed_barrier_facts(combined))
+    with_carried = _project_barrier(
+        fragment,
+        _confirmed_barrier_facts(
+            combined,
+            _barrier_rating_fact(fragment, index=1),
+            _barrier_inheritance_fact(fragment, index=2),
+        ),
+    )
+
+    assert with_carried == without
+
+
+def test_a_reviewed_barrier_set_stating_no_combined_requirement_refuses_to_project() -> None:
+    fragment = _barrier_fragment()
+    facts = _confirmed_barrier_facts(
+        _barrier_rating_fact(fragment), _barrier_inheritance_fact(fragment, index=1)
+    )
+
+    with pytest.raises(ClauseStructureError, match="no combined circuit requirement"):
+        _project_barrier(fragment, facts)
 
 
 def test_barrier_transfer_refuses_to_project_without_facts() -> None:
@@ -1172,8 +1202,8 @@ def test_barrier_transfer_refuses_to_project_without_facts() -> None:
 
 
 def test_barrier_transfer_keeps_its_declared_contract() -> None:
-    facts = _confirmed_barrier_facts(combined_rule="more_severe_of_both_sides")
-    rule = _project_barrier(_barrier_fragment(), facts)
+    fragment = _barrier_fragment()
+    rule = _project_barrier(fragment, _confirmed_barrier_facts(_barrier_fact(fragment)))
 
     assert {item.name for item in rule.inputs} == {
         "galvanic_isolation_verified",
