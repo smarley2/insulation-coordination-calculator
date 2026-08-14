@@ -2096,9 +2096,9 @@ for the remaining #53B work:
 ### Remaining slices, in order
 
 - [x] `DimensionScope` + the wildcard over-match fix — `dfa84a3`
-- [ ] Per-family `statement_kind` variants, **one commit per family, smallest first**, each green on
+- [x] Per-family `statement_kind` variants, **one commit per family, smallest first**, each green on
       the full public suite and on the private suite where it moves the licensed path or the
-      placeholders:
+      placeholders — all five landed:
   - [x] **1. hf_attenuation** — the gate becomes a scope. This is the commit that teaches the shared
         machinery; see "Handoff: what family 1 must touch" below.
   - [x] **2. system_voltage** — measure | applicability. Introduces `statement_kind` and the
@@ -2116,15 +2116,41 @@ for the remaining #53B work:
       The grammar loads from `ICC_PRIVATE_STANDARDS_DIR` as one recipe-named JSON file, validated on
       the way in by the public grammar models themselves; a context node yields no draft, and the
       completion guard's own stem filter is gone with the drafts it used to skip.
-- [ ] Variant editor: value-set widgets, repeating pair rows, `statement_kind` switching
+- [x] Variant editor: value-set widgets, repeating pair rows, `statement_kind` switching. The scope
+      multi-selection and the kind combo landed first; `PairSequenceEditor` finished it — one row per
+      stated pair, both members over the one declared vocabulary, add and remove, no reordering
+      affordance and nothing that sorts or deduplicates. Choosing a kind rebuilds the rows with the
+      rest of the dimensions, so a collection cannot survive onto a variant that declares no such
+      field, and Duplicate loads a stated collection back through the same wire form a proposal
+      prefills through.
 - [x] Removal of multi-statement authoring; per-statement suggestion action — `0a7141d`
 - [x] Completion guard — coverage anchored on route + cited-node identity + evidence hash
 - [ ] Private placeholder replacement, including the invalid positive-isolation placeholder —
       the guard forced part of this early: the private `_placeholder_facts` now returns a tuple per
       route and the system voltage subclauses author one statement per fragment node, driven off the
       node count rather than a written number. What remains is replacing the invented readings.
-- [ ] **Separate, separately reviewed, mandatory before #53B completes:** clause-region widening,
-      with the private normative-paragraph inventory and the version inspection A6 requires
+- [x] **Separate, separately reviewed, mandatory before #53B completes:** clause-region widening,
+      with the private normative-paragraph inventory and the version inspection A6 requires. Three
+      clauses, one commit each: 4.4.7.2.3's region opened below two of its own normative paragraphs
+      and now runs heading-to-heading (still one node, so every existing citation holds); 4.4.7.2.5
+      gained its own `paragraph` region for the stem the lettered alternatives are scoped by;
+      4.4.7.2.4 declared one region on the later of the two pages it spans and now declares eight
+      contiguous regions in reading order across both, extracting thirteen nodes instead of one. The
+      inventory is the declared per-route shape contract rather than a written list — typed root
+      kinds and bboxes only, which is the form the licensing rules allow — and the private
+      placeholders derive what they author from the route's own proposals, so a re-declared region
+      changes the fixture's behaviour instead of breaking it. Row provenance moved to the node the
+      row's own statement cites, which a subclause reaching two pages needs.
+      **The grammar defect it exposed:** a newly reachable sentence made `ClauseSequenceRule`'s
+      positional reading propose a transition running the wrong way up the scale, with both
+      endpoints real values of the dimension — the reading a reviewer is least likely to catch. A
+      sequence rule now declares the terms the relation itself is spelled with and finds no pair in
+      a sentence spelling none of them; required rather than excluded, because naming the relation
+      is one declaration covering every phrasing while excluding each bare-list phrasing would have
+      to enumerate them and would miss the next one. The private grammar declares that term for both
+      reduction routes. Version inspection: no further importer bump — `iec-pdf-8`'s recorded reason
+      under A6-C already covers both changed extracted evidence and changed projected rule
+      semantics, and the stack is unreleased and on no remote ref.
 
 ### Handoff: what family 1 (hf_attenuation) must touch
 
@@ -2292,8 +2318,14 @@ these two routes' inputs and outputs look different from their siblings'.
 - **`pair_sequence` is a new `DimensionKind`**, detected by `clause_facts.pair_vocabulary` (the
   collection counterpart of `scope_vocabulary`). `ClauseSequenceRule` now fills **one** collection
   dimension rather than two scalars, and `keyword_proposer` emits one reading naming every pair — the
-  A7 duplicate-expansion fix arriving for pairs. The editor offers it as its wire form in a line edit;
-  the repeating pair rows stay the variant-editor slice's job.
+  A7 duplicate-expansion fix arriving for pairs. The editor offered it as its wire form in a line
+  edit until the variant-editor slice replaced that with `PairSequenceEditor`: one row per stated
+  pair, two combos over the one vocabulary, add and remove, in the reviewer's own order. Repeating
+  rows rather than two multi-selections precisely because two independent value sets would fabricate
+  the cartesian product of the endpoints that the pair member model exists to refuse. A row missing
+  a member leaves the whole dimension unchosen, the model's refusal of the collection is quoted
+  beside the rows rather than left for Author to reveal, and the wire form stays the seam the
+  proposal prefills through.
 - The contract, right-sized for these two routes only: `<route>` keeps the permission with inputs
   `source_overvoltage_category`, `insulation_class`, `part_of_category_reduction` and outputs
   `reduction_permitted`, `reduced_category`; `<route>.device_monitoring` is a second projected rule
