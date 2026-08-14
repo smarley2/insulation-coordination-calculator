@@ -416,3 +416,123 @@ Repeated draft rows for one statement were the proposer expanding a set-valued r
 draft per value. They disappear through `exact_set` and the structured-pair collections of A2/A3.
 **No deduplication at the presentation layer**: a duplicate row is a modelling defect, and hiding it
 would leave the defect and lose the signal.
+
+---
+
+# Amendment corrections (2026-08-14, follow-up) — maintainer interrupt during the DimensionScope slice
+
+A2, A3, A5 and A6 as first committed were wrong or incomplete in the ways below. These corrections
+supersede those paragraphs; the originals stay above as the record of what was corrected.
+
+## A2-C — `unrestricted` does not unconditionally translate to a wildcard matcher
+
+A2 as committed said `unrestricted -> op="any"` **and** claimed to fix the consumer-vocabulary
+over-match. Those contradict each other: the evaluator's wildcard matcher returns true for every
+value without inspecting it, so it still matches the whole declared consumer domain and the defect
+survives.
+
+Corrected generic translation contract:
+
+```text
+exact_one(value)   -> equals(value)
+exact_set(values)  -> in(values)
+unrestricted       -> any            ONLY when the reviewed domain equals the complete
+                                     consumer input domain
+                   -> in(reviewed_domain)   otherwise
+```
+
+`unrestricted` means unrestricted **within the statement family's reviewed semantic domain**, never
+automatically over every value the consumer API declares. The matcher helper therefore takes both
+the scope and the **reviewed dimension domain**, and chooses the wildcard or the set accordingly.
+
+This generalizes the one place that already behaved correctly — the attenuation route's evidence
+handling, which maps its collective token to an explicit set over the reviewed kinds precisely
+because the declared vocabulary carries a value no reviewed reading may grant. Unconditional
+`unrestricted -> any` is **not** preserved anywhere.
+
+Required regression: reviewed domain `{A, B}`, consumer vocabulary `{A, B, unspecified}`, scope
+`unrestricted` -> the projected row matches `A` and `B` and **not** `unspecified`.
+
+## A3-C — internal family-model validation may change
+
+A3 as committed promised the family check was unchanged. Corrected scope of that promise:
+
+**External route/family contract unchanged; internal family-model validation may be adapted to the
+discriminated union.** The route-to-family declaration, the family discriminator itself and the
+archive schema are unchanged. The internal helper that maps a family to one concrete model class and
+inspects its declared fields must be allowed to understand a variant union or a shared base instead,
+because a family with variants no longer has a single model whose fields answer for all of it.
+
+## A5-C — coverage binds to source-statement identity, not to proposal values
+
+A5 as committed left coverage implicitly bound to the equality of the proposal's suggested values
+and the authored fact's values. That is wrong, and it would invert the authority rule: a maintainer
+who reviews the source, finds the suggestion wrong and authors corrected values would leave the
+statement permanently "uncovered", and completion permanently blocked, **because they exercised
+judgement**.
+
+Corrected contract — coverage binds to the proposal's stable statement anchor plus its cited
+evidence bundle:
+
+```text
+proposal P describes source statement S
+authored fact F is explicitly authored for source statement S
+-> P is covered
+   even when hash(P.suggested_dimensions) != hash(F.reviewed_dimensions)
+```
+
+The proposal is assistance; the maintainer is authority. Corrections must count as coverage.
+
+Both directions are required and tested:
+- a corrected fact covers the statement it was authored for, whatever its values;
+- **one authored fact never marks two distinct source statements as covered.**
+
+## A6-C — the version inspection, run now, and its verdict
+
+A6 as committed justified "no importer version change" on the grounds that no fragment moves and
+reviewed facts are draft-only. **That reasoning is invalid.** Importer compatibility is judged
+against produced package semantics, not fragment bytes or draft schema — and A2 changes projected
+runtime rule semantics, since a reviewed scope that previously projected a wildcard matcher can now
+project a set matcher. The same reviewed fact set can therefore produce a different decision rule.
+
+### Inspection performed
+
+Two questions: can a trusted package exist under the pre-correction version at all, and would this
+correction change its projected rules?
+
+**Can it exist: yes.** The fact-authored projectors are on merged main. A maintainer authors facts
+and a completion record in a draft, the clause-fact approval blocker clears, and the package is
+approved and carries the projected rules. Reviewed facts stay draft-only, but the *rules they
+projected* are in the package. The private licensed suite performs exactly this sequence, which is
+the existence proof.
+
+**Would it change: yes, for two dimensions.** Comparing each reviewed dimension's authorable domain
+against the consumer input domain it projects into:
+
+| Dimension | Reviewed domain vs consumer domain | Wildcard reading changes? |
+| --- | --- | --- |
+| supply kind, calculation purpose | equal | no |
+| earthing arrangement | equal — every consumer value is authorable | no |
+| input topology | equal | no |
+| **phase system** | reviewed is a strict subset; the consumer domain carries two further states | **yes** |
+| **device placement** | reviewed is a strict subset; the consumer domain carries one further state | **yes** |
+| attenuation evidence | already projected as an explicit reviewed set, not a wildcard | no |
+
+Both changing dimensions are authorable as an unrestricted reading today, with nothing refusing it.
+The device-placement case is the sharper one: that route's own design note says a consumer asking
+about the unreviewed placement must reach no row, and the wildcard reading grants it one — so the
+pre-correction projection contradicts its own recorded intent.
+
+### Verdict
+
+**A compatibility bump is required**: a package approved under the pre-correction version can carry a
+projected rule this correction would not produce, so it must stop being trusted.
+
+**This branch already carries that bump**, taken earlier for the clause-opener region correction. No
+*second* increment is needed: the increment is unreleased and branch-only, so its definition widens
+to cover this slice's projection semantics as well. What changes is the **reason** recorded for it —
+not "a fragment moved" but "extracted evidence and projected rule semantics both changed" — and the
+branch must not ship without it.
+
+The following region-widening slice still runs its own inspection before deciding whether it needs a
+further increment or can widen this same unreleased one again.

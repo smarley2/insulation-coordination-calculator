@@ -2086,11 +2086,11 @@ for the remaining #53B work:
 | Amendment | Effect on this plan |
 | --- | --- |
 | **A1** | Any grammar mapping source phrasing to typed meaning relocates beside the licensed material. Public keeps the generic engine. The route-level multi-statement authoring action is removed; one explicit action records one fact. |
-| **A2** | `DimensionScope` (`unrestricted`/`exact_one`/`exact_set` -> `any`/`equals`/`in`) replaces per-dimension `any_*` tokens and fixes the wildcard over-match into consumer-only states. The combined-designation token for the DVC gate is dropped in favour of `exact_set`. |
-| **A3** | Five families gain `statement_kind` variants. Structured pairs are one ordered collection, never two sets. Collections need canonical ordering, or the fact hash is order-dependent and the duplicate refusal is defeated. |
+| **A2** + **A2-C** | `DimensionScope` replaces per-dimension `any_*` tokens. `exact_one -> equals`, `exact_set -> in`; `unrestricted -> any` **only when the reviewed domain equals the consumer domain**, otherwise `in(reviewed_domain)` — the wildcard alone does not fix the over-match. The combined-designation token for the DVC gate is dropped in favour of `exact_set`. |
+| **A3** + **A3-C** | Five families gain `statement_kind` variants. Structured pairs are one ordered collection, never two sets. Collections need canonical ordering, or the fact hash is order-dependent and the duplicate refusal is defeated. External route/family contract unchanged; **internal family-model validation may be adapted to the union.** |
 | **A4** | Barrier isolation state becomes route-declared structural scope. Context nodes yield no proposal; a statement completing an opener cites both nodes. |
-| **A5** | Completion is prohibited while a known proposal is uncovered, and still requires the maintainer's assertion — it is a lower bound, not a redefinition. |
-| **A6** | This slice needs **no importer version change**: no fragment moves and reviewed facts are draft-only. The region-widening slice decides its own version after inspecting whether any trusted package exists under the affected versions. |
+| **A5** + **A5-C** | Completion is prohibited while a known proposal is uncovered, and still requires the maintainer's assertion — a lower bound, not a redefinition. Coverage binds to **source-statement identity plus cited evidence**, never to proposal-value equality: a corrected fact still covers its statement, and one fact never covers two statements. |
+| **A6** + **A6-C** | Inspection run: a pre-correction package **can** exist and **would** differ, because A2 changes projected rule semantics for two dimensions whose reviewed domain is a strict subset of the consumer domain. **A compatibility bump is required and this branch already carries it** — no second increment; its recorded reason widens to cover projection semantics. The region slice runs its own inspection. |
 | **A7** | Duplicate draft rows disappear through A2/A3, never through presentation-layer deduplication. |
 
 ### Remaining slices, in order
