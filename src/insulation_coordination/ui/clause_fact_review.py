@@ -9,6 +9,8 @@ a reviewer must read the licensed clause to author a statement; it is never writ
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Literal
 
 from pydantic import ValidationError
@@ -28,6 +30,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QPushButton,
     QSpinBox,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -44,6 +47,7 @@ from insulation_coordination.rules.importer.clause_facts import (
     CitedNode,
     SupplyFact,
 )
+from insulation_coordination.rules.importer.clauses import RawClauseFragment
 from insulation_coordination.rules.importer.extract import (
     ImportedRuleDraft,
     canonical_model_sha256,
@@ -61,8 +65,26 @@ from insulation_coordination.rules.importer.review import (
     record_fact_completion,
     retract_clause_fact,
 )
+from insulation_coordination.ui.page_preview import PagePreview, Region
 
 _HEADINGS = ("route", "authored", "status", "fragment")
+
+#: Why each action is unavailable, shown as that button's tooltip whenever it is disabled. A
+#: reviewer facing a grey button must never have to guess what would enable it.
+_DISABLED_REASONS = {
+    "author": (
+        "Choose every dimension of the statement and select at least one clause node it rests on."
+    ),
+    "author_proposed": (
+        "No draft for this route has every dimension proposed. Fill the unchosen ones in by hand "
+        "and use Author fact."
+    ),
+    "retract": "Select an authored statement in the list first.",
+    "duplicate": "Select an authored statement in the list first.",
+}
+_NO_SOURCE_REGION = (
+    "Source region not available: re-extract from the licensed PDFs to see the clause's own page."
+)
 
 #: What each authoring path writes into a fact's notes, so the audit distinguishes a confirmed
 #: proposal from a reading a maintainer typed from scratch. Both name the dialog; only the
@@ -120,6 +142,27 @@ class ClauseFactReviewModel:
     @property
     def draft(self) -> ImportedRuleDraft:
         return self._draft
+
+    def _fragment(self, rule_route: str) -> RawClauseFragment | None:
+        return next(
+            (item for item in self._draft.raw_clause_fragments if item.id == f"raw-{rule_route}"),
+            None,
+        )
+
+    def source_regions(self, rule_route: str) -> tuple[str, tuple[Region, ...]]:
+        """The standard, and the page regions one route's fragment was declared over.
+
+        Exactly the reviewed segments, so the preview shows the evidence and not the unreviewed
+        text around it. Empty for a fragment carrying no segment inventory -- a synthetic one --
+        which the pane reports rather than filling in with a whole page nobody reviewed.
+        """
+
+        fragment = self._fragment(rule_route)
+        if fragment is None:
+            return "", ()
+        return fragment.source.standard, tuple(
+            (segment.page_number, segment.expected_bbox) for segment in fragment.segments
+        )
 
     def routes(self) -> tuple[ClauseFactRouteRow, ...]:
         """Every declared non-legacy route whose fragment this draft carries.
@@ -219,10 +262,7 @@ class ClauseFactReviewModel:
         re-opens nothing. A route this draft never extracted has nothing to propose from.
         """
 
-        fragment = next(
-            (item for item in self._draft.raw_clause_fragments if item.id == f"raw-{rule_route}"),
-            None,
-        )
+        fragment = self._fragment(rule_route)
         return () if fragment is None else propose_supply_facts(fragment, rule_route)
 
     def next_statement_index(self, rule_route: str) -> int:
@@ -321,10 +361,19 @@ class ClauseFactReviewDialog(QDialog):
     determines, such as ``supply_kind``, is shown rather than chosen for the same reason.
     """
 
-    def __init__(self, model: ClauseFactReviewModel, parent: object | None = None) -> None:
+    def __init__(
+        self,
+        model: ClauseFactReviewModel,
+        parent: object | None = None,
+        *,
+        pdf_paths: Mapping[str, Path] | None = None,
+        pdf_passwords: Mapping[Path, str] | None = None,
+    ) -> None:
         super().__init__(parent)  # type: ignore[arg-type]
         self.setWindowTitle("Review clause facts")
         self._model = model
+        # Passwords stay in memory for region rendering only; they are never stored.
+        self._pdf_paths = dict(pdf_paths or {})
         self._combos: dict[str, QComboBox] = {}
         self._edits: dict[str, QLineEdit] = {}
         self._booleans: set[str] = set()
@@ -340,7 +389,18 @@ class ClauseFactReviewDialog(QDialog):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.itemSelectionChanged.connect(self._load_route)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        # A route id and a fragment id are long and are what a reviewer picks a row by, so they
+        # stretch and the two short columns size to their contents. ``ResizeToContents`` on all
+        # four truncated both long ones to a few characters, which made the table unreadable.
+        for column, heading in enumerate(_HEADINGS):
+            header.setSectionResizeMode(
+                column,
+                QHeaderView.ResizeMode.ResizeToContents
+                if heading in ("authored", "status")
+                else QHeaderView.ResizeMode.Stretch,
+            )
+        self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setWordWrap(True)
 
         nodes_box = QGroupBox("Clause nodes the statement rests on (select the cited ones)", self)
         nodes_layout = QVBoxLayout(nodes_box)
@@ -380,10 +440,26 @@ class ClauseFactReviewDialog(QDialog):
         self.duplicate_button.clicked.connect(self.duplicate_selected)
         facts_layout.addWidget(self.duplicate_button)
 
-        # The node pane's job is reading a clause, not fitting one: it gets the larger share.
-        panes = QHBoxLayout()
-        panes.addWidget(nodes_box, 2)
-        panes.addWidget(facts_box, 1)
+        # The clause as it is printed. A reviewer interpreting a statement needs the page it is
+        # on -- the extracted text alone loses the list structure, the emphasis and the table
+        # references that decide what a sentence means. Exactly the reviewed segments, so nothing
+        # around them is displayed as if it were evidence.
+        source_box = QGroupBox("The clause as printed (wheel to zoom, drag to pan)", self)
+        source_layout = QVBoxLayout(source_box)
+        self.source_preview = PagePreview(source_box)
+        self.source_preview.set_passwords(dict(pdf_passwords or {}))
+        self.source_preview.setMinimumWidth(260)
+        source_layout.addWidget(self.source_preview)
+
+        # A splitter rather than fixed stretches: the three panes are read in different
+        # proportions depending on whether the reviewer is reading the page, the nodes or the
+        # drafts, and the fixed layout left the widest content in the narrowest pane.
+        panes = QSplitter(Qt.Orientation.Horizontal, self)
+        panes.setChildrenCollapsible(False)
+        panes.addWidget(source_box)
+        panes.addWidget(nodes_box)
+        panes.addWidget(facts_box)
+        panes.setSizes([380, 420, 400])
 
         self._editor_box = QGroupBox("Statement for the selected route", self)
         self._editor_form = QFormLayout(self._editor_box)
@@ -417,13 +493,23 @@ class ClauseFactReviewDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.table)
-        layout.addLayout(panes)
+        layout.addWidget(panes, 1)
         layout.addWidget(self._editor_box)
         layout.addWidget(self._status)
         layout.addLayout(actions)
         self.refresh()
+        # Room for every route at once plus the header, so the table does not open as a two-row
+        # slit the reviewer has to scroll to find a route in.
+        self.table.setMaximumHeight(self._table_height())
+        self.resize(1280, 860)
         if self.table.rowCount():
             self.table.selectRow(0)
+
+    def _table_height(self) -> int:
+        """Enough for the header and every route row, without the table eating the dialog."""
+
+        rows = sum(self.table.rowHeight(row) for row in range(self.table.rowCount()))
+        return self.table.horizontalHeader().height() + rows + 2 * self.table.frameWidth()
 
     @property
     def status_text(self) -> str:
@@ -638,15 +724,22 @@ class ClauseFactReviewDialog(QDialog):
             self.nodes_list.clear()
             self.facts_list.clear()
             self.seed_hint.clear()
+            self.source_preview.render_regions(None, (), unavailable=_NO_SOURCE_REGION)
             self._node_rows = ()
             self._fact_rows = ()
             self._proposal_rows = ()
-            self.author_button.setEnabled(False)
-            self.author_proposed_button.setEnabled(False)
+            self._set_enabled(self.author_button, False, "author")
+            self._set_enabled(self.author_proposed_button, False, "author_proposed")
             self.complete_button.setEnabled(False)
-            self.retract_button.setEnabled(False)
-            self.duplicate_button.setEnabled(False)
+            self._set_enabled(self.retract_button, False, "retract")
+            self._set_enabled(self.duplicate_button, False, "duplicate")
             return
+        standard, regions = self._model.source_regions(row.rule_route)
+        self.source_preview.render_regions(
+            self._pdf_paths.get(standard) if regions else None,
+            regions,
+            unavailable=_NO_SOURCE_REGION,
+        )
         self._node_rows = self._model.nodes(row.fragment_id)
         self.nodes_list.clear()
         for node in self._node_rows:
@@ -670,11 +763,13 @@ class ClauseFactReviewDialog(QDialog):
         self.statement_index.setValue(self._model.next_statement_index(row.rule_route))
         self._reset_dimensions(row.rule_route)
         self.complete_button.setEnabled(True)
-        self.author_proposed_button.setEnabled(
-            any(proposal.fully_proposed for proposal in self._proposal_rows)
+        self._set_enabled(
+            self.author_proposed_button,
+            any(proposal.fully_proposed for proposal in self._proposal_rows),
+            "author_proposed",
         )
-        self.retract_button.setEnabled(False)
-        self.duplicate_button.setEnabled(False)
+        self._set_enabled(self.retract_button, False, "retract")
+        self._set_enabled(self.duplicate_button, False, "duplicate")
         self._refresh_author_enabled()
 
     def _reset_dimensions(self, rule_route: str) -> None:
@@ -761,8 +856,8 @@ class ClauseFactReviewDialog(QDialog):
         """
 
         fact_row = self._current_fact_row()
-        self.retract_button.setEnabled(fact_row is not None)
-        self.duplicate_button.setEnabled(fact_row is not None)
+        self._set_enabled(self.retract_button, fact_row is not None, "retract")
+        self._set_enabled(self.duplicate_button, fact_row is not None, "duplicate")
         if fact_row is None:
             self._load_proposal()
             return
@@ -840,12 +935,59 @@ class ClauseFactReviewDialog(QDialog):
                 self._booleans.add(field)
         self._editor_kind = fact_kind
 
+    @staticmethod
+    def _set_enabled(button: QPushButton, enabled: bool, reason: str) -> None:
+        """Enable a button, or disable it and say on the button itself why.
+
+        A grey button with no explanation is what left the maintainer with no path forward. The
+        tooltip is cleared when the button works, so it never states a reason that is no longer
+        true.
+        """
+
+        button.setEnabled(enabled)
+        button.setToolTip("" if enabled else _DISABLED_REASONS[reason])
+
+    def _unchosen_dimensions(self) -> tuple[str, ...]:
+        """Which editor dimensions are still blank, in the order the editor shows them."""
+
+        return tuple(
+            field
+            for field in (*self._combos, *self._edits)
+            if not (
+                self._combos[field].currentText()
+                if field in self._combos
+                else self._edits[field].text().strip()
+            )
+        )
+
     def _refresh_author_enabled(self) -> None:
-        self.author_button.setEnabled(
-            bool(self._combos or self._edits)
-            and all(combo.currentText() for combo in self._combos.values())
-            and all(edit.text().strip() for edit in self._edits.values())
-            and bool(self.nodes_list.selectedItems())
+        unchosen = self._unchosen_dimensions()
+        cited = bool(self.nodes_list.selectedItems())
+        self._set_enabled(
+            self.author_button,
+            bool(self._combos or self._edits) and not unchosen and cited,
+            "author",
+        )
+        self._describe_next_step(unchosen, cited)
+
+    def _describe_next_step(self, unchosen: tuple[str, ...], cited: bool) -> None:
+        """Say exactly what is missing before this statement can be authored.
+
+        Only while a draft or statement is loaded and something is missing: an outcome message
+        from a mutation must not be overwritten by a running commentary on the editor.
+        """
+
+        if self._current_proposal() is None and self._current_fact_row() is None:
+            return
+        missing: list[str] = []
+        if unchosen:
+            missing.append(f"unchosen dimension(s): {', '.join(unchosen)}")
+        if not cited:
+            missing.append("no clause node cited")
+        self._status.setText(
+            "This draft is ready: press Author fact to record it."
+            if not missing
+            else f"{'; '.join(missing)}. Choose them to enable Author fact."
         )
 
 

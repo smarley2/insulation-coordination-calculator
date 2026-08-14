@@ -414,7 +414,13 @@ class RulesManagerWindow(QWidget):
         if self._draft is None:
             return
         model = ClauseFactReviewModel(self._draft)
-        dialog = ClauseFactReviewDialog(model)
+        # The reviewer interprets a clause statement against the page it is printed on, the same
+        # reason the grid and curve reviews get the PDFs.
+        dialog = ClauseFactReviewDialog(
+            model,
+            pdf_paths=self._draft_pdfs,
+            pdf_passwords=self._draft_passwords,
+        )
         dialog.exec()
         self.set_draft(model.draft)
 

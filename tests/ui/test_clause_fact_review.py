@@ -6,6 +6,7 @@ from typing import Literal, get_args
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QHeaderView
 
 from insulation_coordination.domain.rules import RulePackageError
 from insulation_coordination.rules.importer import clause_fact_proposals
@@ -17,10 +18,12 @@ from insulation_coordination.rules.importer.clause_facts import (
     SpdReductionFact,
     SystemVoltageFact,
 )
+from insulation_coordination.rules.importer.clauses import ClauseNode, RawClauseFragment
 from insulation_coordination.rules.importer.extract import (
     ImportedRuleDraft,
     canonical_model_sha256,
 )
+from insulation_coordination.rules.importer.identify import ClauseSegmentSpec
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
     LEGACY_BRANCH_AUTHORITY_RULE_IDS,
@@ -28,19 +31,30 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply impor
     SUPPLY_FACT_FAMILY_BY_ROUTE,
     SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE,
 )
+from insulation_coordination.ui import clause_fact_review
 from insulation_coordination.ui.clause_fact_review import (
+    _HEADINGS,
     ClauseFactReviewDialog,
     ClauseFactReviewModel,
 )
 from tests.conftest import _logged
+from tests.fixtures.synthetic_pdf import create_clause_pdf
 from tests.rules.importer.iec62477_2022.test_procedure_recipes import _draft
-from tests.rules.importer.iec62477_2022.test_supply_clause_recipes import _fragment
+from tests.rules.importer.iec62477_2022.test_supply_clause_recipes import SOURCE, _fragment
 from tests.rules.importer.test_clause_fact_proposals import fragment_with_sentences
 from tests.rules.importer.test_clause_fact_review_api import _hf_fact
 
 HF_ROUTE = ids.SUPPLY_HF_TRANSFORMER_ATTENUATION
 MAINS_ROUTE = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains"
 _STATUS_COLUMN = 2
+
+#: The synthetic clause fixture's own bullet region, for the source preview. Invented geometry
+#: over an invented PDF; it matches the region ``tests/rules/test_clause_extraction.py`` declares.
+_PREVIEW_SEGMENT = ClauseSegmentSpec(
+    page_number=3,
+    expected_bbox=(70.0, 300.0, 524.0, 700.0),
+    expected_root_kind="bullets",
+)
 
 # Stated here independently of the UI's own mapping, so these tests prove the editor offers the
 # family the route declares rather than agreeing with whatever the dialog decided.
@@ -65,6 +79,34 @@ def _expected_options(fact_kind: str) -> dict[str, tuple[str, ...]]:
         elif get_args(field.annotation):
             options[name] = get_args(field.annotation)
     return options
+
+
+def _fragment_over_segments(
+    semantic_id: str, segments: tuple[ClauseSegmentSpec, ...]
+) -> RawClauseFragment:
+    """A synthetic fragment declaring the given page regions, for the source preview.
+
+    Invented node text under the real fragment id, exactly as the shared fixture does. Only the
+    declared segments matter here: they are what the pane crops the page to.
+    """
+
+    nodes = (
+        ClauseNode(
+            order=0,
+            kind="paragraph",
+            raw_text="synthetic neutral node for the source preview",
+            source=SOURCE.model_copy(update={"row": "node 0"}),
+        ),
+    )
+    fragment = RawClauseFragment(
+        id=f"raw-{semantic_id}",
+        raw_sha256="0" * 64,
+        nodes=nodes,
+        tokens=(),
+        segments=segments,
+        source=SOURCE.model_copy(update={"standard": "SYNTHETIC"}),
+    )
+    return fragment.model_copy(update={"raw_sha256": canonical_model_sha256(fragment)})
 
 
 def _route_position(model: ClauseFactReviewModel, rule_route: str) -> int:
@@ -835,6 +877,119 @@ def test_the_batch_action_stays_disabled_while_no_draft_is_fully_proposed(
 
     assert not model.draft.clause_fact_reviews
     assert "No draft" in dialog.status_text
+
+
+# --- the clause as printed, and telling the reviewer what to do -----------------------
+
+
+def test_the_source_pane_renders_the_routes_own_declared_regions(qtbot, tmp_path) -> None:
+    """A reviewer interprets a statement against the page it is printed on.
+
+    Exactly the reviewed segments, cropped: rendering the whole page would put unreviewed text
+    beside the statement as if it were part of the evidence.
+    """
+
+    path = tmp_path / "clause.pdf"
+    create_clause_pdf(path)
+    fragment = _fragment_over_segments(HF_ROUTE, (_PREVIEW_SEGMENT,))
+    fragments = tuple(
+        fragment if spec.semantic_id == HF_ROUTE else _fragment(spec.semantic_id)
+        for spec in SUPPLY_CLAUSES
+    )
+    model = ClauseFactReviewModel(_logged(_draft(fragments=fragments)))
+    dialog = ClauseFactReviewDialog(model, pdf_paths={"SYNTHETIC": path})
+    qtbot.addWidget(dialog)
+
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+
+    assert len(dialog.source_preview.pixmaps) == 1
+    assert dialog.source_preview.messages == ()
+    # Cropped to the declared region, so it is far shorter than the whole page.
+    assert dialog.source_preview.pixmaps[0].height() < dialog.source_preview.pixmaps[0].width() * 3
+
+
+def test_a_route_with_no_declared_region_says_so_instead_of_showing_a_page(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """The shared fixture's fragments carry no segment inventory; none may be invented for them."""
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+
+    assert dialog.source_preview.pixmaps == ()
+    assert dialog.source_preview.messages == (clause_fact_review._NO_SOURCE_REGION,)
+
+
+def test_every_disabled_action_states_why_it_is_disabled(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """The maintainer sat in front of grey buttons with no path forward; that must be impossible."""
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+
+    for button in (
+        dialog.author_button,
+        dialog.author_proposed_button,
+        dialog.retract_button,
+        dialog.duplicate_button,
+    ):
+        assert button.isEnabled() is False
+        assert button.toolTip()
+
+    dialog.nodes_list.item(0).setSelected(True)
+    _fill_hf_dimensions(dialog)
+
+    assert dialog.author_button.isEnabled() is True
+    # Cleared once the action works, so a tooltip never states a reason that is no longer true.
+    assert dialog.author_button.toolTip() == ""
+
+
+def test_selecting_a_partly_proposed_draft_names_the_dimensions_still_needed(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """Naming them is the difference between a disabled button and a next step."""
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+
+    dialog.facts_list.setCurrentRow(0)
+
+    assert "unchosen dimension(s)" in dialog.status_text
+    assert "dvc_gate" in dialog.status_text
+    assert "Author fact" in dialog.status_text
+
+    _fill_hf_dimensions(dialog)
+
+    assert "ready" in dialog.status_text
+
+
+def test_the_routes_table_stretches_the_columns_a_reviewer_picks_a_row_by(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """Both id columns truncated to a few characters, which made the table unreadable."""
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    header = dialog.table.horizontalHeader()
+
+    modes = {heading: header.sectionResizeMode(column) for column, heading in enumerate(_HEADINGS)}
+
+    assert modes["route"] == QHeaderView.ResizeMode.Stretch
+    assert modes["fragment"] == QHeaderView.ResizeMode.Stretch
+    assert modes["authored"] == QHeaderView.ResizeMode.ResizeToContents
+    # Tall enough for every route at once rather than opening as a two-row slit.
+    assert dialog.table.maximumHeight() >= sum(
+        dialog.table.rowHeight(row) for row in range(dialog.table.rowCount())
+    )
 
 
 # --- authoring every fully proposed statement of a route ------------------------------
