@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListView,
     QListWidget,
+    QListWidgetItem,
     QPushButton,
     QSpinBox,
     QSplitter,
@@ -38,6 +39,7 @@ from PySide6.QtWidgets import (
 
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.rules.importer.clause_fact_proposals import (
+    PRIVATE_MATERIAL_DIRECTORY_VARIABLE,
     SCOPE_UNRESTRICTED,
     ClauseFactProposal,
     DimensionKind,
@@ -66,6 +68,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply impor
     SUPPLY_FACT_FAMILY_BY_ROUTE,
     SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE,
     propose_supply_facts,
+    supply_fact_proposal_grammars,
 )
 from insulation_coordination.rules.importer.review import (
     author_clause_fact,
@@ -92,6 +95,26 @@ _DISABLED_REASONS = {
 }
 _NO_SOURCE_REGION = (
     "Source region not available: re-extract from the licensed PDFs to see the clause's own page."
+)
+
+#: Why a route offers no draft at all. Three separate reasons, kept separate: an empty list on its
+#: own reads as "this clause proposes nothing", and only the last of the three means that. The
+#: grammar mapping phrasing to meaning is licensed-derived and loads from beside the licensed
+#: material (amendment A1), so on a public checkout the first of the three is the normal state --
+#: statements are still authored, entirely by hand.
+_NO_PRIVATE_GRAMMAR = (
+    "No drafts: the private clause-fact grammar is not installed, so nothing can be suggested for "
+    f"any route. Set {PRIVATE_MATERIAL_DIRECTORY_VARIABLE} to the folder holding the licensed "
+    "material and reopen. Every statement can still be authored by hand, which is what a draft "
+    "only ever prefills."
+)
+_NO_GRAMMAR_FOR_ROUTE = (
+    "No drafts: this route's branch authority is declared in the recipe, so its clause proposes "
+    "nothing. Author any statement it states by hand."
+)
+_NO_STATEMENT_SENTENCES = (
+    "No drafts: this fragment carries no sentence that states a branch. A sentence that only "
+    "scopes the ones after it is evidence, not a statement."
 )
 
 
@@ -340,6 +363,23 @@ class ClauseFactReviewModel:
         fragment = self._fragment(rule_route)
         return () if fragment is None else propose_supply_facts(fragment, rule_route)
 
+    def proposals_unavailable(self, rule_route: str) -> str:
+        """Why this route offers no draft at all, or ``""`` when it offers some.
+
+        The honest half of the relocation: with the grammar private, "no drafts" is the ordinary
+        state of a public checkout, and an empty list alone would read as a claim about the clause.
+        Asked of every draft rather than of the open ones, so a route whose drafts are all authored
+        stays quiet -- that is the finished case, not an unavailable one.
+        """
+
+        if self.proposals(rule_route):
+            return ""
+        if not supply_fact_proposal_grammars():
+            return _NO_PRIVATE_GRAMMAR
+        if rule_route not in supply_fact_proposal_grammars():
+            return _NO_GRAMMAR_FOR_ROUTE
+        return _NO_STATEMENT_SENTENCES
+
     def covered_by(self, rule_route: str, proposal: ClauseFactProposal) -> int | None:
         """The authored statement already carrying this draft's reading, or ``None``.
 
@@ -452,8 +492,9 @@ class ClauseFactReviewDialog(QDialog):
 
     No wizard: the reviewer sees every route at once, reads the selected route's fragment
     nodes, and authors, replaces, duplicates, retracts or completes. Below the route's authored
-    statements sit its proposed drafts, one per reading the recipe's grammar reads out of one
-    clause sentence, described in ``_list_proposals``. A draft's suggested values reach the editor
+    statements sit its proposed drafts, one per reading the private grammar reads out of one
+    clause sentence, described in ``_list_proposals`` -- and, where a route has none, the reason
+    there are no drafts rather than a bare empty list. A draft's suggested values reach the editor
     only as a prefill, one draft at a time, and **no action records more than one statement**: a
     suggestion is assistance, the maintainer is the authority, and a press that certified several
     machine-derived normative facts at once would not be review. The editor's fields come
@@ -884,7 +925,7 @@ class ClauseFactReviewDialog(QDialog):
         # Only the drafts still open: an authored one is done and leaves the list, rather than
         # sitting there as an open item inviting a second copy of itself.
         self._proposal_rows = self._model.open_proposals(row.rule_route)
-        self._list_proposals()
+        self._list_proposals(row.rule_route)
         family = SUPPLY_FACT_FAMILY_BY_ROUTE[row.rule_route]
         if self._editor_kind != family:
             self._build_editor(family)
@@ -929,7 +970,7 @@ class ClauseFactReviewDialog(QDialog):
             supply_kind_combo.setCurrentText(SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE[rule_route])
             supply_kind_combo.setEnabled(False)
 
-    def _list_proposals(self) -> None:
+    def _list_proposals(self, rule_route: str) -> None:
         """Offer one draft per proposed reading of one clause sentence, below the authored ones.
 
         Authoring a statement used to be every dimension blank *and* a decision about how many
@@ -943,6 +984,9 @@ class ClauseFactReviewDialog(QDialog):
         how many statements the clause makes, a reviewer is free to author fewer, more, or
         differently cited ones -- a statement resting on two nodes is still selected by hand --
         and nothing is recorded until an Author button is pressed.
+
+        A route with no draft at all ends with an unselectable row saying why, because an empty
+        list would otherwise read as a claim that the clause states nothing.
         """
 
         for proposal in self._proposal_rows:
@@ -956,6 +1000,13 @@ class ClauseFactReviewDialog(QDialog):
                 f"{proposal.node_references[0].node_order} · {reading} · "
                 f"{proposal.sentence_text}"
             )
+        unavailable = self._model.proposals_unavailable(rule_route)
+        if unavailable:
+            # Unselectable, so it can never be loaded as if it were a draft: both row readers
+            # index by position into the authored statements and then the drafts, and neither
+            # reaches past them.
+            notice = QListWidgetItem(unavailable, self.facts_list)
+            notice.setFlags(Qt.ItemFlag.NoItemFlags)
 
     def _fill_editor_from_fact(self, fact: SupplyFact) -> None:
         """Load one statement's field values and cited nodes into the editor.

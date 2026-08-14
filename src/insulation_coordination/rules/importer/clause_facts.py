@@ -3,6 +3,13 @@
 A statement is authored by a maintainer from the private fragment, never proposed by public code,
 and binds a digest of exactly the nodes it cites. No statement text, clause wording or numeric
 source content belongs here: only the neutral vocabulary each field draws from.
+
+That first sentence was false for as long as a keyword grammar mapping the source's phrasing to
+these typed fields sat in the public recipe: it derived complete typed readings from licensed text,
+which amendment A1's audit judged licensed-derived normative content. Such a grammar now loads only
+from beside the licensed material, and the contract is *asserted* rather than restated --
+``test_no_public_module_declares_a_clause_fact_grammar`` fails if any module under ``src`` builds
+one again, so this docstring cannot quietly go false a second time.
 """
 
 from __future__ import annotations

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -95,6 +96,75 @@ def draft_with_unmatched_row(voltage_limits_grid: RawGrid) -> ImportedRuleDraft:
     )
     draft = _draft(voltage_limits_grid).model_copy(update={"axis_selector_proposals": unmatched})
     return _logged(draft)
+
+
+@pytest.fixture
+def synthetic_private_grammars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Install a grammar where the licensed material would live, so a public test can propose.
+
+    A grammar mapping source phrasing to typed meaning is licensed-derived and loads only from
+    beside the licensed material (amendment A1), so a public checkout has none and every route
+    proposes nothing. What the tests using this fixture need is a grammar *at all*: a route with
+    one yields one draft per statement sentence whether or not a keyword matched, which is what
+    gives the completion guard its obligations to count and the review dialog its draft rows.
+
+    Every keyword below is a coined marker (``SYNTH_*``) that means nothing outside this file and
+    occurs in no document, so no mapping from any source's phrasing to a typed meaning appears in
+    this repository. Only the attenuation family gets rules, because it is the family the public
+    surfaces are exercised through; every other route gets a rule-free grammar, which still yields
+    one draft per statement sentence with every dimension unchosen. Families and statement kinds are
+    derived from the recipe's own public declarations, which is what
+    ``_require_declared_proposal_grammars`` demands of the real file too.
+
+    Written through the real file and the real environment variable rather than by patching the
+    loader, so the loading path the maintainer depends on is the one the public suite covers.
+    """
+    from insulation_coordination.rules.importer.clause_fact_proposals import (
+        PRIVATE_MATERIAL_DIRECTORY_VARIABLE,
+        ClauseFactGrammar,
+        ClauseKeywordRule,
+        fact_variants,
+    )
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        LEGACY_BRANCH_AUTHORITY_RULE_IDS,
+        SUPPLY_FACT_FAMILY_BY_ROUTE,
+        SUPPLY_FACT_GRAMMAR_FILE,
+    )
+
+    synthetic_rules = {
+        "hf_attenuation": (
+            ClauseKeywordRule(dimension="obligation", value="requirement", keywords=("synthbind",)),
+            ClauseKeywordRule(dimension="obligation", value="permission", keywords=("synthallow",)),
+            ClauseKeywordRule(dimension="dvc_gate", value="dvc_as", keywords=("synthgateone",)),
+            ClauseKeywordRule(dimension="dvc_gate", value="dvc_b", keywords=("synthgatetwo",)),
+            ClauseKeywordRule(
+                dimension="evidence_kind", value="any_evidence", keywords=("synthevidence",)
+            ),
+            ClauseKeywordRule(
+                dimension="comparison_required", value="true", keywords=("synthcompare",)
+            ),
+        )
+    }
+    directory = tmp_path / "synthetic-private-material"
+    directory.mkdir()
+    payload = {
+        route: ClauseFactGrammar(
+            fact_kind=family,
+            statement_kind=next(iter(fact_variants(family)), ""),
+            keyword_rules=synthetic_rules.get(family, ()),
+            constants=(
+                {"threshold_reference": "synthetic.threshold.route"}
+                if family == "hf_attenuation"
+                else {}
+            ),
+        ).model_dump()
+        for route, family in SUPPLY_FACT_FAMILY_BY_ROUTE.items()
+        if route not in LEGACY_BRANCH_AUTHORITY_RULE_IDS
+    }
+    path = directory / SUPPLY_FACT_GRAMMAR_FILE
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    monkeypatch.setenv(PRIVATE_MATERIAL_DIRECTORY_VARIABLE, str(directory))
+    return path
 
 
 @pytest.fixture

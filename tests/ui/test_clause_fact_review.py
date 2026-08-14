@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal, get_args
 
 import pytest
@@ -941,13 +942,17 @@ _SEEDED_NODE_COUNT = 3
 
 
 @pytest.fixture
-def draft_with_a_multi_node_fragment() -> ImportedRuleDraft:
+def draft_with_a_multi_node_fragment(synthetic_private_grammars: Path) -> ImportedRuleDraft:
     """Every supply fragment, one of them carrying several single-sentence nodes.
 
     The shared fixture gives each fragment a single node, which cannot show a surface that
     offers a draft per sentence across nodes. Node text stays invented here exactly as it is
     there. Rebuilt rather than copied from that fixture, because the extraction audit record
     every correction verifies is a digest of the fragments themselves.
+
+    A grammar is installed too: with every grammar beside the licensed material, a public checkout
+    proposes nothing at all, and a surface test asserting what the drafts look like would pass
+    vacuously with no drafts.
     """
 
     fragments = tuple(
@@ -1369,7 +1374,7 @@ def test_a_blocked_completion_names_the_uncovered_statements_and_the_way_out(
 
 
 def test_selecting_a_partly_proposed_draft_names_the_dimensions_still_needed(
-    qtbot, draft_with_supply_fragments
+    qtbot, draft_with_supply_fragments, synthetic_private_grammars: Path
 ) -> None:
     """Naming them is the difference between a disabled button and a next step."""
 
@@ -1412,18 +1417,19 @@ def test_the_routes_table_stretches_the_columns_a_reviewer_picks_a_row_by(
 
 # --- one suggestion at a time ---------------------------------------------------------
 
-#: Invented sentences carrying, between them, every term the attenuation route's declared rules
-#: name -- two that settle every dimension and one that settles none. They are written for this
-#: file out of the public keyword list and state nothing any clause states.
+#: Invented sentences carrying, between them, every marker the synthetic attenuation grammar names
+#: -- two that settle every dimension and one that settles none. The markers are coined in
+#: ``synthetic_private_grammars`` and mean nothing outside these tests; the real grammar's own terms
+#: live beside the licensed material (amendment A1) and are not spelled anywhere here.
 _FULLY_PROPOSED_SENTENCES = (
-    "Synthetic DVC As gate shall be shown by test, simulation or calculation.",
-    "Synthetic DVC B gate shall be shown by test, simulation or calculation.",
+    "Synthetic reading: synthbind synthgateone synthevidence synthcompare.",
+    "Synthetic reading: synthbind synthgatetwo synthevidence synthcompare.",
     "Synthetic reading naming nothing the grammar looks for.",
 )
 
 
 @pytest.fixture
-def draft_with_fully_proposed_sentences() -> ImportedRuleDraft:
+def draft_with_fully_proposed_sentences(synthetic_private_grammars: Path) -> ImportedRuleDraft:
     """Every supply fragment, with the attenuation route's nodes carrying the sentences above."""
 
     fragments = tuple(

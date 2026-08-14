@@ -23,24 +23,34 @@ from insulation_coordination.rules.importer.clause_fact_proposals import (
     scope_tokens,
 )
 from insulation_coordination.rules.importer.extract import ImportedRuleDraft
+from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
-    SUPPLY_FACT_PROPOSAL_GRAMMARS,
+    LEGACY_BRANCH_AUTHORITY_RULE_IDS,
+    SUPPLY_FACT_FAMILY_BY_ROUTE,
     propose_supply_facts,
+    supply_fact_proposal_grammars,
 )
+from tests.rules.importer.test_clause_fact_proposals import fragment_with_sentences
 
-pytestmark = pytest.mark.private_standard
+pytestmark = [pytest.mark.private_standard, pytest.mark.usefixtures("installed_grammars")]
 
-ROUTES = tuple(SUPPLY_FACT_PROPOSAL_GRAMMARS)
+#: Derived from the recipe's own public declarations rather than from the loaded grammar, so
+#: collection does not depend on the private file being installed -- and so the parametrization is
+#: the same set the loader's own agreement check demands of that file.
+ROUTES = tuple(sorted(set(SUPPLY_FACT_FAMILY_BY_ROUTE) - LEGACY_BRANCH_AUTHORITY_RULE_IDS))
 
-#: The routes sharing each declared grammar, keyed by the grammar's family. Two grammars are
-#: shared by two routes each -- one rule stated across two subclauses -- so reachability is a
-#: property of a grammar over its own routes rather than of a single route.
-ROUTES_BY_GRAMMAR: dict[str, tuple[str, ...]] = {
-    grammar.fact_kind: tuple(
-        route for route, other in SUPPLY_FACT_PROPOSAL_GRAMMARS.items() if other == grammar
-    )
-    for grammar in SUPPLY_FACT_PROPOSAL_GRAMMARS.values()
-}
+#: The families a declared grammar exists for, in route order.
+FAMILIES = tuple(dict.fromkeys(SUPPLY_FACT_FAMILY_BY_ROUTE[route] for route in ROUTES))
+
+
+def _routes_sharing_a_grammar(family: str) -> tuple[str, ...]:
+    """The routes sharing one family's declared grammar.
+
+    Two grammars are shared by two routes each -- one rule stated across two subclauses -- so
+    reachability is a property of a grammar over its own routes rather than of a single route.
+    """
+
+    return tuple(route for route in ROUTES if SUPPLY_FACT_FAMILY_BY_ROUTE[route] == family)
 
 
 def _fragment(draft: ImportedRuleDraft, route: str):
@@ -50,7 +60,7 @@ def _fragment(draft: ImportedRuleDraft, route: str):
 def _declared_dimensions(route: str) -> set[str]:
     """Every dimension the route's own declared rules claim to settle."""
 
-    grammar = SUPPLY_FACT_PROPOSAL_GRAMMARS[route]
+    grammar = supply_fact_proposal_grammars()[route]
     return (
         {rule.dimension for rule in grammar.keyword_rules}
         | {rule.dimension for rule in grammar.sequence_rules}
@@ -58,7 +68,7 @@ def _declared_dimensions(route: str) -> set[str]:
     )
 
 
-@pytest.mark.parametrize("family", tuple(ROUTES_BY_GRAMMAR))
+@pytest.mark.parametrize("family", FAMILIES)
 def test_every_declared_dimension_is_reached_on_the_real_fragments(
     extracted_draft: ImportedRuleDraft, family: str
 ) -> None:
@@ -71,7 +81,7 @@ def test_every_declared_dimension_is_reached_on_the_real_fragments(
     directions -- an unreachable rule fails here, and a missing one is a gap the report names.
     """
 
-    routes = ROUTES_BY_GRAMMAR[family]
+    routes = _routes_sharing_a_grammar(family)
     reached = {
         name
         for route in routes
@@ -89,7 +99,7 @@ def test_a_reached_dimension_is_never_reached_with_a_value_outside_its_vocabular
 ) -> None:
     """A proposal a reviewer cannot author is worse than no proposal at all."""
 
-    grammar = SUPPLY_FACT_PROPOSAL_GRAMMARS[route]
+    grammar = supply_fact_proposal_grammars()[route]
     # The grammar's own statement kind, not the family's: a family with variants has no single
     # dimension list, and the drafts this route proposes are of exactly one kind.
     declared = {
@@ -171,3 +181,101 @@ def test_no_proposal_is_recorded_anywhere_on_the_draft(
 
     assert not extracted_draft.clause_fact_reviews
     assert not extracted_draft.clause_fact_completions
+
+
+def test_every_non_legacy_route_declares_a_grammar_of_its_own_family() -> None:
+    """The real file agrees with the recipe's route-to-family declarations.
+
+    The public suite asserts that the load-time check *fires*; only here can it be asserted that
+    the maintainer's own file passes it. A route missing from the file silently loses every prefill
+    while still looking authorable.
+    """
+
+    grammars = supply_fact_proposal_grammars()
+
+    assert set(grammars) == set(ROUTES)
+    assert all(
+        grammar.fact_kind == SUPPLY_FACT_FAMILY_BY_ROUTE[route]
+        for route, grammar in grammars.items()
+    )
+
+
+# --- the declared rules' own readings ------------------------------------------------
+#
+# Relocated here with the grammar they test (amendment A1). Their sentences are invented for these
+# tests out of a family's own declared vocabulary, but what they assert is which reading a
+# *declared rule* makes of a phrasing -- which is the licensed-derived half, so it cannot be
+# asserted from the public tree at all.
+
+
+def test_a_floor_sentence_proposes_no_insulation_class() -> None:
+    """A reading the sentence does not make is worse than a blank field.
+
+    A blank field cannot be confirmed by accident; a wrong value can. Both sentences below are
+    invented for this test out of the reduction family's own declared vocabulary: one shapes a
+    permission over two classes, the other names the two classes a floor is stated over. Only
+    the first may propose a class.
+
+    Also the A7 duplicate-expansion fix, on the real grammar: the permission's class dimension is a
+    scope, so a sentence naming two classes yields **one** draft naming both rather than one per
+    class.
+    """
+
+    route = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains"
+    permission_sentence = (
+        "Synthetic permission naming basic insulation and supplementary insulation."
+    )
+    floor_sentence = (
+        "Synthetic floor naming double insulation and reinforced insulation, "
+        "not less than basic insulation."
+    )
+    fragment = fragment_with_sentences(route, (permission_sentence, floor_sentence))
+
+    proposals = propose_supply_facts(fragment, route)
+    permission = [item for item in proposals if item.sentence_index == 0]
+    floor = [item for item in proposals if item.sentence_index == 1]
+
+    assert [item.chosen["insulation_classes"] for item in permission] == ["basic|supplementary"]
+    assert floor
+    assert all("insulation_classes" in item.unchosen for item in floor)
+
+
+@pytest.mark.parametrize(
+    ("sentence", "expected"),
+    (
+        # The two explicit modal verbs.
+        ("Synthetic reading which shall hold.", "requirement"),
+        ("Synthetic reading which may hold.", "permission"),
+        # Unmodalized present indicative, in three forms, binds.
+        ("Synthetic reading is the stated one.", "requirement"),
+        ("Synthetic readings are the stated ones.", "requirement"),
+        ("Synthetic reading applies here.", "requirement"),
+        # A permission that also carries a present-indicative verb must never read as binding:
+        # this is the pair the whole exclusion list exists for.
+        ("Synthetic readings are provided and may be designed for.", "permission"),
+        ("Synthetic readings are supplied and may be determined.", "permission"),
+        # Non-binding and capability modality settle nothing rather than binding.
+        ("Synthetic reading should be the stated one.", None),
+        ("Synthetic reading can be the stated one.", None),
+        ("Synthetic reading might be the stated one.", None),
+        # A negated present states an exemption; the grammar declines to read its obligation.
+        ("Synthetic reading is not the stated one.", None),
+        # No verb at all, and no stem to inherit from.
+        ("synthetic fragment of a reading", None),
+    ),
+)
+def test_the_obligation_rules_read_exactly_the_modality_the_sentence_states(
+    sentence: str, expected: str | None
+) -> None:
+    """Every firing set was checked by hand against the document; these pin the shapes.
+
+    A wrong obligation is the one proposal a maintainer is least likely to catch, because it
+    reads plausibly either way. ``None`` means the sentence settles the dimension nowhere and it
+    must stay unchosen -- never defaulted to the binding reading.
+    """
+
+    route = ids.SUPPLY_VERIFIED_BARRIER_TRANSFER
+    (proposal,) = propose_supply_facts(fragment_with_sentences(route, (sentence,)), route)
+
+    assert proposal.chosen.get("obligation") == expected
+    assert ("obligation" in proposal.unchosen) is (expected is None)

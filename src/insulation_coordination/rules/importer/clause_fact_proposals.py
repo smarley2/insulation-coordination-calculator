@@ -6,21 +6,25 @@ it is asked for, and nothing here is stored on the draft. A clause fact review b
 evidence and the fact's own hash rather than a proposal digest, so a re-extraction simply
 re-proposes and re-opens nothing.
 
-The division mirrors the one ``AxisKeywordRule`` and ``AxisSelectorSpec`` already keep for a
-grid axis: the rule *types* are generic and live here, while which keyword settles which
-dimension is declared in the recipe beside the clause specs. No clause prose, no statement
-inventory and no sentence-to-statement mapping belongs in this repository -- only the neutral
-vocabulary each dimension draws from and the short generic terms a sentence is scanned for.
+**Only the generic engine is here** (amendment A1): sentence segmentation, the rule *types*, the
+typed proposal shape, the wire forms an editor prefills from, and the validation that a proposal
+names only dimensions and values the fact models declare. Which term settles which dimension is a
+mapping from source phrasing to typed normative meaning, which is licensed-derived content however
+generic each half looks alone -- so it is declared beside the licensed material and read through
+``load_private_grammars``, and nothing in this repository names a source term at all.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, get_args
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, model_validator
 
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import Identifier, RulePackageError
@@ -485,6 +489,65 @@ class ClauseFactGrammar(FrozenModel):
         return self
 
 
+#: The environment variable naming the folder the licensed extraction and review material lives
+#: in -- the same one the licensed documents themselves are found through. Any grammar mapping
+#: source phrasing to typed meaning loads only from there (amendment A1), so a public checkout
+#: carries none by construction.
+#:
+#: Deliberately no default. Nothing else in ``src`` guesses a repository root, and a default would
+#: have the app silently read a folder the maintainer never named. Unset means no grammar, which is
+#: a state the review surface *reports* rather than one it hides behind an empty draft list.
+PRIVATE_MATERIAL_DIRECTORY_VARIABLE = "ICC_PRIVATE_STANDARDS_DIR"
+
+
+def private_material_directory() -> Path | None:
+    """Where the licensed material lives, or ``None`` when the maintainer has not named it."""
+
+    directory = os.environ.get(PRIVATE_MATERIAL_DIRECTORY_VARIABLE, "").strip()
+    return Path(directory) if directory else None
+
+
+def load_private_grammars(file_name: str) -> dict[str, ClauseFactGrammar]:
+    """One recipe's route-to-grammar declarations, read from beside the licensed material.
+
+    Empty -- and never partial -- when the private material is not installed: a route then offers
+    no draft, which is honest, and the reviewer authors every statement by hand exactly as they do
+    for a route no grammar reaches.
+
+    Declared as data rather than as importable code, for two reasons. The grammar models are
+    already the schema, so ``ClauseFactGrammar``'s own validation -- a dimension the variant
+    declares, a value inside that dimension's vocabulary -- keeps happening in public code on the
+    way in, which is what amendment A1 leaves public. And a data file cannot execute, so the app
+    reads the maintainer's private folder without running anything out of it.
+
+    A malformed or unauthorable declaration raises rather than degrading to no proposals: the
+    absence of the file is a state to report, but a file that is present and wrong is a defect the
+    maintainer has to see.
+    """
+
+    directory = private_material_directory()
+    path = None if directory is None else directory / file_name
+    if path is None or not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise RulePackageError(f"{file_name} cannot be read as a proposal grammar: {error}") from (
+            error
+        )
+    if not isinstance(payload, dict):
+        raise RulePackageError(f"{file_name} must declare one grammar per rule route")
+    try:
+        return {
+            str(route): ClauseFactGrammar.model_validate(declaration)
+            for route, declaration in payload.items()
+        }
+    except ValidationError as error:
+        raise RulePackageError(
+            f"{file_name} declares a grammar nobody could author: {error}"
+        ) from (error)
+
+
 class ClauseSentence(FrozenModel):
     """One normative sentence of one fragment node.
 
@@ -718,6 +781,7 @@ def proposed_fact(proposal: ClauseFactProposal, *, statement_index: int) -> Supp
 
 __all__ = [
     "FACT_MODELS_BY_KIND",
+    "PRIVATE_MATERIAL_DIRECTORY_VARIABLE",
     "SCOPE_UNRESTRICTED",
     "ClauseFactGrammar",
     "ClauseFactProposal",
@@ -732,9 +796,11 @@ __all__ = [
     "fact_model",
     "fact_variants",
     "keyword_proposer",
+    "load_private_grammars",
     "pair_from_wire",
     "pair_tokens",
     "pair_wire",
+    "private_material_directory",
     "propose_clause_facts",
     "proposed_fact",
     "scope_from_wire",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -703,11 +704,19 @@ def _shaped_fragment(semantic_id: str, rows: tuple[tuple[str, str], ...]) -> Raw
 
 
 @pytest.fixture
-def three_node_hf_draft(draft_with_supply_fragments: ImportedRuleDraft) -> ImportedRuleDraft:
+def three_node_hf_draft(
+    draft_with_supply_fragments: ImportedRuleDraft, synthetic_private_grammars: Path
+) -> ImportedRuleDraft:
     """Every supply fragment, with the attenuation route's carrying three single-sentence nodes.
 
     Three nodes rather than one, because a one-node fragment cannot tell a guard that counts
     obligations from one that counts routes.
+
+    The guard derives its obligations from proposals, and a route proposes nothing at all without a
+    grammar installed -- which, since amendment A1 moved every grammar beside the licensed material,
+    is the public checkout's normal state. So the guard's own tests install the synthetic one; see
+    ``synthetic_private_grammars``. Without it these tests pass vacuously, which is worse than
+    failing.
     """
 
     return _with_fragment(draft_with_supply_fragments, _fragment(HF_ROUTE, kind="bullet", count=3))
@@ -897,6 +906,7 @@ def test_coverage_survives_a_sentence_renumbering(three_node_hf_draft) -> None:
 
 def test_a_context_only_node_is_not_an_outstanding_obligation(
     draft_with_supply_fragments,
+    synthetic_private_grammars: Path,
 ) -> None:
     """Amendment A4: a clause's opening sentence scopes what follows and selects no branch.
 

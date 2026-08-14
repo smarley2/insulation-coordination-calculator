@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from decimal import Decimal
 from pathlib import Path
@@ -67,7 +68,6 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply impor
     project_verified_barrier_transfer,
 )
 from tests.rules.importer.iec62477_2022.test_procedure_recipes import _draft as _empty_draft
-from tests.rules.importer.test_clause_fact_proposals import fragment_with_sentences
 
 SOURCE = SourceReference(
     document_id="synthetic-supply",
@@ -622,118 +622,90 @@ def test_exactly_one_supply_rule_still_carries_legacy_branch_authority() -> None
     assert LEGACY_BRANCH_AUTHORITY_RULE_IDS == frozenset({ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION})
 
 
-def test_every_non_legacy_route_declares_a_proposal_grammar_of_its_own_family() -> None:
+def test_every_non_legacy_route_declares_a_proposal_grammar_of_its_own_family(
+    synthetic_private_grammars: Path,
+) -> None:
     """A route without one loses every prefill while still looking authorable.
 
-    The recipe refuses the disagreement at import, so this asserts the property that refusal
+    The recipe refuses the disagreement on the way in, so this asserts the property that refusal
     protects rather than re-deriving it: exactly the non-legacy routes, each stating the fact
     family its own clause declares. The legacy route keeps its branch authority in the recipe
     and so has nothing to propose.
+
+    Asserted over an installed grammar, because the declarations themselves are licensed-derived
+    and load from beside the licensed material (amendment A1). That the *real* file satisfies this
+    is the private suite's assertion; that the check fires at all is this one's.
     """
 
     from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
         LEGACY_BRANCH_AUTHORITY_RULE_IDS,
         SUPPLY_FACT_FAMILY_BY_ROUTE,
-        SUPPLY_FACT_PROPOSAL_GRAMMARS,
+        supply_fact_proposal_grammars,
     )
 
-    assert set(SUPPLY_FACT_PROPOSAL_GRAMMARS) == (
-        set(SUPPLY_FACT_FAMILY_BY_ROUTE) - LEGACY_BRANCH_AUTHORITY_RULE_IDS
-    )
+    grammars = supply_fact_proposal_grammars()
+
+    assert set(grammars) == (set(SUPPLY_FACT_FAMILY_BY_ROUTE) - LEGACY_BRANCH_AUTHORITY_RULE_IDS)
     assert all(
         grammar.fact_kind == SUPPLY_FACT_FAMILY_BY_ROUTE[route]
-        for route, grammar in SUPPLY_FACT_PROPOSAL_GRAMMARS.items()
+        for route, grammar in grammars.items()
     )
 
 
-def test_a_floor_sentence_proposes_no_insulation_class() -> None:
-    """A reading the sentence does not make is worse than a blank field.
-
-    A blank field cannot be confirmed by accident; a wrong value can. Both sentences below are
-    invented for this test out of the reduction family's own declared vocabulary: one shapes a
-    permission over two classes, the other names the two classes a floor is stated over. Only
-    the first may propose a class.
-    """
-
-    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
-        propose_supply_facts,
-    )
-
-    route = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains"
-    permission_sentence = (
-        "Synthetic permission naming basic insulation and supplementary insulation."
-    )
-    floor_sentence = (
-        "Synthetic floor naming double insulation and reinforced insulation, "
-        "not less than basic insulation."
-    )
-    fragment = fragment_with_sentences(route, (permission_sentence, floor_sentence))
-
-    proposals = propose_supply_facts(fragment, route)
-    permission = [item for item in proposals if item.sentence_index == 0]
-    floor = [item for item in proposals if item.sentence_index == 1]
-
-    # One draft naming both classes, not one per class: the dimension is a scope.
-    assert [item.chosen["insulation_classes"] for item in permission] == ["basic|supplementary"]
-    assert floor
-    assert all("insulation_classes" in item.unchosen for item in floor)
-
-
-@pytest.mark.parametrize(
-    ("sentence", "expected"),
-    (
-        # The two explicit modal verbs.
-        ("Synthetic reading which shall hold.", "requirement"),
-        ("Synthetic reading which may hold.", "permission"),
-        # Unmodalized present indicative, in three forms, binds.
-        ("Synthetic reading is the stated one.", "requirement"),
-        ("Synthetic readings are the stated ones.", "requirement"),
-        ("Synthetic reading applies here.", "requirement"),
-        # A permission that also carries a present-indicative verb must never read as binding:
-        # this is the pair the whole exclusion list exists for.
-        ("Synthetic readings are provided and may be designed for.", "permission"),
-        ("Synthetic readings are supplied and may be determined.", "permission"),
-        # Non-binding and capability modality settle nothing rather than binding.
-        ("Synthetic reading should be the stated one.", None),
-        ("Synthetic reading can be the stated one.", None),
-        ("Synthetic reading might be the stated one.", None),
-        # A negated present states an exemption; the grammar declines to read its obligation.
-        ("Synthetic reading is not the stated one.", None),
-        # No verb at all, and no stem to inherit from.
-        ("synthetic fragment of a reading", None),
-    ),
-)
-def test_the_obligation_rules_read_exactly_the_modality_the_sentence_states(
-    sentence: str, expected: str | None
+def test_a_grammar_map_missing_a_route_is_refused(
+    synthetic_private_grammars: Path,
 ) -> None:
-    """Every firing set was checked by hand against the document; these pin the shapes.
+    """The other direction, on the private file this time: a forgotten route is caught on load.
 
-    A wrong obligation is the one proposal a maintainer is least likely to catch, because it
-    reads plausibly either way. ``None`` means the sentence settles the dimension nowhere and it
-    must stay unchosen -- never defaulted to the binding reading.
+    The file is the maintainer's own, outside review, so the check has to be at the boundary rather
+    than at a code review. Dropping one route's declaration is the whole failure this protects
+    against -- that route then silently offers no prefill while still looking authorable.
+    """
+
+    from insulation_coordination.domain.rules import RulePackageError
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        supply_fact_proposal_grammars,
+    )
+
+    payload = json.loads(synthetic_private_grammars.read_text(encoding="utf-8"))
+    dropped = min(payload)
+    del payload[dropped]
+    synthetic_private_grammars.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=re.escape(dropped)):
+        supply_fact_proposal_grammars()
+
+    synthetic_private_grammars.write_text("{not json", encoding="utf-8")
+    with pytest.raises(RulePackageError, match="cannot be read as a proposal grammar"):
+        supply_fact_proposal_grammars()
+
+    synthetic_private_grammars.write_text(
+        json.dumps({dropped: {"fact_kind": "not_a_declared_family"}}), encoding="utf-8"
+    )
+    with pytest.raises(RulePackageError, match="nobody could author"):
+        supply_fact_proposal_grammars()
+
+
+def test_a_route_with_no_declared_grammar_proposes_nothing(
+    synthetic_private_grammars: Path,
+) -> None:
+    """The legacy route's fragment is still extracted; nothing may be proposed from it.
+
+    Asserted with a grammar installed, so it distinguishes "this route declares none" from "no
+    grammar is installed at all", which are two different reasons for the same empty tuple.
     """
 
     from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
         propose_supply_facts,
     )
 
-    route = ids.SUPPLY_VERIFIED_BARRIER_TRANSFER
-    (proposal,) = propose_supply_facts(fragment_with_sentences(route, (sentence,)), route)
+    legacy = ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION
+    attenuation = ids.SUPPLY_HF_TRANSFORMER_ATTENUATION
 
-    assert proposal.chosen.get("obligation") == expected
-    assert ("obligation" in proposal.unchosen) is (expected is None)
-
-
-def test_a_route_with_no_declared_grammar_proposes_nothing() -> None:
-    """The legacy route's fragment is still extracted; nothing may be proposed from it."""
-
-    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
-        propose_supply_facts,
-    )
-
-    fragment = _fragment(ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION)
-
-    assert propose_supply_facts(fragment, ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION) == ()
+    assert propose_supply_facts(_fragment(legacy), legacy) == ()
+    # The contrast that makes the line above mean something: a route the grammar does declare
+    # proposes from the same kind of fragment.
+    assert propose_supply_facts(_fragment(attenuation), attenuation)
 
 
 def test_every_reviewed_fact_is_reachable_and_unsupported_combinations_are_not() -> None:

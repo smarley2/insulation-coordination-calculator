@@ -41,6 +41,28 @@ def supplied_standards() -> dict[str, Path]:
 
 
 @pytest.fixture(scope="session")
+def installed_grammars() -> dict[str, object]:
+    """The maintainer's clause-fact grammars, or a clean skip when they are not installed.
+
+    Amendment A1 moved every grammar mapping source phrasing to typed meaning beside the licensed
+    material, so it is as absent from a public checkout as the PDFs are -- and a test asserting what
+    a declared rule reads has to skip for the same reason, rather than fail because nothing was
+    proposed. Identified by the recipe's own file name inside the licensed folder; the *content* is
+    then validated by the grammar models themselves on the way in.
+    """
+
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        SUPPLY_FACT_GRAMMAR_FILE,
+        supply_fact_proposal_grammars,
+    )
+
+    grammars = supply_fact_proposal_grammars()
+    if not grammars:
+        pytest.skip(f"no {SUPPLY_FACT_GRAMMAR_FILE} beside the licensed material")
+    return dict(grammars)
+
+
+@pytest.fixture(scope="session")
 def supplied_paths(supplied_standards: dict[str, Path]) -> tuple[Path, ...]:
     """The licensed documents in the order extraction expects them."""
 
