@@ -173,11 +173,18 @@ def _review_all_c2_proposals(draft):
             cell = next(cell for cell in grid.cells if (cell.row, cell.column) == (row, column))
             component_id = cell.compound_component_ids[source_index]
             associations[(row, column, source_index)] = component_id
-            formulas[(row, column, source_index)] = next(
-                formula_id
-                for candidate_id, formula_id in cell.allowed_component_formula_ids
-                if candidate_id == component_id
+            # Only a component whose recipe declares a formula route needs one selected;
+            # offering a formula where no route exists is refused, by design.
+            route = next(
+                (
+                    formula_id
+                    for candidate_id, formula_id in cell.allowed_component_formula_ids
+                    if candidate_id == component_id
+                ),
+                None,
             )
+            if route is not None:
+                formulas[(row, column, source_index)] = route
         reviewed = accept_raw_table(
             reviewed,
             grid_id=grid_id,
