@@ -10,17 +10,19 @@ from pathlib import Path
 
 import pdfplumber
 from pdfplumber.utils.exceptions import PdfminerException
+from pydantic import ValidationError
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPixmap
+from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
+    QGraphicsScene,
+    QGraphicsView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -28,6 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insulation_coordination.domain.rules import RulePackageError
 from insulation_coordination.rules.importer.extract import (
     ImportedRuleDraft,
     RawGrid,
@@ -41,6 +44,11 @@ from insulation_coordination.rules.importer.review import (
     unresolved_raw_review_items,
     unresolved_table_items,
 )
+from insulation_coordination.ui.axis_review import (
+    AxisReviewModel,
+    AxisReviewRow,
+    AxisSelectorEditor,
+)
 
 _CELL_COLORS = {
     "numeric": QColor("#e5f4e3"),
@@ -52,7 +60,19 @@ _CELL_COLORS = {
     "non_scalar": QColor("#ffe3a3"),
     "range": QColor("#ffe3a3"),
 }
-_PAGE_RESOLUTION = 110
+# Pages are rendered at twice the scale they open at, so zooming in reads the print rather
+# than an upscaled bitmap. A reviewer judging a cell has to read the page's small print.
+# ponytail: fixed render resolution with a 2x headroom, not a re-render per zoom step; if a
+# reviewer needs to go past _MAX_PAGE_SCALE, re-render the page at the zoomed resolution.
+_PAGE_RESOLUTION = 220
+_INITIAL_PAGE_SCALE = 0.5
+_MIN_PAGE_SCALE = 0.1
+_MAX_PAGE_SCALE = 4.0
+_PAGE_GAP = 12.0
+# ponytail: a 220 dpi page costs about 20 MB as a pixmap, so the cache is dropped wholesale
+# rather than tracked by use order. Re-rendering one page costs a fraction of a second.
+_PAGE_CACHE_LIMIT = 8
+_AXIS_PROMPT = "Select a row or column header to review the selector for that position."
 
 
 def source_pdf_paths(
@@ -75,6 +95,26 @@ def source_pdf_paths(
         for identity in getattr(draft, "source_identities", ())
         if identity.sha256 in digests
     }
+
+
+class _PageGraphicsView(QGraphicsView):
+    """Zoomable, pannable read-only view of the source pages.
+
+    Same scheme as the curve review's source view: the wheel scales the view, and the drag
+    mode pans it. Anchored under the mouse so zooming keeps the print the cursor is on.
+    """
+
+    def __init__(self, scene: QGraphicsScene) -> None:
+        super().__init__(scene)
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setRenderHints(QPainter.RenderHint.SmoothPixmapTransform)
+
+    def wheelEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
+        # Clamped, or a reviewer can scroll the page down to nothing and never find it again.
+        if _MIN_PAGE_SCALE <= self.transform().m11() * factor <= _MAX_PAGE_SCALE:
+            self.scale(factor, factor)
 
 
 class RawGridReviewDialog(QDialog):
@@ -121,29 +161,35 @@ class RawGridReviewDialog(QDialog):
 
         # A table that spans pages needs every one of its pages, stacked in
         # reading order, or half the grid has no source to compare against.
-        self._page_label = QLabel("Source page not available.")
-        self._page_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-        self._pages_widget = QWidget()
-        self._pages_layout = QVBoxLayout(self._pages_widget)
-        self._pages_layout.setContentsMargins(0, 0, 0, 0)
-        self._pages_layout.addWidget(self._page_label)
-        self._pages_layout.addStretch(1)
-        self._extra_page_labels: list[QLabel] = []
-        page_scroll = QScrollArea()
-        page_scroll.setWidget(self._pages_widget)
-        page_scroll.setWidgetResizable(True)
+        self._page_scene = QGraphicsScene(self)
+        self._page_view = _PageGraphicsView(self._page_scene)
+        self._page_messages: tuple[str, ...] = ()
+        self._page_pixmaps: tuple[QPixmap, ...] = ()
 
         self._table = QTableWidget()
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectItems)
         self._table.currentCellChanged.connect(self._selection_changed)
+        # A selector describes a row or a column, so the header is where it is edited. Both
+        # this dialog's header labels and ``proposal.index`` stay exactly as they were: the
+        # 1-based citation strings are printed-table text, the index is the physical position.
+        self._table.verticalHeader().sectionClicked.connect(
+            lambda index: self.show_axis_position("row", index)
+        )
+        self._table.horizontalHeader().sectionClicked.connect(
+            lambda index: self.show_axis_position("column", index)
+        )
+        self._row_header_labels: tuple[str, ...] = ()
+        self._column_header_labels: tuple[str, ...] = ()
+        self._axis_position: tuple[str, int] | None = None
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
-        splitter.addWidget(page_scroll)
+        splitter.addWidget(self._page_view)
         splitter.addWidget(self._table)
-        splitter.setSizes([460, 700])
+        splitter.addWidget(self._axis_pane())
+        splitter.setSizes([420, 520, 280])
         layout.addWidget(splitter, 1)
 
         self._details = QLabel("Select a cell to compare it with the source page.")
@@ -291,6 +337,16 @@ class RawGridReviewDialog(QDialog):
                 pages.append(segment.page_number)
         return tuple(pages)
 
+    @property
+    def page_pixmaps(self) -> tuple[QPixmap, ...]:
+        """The rendered pages currently in the source pane, in reading order."""
+        return self._page_pixmaps
+
+    @property
+    def page_messages(self) -> tuple[str, ...]:
+        """Whatever the pane says in place of a page it could not show."""
+        return self._page_messages
+
     def _page_pixmap(self, path: Path, page_number: int) -> QPixmap:
         """Render one page, raising nothing the caller cannot report."""
         cached = self._page_cache.get((path, page_number))
@@ -302,42 +358,149 @@ class RawGridReviewDialog(QDialog):
             image.save(buffer, format="PNG")
         pixmap = QPixmap()
         pixmap.loadFromData(buffer.getvalue())
+        if len(self._page_cache) >= _PAGE_CACHE_LIMIT:
+            self._page_cache.clear()
         self._page_cache[(path, page_number)] = pixmap
         return pixmap
 
-    def _page_target(self, index: int) -> QLabel:
-        """The label showing the index-th page of the current grid."""
-        if index == 0:
-            return self._page_label
-        while len(self._extra_page_labels) < index:
-            label = QLabel()
-            label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-            self._extra_page_labels.append(label)
-            self._pages_layout.insertWidget(len(self._extra_page_labels), label)
-        return self._extra_page_labels[index - 1]
-
     def _render_pages(self, grid: RawGrid) -> None:
-        for label in self._extra_page_labels:
-            label.clear()
-            label.setVisible(False)
+        """Stack this grid's pages in one zoomable scene, in reading order."""
+        self._page_scene.clear()
+        pixmaps: list[QPixmap] = []
+        messages: list[str] = []
+        top = 0.0
         path = self._pdf_paths.get(grid.source.standard)
         if path is None:
-            self._page_label.setPixmap(QPixmap())
-            self._page_label.setText(
-                "Source page not available: re-extract from the PDFs to compare pages."
-            )
+            messages.append("Source page not available: re-extract from the PDFs to compare pages.")
+        else:
+            for page_number in self._page_numbers(grid):
+                try:
+                    pixmap = self._page_pixmap(path, page_number)
+                except (OSError, IndexError, TypeError, ValueError, PdfminerException) as error:
+                    messages.append(f"Source page {page_number} could not be rendered: {error}")
+                    continue
+                item = self._page_scene.addPixmap(pixmap)
+                item.setPos(0.0, top)
+                top += pixmap.height() + _PAGE_GAP
+                pixmaps.append(pixmap)
+        for message in messages:
+            text = self._page_scene.addText(message)
+            text.setPos(0.0, top)
+            top += text.boundingRect().height() + _PAGE_GAP
+        self._page_pixmaps = tuple(pixmaps)
+        self._page_messages = tuple(messages)
+        self._page_scene.setSceneRect(self._page_scene.itemsBoundingRect())
+        self._page_view.resetTransform()
+        self._page_view.scale(_INITIAL_PAGE_SCALE, _INITIAL_PAGE_SCALE)
+
+    # -- Axis selectors ----------------------------------------------------
+    #
+    # The selector for a row or a column is edited here, beside the position it describes,
+    # rather than in a screen of its own where the same position carried a second number.
+    # Every mutation still goes through ``review_axis_selector`` by way of AxisReviewModel,
+    # which also owns the staleness test this dialog only reads.
+
+    def _axis_pane(self) -> QWidget:
+        pane = QWidget()
+        pane_layout = QVBoxLayout(pane)
+        pane_layout.setContentsMargins(0, 0, 0, 0)
+        self._axis_position_label = QLabel(_AXIS_PROMPT)
+        self._axis_position_label.setWordWrap(True)
+        pane_layout.addWidget(self._axis_position_label)
+        self._axis_editor = AxisSelectorEditor("Axis selector")
+        self._axis_editor.changed.connect(self._refresh_axis_confirm)
+        pane_layout.addWidget(self._axis_editor)
+        self._confirm_axis_button = QPushButton("Confirm selector")
+        self._confirm_axis_button.setEnabled(False)
+        self._confirm_axis_button.clicked.connect(self._confirm_axis_selector)
+        pane_layout.addWidget(self._confirm_axis_button)
+        self._axis_status = QLabel()
+        self._axis_status.setWordWrap(True)
+        pane_layout.addWidget(self._axis_status)
+        pane_layout.addStretch(1)
+        return pane
+
+    @property
+    def axis_status_text(self) -> str:
+        return self._axis_status.text()
+
+    def _axis_rows(self) -> tuple[AxisReviewRow, ...]:
+        """This grid's axis positions with their live status, straight from the axis model."""
+        grid_id = self._current_grid_id()
+        return tuple(row for row in AxisReviewModel(self._draft).rows() if row.grid_id == grid_id)
+
+    @staticmethod
+    def _with_status(label: str, status: str | None) -> str:
+        return label if status is None else f"{label} · {status}"
+
+    def _apply_axis_statuses(self) -> None:
+        """Show each position's review status against the row or column it describes."""
+        statuses = {(row.axis, row.index): row.status for row in self._axis_rows()}
+        self._table.setVerticalHeaderLabels(
+            [
+                self._with_status(label, statuses.get(("row", index)))
+                for index, label in enumerate(self._row_header_labels)
+            ]
+        )
+        self._table.setHorizontalHeaderLabels(
+            [
+                self._with_status(label, statuses.get(("column", index)))
+                for index, label in enumerate(self._column_header_labels)
+            ]
+        )
+
+    def _clear_axis_panel(self) -> None:
+        self._axis_position = None
+        self._axis_position_label.setText(_AXIS_PROMPT)
+        self._axis_status.clear()
+        self._axis_editor.clear()
+
+    def show_axis_position(self, axis: str, index: int) -> None:
+        """Offer the selected header's own selector editor, pre-filled with what it reads."""
+        row = next(
+            (item for item in self._axis_rows() if (item.axis, item.index) == (axis, index)),
+            None,
+        )
+        labels = self._row_header_labels if axis == "row" else self._column_header_labels
+        visible = labels[index] if index < len(labels) else str(index)
+        if row is None:
+            self._clear_axis_panel()
+            self._axis_position_label.setText(f"{visible} carries no axis selector position.")
             return
-        for index, page_number in enumerate(self._page_numbers(grid)):
-            label = self._page_target(index)
-            label.setVisible(True)
-            try:
-                pixmap = self._page_pixmap(path, page_number)
-            except (OSError, IndexError, TypeError, ValueError, PdfminerException) as error:
-                label.setPixmap(QPixmap())
-                label.setText(f"Source page {page_number} could not be rendered: {error}")
-                continue
-            label.setText("")
-            label.setPixmap(pixmap)
+        self._axis_position = (axis, index)
+        self._axis_status.clear()
+        self._axis_position_label.setText(f"Selector for {axis} {visible}: {row.status}")
+        self._axis_editor.show_selector(
+            row.selector_kind, row.confirmed if row.confirmed is not None else row.proposed
+        )
+
+    def _refresh_axis_confirm(self) -> None:
+        self._confirm_axis_button.setEnabled(
+            self._axis_position is not None and self._axis_editor.complete
+        )
+
+    def _confirm_axis_selector(self) -> None:
+        """Record the visible reading for the selected position. The importer owns the mutation."""
+        if self._axis_position is None:
+            return
+        axis, index = self._axis_position
+        model = AxisReviewModel(self._draft)
+        try:
+            self._draft = model.confirm(
+                self._current_grid_id(),
+                axis,
+                index,
+                self._axis_editor.selector(),
+                actor=self._actor,
+                notes="confirmed beside the reviewed row or column",
+            )
+        except (RulePackageError, ValidationError) as error:
+            self._axis_status.setText(f"Selector refused: {error}")
+            return
+        self.draft_changed.emit(self._draft)
+        self._apply_axis_statuses()
+        self.show_axis_position(axis, index)
+        self._axis_status.setText("Selector confirmed for this position.")
 
     def _load_grid(self, _index: int) -> None:
         grid = self._current_grid()
@@ -345,6 +508,9 @@ class RawGridReviewDialog(QDialog):
             self._table.clear()
             self._table.setRowCount(0)
             self._table.setColumnCount(0)
+            self._row_header_labels = ()
+            self._column_header_labels = ()
+            self._clear_axis_panel()
             self._accept_button.setEnabled(False)
             return
         pending = self._pending_coordinates(grid.id)
@@ -357,8 +523,10 @@ class RawGridReviewDialog(QDialog):
             if spec is not None and len(spec.columns) == grid.columns
             else tuple(f"Column {column + 1}" for column in range(grid.columns))
         )
-        self._table.setHorizontalHeaderLabels(headings)
-        self._table.setVerticalHeaderLabels(self._row_labels(grid))
+        self._column_header_labels = headings
+        self._row_header_labels = self._row_labels(grid)
+        self._clear_axis_panel()
+        self._apply_axis_statuses()
         corrections = self._corrections.get(grid.id, {})
         for cell in grid.cells:
             coordinate = (cell.row, cell.column)

@@ -2,13 +2,17 @@
 
 Qt holds no review logic. Every decision goes through review_axis_selector, which records an
 audited correction and binds the review to the exact proposal and its per-position evidence.
+
+The editor a reviewer types a selector into lives here as a widget, but the screen that shows
+it is the raw grid review dialog, beside the row or column the selector describes. This module
+keeps the read-only overview of every position across every grid.
 """
 
 from __future__ import annotations
 
 from typing import Literal, get_args
 
-from pydantic import ValidationError
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -16,13 +20,11 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QGroupBox,
-    QHBoxLayout,
     QHeaderView,
-    QLabel,
-    QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from insulation_coordination.domain.project import FrozenModel
@@ -147,54 +149,20 @@ class AxisReviewModel:
         return self._draft
 
 
-class AxisReviewDialog(QDialog):
-    """One table of axis positions, with an editor for the selected position's selector.
+class AxisSelectorEditor(QGroupBox):
+    """One combo per dimension of a single selector kind, built from the selector models.
 
-    No wizard: a reviewer sees every position at once, and confirms, corrects or supplies the
-    selected one. The editor's combos come from the selector models themselves, so a position
-    can only be confirmed as the kind its axis declares.
+    The vocabularies stay read from the models here rather than in the screen that shows the
+    editor, so a position can only ever be edited as the kind its axis declares.
     """
 
-    def __init__(self, model: AxisReviewModel, parent: object | None = None) -> None:
-        super().__init__(parent)  # type: ignore[arg-type]
-        self.setWindowTitle("Review axis selectors")
-        self._model = model
-        self._combos: dict[str, QComboBox] = {}
-        self._editor_kind: str | None = None
-        self.table = QTableWidget(0, len(_HEADINGS), self)
-        self.table.setHorizontalHeaderLabels([heading for heading in _HEADINGS])
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.itemSelectionChanged.connect(self._load_editor)
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self._editor_box = QGroupBox("Selector for the selected position", self)
-        self._editor_form = QFormLayout(self._editor_box)
-        self._status = QLabel(self)
-        self._status.setWordWrap(True)
-        self.confirm_button = QPushButton("Confirm selector", self)
-        # Nothing is selected yet, and a draft with no axis positions never selects a row, so
-        # ``_load_editor`` would never run to disable this.
-        self.confirm_button.setEnabled(False)
-        self.confirm_button.clicked.connect(self.confirm_selected)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
-        buttons.rejected.connect(self.reject)
-        actions = QHBoxLayout()
-        actions.addWidget(self.confirm_button)
-        actions.addWidget(buttons)
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.table)
-        layout.addWidget(self._editor_box)
-        layout.addWidget(self._status)
-        layout.addLayout(actions)
-        self.refresh()
-        if self.table.rowCount():
-            self.table.selectRow(0)
+    changed = Signal()
 
-    @property
-    def status_text(self) -> str:
-        return self._status.text()
+    def __init__(self, title: str, parent: QWidget | None = None) -> None:
+        super().__init__(title, parent)
+        self._form = QFormLayout(self)
+        self._combos: dict[str, QComboBox] = {}
+        self._kind: str | None = None
 
     @property
     def dimension_options(self) -> dict[str, tuple[str, ...]]:
@@ -207,8 +175,82 @@ class AxisReviewDialog(QDialog):
             for field, combo in self._combos.items()
         }
 
+    @property
+    def complete(self) -> bool:
+        """Whether every dimension has been chosen. No combos is never complete."""
+
+        return bool(self._combos) and all(combo.currentText() for combo in self._combos.values())
+
     def dimension_combo(self, field: str) -> QComboBox:
         return self._combos[field]
+
+    def clear(self) -> None:
+        """Offer nothing, for a position that is not selected or carries no axis selector."""
+
+        while self._form.rowCount():
+            self._form.removeRow(0)
+        self._combos = {}
+        self._kind = None
+        self.changed.emit()
+
+    def show_selector(self, selector_kind: str, selector: AxisSelector | None) -> None:
+        """Offer one kind's dimensions, pre-filled with what the position already reads."""
+
+        if self._kind != selector_kind:
+            self._build(selector_kind)
+        for field, combo in self._combos.items():
+            combo.setCurrentText("" if selector is None else getattr(selector, field))
+        self.changed.emit()
+
+    def selector(self) -> AxisSelector:
+        """The visible reading, as the kind this editor was built for."""
+
+        if self._kind is None:
+            raise RulePackageError("no axis selector kind is on offer")
+        return _SELECTOR_MODELS[self._kind].model_validate(
+            {field: combo.currentText() for field, combo in self._combos.items()}
+        )
+
+    def _build(self, selector_kind: str) -> None:
+        while self._form.rowCount():
+            self._form.removeRow(0)
+        self._combos = {}
+        for field, options in _dimensions(selector_kind):
+            combo = QComboBox()
+            # A blank first entry, so a position nothing was proposed for starts unchosen: a
+            # reviewer must never be able to record a selector they did not pick.
+            combo.addItem("")
+            combo.addItems(options)
+            combo.currentIndexChanged.connect(self.changed)
+            self._form.addRow(field.replace("_", " "), combo)
+            self._combos[field] = combo
+        self._kind = selector_kind
+
+
+class AxisReviewDialog(QDialog):
+    """Read-only overview of every axis position of every grid, with its status.
+
+    Confirming a selector happens in the raw grid review dialog, beside the row or column it
+    describes; this screen answers what is still pending for the whole draft in one place.
+    """
+
+    def __init__(self, model: AxisReviewModel, parent: object | None = None) -> None:
+        super().__init__(parent)  # type: ignore[arg-type]
+        self.setWindowTitle("Axis selector review status")
+        self._model = model
+        self.table = QTableWidget(0, len(_HEADINGS), self)
+        self.table.setHorizontalHeaderLabels([heading for heading in _HEADINGS])
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
+        buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.table)
+        layout.addWidget(buttons)
+        self.refresh()
 
     def refresh(self) -> None:
         rows = self._model.rows()
@@ -220,72 +262,5 @@ class AxisReviewDialog(QDialog):
             ):
                 self.table.setItem(position, column, QTableWidgetItem(text))
 
-    def confirm_selected(self) -> None:
-        """Record the visible reading for the selected position. The model owns the mutation."""
 
-        position = self.table.currentRow()
-        row = self._current_row()
-        if row is None:
-            self._status.setText("Select an axis position first.")
-            return
-        values = {field: combo.currentText() for field, combo in self._combos.items()}
-        if not all(values.values()):
-            self._status.setText("Choose every dimension before confirming this selector.")
-            return
-        try:
-            self._model.confirm(
-                row.grid_id,
-                row.axis,
-                row.index,
-                _SELECTOR_MODELS[row.selector_kind].model_validate(values),
-                actor="maintainer",
-                notes="confirmed in the axis selector review dialog",
-            )
-        except (RulePackageError, ValidationError) as error:
-            self._status.setText(f"Selector refused: {error}")
-            return
-        self.refresh()
-        self.table.selectRow(position)
-        self._status.setText("Selector confirmed for this position.")
-
-    def _current_row(self) -> AxisReviewRow | None:
-        rows = self._model.rows()
-        position = self.table.currentRow()
-        return rows[position] if 0 <= position < len(rows) else None
-
-    def _load_editor(self) -> None:
-        """Offer the selected position's kind, pre-filled with what it already reads."""
-
-        row = self._current_row()
-        if row is None:
-            self.confirm_button.setEnabled(False)
-            return
-        if self._editor_kind != row.selector_kind:
-            self._build_editor(row.selector_kind)
-        selector = row.confirmed if row.confirmed is not None else row.proposed
-        for field, combo in self._combos.items():
-            combo.setCurrentText("" if selector is None else getattr(selector, field))
-        self._refresh_confirm_enabled()
-
-    def _build_editor(self, selector_kind: str) -> None:
-        while self._editor_form.rowCount():
-            self._editor_form.removeRow(0)
-        self._combos = {}
-        for field, options in _dimensions(selector_kind):
-            combo = QComboBox()
-            # A blank first entry, so a position nothing was proposed for starts unchosen: a
-            # reviewer must never be able to record a selector they did not pick.
-            combo.addItem("")
-            combo.addItems(options)
-            combo.currentIndexChanged.connect(self._refresh_confirm_enabled)
-            self._editor_form.addRow(field.replace("_", " "), combo)
-            self._combos[field] = combo
-        self._editor_kind = selector_kind
-
-    def _refresh_confirm_enabled(self) -> None:
-        self.confirm_button.setEnabled(
-            bool(self._combos) and all(combo.currentText() for combo in self._combos.values())
-        )
-
-
-__all__ = ["AxisReviewDialog", "AxisReviewModel", "AxisReviewRow"]
+__all__ = ["AxisReviewDialog", "AxisReviewModel", "AxisReviewRow", "AxisSelectorEditor"]
