@@ -691,6 +691,37 @@ def test_data_cell_parser_does_not_collapse_non_scalar_values(
     assert parsed.parse_status == status
 
 
+@pytest.mark.parametrize(
+    ("raw_text", "status"),
+    (
+        ("110\n120 c", "non_scalar"),
+        ("-- c", "non_scalar"),
+    ),
+)
+def test_data_cell_parser_keeps_a_footnote_marker_on_a_non_scalar_cell(
+    raw_text: str,
+    status: str,
+) -> None:
+    """A cell can carry both a non-scalar value and a marker, and needs both reviewed.
+
+    The marker is the only route from the cell to the footnote that qualifies it, so
+    dropping it leaves a reviewer with an unexplained cell and no way back to its note.
+    """
+    parsed = parse_data_cell(raw_text, allowed_footnotes=("c",))
+
+    assert parsed.value is None
+    assert parsed.parse_status == status
+    assert parsed.footnotes == ("c",)
+
+
+def test_data_cell_parser_reads_no_footnote_from_ordinary_non_scalar_text() -> None:
+    """Only a cell whose every letter run is a declared marker carries markers."""
+    parsed = parse_data_cell("see the note below", allowed_footnotes=("c", "e"))
+
+    assert parsed.parse_status == "non_scalar"
+    assert parsed.footnotes == ()
+
+
 def test_extraction_assigns_context_roles_and_one_page_segment(
     supported_pdfs: tuple[Path, Path, Path],
 ) -> None:

@@ -862,6 +862,18 @@ def _numeric_token(
     return Decimal(normalized), qualifier, suffix
 
 
+def _footnote_markers(text: str, allowed_footnotes: tuple[str, ...]) -> tuple[str, ...]:
+    """The reviewed footnote markers one cell carries, in source order.
+
+    Every letter run in the cell must be a declared marker, so a cell whose text is
+    ordinary words carries none. A number contributes no letters, which is why one pass
+    over the whole cell is exact for a numeric cell too: its markers can only sit in the
+    text beside the number.
+    """
+    markers = tuple(re.findall(r"[A-Za-z]+", text))
+    return markers if markers and all(item in allowed_footnotes for item in markers) else ()
+
+
 def parse_data_cell(
     value: str | None,
     *,
@@ -877,18 +889,21 @@ def parse_data_cell(
     if "up_to" in allowed_qualifiers and re.match(r"(?i)^\s*up\s+to\s+", raw_text):
         raw_text = re.sub(r"(?i)^\s*up\s+to\s+", "", raw_text, count=1)
         semantic_qualifier = "up_to"
+    # Read once, before any early return: a cell that carries both a non-scalar value and
+    # a footnote marker keeps the marker, which the marker's own footnote row is the only
+    # place to resolve. Markers are read after the qualifier is stripped, so the words of
+    # a semantic qualifier are never mistaken for markers.
+    footnotes = _footnote_markers(raw_text, allowed_footnotes)
     if "\n" in raw_text and len(tuple(line for line in raw_text.splitlines() if line.strip())) > 1:
-        return ParsedDataCell(parse_status="non_scalar")
+        return ParsedDataCell(parse_status="non_scalar", footnotes=footnotes)
     if _RANGE_CELL.fullmatch(raw_text):
-        return ParsedDataCell(parse_status="range")
+        return ParsedDataCell(parse_status="range", footnotes=footnotes)
     token = _numeric_token(raw_text)
     if token is None:
-        return ParsedDataCell(parse_status="non_scalar")
+        return ParsedDataCell(parse_status="non_scalar", footnotes=footnotes)
     number, qualifier, suffix = token
     qualifier = semantic_qualifier or qualifier
     normalized_suffix = (suffix or "").strip()
-    markers = tuple(re.findall(r"[A-Za-z]+", normalized_suffix))
-    footnotes = markers if markers and all(item in allowed_footnotes for item in markers) else ()
     unknown_suffix = bool(normalized_suffix and not footnotes)
     ambiguous = qualifier in {"<=", ">="} or unknown_suffix
     return ParsedDataCell(
