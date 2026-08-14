@@ -23,7 +23,10 @@ from insulation_coordination.rules.importer.clause_facts import (
     ConfirmedFacts,
     DimensionScope,
     HfAttenuationFact,
+    SpdMonitoringComplianceFact,
+    SpdMonitoringExemptionFact,
     SpdMonitoringFact,
+    SpdMonitoringRequirementFact,
     SpdReductionFact,
     SystemVoltageApplicabilityFact,
     SystemVoltageMeasureFact,
@@ -389,44 +392,64 @@ def _confirmed_spd_facts(
     return ConfirmedFacts(by_route={route_id: (fact,)})
 
 
-def _spd_monitoring_fact(
+def _spd_requirement_fact(
     fragment: RawClauseFragment,
     *,
     index: int = 0,
-    device_placement: str = "internal_to_pecs",
+    device_placement: DimensionScope[str] | None = None,
     participates_in_reduction: bool = True,
-    monitoring_required: bool = True,
-    compliance_evidence: str = "monitoring_test",
-) -> SpdMonitoringFact:
+) -> SpdMonitoringRequirementFact:
     """Invented values only: a synthetic reviewed statement, never real clause content."""
 
-    return SpdMonitoringFact(
+    return SpdMonitoringRequirementFact(
         statement_index=index,
         node_references=(_cited_node(fragment),),
         obligation="requirement",
-        device_placement=device_placement,  # type: ignore[arg-type]
+        device_placement=(  # type: ignore[arg-type]
+            device_placement
+            if device_placement is not None
+            else DimensionScope.of("internal_to_pecs")
+        ),
         participates_in_reduction=participates_in_reduction,
-        monitoring_required=monitoring_required,
-        compliance_evidence=compliance_evidence,  # type: ignore[arg-type]
     )
 
 
-def _confirmed_spd_monitoring_facts(
+def _spd_exemption_fact(
+    fragment: RawClauseFragment,
     *,
-    monitoring_required: bool,
-    participates_in_reduction: bool = True,
-    device_placement: str = "internal_to_pecs",
-    fragment: RawClauseFragment | None = None,
-) -> ConfirmedFacts:
-    frag = fragment if fragment is not None else _spd_fragment("monitoring")
-    fact = _spd_monitoring_fact(
-        frag,
-        device_placement=device_placement,
+    index: int = 0,
+    participates_in_reduction: bool = False,
+) -> SpdMonitoringExemptionFact:
+    """Invented values only. An exemption states no placement, which is the point of the variant."""
+
+    return SpdMonitoringExemptionFact(
+        statement_index=index,
+        node_references=(_cited_node(fragment),),
+        obligation="requirement",
         participates_in_reduction=participates_in_reduction,
-        monitoring_required=monitoring_required,
     )
+
+
+def _spd_compliance_fact(
+    fragment: RawClauseFragment,
+    *,
+    index: int = 0,
+) -> SpdMonitoringComplianceFact:
+    """Invented values only: the carried kind, which selects no obligation at all."""
+
+    return SpdMonitoringComplianceFact(
+        statement_index=index,
+        node_references=(_cited_node(fragment),),
+        obligation="requirement",
+        compliance_evidence=DimensionScope.of(  # type: ignore[arg-type]
+            "monitoring_test", "visual_inspection"
+        ),
+    )
+
+
+def _confirmed_spd_monitoring_facts(*facts: SpdMonitoringFact) -> ConfirmedFacts:
     route_id = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring"
-    return ConfirmedFacts(by_route={route_id: (fact,)})
+    return ConfirmedFacts(by_route={route_id: facts})
 
 
 def _hf_attenuation_fact(
@@ -1445,47 +1468,69 @@ def test_the_reduced_category_comes_from_the_reviewed_fact() -> None:
 
 
 def test_the_monitoring_route_follows_its_own_reviewed_facts() -> None:
+    """Whether monitoring is owed comes from the kind of statement, not from a field beside it."""
+
     fragment = _spd_fragment("monitoring")
-    facts = _confirmed_spd_monitoring_facts(
-        monitoring_required=True, participates_in_reduction=True, fragment=fragment
-    )
+    facts = _confirmed_spd_monitoring_facts(_spd_requirement_fact(fragment))
     rule = _project_spd(fragment, facts)
     row = _lookup(rule, **_spd_inputs(part_of_category_reduction=True))
     assert row is not None
     assert _value(row, "monitoring_required") is True
     assert _value(row, "status_indication_required") is True
 
-    not_participating = _confirmed_spd_monitoring_facts(
-        monitoring_required=False, participates_in_reduction=False, fragment=fragment
-    )
-    excused = _project_spd(fragment, not_participating)
+    excused = _project_spd(fragment, _confirmed_spd_monitoring_facts(_spd_exemption_fact(fragment)))
     excused_row = _lookup(excused, **_spd_inputs(part_of_category_reduction=False))
     assert excused_row is not None
     assert _value(excused_row, "monitoring_required") is False
+    assert _value(excused_row, "status_indication_required") is False
+
+
+def test_a_carried_compliance_statement_changes_no_row_and_no_output() -> None:
+    """The carried kind is resolved and covered, and contributes nothing executable.
+
+    This route's declared ``verification_reference`` output carries none of that statement's
+    tokens, so projecting it would need a contract change (#53C item 5). It is still reviewed, and
+    the rule it accompanies must come out identical to the one without it.
+    """
+
+    fragment = _spd_fragment("monitoring")
+    obligation = _spd_requirement_fact(fragment)
+    without = _project_spd(fragment, _confirmed_spd_monitoring_facts(obligation))
+    with_carried = _project_spd(
+        fragment,
+        _confirmed_spd_monitoring_facts(obligation, _spd_compliance_fact(fragment, index=1)),
+    )
+
+    assert with_carried == without
+
+
+def test_a_reviewed_monitoring_set_that_states_no_obligation_refuses_to_project() -> None:
+    """A zero-row rule answers every consumer with silence and looks reviewed while doing it."""
+
+    fragment = _spd_fragment("monitoring")
+    facts = _confirmed_spd_monitoring_facts(_spd_compliance_fact(fragment))
+
+    with pytest.raises(ClauseStructureError, match="no monitoring obligation"):
+        _project_spd(fragment, facts)
 
 
 def test_one_exemption_statement_covers_every_reviewed_placement_and_no_other() -> None:
-    """An unrestricted reading covers every placement a reviewed reading can name -- and stops there.
+    """An exemption covers every placement a reviewed reading can name -- and stops there.
 
-    Two halves. A reading placement does not restrict is authored once, not once per placement: a
-    required single placement matched with ``equals`` left whichever one the maintainer did not pick
-    reaching no row.
+    Two halves. An exemption states no placement at all, so it is authored once rather than once
+    per placement: a required single placement matched with ``equals`` left whichever one the
+    maintainer did not pick reaching no row.
 
     And the half that was a real defect: this rule declares a placement the reviewed vocabulary
     deliberately cannot name, because what the source states about it is nothing. The unrestricted
     reading used to project a wildcard, which answered for that placement too -- contradicting the
     note beside the declared placements, which says a consumer asking about it must reach no match.
-    An unrestricted scope now projects an ``in`` over the reviewed placements, so the unreviewed one
+    The absent placement now projects an ``in`` over the reviewed placements, so the unreviewed one
     reaches **no row at all**.
     """
 
     fragment = _spd_fragment("monitoring")
-    facts = _confirmed_spd_monitoring_facts(
-        fragment=fragment,
-        device_placement="any_placement",
-        participates_in_reduction=False,
-        monitoring_required=False,
-    )
+    facts = _confirmed_spd_monitoring_facts(_spd_exemption_fact(fragment))
     rule = _project_spd(fragment, facts)
 
     for placement in ("internal_to_pecs", "bundled_external_to_pecs"):
@@ -1580,38 +1625,41 @@ def test_an_unrestricted_reading_projects_the_declared_domain_not_the_authored_o
         assert _lookup(rule, **_system_voltage_inputs(phase_system=value)) is not None, value
 
 
-def test_an_any_placement_statement_overlapping_a_specific_one_is_refused() -> None:
-    """The other route where an unrestricted dimension can shadow a specific statement.
+def test_a_requirement_and_an_exemption_over_one_placement_are_refused() -> None:
+    """The route where an absent dimension can shadow a specific statement.
 
-    Both statements gate on participation, so only placement separates them, and one of them
-    restricts nothing: whichever was authored first would answer for the internal placement and
-    the other's obligation would never be served.
+    Both statements agree on participation, so only placement separates them, and the exemption
+    states none: whichever was authored first would answer for the internal placement and the
+    other's obligation would never be served. Participation is what the source really separates
+    them by, which is why a requirement states it too.
     """
 
     fragment = _spd_fragment("monitoring")
-    facts = ConfirmedFacts(
-        by_route={
-            _SPD_MONITORING_ID: (
-                _spd_monitoring_fact(
-                    fragment,
-                    index=0,
-                    device_placement="any_placement",
-                    participates_in_reduction=True,
-                    monitoring_required=False,
-                ),
-                _spd_monitoring_fact(
-                    fragment,
-                    index=1,
-                    device_placement="internal_to_pecs",
-                    participates_in_reduction=True,
-                    monitoring_required=True,
-                ),
-            )
-        }
+    facts = _confirmed_spd_monitoring_facts(
+        _spd_exemption_fact(fragment, index=0, participates_in_reduction=True),
+        _spd_requirement_fact(fragment, index=1, participates_in_reduction=True),
     )
 
     with pytest.raises(ClauseStructureError, match="not disjoint"):
         _project_spd(fragment, facts)
+
+
+def test_a_requirement_and_an_exemption_separated_by_participation_are_not_refused() -> None:
+    """The pair the source actually states: the exemption is exactly the non-participating case."""
+
+    fragment = _spd_fragment("monitoring")
+    facts = _confirmed_spd_monitoring_facts(
+        _spd_requirement_fact(fragment, index=0, participates_in_reduction=True),
+        _spd_exemption_fact(fragment, index=1),
+    )
+    rule = _project_spd(fragment, facts)
+
+    owed = _lookup(rule, **_spd_inputs(part_of_category_reduction=True))
+    excused = _lookup(rule, **_spd_inputs(part_of_category_reduction=False))
+    assert owed is not None
+    assert excused is not None
+    assert _value(owed, "monitoring_required") is True
+    assert _value(excused, "monitoring_required") is False
 
 
 def test_the_external_monitoring_obligation_keeps_its_qualifier() -> None:
@@ -1623,10 +1671,9 @@ def test_the_external_monitoring_obligation_keeps_its_qualifier() -> None:
 
     fragment = _spd_fragment("monitoring")
     facts = _confirmed_spd_monitoring_facts(
-        fragment=fragment,
-        device_placement="bundled_external_to_pecs",
-        participates_in_reduction=True,
-        monitoring_required=True,
+        _spd_requirement_fact(
+            fragment, device_placement=DimensionScope.of("bundled_external_to_pecs")
+        )
     )
     rule = _project_spd(fragment, facts)
 
@@ -1712,7 +1759,7 @@ def test_each_spd_route_is_projected_under_its_own_id() -> None:
         assert rule.id == f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.{route}"
 
     fragment = _spd_fragment("monitoring")
-    facts = _confirmed_spd_monitoring_facts(monitoring_required=True, fragment=fragment)
+    facts = _confirmed_spd_monitoring_facts(_spd_requirement_fact(fragment))
     rule = _project_spd(fragment, facts)
     assert rule.id == _SPD_MONITORING_ID
 

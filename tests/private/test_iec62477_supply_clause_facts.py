@@ -29,7 +29,7 @@ from insulation_coordination.rules.importer.clause_facts import (
     CitedNode,
     DimensionScope,
     HfAttenuationFact,
-    SpdMonitoringFact,
+    SpdMonitoringRequirementFact,
     SpdReductionFact,
     SupplyFact,
     SystemVoltageMeasureFact,
@@ -158,14 +158,12 @@ def _placeholder_facts(draft: ImportedRuleDraft) -> dict[str, SupplyFact]:
             monitoring_obligation="not_required",
             monitoring_reference=SPD_MONITORING_ROUTE,
         ),
-        SPD_MONITORING_ROUTE: SpdMonitoringFact(
+        SPD_MONITORING_ROUTE: SpdMonitoringRequirementFact(
             statement_index=0,
             node_references=_first_cited_node(draft, SPD_MONITORING_ROUTE),
             obligation="requirement",
-            device_placement="internal_to_pecs",
+            device_placement=DimensionScope.of("internal_to_pecs"),
             participates_in_reduction=True,
-            monitoring_required=True,
-            compliance_evidence="monitoring_test",
         ),
         ids.SUPPLY_HF_TRANSFORMER_ATTENUATION: HfAttenuationFact(
             statement_index=0,

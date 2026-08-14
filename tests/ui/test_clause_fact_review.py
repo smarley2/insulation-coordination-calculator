@@ -20,7 +20,9 @@ from insulation_coordination.rules.importer.clause_facts import (
     CitedNode,
     DimensionScope,
     HfAttenuationFact,
-    SpdMonitoringFact,
+    SpdMonitoringComplianceFact,
+    SpdMonitoringExemptionFact,
+    SpdMonitoringRequirementFact,
     SpdReductionFact,
     SystemVoltageApplicabilityFact,
     SystemVoltageMeasureFact,
@@ -73,10 +75,24 @@ _FACT_MODELS: dict[str, tuple[type[BaseModel], ...]] = {
     "system_voltage": (SystemVoltageMeasureFact, SystemVoltageApplicabilityFact),
     "barrier_transfer": (BarrierTransferFact,),
     "spd_reduction": (SpdReductionFact,),
-    "spd_monitoring": (SpdMonitoringFact,),
+    "spd_monitoring": (
+        SpdMonitoringRequirementFact,
+        SpdMonitoringExemptionFact,
+        SpdMonitoringComplianceFact,
+    ),
     "hf_attenuation": (HfAttenuationFact,),
 }
 _UNDIMENSIONED = ("fact_kind", "statement_kind", "statement_index", "node_references")
+
+
+def _declared_variants(models: tuple[type[BaseModel], ...]) -> tuple[str | None, ...]:
+    """Each statement kind a family declares, or ``(None,)`` for a family that states one kind."""
+
+    if len(models) == 1:
+        return (None,)
+    return tuple(
+        str(get_args(model.model_fields["statement_kind"].annotation)[0]) for model in models
+    )
 
 
 def _variant_model(fact_kind: str, statement_kind: str | None) -> type[BaseModel]:
@@ -654,12 +670,12 @@ def test_each_combo_offers_exactly_its_fields_vocabulary(
             dialog.choose_statement_kind(variant)
             offered.append((family, variant, dialog.dimension_options, dialog.scope_options))
 
-    # Every non-legacy family is reachable; propagation_step belongs only to the legacy route.
-    assert {family for family, _variant, _options, _scopes in offered} == set(_FACT_MODELS)
-    assert {variant for _family, variant, _options, _scopes in offered} == {
-        None,
-        "measure",
-        "applicability",
+    # Every non-legacy family is reachable with every kind of statement it declares;
+    # propagation_step belongs only to the legacy route.
+    assert {(family, variant) for family, variant, _options, _scopes in offered} == {
+        (family, variant)
+        for family, models in _FACT_MODELS.items()
+        for variant in _declared_variants(models)
     }
     assert all(
         options == _expected_options(family, variant)

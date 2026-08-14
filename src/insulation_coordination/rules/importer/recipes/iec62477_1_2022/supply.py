@@ -47,7 +47,9 @@ from insulation_coordination.rules.importer.clause_facts import (
     ConfirmedFacts,
     DimensionScope,
     HfAttenuationFact,
-    SpdMonitoringFact,
+    SpdMonitoringExemptionFact,
+    SpdMonitoringRequirementFact,
+    SpdMonitoringStatement,
     SpdReductionFact,
     SupplyFact,
     SystemVoltageMeasureFact,
@@ -474,14 +476,17 @@ _SPD_REDUCTION_GRAMMAR = ClauseFactGrammar(
 
 _SPD_MONITORING_GRAMMAR = ClauseFactGrammar(
     fact_kind="spd_monitoring",
+    # Requirement statements only. The family's other two kinds state dimensions no declared term
+    # of this grammar reaches -- an exemption's participation is settled by a term the requirement
+    # sentences do not carry, and a compliance statement's accepted showings are its own
+    # dimension -- so proposing them here would offer a reading of the wrong kind. They are
+    # authored by hand until the private grammar reaches them, exactly as the system voltage
+    # family's applicability statements are.
+    statement_kind="requirement",
     keyword_rules=(
         *_OBLIGATION_RULES,
         _keyword("device_placement", "bundled_external_to_pecs", "bundles", "external", "SPD"),
         _keyword("device_placement", "internal_to_pecs", "internal", "PECS"),
-        _keyword("participates_in_reduction", "false", "not", "part", "reduction"),
-        _keyword("monitoring_required", "false", "not", "part", "reduction"),
-        _keyword("compliance_evidence", "visual_inspection", "visual", "inspection"),
-        _keyword("compliance_evidence", "monitoring_test", "test", "according"),
     ),
 )
 
@@ -1298,7 +1303,7 @@ _REVIEWED_AND_CONSUMER_DOMAINS: dict[str, tuple[tuple[str, ...], tuple[str, ...]
         _CALCULATION_PURPOSES,
     ),
     "device_placement": (
-        _reviewed_domain(SpdMonitoringFact, "device_placement", "any_placement"),
+        _reviewed_domain(SpdMonitoringRequirementFact, "device_placement"),
         _DEVICE_PLACEMENTS,
     ),
     "dvc_gate": (_reviewed_domain(HfAttenuationFact, "dvc_gate"), _DVC_DESIGNATIONS),
@@ -1368,45 +1373,44 @@ def _spd_reduction_row(fact: SpdReductionFact, fragment: RawClauseFragment) -> D
     )
 
 
-def _placement_matcher(placement: str) -> Matcher:
-    """Match one authored placement, or every placement a reviewed reading can name.
+def _spd_monitoring_row(
+    fact: SpdMonitoringRequirementFact | SpdMonitoringExemptionFact,
+    fragment: RawClauseFragment,
+) -> DecisionRow:
+    """One row for one reviewed monitoring requirement or exemption.
 
-    ``any_placement`` records a reading placement does not restrict. It is now an ``in`` over the
-    reviewed placements rather than a wildcard, and that is a behaviour fix rather than a tidy-up:
-    this rule's own declared placements include one the reviewed vocabulary deliberately cannot name,
-    because what the source states about that placement is nothing. The wildcard granted it a row
-    anyway -- contradicting the note beside ``_DEVICE_PLACEMENTS``, which says a consumer asking
-    about it must reach no match at all.
-    """
+    Whether monitoring is owed is *what the variant is*, not a value read off a field: a
+    requirement projects the obligation and an exemption projects its absence. A boolean beside the
+    variant could contradict it, and the pair of readings would then depend on which of the two
+    the projector believed.
 
-    reviewed, consumer = _REVIEWED_AND_CONSUMER_DOMAINS["device_placement"]
-    scope: DimensionScope[str] = (
-        DimensionScope(mode="unrestricted")
-        if placement == "any_placement"
-        else DimensionScope(mode="exact_one", values=(placement,))
-    )
-    return _scope_matcher("device_placement", scope, reviewed, consumer)
+    ``device_placement`` is a branch dimension of a requirement and a dimension an exemption does
+    not state. An exemption therefore projects the unrestricted reading -- an ``in`` over the
+    reviewed placements, never a wildcard -- so it covers every placement a reviewed statement can
+    name and stops there: this rule declares a bare external placement the reviewed vocabulary
+    deliberately cannot name, because what the source states about it is nothing, and a wildcard
+    would grant it a row anyway.
 
-
-def _spd_monitoring_row(fact: SpdMonitoringFact, fragment: RawClauseFragment) -> DecisionRow:
-    """One row for one reviewed monitoring statement.
-
-    ``device_placement`` and ``participates_in_reduction`` are both read as branch values: each is
-    a dimension the reviewed reading scopes, and the fact's placement vocabulary is this rule's own.
-
-    ``compliance_evidence`` is not, and that one is a real gap rather than an oversight. This rule's
-    declared ``verification_reference`` output carries none of that field's tokens -- it has the
-    mains/non-mains routes'. Widening the output is a contract change, so it is #53C item 5, and
-    until then the fact carries a reading the rule cannot yet express.
+    ``participates_in_reduction`` is the dimension that separates the two kinds, which is why a
+    requirement states it as well. Without it a requirement would overlap every exemption and
+    ``_require_distinct_branches`` would refuse the pair rather than serve whichever came first.
 
     The three reduction outputs below are the mains and non-mains routes' concern; this route
     fills them with a fixed, uninformative value only because all three routes still share one
-    declared output tuple. Right-sizing that per route is #53C item 5 as well.
+    declared output tuple. Right-sizing that per route is #53C item 5.
     """
 
+    requirement = fact if isinstance(fact, SpdMonitoringRequirementFact) else None
+    required = requirement is not None
+    reviewed, consumer = _REVIEWED_AND_CONSUMER_DOMAINS["device_placement"]
+    placement: DimensionScope[Any] = (
+        requirement.device_placement
+        if requirement is not None
+        else DimensionScope[str].unrestricted()
+    )
     return DecisionRow(
         matchers=(
-            _placement_matcher(fact.device_placement),
+            _scope_matcher("device_placement", placement, reviewed, consumer),
             Matcher(input="insulation_class", op="any"),
             Matcher(input="device_degradable", op="any"),
             Matcher(
@@ -1418,14 +1422,12 @@ def _spd_monitoring_row(fact: SpdMonitoringFact, fragment: RawClauseFragment) ->
         values=(
             DecisionValue(name="reduction_permitted", boolean=False),
             DecisionValue(name="reduced_category", categorical=_NOT_REDUCED),
-            DecisionValue(name="monitoring_required", boolean=fact.monitoring_required),
-            DecisionValue(name="status_indication_required", boolean=fact.monitoring_required),
+            DecisionValue(name="monitoring_required", boolean=required),
+            DecisionValue(name="status_indication_required", boolean=required),
             DecisionValue(
                 name="verification_reference",
                 categorical=(
-                    "inspection_and_dielectric_verification"
-                    if fact.monitoring_required
-                    else "not_required"
+                    "inspection_and_dielectric_verification" if required else "not_required"
                 ),
             ),
             DecisionValue(name="reinforced_floor_applies", boolean=False),
@@ -1463,11 +1465,26 @@ def project_spd_reduction_requirements(
         raise ClauseStructureError(f"{label} needs reviewed clause facts for its route")
 
     if rule_id == _SPD_MONITORING_ROUTE:
-        monitoring_facts = tuple(fact for fact in facts if isinstance(fact, SpdMonitoringFact))
+        monitoring_facts = tuple(fact for fact in facts if isinstance(fact, SpdMonitoringStatement))
         if len(monitoring_facts) != len(facts):
             raise ValueError(f"{label} projection requires SPD monitoring facts")
-        rows = tuple(_spd_monitoring_row(fact, fragment) for fact in monitoring_facts)
-        _require_distinct_branches(label, monitoring_facts, rows)
+        # The family's **compliance** statements are carried, not projected: they state how a
+        # showing is accepted, which none of this rule's declared outputs can carry. A reviewed set
+        # of only those cannot answer the question this rule asks, so the projection refuses rather
+        # than emitting a rule with no rows -- a zero-row rule answers every consumer with silence
+        # and looks reviewed while doing it.
+        obligations = tuple(
+            fact
+            for fact in monitoring_facts
+            if isinstance(fact, SpdMonitoringRequirementFact | SpdMonitoringExemptionFact)
+        )
+        if not obligations:
+            raise ClauseStructureError(
+                f"{label} reviewed statements state no monitoring obligation, so they cannot "
+                "answer its question"
+            )
+        rows = tuple(_spd_monitoring_row(fact, fragment) for fact in obligations)
+        _require_distinct_branches(label, obligations, rows)
         reduced_categories: tuple[str, ...] = (_NOT_REDUCED,)
     else:
         reduction_facts = tuple(fact for fact in facts if isinstance(fact, SpdReductionFact))

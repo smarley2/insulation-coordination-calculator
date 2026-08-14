@@ -30,7 +30,9 @@ from insulation_coordination.rules.importer.clause_facts import (
     DimensionScope,
     HfAttenuationFact,
     PropagationStepFact,
-    SpdMonitoringFact,
+    SpdMonitoringComplianceFact,
+    SpdMonitoringExemptionFact,
+    SpdMonitoringRequirementFact,
     SpdReductionFact,
     SupplyFact,
     SystemVoltageApplicabilityFact,
@@ -46,7 +48,9 @@ FactModel = type[
     | PropagationStepFact
     | BarrierTransferFact
     | SpdReductionFact
-    | SpdMonitoringFact
+    | SpdMonitoringRequirementFact
+    | SpdMonitoringExemptionFact
+    | SpdMonitoringComplianceFact
     | HfAttenuationFact
 ]
 
@@ -62,7 +66,11 @@ FACT_MODELS_BY_KIND: dict[str, tuple[FactModel, ...]] = {
     "propagation_step": (PropagationStepFact,),
     "barrier_transfer": (BarrierTransferFact,),
     "spd_reduction": (SpdReductionFact,),
-    "spd_monitoring": (SpdMonitoringFact,),
+    "spd_monitoring": (
+        SpdMonitoringRequirementFact,
+        SpdMonitoringExemptionFact,
+        SpdMonitoringComplianceFact,
+    ),
     "hf_attenuation": (HfAttenuationFact,),
 }
 

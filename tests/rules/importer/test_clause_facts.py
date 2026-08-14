@@ -14,7 +14,9 @@ from insulation_coordination.rules.importer.clause_facts import (
     ClauseFactReview,
     ConfirmedFacts,
     DimensionScope,
-    SpdMonitoringFact,
+    SpdMonitoringComplianceFact,
+    SpdMonitoringExemptionFact,
+    SpdMonitoringRequirementFact,
     SpdReductionFact,
     SystemVoltageApplicabilityFact,
     SystemVoltageMeasureFact,
@@ -137,6 +139,10 @@ def test_two_readings_of_different_kinds_are_never_one_reading() -> None:
     assert same_clause_fact_reading(measure, measure) is True
 
 
+def _monitoring_node() -> tuple[CitedNode, ...]:
+    return (CitedNode(fragment_id="raw-a", node_order=0, node_sha256="a" * 64),)
+
+
 def test_monitoring_is_its_own_family_and_reduction_carries_no_placement() -> None:
     """Placement is monitoring semantics. Reduction refers to monitoring, never restates it.
 
@@ -145,21 +151,78 @@ def test_monitoring_is_its_own_family_and_reduction_carries_no_placement() -> No
     reduction statement a field its own clause never scopes.
     """
 
-    monitoring = SpdMonitoringFact(
+    monitoring = SpdMonitoringRequirementFact(
         statement_index=0,
-        node_references=(CitedNode(fragment_id="raw-a", node_order=0, node_sha256="a" * 64),),
+        node_references=_monitoring_node(),
         obligation="requirement",
-        device_placement="bundled_external_to_pecs",
+        device_placement=DimensionScope.of("bundled_external_to_pecs"),
         participates_in_reduction=True,
-        monitoring_required=True,
-        compliance_evidence="visual_inspection",
     )
 
     assert monitoring.fact_kind == "spd_monitoring"
     assert "device_placement" not in SpdReductionFact.model_fields
     assert "participates_in_reduction" not in SpdReductionFact.model_fields
-    assert "device_placement" in SpdMonitoringFact.model_fields
     assert _spd_fact().monitoring_reference.endswith(".monitoring")
+
+
+def test_the_monitoring_obligation_is_the_variant_rather_than_a_field() -> None:
+    """A boolean beside the variant could contradict it, and one of the two would have to win."""
+
+    for model in (SpdMonitoringRequirementFact, SpdMonitoringExemptionFact):
+        assert "monitoring_required" not in model.model_fields
+    assert {"requirement", "exemption"} <= {
+        SpdMonitoringRequirementFact.model_fields["statement_kind"].default,
+        SpdMonitoringExemptionFact.model_fields["statement_kind"].default,
+    }
+
+
+def test_an_exemption_states_no_placement_and_compliance_states_no_monitoring_state() -> None:
+    """Neither variant may be forced to carry a dimension its own kind of statement never states.
+
+    An exemption is stated over the monitoring obligations collectively, so a placement on it would
+    be invented -- and an unrestricted placement token is that same invented dimension spelled as a
+    scope. A compliance statement states which showings are accepted and nothing about whether
+    monitoring is owed or where the device sits.
+    """
+
+    assert "device_placement" not in SpdMonitoringExemptionFact.model_fields
+    assert "device_placement" not in SpdMonitoringComplianceFact.model_fields
+    assert "participates_in_reduction" not in SpdMonitoringComplianceFact.model_fields
+    assert "compliance_evidence" not in SpdMonitoringRequirementFact.model_fields
+
+
+def test_one_compliance_statement_accepts_both_showings_as_one_reading() -> None:
+    """Two accepted showings are one statement: splitting them would claim twice the review."""
+
+    compliance = SpdMonitoringComplianceFact(
+        statement_index=0,
+        node_references=_monitoring_node(),
+        obligation="requirement",
+        compliance_evidence=DimensionScope.of("monitoring_test", "visual_inspection"),
+    )
+
+    assert compliance.compliance_evidence.mode == "exact_set"
+    assert compliance.compliance_evidence.values == ("monitoring_test", "visual_inspection")
+
+
+def test_a_requirement_and_an_exemption_are_never_one_reading() -> None:
+    """The duplicate refusal compares the kind, so an obligation never covers its own exemption."""
+
+    requirement = SpdMonitoringRequirementFact(
+        statement_index=0,
+        node_references=_monitoring_node(),
+        obligation="requirement",
+        device_placement=DimensionScope.of("internal_to_pecs"),
+        participates_in_reduction=True,
+    )
+    exemption = SpdMonitoringExemptionFact(
+        statement_index=1,
+        node_references=_monitoring_node(),
+        obligation="requirement",
+        participates_in_reduction=True,
+    )
+
+    assert same_clause_fact_reading(requirement, exemption) is False
 
 
 def test_a_fact_must_cite_at_least_one_node() -> None:

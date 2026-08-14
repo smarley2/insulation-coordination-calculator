@@ -258,32 +258,101 @@ class SpdReductionFact(_Fact):
     monitoring_reference: Identifier
 
 
-class SpdMonitoringFact(_Fact):
-    """One monitoring statement, whose obligation turns on placement and on participation.
+#: The device placements a monitoring statement may name. Its own alias because the scope's
+#: vocabulary is read back out of this annotation -- see ``scope_vocabulary`` -- and because the
+#: reviewed domain is deliberately narrower than the consumer input's: the rule also declares a bare
+#: external placement, which is wider than any reviewed reading of this clause, so an unrestricted
+#: reading must not answer for it.
+#:
+#: Spelled as the rule's own ``device_placement`` vocabulary, because these mean the same thing. A
+#: fact field may diverge from a consumer input where the two really are different concepts --
+#: Table 2's basis against the curve basis in #53A is the precedent -- but only with an explicit
+#: mapping. Two spellings of one concept and no mapping is just a field nothing can consume.
+DevicePlacement = Literal["internal_to_pecs", "bundled_external_to_pecs"]
 
-    Its own normative concern rather than a dimension of reduction: both dimensions are read from
-    the monitoring clause, and neither appears in the reduction clauses at all.
+#: How compliance with a monitoring obligation is shown. Its own alias for the same reason: the
+#: scope's vocabulary is read back out of the annotation. It carries no "not required" member,
+#: because that is a monitoring state rather than a way of showing compliance -- a compliance
+#: statement states which showings are accepted and nothing about whether monitoring is owed.
+MonitoringComplianceEvidence = Literal["visual_inspection", "monitoring_test"]
+
+
+class SpdMonitoringStatement(_Fact):
+    """What every SPD monitoring statement shares, whichever kind of reading it is.
+
+    Monitoring is its own normative concern rather than a dimension of reduction: every dimension
+    below is read from the monitoring clause, and none of them appears in the reduction clauses at
+    all.
+
+    The family answers three normatively different questions from one clause -- when monitoring is
+    owed, when it is not, and how compliance with it is shown -- so it discriminates on
+    ``statement_kind`` inside one ``fact_kind``. This base carries only what all three kinds state,
+    which is the family itself: each variant adds its own dimensions and nothing more. In
+    particular the obligation is no longer a field. Whether monitoring is required is *what the
+    variant is*, so a boolean beside the variant would let a requirement record that monitoring is
+    not required -- two spellings of one reading, one of which contradicts itself.
     """
 
     fact_kind: Literal["spd_monitoring"] = "spd_monitoring"
-    #: Spelled as the rule's own ``device_placement`` vocabulary, because these mean the same
-    #: thing. A fact field may diverge from a consumer input where the two really are different
-    #: concepts -- Table 2's basis against the curve basis in #53A is the precedent -- but only
-    #: with an explicit mapping. Two spellings of one concept and no mapping is just a field
-    #: nothing can consume.
-    #:
-    #: ``bundled_external_to_pecs`` rather than a bare external placement, because the reviewed
-    #: scope is narrower than every external device: a token claiming all of them would be wider
-    #: than the reading it records. The rule declares both tokens, so a placement outside the
-    #: reviewed scope reaches no row at all.
-    #:
-    #: ``any_placement`` records a reading whose obligation is not restricted by placement, so it
-    #: is authored once rather than once per placement -- the same shape ``any_purpose`` and
-    #: ``any_evidence`` carry for their own dimensions.
-    device_placement: Literal["internal_to_pecs", "bundled_external_to_pecs", "any_placement"]
+
+
+class SpdMonitoringRequirementFact(SpdMonitoringStatement):
+    """One statement of a placement whose device is owed monitoring.
+
+    A scope rather than one placement, because a statement naming several placements is one
+    statement: authored as a scalar it had to be authored once per placement, or once with an
+    ``any_placement`` token that then had to be translated back into a scope at projection.
+
+    ``participates_in_reduction`` is stated as well, and it is what separates a requirement from an
+    exemption: the exemption is exactly the circuit that is not part of a category reduction, so a
+    requirement recording no participation would overlap every exemption over the same placement
+    and the projector would refuse the pair -- see ``_require_distinct_branches``.
+    """
+
+    statement_kind: Literal["requirement"] = "requirement"
+    device_placement: DimensionScope[DevicePlacement]
     participates_in_reduction: bool
-    monitoring_required: bool
-    compliance_evidence: Literal["visual_inspection", "monitoring_test", "not_required"]
+
+
+class SpdMonitoringExemptionFact(SpdMonitoringStatement):
+    """One statement of a circuit that is owed no monitoring.
+
+    It carries **no placement**. An exemption of this kind is stated over the monitoring
+    obligations collectively rather than over a placement, so authoring one would need a placement
+    the statement does not name -- and an unrestricted placement token would be that same invented
+    dimension spelled as a scope. The projector reads the absence as unrestricted *within the
+    reviewed placements*, which is the reading, and never widens to a placement no reviewed
+    statement can name.
+    """
+
+    statement_kind: Literal["exemption"] = "exemption"
+    participates_in_reduction: bool
+
+
+class SpdMonitoringComplianceFact(SpdMonitoringStatement):
+    """One statement of how compliance with the monitoring obligation is shown.
+
+    The carried-not-projected variant. This route's declared ``verification_reference`` output
+    carries none of this field's tokens, and widening it is a contract change (#53C item 5), so the
+    statement is accepted by resolution and covered by the route's fact-set digest -- which is how
+    completion and the approval gate know the reviewer read it -- and contributes no row.
+
+    One scope rather than one fact per accepted showing: a statement accepting either of two
+    showings is one statement, and splitting it would record one reading twice and claim twice the
+    review. It carries no placement and no monitoring state, because a statement of this kind
+    states neither.
+    """
+
+    statement_kind: Literal["compliance"] = "compliance"
+    compliance_evidence: DimensionScope[MonitoringComplianceEvidence]
+
+
+#: The family's three variants under one ``fact_kind``, discriminated by ``statement_kind``. The
+#: route-to-family declaration, the family discriminator and the archive schema are unchanged.
+SpdMonitoringFact = Annotated[
+    SpdMonitoringRequirementFact | SpdMonitoringExemptionFact | SpdMonitoringComplianceFact,
+    Field(discriminator="statement_kind"),
+]
 
 
 #: The DVC designations a gate reading may name. Its own alias because the scope's vocabulary is
@@ -422,13 +491,19 @@ __all__ = [
     "ClauseFactCompletion",
     "ClauseFactReview",
     "ConfirmedFacts",
+    "DevicePlacement",
     "DimensionScope",
     "DvcGate",
     "HfAttenuationFact",
+    "MonitoringComplianceEvidence",
     "Obligation",
     "PropagationStepFact",
     "ScopeMode",
+    "SpdMonitoringComplianceFact",
+    "SpdMonitoringExemptionFact",
     "SpdMonitoringFact",
+    "SpdMonitoringRequirementFact",
+    "SpdMonitoringStatement",
     "SpdReductionFact",
     "SupplyFact",
     "SystemVoltageApplicabilityFact",
