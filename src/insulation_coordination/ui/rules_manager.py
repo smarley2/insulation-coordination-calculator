@@ -41,7 +41,7 @@ from insulation_coordination.rules.audit import (
 from insulation_coordination.rules.importer.approval import is_fully_resolved
 from insulation_coordination.rules.importer.extract import _REQUIRED_RECIPES, ImportedRuleDraft
 from insulation_coordination.rules.installation import install_rule_package
-from insulation_coordination.ui.axis_review import AxisReviewDialog, AxisReviewModel
+from insulation_coordination.ui.axis_review import AxisReviewModel
 from insulation_coordination.ui.clause_fact_review import (
     ClauseFactReviewDialog,
     ClauseFactReviewModel,
@@ -156,10 +156,6 @@ class RulesManagerWindow(QWidget):
         self._review_clause_facts_button.setEnabled(False)
         self._review_clause_facts_button.clicked.connect(self._on_review_clause_facts_clicked)
         review_actions.addWidget(self._review_clause_facts_button)
-        self._review_axis_selectors_button = QPushButton("Review axis selectors…")
-        self._review_axis_selectors_button.setEnabled(False)
-        self._review_axis_selectors_button.clicked.connect(self._on_review_axis_selectors_clicked)
-        review_actions.addWidget(self._review_axis_selectors_button)
         review_layout.addLayout(review_actions)
 
         self._review_approve_button = QPushButton("Approve draft and build package…")
@@ -287,10 +283,6 @@ class RulesManagerWindow(QWidget):
         return self._review_clause_facts_button.isEnabled()
 
     @property
-    def axis_review_enabled(self) -> bool:
-        return self._review_axis_selectors_button.isEnabled()
-
-    @property
     def review_approve_enabled(self) -> bool:
         return self._review_approve_button.isEnabled()
 
@@ -326,7 +318,6 @@ class RulesManagerWindow(QWidget):
             self._review_equations_button.setEnabled(False)
             self._review_curves_button.setEnabled(False)
             self._review_clause_facts_button.setEnabled(False)
-            self._review_axis_selectors_button.setEnabled(False)
             return
         from insulation_coordination.rules.importer.review import (
             recipe_derived_items,
@@ -341,13 +332,19 @@ class RulesManagerWindow(QWidget):
         equation_pending = unresolved_equation_items(self._draft)
         mapping_pending = unresolved_mapping_items(self._draft)
         tables_done = not table_pending and not raw_pending
-        self._review_tables_button.setEnabled(not tables_done)
+        # An axis selector is confirmed inside the table review dialog, beside the row or column
+        # it describes, so that dialog has to stay reachable while any position is unreviewed --
+        # otherwise accepting every table first strands the reviewer with approval blocked on a
+        # gate no button opens. The model owns the status; this only reads it.
+        axis_pending = any(
+            row.status == "needs_review" for row in AxisReviewModel(self._draft).rows()
+        )
+        self._review_tables_button.setEnabled(not tables_done or axis_pending)
         self._review_equations_button.setEnabled(
             tables_done and bool(equation_pending or mapping_pending)
         )
         self._review_curves_button.setEnabled(bool(self._draft.raw_figures))
         self._review_clause_facts_button.setEnabled(bool(self._draft.raw_clause_fragments))
-        self._review_axis_selectors_button.setEnabled(bool(self._draft.axis_selector_proposals))
         for item in table_pending:
             flagged = sum(
                 candidate.semantic_id.startswith(f"raw-{item.semantic_id}:")
@@ -418,14 +415,6 @@ class RulesManagerWindow(QWidget):
             return
         model = ClauseFactReviewModel(self._draft)
         dialog = ClauseFactReviewDialog(model)
-        dialog.exec()
-        self.set_draft(model.draft)
-
-    def _on_review_axis_selectors_clicked(self) -> None:
-        if self._draft is None:
-            return
-        model = AxisReviewModel(self._draft)
-        dialog = AxisReviewDialog(model)
         dialog.exec()
         self.set_draft(model.draft)
 

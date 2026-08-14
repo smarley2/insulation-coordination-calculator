@@ -1,8 +1,8 @@
 """The axis review surface: proposals in, decisions out. No review logic in Qt.
 
-Confirming a selector happens in the raw grid review dialog, beside the row or column it
-describes, so the editor's tests drive that dialog. ``AxisReviewDialog`` is the read-only
-overview of every position across every grid.
+Every position is reviewed in the raw grid review dialog, beside the row or column it
+describes, so the editor's tests drive that dialog. What lives here on its own is the model:
+which positions a draft carries, and whether each one's review is still current.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from typing import get_args
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QComboBox
 
 from insulation_coordination.domain.rules import RulePackageError
 from insulation_coordination.rules.importer.axis_selectors import (
@@ -22,11 +21,7 @@ from insulation_coordination.rules.importer.axis_selectors import (
 from insulation_coordination.rules.importer.extract import ImportedRuleDraft
 from insulation_coordination.rules.importer.review import review_axis_selector
 from insulation_coordination.ui import axis_review
-from insulation_coordination.ui.axis_review import (
-    AxisReviewDialog,
-    AxisReviewModel,
-    AxisReviewRow,
-)
+from insulation_coordination.ui.axis_review import AxisReviewModel, AxisReviewRow
 from insulation_coordination.ui.raw_grid_review import RawGridReviewDialog
 from tests.rules.importer.test_axis_resolution import _with_one_corrected_header_cell
 
@@ -37,7 +32,6 @@ _SELECTOR_MODELS = {
     "table2_quantity": Table2QuantitySelector,
     "protection_target": ProtectionTargetSelector,
 }
-_STATUS_COLUMN = 4
 
 
 def _expected_options(selector_kind: str) -> dict[str, tuple[str, ...]]:
@@ -179,28 +173,6 @@ def test_a_position_whose_own_evidence_changed_reads_as_needing_review(
 
     assert rows[("row", 3)] == "needs_review"
     assert all(status == "reviewed" for key, status in rows.items() if key != ("row", 3))
-
-
-def test_the_overview_shows_one_row_per_position(qtbot, draft_with_axis_proposals) -> None:
-    """One screen still answers what is pending across every grid of the draft."""
-
-    dialog = AxisReviewDialog(AxisReviewModel(draft_with_axis_proposals))
-    qtbot.addWidget(dialog)
-
-    assert dialog.table.rowCount() == len(draft_with_axis_proposals.axis_selector_proposals)
-    assert dialog.table.columnCount() == 5
-    assert {
-        dialog.table.item(row, _STATUS_COLUMN).text() for row in range(dialog.table.rowCount())
-    } == {"needs_review"}
-
-
-def test_the_overview_offers_no_editor(qtbot, draft_with_axis_proposals) -> None:
-    """Deciding moved beside the row or column; this screen only reports status."""
-
-    dialog = AxisReviewDialog(AxisReviewModel(draft_with_axis_proposals))
-    qtbot.addWidget(dialog)
-
-    assert dialog.findChildren(QComboBox) == []
 
 
 def test_selecting_a_row_header_shows_that_row_positions_selector_editor(
@@ -355,30 +327,38 @@ def test_a_duplicate_selector_is_surfaced_rather_than_raised(
     assert len(dialog.reviewed_draft.axis_selector_reviews) == 1
 
 
-def test_the_button_is_enabled_by_axis_state_not_by_curve_content(
+def test_table_review_stays_reachable_while_a_position_is_unreviewed(
     qtbot, draft_with_axis_proposals
 ) -> None:
-    """Axis review is its own approval gate.
+    """Axis review is its own approval gate, and table review is the only door to it.
 
-    A draft can declare axis selectors without carrying any curve content, and the reviewer must
-    still be able to reach the gate that blocks its approval.
+    A selector is confirmed inside the grid dialog, beside the row or column it describes. This
+    draft's tables carry nothing pending, so enabling that button on table state alone would
+    leave approval blocked on positions the reviewer has no way to reach.
     """
     from insulation_coordination.ui.rules_manager import RulesManagerWindow
 
-    # Create a draft with axis proposals but no curves
-    draft_without_curves = draft_with_axis_proposals.model_copy(
-        update={"curves": (), "curve_digitizations": ()}
-    )
-
-    # Verify the fixture setup is correct
-    assert draft_without_curves.axis_selector_proposals
-    assert not draft_without_curves.curves
-    assert not draft_without_curves.curve_digitizations
-
-    # Load the draft and verify the axis button is enabled
     window = RulesManagerWindow()
     qtbot.addWidget(window)
-    window.set_draft(draft_without_curves)
 
-    assert window.axis_review_enabled is True
+    window.set_draft(draft_with_axis_proposals)
+
+    assert window.review_tables_enabled is True
+    # Axis positions are not curve content: this draft carries no curves at all.
     assert window.curve_review_enabled is False
+
+    reviewed = draft_with_axis_proposals
+    for proposal in draft_with_axis_proposals.axis_selector_proposals:
+        assert proposal.selector is not None
+        reviewed = review_axis_selector(
+            reviewed,
+            grid_id=proposal.grid_id,
+            axis=proposal.axis,
+            index=proposal.index,
+            selector=proposal.selector,
+            actor="tester",
+            notes="confirmed",
+        )
+    window.set_draft(reviewed)
+
+    assert window.review_tables_enabled is False

@@ -3,9 +3,9 @@
 Qt holds no review logic. Every decision goes through review_axis_selector, which records an
 audited correction and binds the review to the exact proposal and its per-position evidence.
 
-The editor a reviewer types a selector into lives here as a widget, but the screen that shows
+The editor a reviewer types a selector into lives here as a widget, and the screen that shows
 it is the raw grid review dialog, beside the row or column the selector describes. This module
-keeps the read-only overview of every position across every grid.
+holds no screen of its own.
 """
 
 from __future__ import annotations
@@ -14,16 +14,9 @@ from typing import Literal, get_args
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QFormLayout,
     QGroupBox,
-    QHeaderView,
-    QTableWidget,
-    QTableWidgetItem,
-    QVBoxLayout,
     QWidget,
 )
 
@@ -40,8 +33,6 @@ from insulation_coordination.rules.importer.review import (
     axis_review_is_current,
     review_axis_selector,
 )
-
-_HEADINGS = ("table", "axis", "position", "proposed", "status")
 
 _SELECTOR_MODELS: dict[
     str, type[DvcDesignationSelector | Table2QuantitySelector | ProtectionTargetSelector]
@@ -227,40 +218,4 @@ class AxisSelectorEditor(QGroupBox):
         self._kind = selector_kind
 
 
-class AxisReviewDialog(QDialog):
-    """Read-only overview of every axis position of every grid, with its status.
-
-    Confirming a selector happens in the raw grid review dialog, beside the row or column it
-    describes; this screen answers what is still pending for the whole draft in one place.
-    """
-
-    def __init__(self, model: AxisReviewModel, parent: object | None = None) -> None:
-        super().__init__(parent)  # type: ignore[arg-type]
-        self.setWindowTitle("Axis selector review status")
-        self._model = model
-        self.table = QTableWidget(0, len(_HEADINGS), self)
-        self.table.setHorizontalHeaderLabels([heading for heading in _HEADINGS])
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
-        buttons.rejected.connect(self.reject)
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.table)
-        layout.addWidget(buttons)
-        self.refresh()
-
-    def refresh(self) -> None:
-        rows = self._model.rows()
-        self.table.setRowCount(len(rows))
-        for position, row in enumerate(rows):
-            proposed = "" if row.proposed is None else row.proposed.selector_kind
-            for column, text in enumerate(
-                (row.grid_id, row.axis, str(row.index), proposed, row.status)
-            ):
-                self.table.setItem(position, column, QTableWidgetItem(text))
-
-
-__all__ = ["AxisReviewDialog", "AxisReviewModel", "AxisReviewRow", "AxisSelectorEditor"]
+__all__ = ["AxisReviewModel", "AxisReviewRow", "AxisSelectorEditor"]
