@@ -14,7 +14,7 @@ from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.quantities import DecimalValue
 
 RULE_SCHEMA_VERSION = 4
-IEC_IMPORTER_VERSION = "iec-pdf-6"
+IEC_IMPORTER_VERSION = "iec-pdf-7"
 MAX_IDENTIFIER_LENGTH = 160
 MAX_REFERENCE_TEXT_LENGTH = 500
 MAX_NOTES_LENGTH = 2_000
