@@ -21,7 +21,7 @@ from insulation_coordination.rules.importer.review import (
     unresolved_raw_review_items,
     unresolved_table_items,
 )
-from insulation_coordination.ui import raw_grid_review
+from insulation_coordination.ui import page_preview
 from insulation_coordination.ui.raw_grid_review import RawGridReviewDialog, source_pdf_paths
 from tests.conftest import _logged
 from tests.rules.test_importer import _compound_draft, _test_recipes
@@ -139,7 +139,7 @@ def test_the_page_pane_zooms_about_the_cursor_and_pans_by_dragging(qtbot, tmp_pa
     # Clamped: without this a reviewer can scroll the page away to nothing.
     for _ in range(40):
         view.wheelEvent(_wheel(view, -120))
-    assert view.transform().m11() >= raw_grid_review._MIN_PAGE_SCALE
+    assert view.transform().m11() >= page_preview.MIN_PAGE_SCALE
 
 
 def test_page_numbers_list_each_source_page_once_in_reading_order() -> None:

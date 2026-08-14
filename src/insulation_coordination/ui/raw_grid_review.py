@@ -2,22 +2,16 @@
 
 from __future__ import annotations
 
-import hashlib
-import io
 from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-import pdfplumber
-from pdfplumber.utils.exceptions import PdfminerException
 from pydantic import ValidationError
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
+from PySide6.QtGui import QColor, QFont, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
-    QGraphicsScene,
-    QGraphicsView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -49,6 +43,9 @@ from insulation_coordination.ui.axis_review import (
     AxisReviewRow,
     AxisSelectorEditor,
 )
+from insulation_coordination.ui.page_preview import PagePreview, source_pdf_paths
+
+__all__ = ["RawGridReviewDialog", "source_pdf_paths"]
 
 _CELL_COLORS = {
     "numeric": QColor("#e5f4e3"),
@@ -60,61 +57,8 @@ _CELL_COLORS = {
     "non_scalar": QColor("#ffe3a3"),
     "range": QColor("#ffe3a3"),
 }
-# Pages are rendered at twice the scale they open at, so zooming in reads the print rather
-# than an upscaled bitmap. A reviewer judging a cell has to read the page's small print.
-# ponytail: fixed render resolution with a 2x headroom, not a re-render per zoom step; if a
-# reviewer needs to go past _MAX_PAGE_SCALE, re-render the page at the zoomed resolution.
-_PAGE_RESOLUTION = 220
-_INITIAL_PAGE_SCALE = 0.5
-_MIN_PAGE_SCALE = 0.1
-_MAX_PAGE_SCALE = 4.0
-_PAGE_GAP = 12.0
-# ponytail: a 220 dpi page costs about 20 MB as a pixmap, so the cache is dropped wholesale
-# rather than tracked by use order. Re-rendering one page costs a fraction of a second.
-_PAGE_CACHE_LIMIT = 8
 _AXIS_PROMPT = "Select a row or column header to review the selector for that position."
-
-
-def source_pdf_paths(
-    draft: ImportedRuleDraft,
-    paths: tuple[Path, ...],
-) -> dict[str, Path]:
-    """Map each recognized standard to the PDF on disk it was extracted from.
-
-    Matching is by content digest, not filename, so a renamed or swapped file
-    cannot end up displayed beside another standard's grid.
-    """
-    digests: dict[str, Path] = {}
-    for path in paths:
-        try:
-            digests[hashlib.sha256(Path(path).read_bytes()).hexdigest()] = Path(path)
-        except OSError:
-            continue
-    return {
-        identity.standard: digests[identity.sha256]
-        for identity in getattr(draft, "source_identities", ())
-        if identity.sha256 in digests
-    }
-
-
-class _PageGraphicsView(QGraphicsView):
-    """Zoomable, pannable read-only view of the source pages.
-
-    Same scheme as the curve review's source view: the wheel scales the view, and the drag
-    mode pans it. Anchored under the mouse so zooming keeps the print the cursor is on.
-    """
-
-    def __init__(self, scene: QGraphicsScene) -> None:
-        super().__init__(scene)
-        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        self.setRenderHints(QPainter.RenderHint.SmoothPixmapTransform)
-
-    def wheelEvent(self, event) -> None:  # type: ignore[no-untyped-def]
-        factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
-        # Clamped, or a reviewer can scroll the page down to nothing and never find it again.
-        if _MIN_PAGE_SCALE <= self.transform().m11() * factor <= _MAX_PAGE_SCALE:
-            self.scale(factor, factor)
+_NO_SOURCE_PAGE = "Source page not available: re-extract from the PDFs to compare pages."
 
 
 class RawGridReviewDialog(QDialog):
@@ -143,7 +87,6 @@ class RawGridReviewDialog(QDialog):
         # Passwords stay in memory for page rendering only; they are never stored.
         self._pdf_paths = dict(pdf_paths or {})
         self._pdf_passwords = dict(pdf_passwords or {})
-        self._page_cache: dict[tuple[Path, int], QPixmap] = {}
 
         layout = QVBoxLayout(self)
         selector_row = QHBoxLayout()
@@ -161,10 +104,8 @@ class RawGridReviewDialog(QDialog):
 
         # A table that spans pages needs every one of its pages, stacked in
         # reading order, or half the grid has no source to compare against.
-        self._page_scene = QGraphicsScene(self)
-        self._page_view = _PageGraphicsView(self._page_scene)
-        self._page_messages: tuple[str, ...] = ()
-        self._page_pixmaps: tuple[QPixmap, ...] = ()
+        self._page_view = PagePreview(self)
+        self._page_view.set_passwords(self._pdf_passwords)
 
         self._table = QTableWidget()
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -340,58 +281,24 @@ class RawGridReviewDialog(QDialog):
     @property
     def page_pixmaps(self) -> tuple[QPixmap, ...]:
         """The rendered pages currently in the source pane, in reading order."""
-        return self._page_pixmaps
+        return self._page_view.pixmaps
 
     @property
     def page_messages(self) -> tuple[str, ...]:
         """Whatever the pane says in place of a page it could not show."""
-        return self._page_messages
-
-    def _page_pixmap(self, path: Path, page_number: int) -> QPixmap:
-        """Render one page, raising nothing the caller cannot report."""
-        cached = self._page_cache.get((path, page_number))
-        if cached is not None:
-            return cached
-        with pdfplumber.open(path, password=self._pdf_passwords.get(path, "")) as pdf:
-            image = pdf.pages[page_number - 1].to_image(resolution=_PAGE_RESOLUTION)
-            buffer = io.BytesIO()
-            image.save(buffer, format="PNG")
-        pixmap = QPixmap()
-        pixmap.loadFromData(buffer.getvalue())
-        if len(self._page_cache) >= _PAGE_CACHE_LIMIT:
-            self._page_cache.clear()
-        self._page_cache[(path, page_number)] = pixmap
-        return pixmap
+        return self._page_view.messages
 
     def _render_pages(self, grid: RawGrid) -> None:
-        """Stack this grid's pages in one zoomable scene, in reading order."""
-        self._page_scene.clear()
-        pixmaps: list[QPixmap] = []
-        messages: list[str] = []
-        top = 0.0
-        path = self._pdf_paths.get(grid.source.standard)
-        if path is None:
-            messages.append("Source page not available: re-extract from the PDFs to compare pages.")
-        else:
-            for page_number in self._page_numbers(grid):
-                try:
-                    pixmap = self._page_pixmap(path, page_number)
-                except (OSError, IndexError, TypeError, ValueError, PdfminerException) as error:
-                    messages.append(f"Source page {page_number} could not be rendered: {error}")
-                    continue
-                item = self._page_scene.addPixmap(pixmap)
-                item.setPos(0.0, top)
-                top += pixmap.height() + _PAGE_GAP
-                pixmaps.append(pixmap)
-        for message in messages:
-            text = self._page_scene.addText(message)
-            text.setPos(0.0, top)
-            top += text.boundingRect().height() + _PAGE_GAP
-        self._page_pixmaps = tuple(pixmaps)
-        self._page_messages = tuple(messages)
-        self._page_scene.setSceneRect(self._page_scene.itemsBoundingRect())
-        self._page_view.resetTransform()
-        self._page_view.scale(_INITIAL_PAGE_SCALE, _INITIAL_PAGE_SCALE)
+        """Stack this grid's pages in one zoomable scene, in reading order.
+
+        Whole pages rather than the grid's own rectangle: judging a cell means reading the
+        printed table around it, including the header rows and notes outside the data region.
+        """
+        self._page_view.render_regions(
+            self._pdf_paths.get(grid.source.standard),
+            tuple((page_number, None) for page_number in self._page_numbers(grid)),
+            unavailable=_NO_SOURCE_PAGE,
+        )
 
     # -- Axis selectors ----------------------------------------------------
     #
