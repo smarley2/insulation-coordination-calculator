@@ -32,11 +32,19 @@ from insulation_coordination.domain.rules import (
     RuleKind,
     SourceReference,
 )
+from insulation_coordination.rules.importer.clause_fact_proposals import (
+    FACT_MODEL_BY_KIND,
+    ClauseFactGrammar,
+    ClauseFactProposal,
+    ClauseKeywordRule,
+    ClauseSequenceRule,
+    keyword_proposer,
+    propose_clause_facts,
+)
 from insulation_coordination.rules.importer.clause_facts import (
     BarrierTransferFact,
     ConfirmedFacts,
     HfAttenuationFact,
-    PropagationStepFact,
     SpdMonitoringFact,
     SpdReductionFact,
     SupplyFact,
@@ -63,6 +71,11 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.clauses impo
 #: physical pagination and clause numbering are provenance, not application semantics, and a
 #: consumer still asks one ``supply.system_voltage_resolution`` question.
 SUPPLY_SYSTEM_VOLTAGE_NON_MAINS = f"{ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION}.non_mains_evidence"
+
+#: The monitoring subclause's own route. Named here rather than only where its rows are built,
+#: because the reduction routes' declared grammar refers to it as the route their monitoring
+#: obligation defers to.
+_SPD_MONITORING_ROUTE = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring"
 
 #: Measured with pdfplumber against the licensed document; the x range excludes the
 #: licence watermark columns at either margin.
@@ -248,27 +261,6 @@ def _require_declared_fact_families(
 
 _require_declared_fact_families(SUPPLY_CLAUSES, SUPPLY_FACT_FAMILY_BY_ROUTE)
 
-#: The one fact model each declared family builds, so the check below can ask a family's own
-#: model whether it carries a ``supply_kind`` field rather than naming families by string.
-_FACT_MODEL_BY_FAMILY: dict[
-    str,
-    type[
-        SystemVoltageFact
-        | PropagationStepFact
-        | BarrierTransferFact
-        | SpdReductionFact
-        | SpdMonitoringFact
-        | HfAttenuationFact
-    ],
-] = {
-    "system_voltage": SystemVoltageFact,
-    "propagation_step": PropagationStepFact,
-    "barrier_transfer": BarrierTransferFact,
-    "spd_reduction": SpdReductionFact,
-    "spd_monitoring": SpdMonitoringFact,
-    "hf_attenuation": HfAttenuationFact,
-}
-
 #: The concrete supply kind each route's own clause states, for every route whose fact family
 #: carries a ``supply_kind`` field: system voltage's mains and non-mains subclauses, and each SPD
 #: reduction subclause. The route determines this dimension structurally -- it is not a reviewed
@@ -298,7 +290,7 @@ def _require_declared_supply_kinds(
     needs_expectation = {
         route
         for route, family in families.items()
-        if "supply_kind" in _FACT_MODEL_BY_FAMILY[family].model_fields
+        if "supply_kind" in FACT_MODEL_BY_KIND[family].model_fields
     }
     disagreement = needs_expectation.symmetric_difference(expected_supply_kinds)
     if disagreement:
@@ -308,6 +300,234 @@ def _require_declared_supply_kinds(
 
 
 _require_declared_supply_kinds(SUPPLY_FACT_FAMILY_BY_ROUTE, SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE)
+
+
+# --- proposal grammars ---------------------------------------------------------------
+#
+# Which short generic term settles which dimension of which fact family, declared here beside
+# the clause specs because it is the same kind of declaration: locators and neutral vocabulary,
+# never source content. A proposal is a prefill of the authoring editor, so a term that stops
+# matching after a reprint costs a maintainer some typing and can never mis-certify a route -- a
+# dimension no rule settles stays unchosen and its Author button stays disabled.
+#
+# Every term below was verified against the licensed document before it was declared. Where a
+# dimension is genuinely unreachable from a route's own wording it carries no rule at all,
+# rather than a rule guessing at it.
+
+
+def _keyword(
+    dimension: str,
+    value: str,
+    *keywords: str,
+    without: tuple[str, ...] = (),
+) -> ClauseKeywordRule:
+    """One keyword rule, spelled positionally so a grammar reads as a table."""
+
+    return ClauseKeywordRule(
+        dimension=dimension, value=value, keywords=keywords, excluded_keywords=without
+    )
+
+
+#: The normative verbs. Generic to every standard rather than to any clause, and the one pair of
+#: terms that reaches the obligation dimension every fact family carries.
+#:
+#: Declared only by the grammars whose own regions carry a normative verb at all. Two of them do
+#: not: their obligation dimension is simply unreachable from the text the recipe extracts, and a
+#: rule that reaches nothing is worse than no rule -- it claims a coverage the maintainer would
+#: only discover was missing by finding the field blank. The private grammar test refuses a rule
+#: that reaches nothing, so this omission is enforced rather than remembered.
+_OBLIGATION_RULES = (
+    _keyword("obligation", "requirement", "shall"),
+    _keyword("obligation", "permission", "may"),
+)
+
+#: Overvoltage category designations as the scale a reduction step is read over. Designations,
+#: not values; which of a pair is the step's start and which its end is the order they occur in.
+_OVERVOLTAGE_STEP_TOKENS = (
+    ("IV", "ovc_iv"),
+    ("III", "ovc_iii"),
+    ("II", "ovc_ii"),
+    ("I", "ovc_i"),
+)
+
+_SYSTEM_VOLTAGE_GRAMMAR = ClauseFactGrammar(
+    fact_kind="system_voltage",
+    # No obligation rule: see ``_OBLIGATION_RULES``. Shared by the mains and non-mains subclauses,
+    # which state one rule between them and so read from one grammar; a dimension only one of them
+    # reaches is still reached, and the other's statements keep it unchosen.
+    keyword_rules=(
+        _keyword("phase_system", "three_phase_star", "star"),
+        _keyword("phase_system", "three_phase_delta", "delta"),
+        _keyword("phase_system", "three_phase_delta", "corner"),
+        _keyword("phase_system", "three_phase_delta", "high-leg"),
+        _keyword("phase_system", "three_phase_it", "three-phase", "IT"),
+        _keyword("phase_system", "single_phase_it", "single-phase", "IT"),
+        _keyword("earthing", "tn", "TN"),
+        _keyword("earthing", "tt", "TT"),
+        _keyword("earthing", "it", "IT"),
+        _keyword("purpose", "impulse", "impulse", "withstand"),
+        _keyword("purpose", "temporary_overvoltage", "temporary", "overvoltage"),
+        # The unrestricted reading, which is a claim in its own right and so needs its own rule:
+        # a sentence naming neither calculation purpose covers both.
+        _keyword("purpose", "any_purpose", without=("withstand", "temporary")),
+        _keyword("measure", "phase_to_earth_rms", "phase", "earth"),
+        _keyword("measure", "phase_to_phase_rms", "between", "phases"),
+        _keyword("measure", "phase_to_artificial_neutral_rms", "artificial", "neutral"),
+        _keyword("measure", "between_supply_conductors_rms", "supply", "conductors"),
+        # The narrower reading of the same measure carries the terms that distinguish it, and
+        # the broader one excludes them, so exactly one of the two ever matches.
+        _keyword(
+            "measure",
+            "pre_rectifier_ac_rms",
+            "before",
+            "rectification",
+            without=("highest", "bridge"),
+        ),
+        _keyword(
+            "measure",
+            "highest_pre_rectifier_ac_rms_at_bridge",
+            "before",
+            "rectification",
+            "highest",
+            "bridge",
+        ),
+        _keyword("input_topology", "rectified_dc", "rectified"),
+        _keyword("input_topology", "series_rectifier_bridges", "series-connected", "bridges"),
+        _keyword("input_topology", "isolated_secondary", "secondaries", "transformers"),
+        _keyword(
+            "input_topology",
+            "any_input_topology",
+            without=("rectified", "series-connected", "secondaries"),
+        ),
+    ),
+)
+
+_BARRIER_TRANSFER_GRAMMAR = ClauseFactGrammar(
+    fact_kind="barrier_transfer",
+    # No obligation rule: see ``_OBLIGATION_RULES``.
+    keyword_rules=(
+        _keyword("isolation_present", "false", "not", "providing", "galvanic", "isolation"),
+        _keyword("combined_circuit_rule", "more_severe_of_both_sides", "higher", "two"),
+        _keyword("downstream_connection_kind", "no_isolation", "without", "galvanic", "isolation"),
+    ),
+)
+
+_SPD_REDUCTION_GRAMMAR = ClauseFactGrammar(
+    fact_kind="spd_reduction",
+    keyword_rules=(
+        *_OBLIGATION_RULES,
+        _keyword("insulation_class", "basic", "basic"),
+        _keyword("insulation_class", "supplementary", "supplementary"),
+        _keyword("degradable", "true", "damaged", "overvoltages", "monitored"),
+        _keyword("monitoring_obligation", "required", "damaged", "overvoltages", "monitored"),
+    ),
+    sequence_rules=(
+        ClauseSequenceRule(
+            tokens=_OVERVOLTAGE_STEP_TOKENS, dimensions=("source_ovc", "target_ovc")
+        ),
+    ),
+    # The route whose statements the obligation defers to. Not read from the sentence: it is
+    # which route this one references, which is the recipe's own declaration.
+    constants={"monitoring_reference": _SPD_MONITORING_ROUTE},
+)
+
+_SPD_MONITORING_GRAMMAR = ClauseFactGrammar(
+    fact_kind="spd_monitoring",
+    keyword_rules=(
+        *_OBLIGATION_RULES,
+        _keyword("device_placement", "bundled_external_to_pecs", "bundles", "external", "SPD"),
+        _keyword("device_placement", "internal_to_pecs", "internal", "PECS"),
+        _keyword("participates_in_reduction", "false", "not", "part", "reduction"),
+        _keyword("monitoring_required", "false", "not", "part", "reduction"),
+        _keyword("compliance_evidence", "visual_inspection", "visual", "inspection"),
+        _keyword("compliance_evidence", "monitoring_test", "test", "according"),
+    ),
+)
+
+_HF_ATTENUATION_GRAMMAR = ClauseFactGrammar(
+    fact_kind="hf_attenuation",
+    keyword_rules=(
+        *_OBLIGATION_RULES,
+        _keyword("dvc_gate", "dvc_as", "DVC", "As"),
+        _keyword("dvc_gate", "dvc_b", "DVC", "B"),
+        # The three evidence routes as one disjunction, which is how the source states them:
+        # a sentence naming all three restricts the reading to none of them individually.
+        _keyword("evidence_kind", "any_evidence", "test", "simulation", "calculation"),
+        _keyword("comparison_required", "true", "shall", "shown"),
+    ),
+    # The route whose requirement the comparison is against, declared rather than read.
+    constants={"threshold_reference": ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC},
+)
+
+#: The grammar each non-legacy route's sentences are proposed from. Propagation is absent: its
+#: branch authority stays in this file, so it has nothing to propose.
+SUPPLY_FACT_PROPOSAL_GRAMMARS: dict[str, ClauseFactGrammar] = {
+    ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: _SYSTEM_VOLTAGE_GRAMMAR,
+    SUPPLY_SYSTEM_VOLTAGE_NON_MAINS: _SYSTEM_VOLTAGE_GRAMMAR,
+    ids.SUPPLY_VERIFIED_BARRIER_TRANSFER: _BARRIER_TRANSFER_GRAMMAR,
+    f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains": _SPD_REDUCTION_GRAMMAR,
+    f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains": _SPD_REDUCTION_GRAMMAR,
+    _SPD_MONITORING_ROUTE: _SPD_MONITORING_GRAMMAR,
+    ids.SUPPLY_HF_TRANSFORMER_ATTENUATION: _HF_ATTENUATION_GRAMMAR,
+}
+
+
+def _require_declared_proposal_grammars(
+    families: dict[str, str],
+    legacy: frozenset[str],
+    grammars: dict[str, ClauseFactGrammar],
+) -> None:
+    """Refuse, at import, a grammar map that disagrees with the fact families it proposes for.
+
+    A route with no grammar silently loses every prefill while still looking authorable, and a
+    grammar declared for the wrong family proposes dimensions that family does not carry. Both
+    are caught where they are declared, the same way ``_require_declared_fact_families`` catches
+    a forgotten family before a route can deadlock.
+    """
+
+    expected = {route: family for route, family in families.items() if route not in legacy}
+    disagreement = set(expected).symmetric_difference(grammars)
+    if disagreement:
+        raise ValueError(
+            f"supply fact families and proposal grammars disagree on: {sorted(disagreement)}"
+        )
+    wrong_family = sorted(
+        route for route, grammar in grammars.items() if grammar.fact_kind != expected[route]
+    )
+    if wrong_family:
+        raise ValueError(
+            f"supply proposal grammars state the wrong fact family for: {wrong_family}"
+        )
+
+
+_require_declared_proposal_grammars(
+    SUPPLY_FACT_FAMILY_BY_ROUTE, LEGACY_BRANCH_AUTHORITY_RULE_IDS, SUPPLY_FACT_PROPOSAL_GRAMMARS
+)
+
+
+def propose_supply_facts(
+    fragment: RawClauseFragment, rule_route: str
+) -> tuple[ClauseFactProposal, ...]:
+    """Every sentence-level draft one route's fragment supports, or nothing for a route with
+    no declared grammar.
+
+    The seam a later slice widens: the grammar is *one* implementation of "propose readings for
+    this sentence" behind ``SentenceProposer``, and swapping or adding another changes nothing
+    about how a draft is cited, indexed or authored.
+    """
+
+    grammar = SUPPLY_FACT_PROPOSAL_GRAMMARS.get(rule_route)
+    if grammar is None:
+        return ()
+    locked_supply_kind = SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE.get(rule_route)
+    return propose_clause_facts(
+        fragment,
+        rule_route=rule_route,
+        fact_kind=grammar.fact_kind,
+        propose=keyword_proposer(grammar),
+        locked={} if locked_supply_kind is None else {"supply_kind": locked_supply_kind},
+    )
+
 
 #: A ported projector's default when its call site supplies nothing: still refuses to
 #: project, through the same "no facts for this route" check as a caller-supplied empty
@@ -911,8 +1131,6 @@ _DEVICE_PLACEMENTS = ("internal_to_pecs", "external_to_pecs", "bundled_external_
 _INSULATION_CLASSES = ("functional", "basic", "supplementary", "double", "reinforced")
 _VERIFICATION_REFERENCES = ("inspection_and_dielectric_verification", "not_required")
 
-_SPD_MONITORING_ROUTE = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring"
-
 #: The monitoring route's own clause states no category step at all (``SpdMonitoringFact``
 #: carries no OVC field), so its rows fill this shared output with this one fixed token
 #: rather than a value borrowed from the mains/non-mains routes' vocabulary.
@@ -1267,6 +1485,7 @@ __all__ = [
     "LEGACY_BRANCH_AUTHORITY_RULE_IDS",
     "SUPPLY_CLAUSES",
     "SUPPLY_FACT_FAMILY_BY_ROUTE",
+    "SUPPLY_FACT_PROPOSAL_GRAMMARS",
     "SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE",
     "SUPPLY_SYSTEM_VOLTAGE_NON_MAINS",
     "project_hf_transformer_attenuation",
@@ -1274,4 +1493,5 @@ __all__ = [
     "project_spd_reduction_requirements",
     "project_system_voltage_resolution",
     "project_verified_barrier_transfer",
+    "propose_supply_facts",
 ]

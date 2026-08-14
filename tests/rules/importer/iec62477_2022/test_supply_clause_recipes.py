@@ -513,6 +513,42 @@ def test_exactly_one_supply_rule_still_carries_legacy_branch_authority() -> None
     assert LEGACY_BRANCH_AUTHORITY_RULE_IDS == frozenset({ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION})
 
 
+def test_every_non_legacy_route_declares_a_proposal_grammar_of_its_own_family() -> None:
+    """A route without one loses every prefill while still looking authorable.
+
+    The recipe refuses the disagreement at import, so this asserts the property that refusal
+    protects rather than re-deriving it: exactly the non-legacy routes, each stating the fact
+    family its own clause declares. The legacy route keeps its branch authority in the recipe
+    and so has nothing to propose.
+    """
+
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        LEGACY_BRANCH_AUTHORITY_RULE_IDS,
+        SUPPLY_FACT_FAMILY_BY_ROUTE,
+        SUPPLY_FACT_PROPOSAL_GRAMMARS,
+    )
+
+    assert set(SUPPLY_FACT_PROPOSAL_GRAMMARS) == (
+        set(SUPPLY_FACT_FAMILY_BY_ROUTE) - LEGACY_BRANCH_AUTHORITY_RULE_IDS
+    )
+    assert all(
+        grammar.fact_kind == SUPPLY_FACT_FAMILY_BY_ROUTE[route]
+        for route, grammar in SUPPLY_FACT_PROPOSAL_GRAMMARS.items()
+    )
+
+
+def test_a_route_with_no_declared_grammar_proposes_nothing() -> None:
+    """The legacy route's fragment is still extracted; nothing may be proposed from it."""
+
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        propose_supply_facts,
+    )
+
+    fragment = _fragment(ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION)
+
+    assert propose_supply_facts(fragment, ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION) == ()
+
+
 def test_every_reviewed_fact_is_reachable_and_unsupported_combinations_are_not() -> None:
     """Reachability now rests on the reviewed facts, not on a fixed nine-branch inventory."""
 
