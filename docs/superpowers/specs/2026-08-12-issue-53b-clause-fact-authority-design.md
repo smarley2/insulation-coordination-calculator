@@ -229,9 +229,13 @@ belongs to #53C. It therefore keeps legacy branch authority in #53B, recorded in
 ## Package and review consequences
 
 ```text
-IEC_IMPORTER_VERSION   iec-pdf-5 -> iec-pdf-6
+IEC_IMPORTER_VERSION   bumped once for this whole stack; the number is assigned in merge
+                       order at implementation time and is currently iec-pdf-8
     => a package built before #53B is rejected and rebuilt
 ```
+
+See A6-C for what the bump covers -- extracted evidence *and* projected rule semantics -- and why
+one increment is enough for the whole stack.
 
 For the rebuilt draft, review state follows the #53A principle that nothing unchanged is
 invalidated unnecessarily:
@@ -532,7 +536,11 @@ projected rule this correction would not produce, so it must stop being trusted.
 *second* increment is needed: the increment is unreleased and branch-only, so its definition widens
 to cover this slice's projection semantics as well. What changes is the **reason** recorded for it —
 not "a fragment moved" but "extracted evidence and projected rule semantics both changed" — and the
-branch must not ship without it.
+branch must not ship without it. Recorded beside the constant, which now names both halves.
+
+Its **number** is not fixed by this document: it is assigned in merge order at implementation time.
+Issue #60 is based on main and merges first, so it owns `iec-pdf-7` and this stack carries
+`iec-pdf-8`.
 
 The following region-widening slice still runs its own inspection before deciding whether it needs a
 further increment or can widen this same unreleased one again.

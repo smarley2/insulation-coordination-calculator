@@ -14,10 +14,16 @@ from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.quantities import DecimalValue
 
 RULE_SCHEMA_VERSION = 4
-#: Bumped whenever reviewed evidence changes shape, so a package built by an older importer is
-#: no longer trusted. ``iec-pdf-7`` widened one clause region to reach the sentence its bullet
-#: list completes, which changes that fragment's nodes and its digest.
-IEC_IMPORTER_VERSION = "iec-pdf-7"
+#: Bumped whenever a package's compatibility identity changes, so a package built by an older
+#: importer is no longer trusted. Judged against produced package semantics, not fragment bytes:
+#: ``iec-pdf-8`` covers both halves of one branch's change. Its clause-region widening reaches the
+#: sentence a bullet list completes, which changes that fragment's nodes and its digest; and a
+#: reviewed dimension scope that used to project a wildcard matcher now projects a set over the
+#: reviewed domain, so the same reviewed facts can produce a different decision rule.
+#:
+#: The number is assigned in merge order at implementation time, never reserved ahead of it: issue
+#: #60 is based on main, merges first and owns ``iec-pdf-7``.
+IEC_IMPORTER_VERSION = "iec-pdf-8"
 MAX_IDENTIFIER_LENGTH = 160
 MAX_REFERENCE_TEXT_LENGTH = 500
 MAX_NOTES_LENGTH = 2_000

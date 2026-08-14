@@ -317,10 +317,13 @@ round-trip proves the three contracts project from real facts.
 
 ## Contract impact
 
-```text
-#60 first:  IEC_IMPORTER_VERSION  iec-pdf-6 -> iec-pdf-7   (#60 owns this bump)
+An importer version is **assigned at implementation time, in merge order** — never reserved here.
+See ledger note L5. The settled sequence today is #60 = ``iec-pdf-7``, the #53B stack =
+``iec-pdf-8``, and this spec = ``iec-pdf-9``; that is the current expectation, and this spec's own
+number is decided when it is implemented.
 
-#53C:       IEC_IMPORTER_VERSION  iec-pdf-7 -> iec-pdf-8
+```text
+#53C:       IEC_IMPORTER_VERSION  bumped once, number assigned on implementation
             LEGACY_BRANCH_AUTHORITY_RULE_IDS -> frozenset()
             removed:  working_voltage_basis_permitted, reduced_category,
                       reinforced_floor_applies
