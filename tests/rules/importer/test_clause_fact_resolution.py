@@ -8,7 +8,8 @@ from insulation_coordination.rules.importer.clause_facts import (
     CitedNode,
     DimensionScope,
     HfAttenuationFact,
-    SystemVoltageFact,
+    SystemVoltageApplicabilityFact,
+    SystemVoltageMeasureFact,
 )
 from insulation_coordination.rules.importer.clauses import RawClauseFragment
 from insulation_coordination.rules.importer.extract import (
@@ -24,6 +25,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply impor
 from insulation_coordination.rules.importer.review import (
     ClauseFactResolutionError,
     author_clause_fact,
+    clause_fact_route_defect,
     live_evidence_sha256,
     record_fact_completion,
     resolve_confirmed_clause_facts,
@@ -80,8 +82,8 @@ def _system_voltage_fact(
     node_order: int,
     fragment_id: str = SV_FRAGMENT_ID,
     supply_kind: str = "mains",
-) -> SystemVoltageFact:
-    return SystemVoltageFact(
+) -> SystemVoltageMeasureFact:
+    return SystemVoltageMeasureFact(
         statement_index=statement_index,
         node_references=(_cited(draft, fragment_id, node_order),),
         obligation="requirement",
@@ -220,6 +222,48 @@ def test_a_completed_route_resolves(completed_draft, hf_spec) -> None:
     facts = resolve_confirmed_clause_facts(hf_spec, completed_draft)
 
     assert len(facts.for_route(HF_ROUTE)) == 1
+
+
+def test_a_carried_statement_is_hashed_into_the_fact_set_and_then_resolves(
+    completed_system_voltage_draft,
+) -> None:
+    """The carried variant is reviewed, not merely tolerated.
+
+    An applicability statement contributes no row, so the only thing that can show it was reviewed
+    is the fact-set digest: authoring one after a completion has to make that completion stale, and
+    re-asserting completeness has to bring it back through resolution beside the measure statements.
+    """
+
+    applicability = SystemVoltageApplicabilityFact(
+        statement_index=9,
+        node_references=(_cited(completed_system_voltage_draft, SV_FRAGMENT_ID, 1),),
+        obligation="requirement",
+        supply_kind="mains",
+        input_topology="isolated_secondary",
+        purpose="impulse",
+        counts_as_system_voltage=True,
+    )
+    draft = author_clause_fact(
+        completed_system_voltage_draft,
+        rule_route=SV_ROUTE,
+        fact=applicability,
+        actor="tester",
+        notes="the applicability statement",
+    )
+
+    assert clause_fact_route_defect(draft, SV_ROUTE) == "was completed against a different fact set"
+
+    draft = record_fact_completion(
+        draft,
+        rule_route=SV_ROUTE,
+        fragment_id=SV_FRAGMENT_ID,
+        actor="tester",
+        notes="complete, applicability included",
+    )
+    resolved = resolve_confirmed_clause_facts(_spec(SV_ROUTE), draft)
+
+    assert applicability in resolved.for_route(SV_ROUTE)
+    assert clause_fact_route_defect(draft, SV_ROUTE) is None
 
 
 def test_a_route_without_authored_facts_refuses(draft_with_supply_fragments, hf_spec) -> None:

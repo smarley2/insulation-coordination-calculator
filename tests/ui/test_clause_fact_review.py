@@ -5,12 +5,16 @@ from __future__ import annotations
 from typing import Literal, get_args
 
 import pytest
+from pydantic import BaseModel
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHeaderView
 
 from insulation_coordination.domain.rules import RulePackageError
 from insulation_coordination.rules.importer import clause_fact_proposals
-from insulation_coordination.rules.importer.clause_fact_proposals import scope_wire
+from insulation_coordination.rules.importer.clause_fact_proposals import (
+    fact_variants,
+    scope_wire,
+)
 from insulation_coordination.rules.importer.clause_facts import (
     BarrierTransferFact,
     CitedNode,
@@ -18,7 +22,8 @@ from insulation_coordination.rules.importer.clause_facts import (
     HfAttenuationFact,
     SpdMonitoringFact,
     SpdReductionFact,
-    SystemVoltageFact,
+    SystemVoltageApplicabilityFact,
+    SystemVoltageMeasureFact,
     scope_vocabulary,
 )
 from insulation_coordination.rules.importer.clauses import ClauseNode, RawClauseFragment
@@ -49,6 +54,7 @@ from tests.rules.importer.test_clause_fact_review_api import _hf_fact
 
 HF_ROUTE = ids.SUPPLY_HF_TRANSFORMER_ATTENUATION
 MAINS_ROUTE = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains"
+SV_ROUTE = ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION
 _STATUS_COLUMN = 2
 
 #: The synthetic clause fixture's own bullet region, for the source preview. Invented geometry
@@ -60,17 +66,33 @@ _PREVIEW_SEGMENT = ClauseSegmentSpec(
 )
 
 # Stated here independently of the UI's own mapping, so these tests prove the editor offers the
-# family the route declares rather than agreeing with whatever the dialog decided.
-_FACT_MODELS = {
-    "system_voltage": SystemVoltageFact,
-    "barrier_transfer": BarrierTransferFact,
-    "spd_reduction": SpdReductionFact,
-    "spd_monitoring": SpdMonitoringFact,
-    "hf_attenuation": HfAttenuationFact,
+# family the route declares rather than agreeing with whatever the dialog decided. Each family
+# maps to its declared statement variants: a family whose clause states two kinds of reading has
+# no single model whose fields answer for all of it.
+_FACT_MODELS: dict[str, tuple[type[BaseModel], ...]] = {
+    "system_voltage": (SystemVoltageMeasureFact, SystemVoltageApplicabilityFact),
+    "barrier_transfer": (BarrierTransferFact,),
+    "spd_reduction": (SpdReductionFact,),
+    "spd_monitoring": (SpdMonitoringFact,),
+    "hf_attenuation": (HfAttenuationFact,),
 }
+_UNDIMENSIONED = ("fact_kind", "statement_kind", "statement_index", "node_references")
 
 
-def _expected_options(fact_kind: str) -> dict[str, tuple[str, ...]]:
+def _variant_model(fact_kind: str, statement_kind: str | None) -> type[BaseModel]:
+    if statement_kind is None:
+        (model,) = _FACT_MODELS[fact_kind]
+        return model
+    return next(
+        model
+        for model in _FACT_MODELS[fact_kind]
+        if get_args(model.model_fields["statement_kind"].annotation) == (statement_kind,)
+    )
+
+
+def _expected_options(
+    fact_kind: str, statement_kind: str | None = None
+) -> dict[str, tuple[str, ...]]:
     """Every combo dimension's vocabulary: literals verbatim, booleans as the two-value choice.
 
     Scope dimensions are excluded and checked through ``_expected_scope_options`` instead: a scope
@@ -79,8 +101,8 @@ def _expected_options(fact_kind: str) -> dict[str, tuple[str, ...]]:
     """
 
     options: dict[str, tuple[str, ...]] = {}
-    for name, field in _FACT_MODELS[fact_kind].model_fields.items():
-        if name in ("fact_kind", "statement_index", "node_references"):
+    for name, field in _variant_model(fact_kind, statement_kind).model_fields.items():
+        if name in _UNDIMENSIONED:
             continue
         if scope_vocabulary(field.annotation) is not None:
             continue
@@ -91,12 +113,14 @@ def _expected_options(fact_kind: str) -> dict[str, tuple[str, ...]]:
     return options
 
 
-def _expected_scope_options(fact_kind: str) -> dict[str, tuple[str, ...]]:
+def _expected_scope_options(
+    fact_kind: str, statement_kind: str | None = None
+) -> dict[str, tuple[str, ...]]:
     """Every scope dimension's vocabulary, read from the model that declares it."""
 
     return {
         name: scoped
-        for name, field in _FACT_MODELS[fact_kind].model_fields.items()
+        for name, field in _variant_model(fact_kind, statement_kind).model_fields.items()
         if (scoped := scope_vocabulary(field.annotation))
     }
 
@@ -176,7 +200,9 @@ def test_a_dimension_without_a_string_vocabulary_is_refused(
 ) -> None:
     """Silent degradation here is an unauthorable route and an approval blocked with no message."""
 
-    monkeypatch.setitem(clause_fact_proposals.FACT_MODEL_BY_KIND, "hf_attenuation", _DriftedFact)
+    monkeypatch.setitem(
+        clause_fact_proposals.FACT_MODELS_BY_KIND, "hf_attenuation", (_DriftedFact,)
+    )
 
     with pytest.raises(RulePackageError, match="dvc_gate"):
         clause_fact_proposals.fact_dimensions("hf_attenuation")
@@ -602,7 +628,12 @@ def test_authoring_stays_disabled_while_no_node_is_selected(
 def test_each_combo_offers_exactly_its_fields_vocabulary(
     qtbot, draft_with_supply_fragments
 ) -> None:
-    """The editor is built from the fact models, so a wrong-family editor cannot be offered."""
+    """The editor is built from the fact models, so a wrong-family editor cannot be offered.
+
+    Every statement kind of every family, because a variant family has no single model whose
+    fields the editor could offer: switching the kind is a different form, and offering one kind's
+    dimensions for the other would ask the reviewer for a reading that kind does not make.
+    """
 
     model = ClauseFactReviewModel(draft_with_supply_fragments)
     dialog = ClauseFactReviewDialog(model)
@@ -613,14 +644,76 @@ def test_each_combo_offers_exactly_its_fields_vocabulary(
         dialog.table.selectRow(position)
         family = SUPPLY_FACT_FAMILY_BY_ROUTE[row.rule_route]
         assert dialog.family_text == family
-        offered.append((family, dialog.dimension_options, dialog.scope_options))
+        variants = fact_variants(family)
+        if not variants:
+            offered.append((family, None, dialog.dimension_options, dialog.scope_options))
+            continue
+        # A variant family offers no dimension at all until a kind is chosen.
+        assert dialog.dimension_options == {} and dialog.scope_options == {}
+        for variant in variants:
+            dialog.choose_statement_kind(variant)
+            offered.append((family, variant, dialog.dimension_options, dialog.scope_options))
 
     # Every non-legacy family is reachable; propagation_step belongs only to the legacy route.
-    assert {family for family, _options, _scopes in offered} == set(_FACT_MODELS)
-    assert all(options == _expected_options(family) for family, options, _scopes in offered)
-    assert all(scopes == _expected_scope_options(family) for family, _options, scopes in offered)
+    assert {family for family, _variant, _options, _scopes in offered} == set(_FACT_MODELS)
+    assert {variant for _family, variant, _options, _scopes in offered} == {
+        None,
+        "measure",
+        "applicability",
+    }
+    assert all(
+        options == _expected_options(family, variant)
+        for family, variant, options, _scopes in offered
+    )
+    assert all(
+        scopes == _expected_scope_options(family, variant)
+        for family, variant, _options, scopes in offered
+    )
     # The scope widget is reached at all, so the assertions above are not vacuously true.
-    assert any(scopes for _family, _options, scopes in offered)
+    assert any(scopes for _family, _variant, _options, scopes in offered)
+
+
+def test_a_variant_family_authors_the_kind_the_reviewer_chose(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """Both kinds are authorable, and neither is offered until the reviewer picks one.
+
+    A surface that could only author one of a family's kinds would leave the other reviewable
+    nowhere -- the unauthorable route ``fact_dimensions`` refuses to create in the first place --
+    and one that defaulted to a kind would record which question the statement answers on the
+    reviewer's behalf.
+    """
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, SV_ROUTE))
+    dialog.nodes_list.item(0).setSelected(True)
+
+    combo = dialog.statement_kind_combo
+    assert combo is not None
+    assert combo.currentText() == ""
+    assert dialog.author_button.isEnabled() is False
+
+    dialog.choose_statement_kind("applicability")
+    dialog.dimension_combo("obligation").setCurrentText("requirement")
+    dialog.dimension_combo("input_topology").setCurrentText("isolated_secondary")
+    dialog.dimension_combo("purpose").setCurrentText("impulse")
+    dialog.dimension_combo("counts_as_system_voltage").setCurrentText("true")
+    assert dialog.author_button.isEnabled() is True
+    dialog.author_selected()
+
+    (review,) = model.draft.clause_fact_reviews
+    assert review.fact.statement_kind == "applicability"
+    assert review.fact.fact_kind == "system_voltage"
+    # The row leads with the kind, so two kinds of one family do not read as unrelated statements.
+    assert dialog.facts_list.item(0).text().startswith("statement 0 · applicability")
+
+    # And the other kind, whose editor is a different set of dimensions.
+    dialog.nodes_list.item(0).setSelected(True)
+    dialog.choose_statement_kind("measure")
+    assert "measure" in dialog.dimension_options
+    assert "counts_as_system_voltage" not in dialog.dimension_options
 
 
 def test_a_scope_dimension_offers_its_values_and_an_explicit_unrestricted_entry(

@@ -34,7 +34,7 @@ from insulation_coordination.domain.rules import (
     SourceReference,
 )
 from insulation_coordination.rules.importer.clause_fact_proposals import (
-    FACT_MODEL_BY_KIND,
+    FACT_MODELS_BY_KIND,
     ClauseFactGrammar,
     ClauseFactProposal,
     ClauseKeywordRule,
@@ -50,7 +50,8 @@ from insulation_coordination.rules.importer.clause_facts import (
     SpdMonitoringFact,
     SpdReductionFact,
     SupplyFact,
-    SystemVoltageFact,
+    SystemVoltageMeasureFact,
+    SystemVoltageStatement,
     scope_vocabulary,
 )
 from insulation_coordination.rules.importer.clauses import RawClauseFragment
@@ -298,7 +299,10 @@ def _require_declared_supply_kinds(
     needs_expectation = {
         route
         for route, family in families.items()
-        if "supply_kind" in FACT_MODEL_BY_KIND[family].model_fields
+        # Any variant of the family: a dimension the route determines structurally is stated by
+        # every kind of statement that route can carry, so one variant declaring it is enough to
+        # need the expectation -- and ``clause_fact_defect`` reads it off whichever variant arrives.
+        if any("supply_kind" in model.model_fields for model in FACT_MODELS_BY_KIND[family])
     }
     disagreement = needs_expectation.symmetric_difference(expected_supply_kinds)
     if disagreement:
@@ -370,6 +374,11 @@ _OVERVOLTAGE_STEP_TOKENS = (
 
 _SYSTEM_VOLTAGE_GRAMMAR = ClauseFactGrammar(
     fact_kind="system_voltage",
+    # Measure statements only. The family's applicability statements state no measure and no phase
+    # system, and no declared term distinguishes one from a measure statement, so proposing them
+    # here would offer a reading of the wrong kind: they are authored by hand until the private
+    # grammar reaches them.
+    statement_kind="measure",
     # Shared by the mains and non-mains subclauses, which state one rule between them and so read
     # from one grammar; a dimension only one of them reaches is still reached, and the other's
     # statements keep it unchosen.
@@ -556,6 +565,7 @@ def propose_supply_facts(
         fragment,
         rule_route=rule_route,
         fact_kind=grammar.fact_kind,
+        statement_kind=grammar.variant,
         propose=keyword_proposer(grammar),
         locked={} if locked_supply_kind is None else {"supply_kind": locked_supply_kind},
     )
@@ -816,7 +826,7 @@ def _system_voltage_evidence_fragment(
 
 
 def _statement_source(
-    fact: SystemVoltageFact,
+    fact: SystemVoltageMeasureFact,
     fragments: tuple[RawClauseFragment, ...],
 ) -> SourceReference:
     """Where one statement was read: the first node it cites, in whichever fragment holds it.
@@ -922,9 +932,16 @@ def project_system_voltage_resolution(
 ) -> tuple[tuple[DecisionRule | GuidanceRule, ...], tuple[SemanticProposal, ...]]:
     """Project the reviewed mains and non-mains system voltage subclauses into one decision.
 
-    Every row comes from one reviewed ``SystemVoltageFact``: the clause states the branch,
+    Every row comes from one reviewed ``SystemVoltageMeasureFact``: the clause states the branch,
     this projection only shapes it into the rule's declared inputs and outputs. A route with
     no reviewed facts refuses rather than falling back to an inventory nobody reviewed.
+
+    The family's **applicability** statements are carried, not projected. Such a statement selects
+    no measure, so it contributes no row and changes no declared output; it is still resolved and
+    covered by the route's fact-set digest, which is how completion and the approval gate know the
+    reviewer read it. A reviewed set of only applicability statements cannot answer the question
+    this rule asks, so the projection refuses rather than emitting a rule with no rows -- a
+    zero-row rule answers every consumer with silence and looks reviewed while doing it.
 
     Two subclauses state this one rule between them, so the facts come from two evidence
     scopes and the rule's proposal is grounded in the aggregate of both fragments. One
@@ -942,15 +959,27 @@ def project_system_voltage_resolution(
     facts = (*mains_facts, *evidence_facts)
     if not facts:
         raise ClauseStructureError(f"{label} needs reviewed clause facts for its route")
-    system_voltage_facts = tuple(fact for fact in facts if isinstance(fact, SystemVoltageFact))
-    if len(system_voltage_facts) != len(facts):
+    if not all(isinstance(fact, SystemVoltageStatement) for fact in facts):
         raise ValueError(f"{label} projection requires system voltage facts")
     # Two routes' facts share this one route's statement-index numbering, so a collision
-    # between them needs its own scope named -- see `_require_distinct_branches`.
-    scopes = (
-        *((ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,) * len(mains_facts)),
-        *((SUPPLY_SYSTEM_VOLTAGE_NON_MAINS,) * len(evidence_facts)),
+    # between them needs its own scope named -- see `_require_distinct_branches`. Each measure
+    # statement keeps the subclause it was reviewed under as it is selected, rather than being
+    # matched back to a scope afterwards.
+    scoped_facts = tuple(
+        (route, fact)
+        for route, group in (
+            (ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION, mains_facts),
+            (SUPPLY_SYSTEM_VOLTAGE_NON_MAINS, evidence_facts),
+        )
+        for fact in group
+        if isinstance(fact, SystemVoltageMeasureFact)
     )
+    if not scoped_facts:
+        raise ClauseStructureError(
+            f"{label} reviewed statements select no measure, so they cannot answer its question"
+        )
+    system_voltage_facts = tuple(fact for _route, fact in scoped_facts)
+    scopes = tuple(route for route, _fact in scoped_facts)
 
     grounding = (fragment,) if evidence is None else (fragment, evidence)
     measures = tuple(dict.fromkeys(fact.measure for fact in system_voltage_facts))
@@ -1249,23 +1278,23 @@ _DVC_DESIGNATIONS = ("dvc_as", "dvc_b", "dvc_c")
 #: of consumer states no reviewed reading can name.
 _REVIEWED_AND_CONSUMER_DOMAINS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "supply_kind": (
-        _reviewed_domain(SystemVoltageFact, "supply_kind", "any_supply_kind"),
+        _reviewed_domain(SystemVoltageMeasureFact, "supply_kind", "any_supply_kind"),
         _SUPPLY_KINDS,
     ),
     "phase_system": (
-        _reviewed_domain(SystemVoltageFact, "phase_system", "any_phase_system"),
+        _reviewed_domain(SystemVoltageMeasureFact, "phase_system", "any_phase_system"),
         _PHASE_SYSTEMS,
     ),
     "earthing": (
-        _reviewed_domain(SystemVoltageFact, "earthing", "any_earthing"),
+        _reviewed_domain(SystemVoltageMeasureFact, "earthing", "any_earthing"),
         _EARTHING_ARRANGEMENTS,
     ),
     "input_topology": (
-        _reviewed_domain(SystemVoltageFact, "input_topology", "any_input_topology"),
+        _reviewed_domain(SystemVoltageMeasureFact, "input_topology", "any_input_topology"),
         _INPUT_TOPOLOGIES,
     ),
     "purpose": (
-        _reviewed_domain(SystemVoltageFact, "purpose", "any_purpose"),
+        _reviewed_domain(SystemVoltageMeasureFact, "purpose", "any_purpose"),
         _CALCULATION_PURPOSES,
     ),
     "device_placement": (

@@ -25,7 +25,8 @@ from insulation_coordination.rules.importer.clause_facts import (
     HfAttenuationFact,
     SpdMonitoringFact,
     SpdReductionFact,
-    SystemVoltageFact,
+    SystemVoltageApplicabilityFact,
+    SystemVoltageMeasureFact,
 )
 from insulation_coordination.rules.importer.clauses import (
     ClauseNode,
@@ -228,10 +229,10 @@ def _system_voltage_fact(
     input_topology: str = "any_input_topology",
     purpose: str = "impulse",
     measure: str,
-) -> SystemVoltageFact:
+) -> SystemVoltageMeasureFact:
     """Invented values only: a synthetic reviewed statement, never real clause content."""
 
-    return SystemVoltageFact(
+    return SystemVoltageMeasureFact(
         statement_index=index,
         node_references=(_cited_node(fragment, node_order=index % len(fragment.nodes)),),
         obligation="requirement",
@@ -241,6 +242,29 @@ def _system_voltage_fact(
         input_topology=input_topology,  # type: ignore[arg-type]
         purpose=purpose,  # type: ignore[arg-type]
         measure=measure,  # type: ignore[arg-type]
+    )
+
+
+def _system_voltage_applicability_fact(
+    fragment: RawClauseFragment,
+    *,
+    index: int = 0,
+    input_topology: str = "isolated_secondary",
+    purpose: str = "impulse",
+) -> SystemVoltageApplicabilityFact:
+    """Invented values only: a synthetic reviewed statement of the carried kind.
+
+    It selects no measure, which is the point: the rule declares no output that could carry it.
+    """
+
+    return SystemVoltageApplicabilityFact(
+        statement_index=index,
+        node_references=(_cited_node(fragment, node_order=index % len(fragment.nodes)),),
+        obligation="requirement",
+        supply_kind="mains",
+        input_topology=input_topology,  # type: ignore[arg-type]
+        purpose=purpose,  # type: ignore[arg-type]
+        counts_as_system_voltage=True,
     )
 
 
@@ -900,6 +924,55 @@ def test_system_voltage_keeps_its_declared_contract() -> None:
         ),
         "calculation_purpose": ("impulse", "temporary_overvoltage"),
     }
+
+
+def test_a_carried_applicability_statement_changes_no_row_and_no_output() -> None:
+    """The carried-not-projected variant: reviewed, hashed, and invisible to the contract.
+
+    Such a statement selects no measure, so there is nothing for it to answer with. It must not
+    reach a row, must not widen the declared measure vocabulary, and must not be forced into a
+    measure token to make it fit -- the projector manufacturing a reading is the same defect as a
+    variant carrying a dimension its statements never state.
+    """
+
+    fragment = _bullet_fragment()
+    measures = ("phase_to_phase_rms", "between_supply_conductors_rms")
+    projected = _confirmed_system_voltage_facts(measures=measures, fragment=fragment)
+    carried = ConfirmedFacts(
+        by_route={
+            ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: (
+                *projected.for_route(ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION),
+                _system_voltage_applicability_fact(fragment, index=len(measures)),
+            )
+        }
+    )
+
+    baseline = _project_system_voltage(fragment, projected)
+    with_carried = _project_system_voltage(fragment, carried)
+
+    assert with_carried.rows == baseline.rows
+    assert with_carried.outputs == baseline.outputs
+    assert with_carried.inputs == baseline.inputs
+
+
+def test_a_reviewed_set_that_selects_no_measure_refuses_to_project() -> None:
+    """A route whose reviewed facts cannot answer its rule's question refuses, never zero rows.
+
+    A zero-row rule answers every consumer with silence while carrying a reviewed provenance, which
+    reads as reviewed and decides nothing.
+    """
+
+    fragment = _bullet_fragment()
+    facts = ConfirmedFacts(
+        by_route={
+            ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: (
+                _system_voltage_applicability_fact(fragment, index=0),
+            )
+        }
+    )
+
+    with pytest.raises(ClauseStructureError, match="select no measure"):
+        _project_system_voltage(fragment, facts)
 
 
 def test_a_fragment_whose_node_kinds_differ_blocks() -> None:

@@ -106,33 +106,60 @@ class _Fact(FrozenModel):
     obligation: Obligation
 
 
-class SystemVoltageFact(_Fact):
-    """One statement of which measure is the system voltage, on four stated dimensions.
+class SystemVoltageStatement(_Fact):
+    """What every system-voltage statement states, whichever kind of reading it is.
+
+    The family answers two normatively different questions from one clause -- which measure *is*
+    the system voltage, and which voltages *count as* system voltages at all -- so it discriminates
+    on ``statement_kind`` inside one ``fact_kind`` rather than forcing both onto one shape. This
+    base carries only what both kinds state; each variant adds its own dimensions and nothing more.
+    A variant that carried a dimension its own kind of statement does not state would be a reading
+    the reviewer never made, and a projector manufacturing one to fill its output is the same
+    defect from the other side.
+
+    ``supply_kind`` sits here rather than on a variant because the route determines it structurally
+    for every statement it carries -- see ``SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE`` and
+    ``clause_fact_defect``, which is what refuses a statement contradicting its own route.
+
+    ``any_*`` on a dimension records a reading that dimension does not restrict -- authored once
+    rather than once per value. Where a general reading and a narrower one cover the same values,
+    the narrower one's own dimension is what separates them, and the projector refuses an
+    overlapping pair rather than serving whichever row comes first.
+
+    Known gap, disclosed rather than dropped: these tokens are the scalar-plus-``any_*`` shape
+    ``DimensionScope`` replaces, and converting them is what deletes ``_dimension_matcher``. Their
+    projection is already correct -- the shim maps each to a scope -- so the conversion is a
+    modelling tidy-up rather than a behaviour fix, and it is not this commit's variant work.
+    """
+
+    fact_kind: Literal["system_voltage"] = "system_voltage"
+    supply_kind: Literal["mains", "non_mains", "any_supply_kind"]
+    input_topology: Literal[
+        "direct",
+        "rectified_dc",
+        "series_rectifier_bridges",
+        "isolated_secondary",
+        "any_input_topology",
+    ]
+    #: ``any_purpose`` names a statement that does not restrict which calculation purpose it
+    #: applies to -- one normative statement, not two, so it needs its own token rather than being
+    #: authored as a separate fact per purpose.
+    purpose: Literal["impulse", "temporary_overvoltage", "any_purpose"]
+
+
+class SystemVoltageMeasureFact(SystemVoltageStatement):
+    """One statement of which measure is the system voltage, on the dimensions it scopes.
 
     One field per dimension the projected rule declares as an input, each drawn from that
-    input's own vocabulary. The four were once collapsed into ``phase_system``, whose token
+    input's own vocabulary. Four were once collapsed into ``phase_system``, whose token
     list mixed two phase systems with a supply kind and two input topologies: three of those
     four raised at projection because the rule's ``phase_system`` never declared them, and the
     ``supply_kind`` and ``input_topology`` inputs sat declared but unreachable behind matchers
     that accepted anything. A statement's dimensions are separate readings and need separate
     fields.
-
-    ``any_*`` on a dimension records a reading that dimension does not restrict -- authored once
-    rather than once per value, the same shape ``any_purpose`` carries for the calculation purpose.
-    Where a general reading and a narrower one cover the same values, the narrower one's own
-    dimension is what separates them, and the projector refuses an overlapping pair rather than
-    serving whichever row comes first.
-
-    Known gap, disclosed rather than dropped: this family answers which measure applies, and the
-    reviewed reading of one region is an applicability statement rather than a measure one. The
-    projected rule declares no applicability output to carry it, and forcing it into ``measure``
-    would answer "which measure" with a reading that names none. The contract change belongs to
-    #53C; completion is asserted per (clause, rule route), so a reading belonging to a rule
-    outside this route does not make this route's fact set incomplete.
     """
 
-    fact_kind: Literal["system_voltage"] = "system_voltage"
-    supply_kind: Literal["mains", "non_mains", "any_supply_kind"]
+    statement_kind: Literal["measure"] = "measure"
     phase_system: Literal[
         "three_phase_star",
         "three_phase_delta",
@@ -141,17 +168,6 @@ class SystemVoltageFact(_Fact):
         "any_phase_system",
     ]
     earthing: Literal["tn", "tt", "it", "unspecified", "any_earthing"]
-    input_topology: Literal[
-        "direct",
-        "rectified_dc",
-        "series_rectifier_bridges",
-        "isolated_secondary",
-        "any_input_topology",
-    ]
-    #: ``any_purpose`` names a statement that fixes its measure without restricting which
-    #: calculation purpose it applies to -- one normative statement, not two, so it needs its
-    #: own token rather than being authored as a separate fact per purpose.
-    purpose: Literal["impulse", "temporary_overvoltage", "any_purpose"]
     measure: Literal[
         "phase_to_earth_rms",
         "phase_to_artificial_neutral_rms",
@@ -160,6 +176,37 @@ class SystemVoltageFact(_Fact):
         "pre_rectifier_ac_rms",
         "highest_pre_rectifier_ac_rms_at_bridge",
     ]
+
+
+class SystemVoltageApplicabilityFact(SystemVoltageStatement):
+    """One statement of whether a topology's voltages count as system voltages, and for what.
+
+    The carried-not-projected variant. Such a statement selects no measure: it establishes what
+    the measure statements are *about*, for one input topology and one calculation purpose. It is
+    accepted by resolution and covered by the fact-set digest, so completion and the approval gate
+    know the reviewer read it -- and it contributes no row and no output, because the projected
+    rule declares nothing that could carry it.
+
+    Reviewed and disclosed rather than forced: authoring it as a ``measure`` statement would answer
+    "which measure applies" with a reading that names none, and giving this route an applicability
+    output is a contract change (#53C item L3). Until then the reading is recorded where it was
+    read, and the gap is visible in the model instead of hidden in a measure token.
+
+    It carries no ``phase_system``, ``earthing`` or ``measure``, because a statement of this kind
+    states none of them.
+    """
+
+    statement_kind: Literal["applicability"] = "applicability"
+    counts_as_system_voltage: bool
+
+
+#: The family's two variants under one ``fact_kind``, discriminated by ``statement_kind``. The
+#: route-to-family declaration, the family discriminator and the archive schema are unchanged: a
+#: consumer still asks one question of one route, and a route still states one family.
+SystemVoltageFact = Annotated[
+    SystemVoltageMeasureFact | SystemVoltageApplicabilityFact,
+    Field(discriminator="statement_kind"),
+]
 
 
 class PropagationStepFact(_Fact):
@@ -288,6 +335,11 @@ _STATEMENT_IDENTITY_FIELDS = frozenset({"statement_index", "node_references"})
 def same_clause_fact_reading(first: SupplyFact, second: SupplyFact) -> bool:
     """Whether two statements record one reading: same dimensions and the same cited nodes.
 
+    Compared by model type, which is the family *and*, where the family declares variants, the kind
+    of statement: two readings of different kinds are never one reading, and asking a measure
+    statement's field list of an applicability statement would ask it for dimensions it does not
+    carry.
+
     ``statement_index`` is excluded because it names the slot, not the reading -- comparing it
     would make every statement unique and catch nothing. Citations are compared by node
     *identity* rather than by recorded digest: two statements citing one node record one
@@ -300,7 +352,7 @@ def same_clause_fact_reading(first: SupplyFact, second: SupplyFact) -> bool:
     statement that agrees on both is a second copy of the first.
     """
 
-    if first.fact_kind != second.fact_kind:
+    if type(first) is not type(second):
         return False
     if any(
         getattr(first, name) != getattr(second, name)
@@ -379,7 +431,10 @@ __all__ = [
     "SpdMonitoringFact",
     "SpdReductionFact",
     "SupplyFact",
+    "SystemVoltageApplicabilityFact",
     "SystemVoltageFact",
+    "SystemVoltageMeasureFact",
+    "SystemVoltageStatement",
     "evidence_sha256",
     "same_clause_fact_reading",
     "scope_vocabulary",

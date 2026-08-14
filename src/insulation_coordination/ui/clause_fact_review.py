@@ -38,12 +38,13 @@ from PySide6.QtWidgets import (
 
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.rules.importer.clause_fact_proposals import (
-    FACT_MODEL_BY_KIND,
     SCOPE_UNRESTRICTED,
     ClauseFactProposal,
     DimensionKind,
     authored_dimension,
     fact_dimensions,
+    fact_model,
+    fact_variants,
     proposed_fact,
     scope_tokens,
     scope_wire,
@@ -80,7 +81,8 @@ _HEADINGS = ("route", "authored", "status", "fragment")
 #: reviewer facing a grey button must never have to guess what would enable it.
 _DISABLED_REASONS = {
     "author": (
-        "Choose every dimension of the statement and select at least one clause node it rests on."
+        "Choose the kind of statement and every dimension of it, and select at least one clause "
+        "node it rests on."
     ),
     "author_proposed": (
         "No draft for this route has every dimension proposed. Fill the unchosen ones in by hand "
@@ -114,18 +116,29 @@ def _dimension_text(kind: DimensionKind, value: object) -> str:
     return str(value)
 
 
-def _reading_summary(fact: SupplyFact) -> str:
-    """One statement's reading, compactly, from whatever dimensions its family declares.
+def _statement_kind(fact: SupplyFact | ClauseFactProposal) -> str | None:
+    """Which variant a statement or draft is of, or ``None`` for a one-kind family."""
 
-    Derived from the family's own dimension list rather than formatted per family: a hand-written
+    return getattr(fact, "statement_kind", "") or None
+
+
+def _reading_summary(fact: SupplyFact) -> str:
+    """One statement's reading, compactly, from whatever dimensions its own kind declares.
+
+    Derived from the model's own dimension list rather than formatted per family: a hand-written
     format per family is one more place a new dimension can be forgotten, and a row that omits a
     dimension is exactly the blindness that let ten copies of one reading look distinct.
+
+    A variant family's rows lead with the statement kind, because two kinds of one family carry
+    different dimensions and a bare field list would read as two unrelated statements.
     """
 
-    return " · ".join(
+    variant = _statement_kind(fact)
+    reading = " · ".join(
         _dimension_text(kind, getattr(fact, name))
-        for name, kind, _options in fact_dimensions(fact.fact_kind)
+        for name, kind, _options in fact_dimensions(fact.fact_kind, variant)
     )
+    return reading if variant is None else f"{variant} · {reading}"
 
 
 #: What each authoring path writes into a fact's notes, so the audit distinguishes a confirmed
@@ -464,6 +477,8 @@ class ClauseFactReviewDialog(QDialog):
         self._scope_lists: dict[str, QListWidget] = {}
         self._kinds: dict[str, DimensionKind] = {}
         self._editor_kind: str | None = None
+        self._variant_combo: QComboBox | None = None
+        self._fixed_rows = 0
         self._node_rows: tuple[ClauseFactNodeRow, ...] = ()
         self._fact_rows: tuple[ClauseFactStatementRow, ...] = ()
         self._proposal_rows: tuple[ClauseFactProposal, ...] = ()
@@ -687,6 +702,9 @@ class ClauseFactReviewDialog(QDialog):
         if not citations:
             self._status.setText("Select the node(s) the statement rests on first.")
             return
+        if self._variant_unchosen():
+            self._status.setText("Choose which kind of statement this is first.")
+            return
         chosen = self._chosen_text()
         # Blankness is checked before any conversion: a blank boolean combo converted first
         # would read as a chosen ``false``, and an empty scope selection as an empty set.
@@ -711,7 +729,7 @@ class ClauseFactReviewDialog(QDialog):
         try:
             self._model.author(
                 row.rule_route,
-                FACT_MODEL_BY_KIND[family].model_validate(values),
+                fact_model(family, self._editor_variant()).model_validate(values),
                 actor="maintainer",
                 notes=notes,
             )
@@ -876,10 +894,12 @@ class ClauseFactReviewDialog(QDialog):
         family = SUPPLY_FACT_FAMILY_BY_ROUTE[row.rule_route]
         if self._editor_kind != family:
             self._build_editor(family)
-        # A statement starts unchosen: authoring is writing down what was read, never
-        # accepting what a widget happened to hold. The index is the one exception: it defaults
-        # to the next free slot for this route rather than starting blank, because appending a
-        # statement is the normal case and typing an index is only for the sanctioned replace path.
+        # A statement starts unchosen, its kind included: authoring is writing down what was read,
+        # never accepting what a widget happened to hold, and which kind of reading this is is part
+        # of that. The index is the one exception: it defaults to the next free slot for this route
+        # rather than starting blank, because appending a statement is the normal case and typing an
+        # index is only for the sanctioned replace path.
+        self._reset_statement_kind()
         self.statement_index.setValue(self._model.next_statement_index(row.rule_route))
         self._reset_dimensions(row.rule_route)
         self.complete_button.setEnabled(True)
@@ -891,6 +911,12 @@ class ClauseFactReviewDialog(QDialog):
         self._set_enabled(self.retract_button, False, "retract")
         self._set_enabled(self.duplicate_button, False, "duplicate")
         self._refresh_author_enabled()
+
+    def _reset_statement_kind(self) -> None:
+        """Put the variant chooser back to unchosen, and with it the dimensions it decides."""
+
+        if self._variant_combo is not None:
+            self._variant_combo.setCurrentIndex(0)
 
     def _reset_dimensions(self, rule_route: str) -> None:
         """Put every dimension back to unchosen for one route, ready to be filled in."""
@@ -945,6 +971,9 @@ class ClauseFactReviewDialog(QDialog):
         through the same code so they cannot drift on which fields they copy.
         """
 
+        # The kind first: it decides which dimension widgets exist at all, and choosing it rebuilds
+        # them unchosen -- so filling values before it would fill widgets about to be replaced.
+        self.choose_statement_kind(_statement_kind(fact))
         self.statement_index.setValue(fact.statement_index)
         for field, combo in self._combos.items():
             combo.setCurrentText(_dimension_text(self._kinds[field], getattr(fact, field)))
@@ -988,6 +1017,7 @@ class ClauseFactReviewDialog(QDialog):
         proposal = self._current_proposal()
         if row is None or proposal is None:
             return
+        self.choose_statement_kind(_statement_kind(proposal))
         self._reset_dimensions(row.rule_route)
         self.statement_index.setValue(self._model.next_statement_index(row.rule_route))
         for field, value in proposal.chosen.items():
@@ -1019,21 +1049,87 @@ class ClauseFactReviewDialog(QDialog):
         self._fill_editor_from_fact(fact_row.fact)
         self.statement_index.setValue(self._model.next_statement_index(fact_row.rule_route))
 
+    @property
+    def statement_kind_combo(self) -> QComboBox | None:
+        """The variant chooser, or ``None`` for a family that states one kind of reading."""
+
+        return self._variant_combo
+
+    def _editor_variant(self) -> str | None:
+        return None if self._variant_combo is None else (self._variant_combo.currentText() or None)
+
+    def _variant_unchosen(self) -> bool:
+        return self._variant_combo is not None and not self._variant_combo.currentText()
+
+    def choose_statement_kind(self, statement_kind: str | None) -> None:
+        """Put the variant chooser on one statement kind, rebuilding its dimensions if it moves.
+
+        Does nothing for a family that states one kind of reading: there is no chooser, and no
+        statement kind to record.
+        """
+
+        if self._variant_combo is None or statement_kind is None:
+            return
+        if self._variant_combo.currentText() != statement_kind:
+            self._variant_combo.setCurrentText(statement_kind)
+
     def _build_editor(self, fact_kind: str) -> None:
+        """The head of the editor: the family, the statement kind, and the index.
+
+        The statement-kind chooser lives here rather than among the dimension rows because
+        choosing it *rebuilds* those rows: a variant carries only the dimensions its own kind of
+        statement states, so switching kind is a different form, and a widget cannot safely
+        destroy itself from inside its own signal.
+        """
+
         while self._editor_form.rowCount():
             self._editor_form.removeRow(0)
-        self._combos = {}
-        self._edits = {}
-        self._scope_lists = {}
-        self._kinds = {name: kind for name, kind, _options in fact_dimensions(fact_kind)}
         # The family is the route's declared reading, displayed rather than chosen: offering
         # a choice would let a reviewer certify a route with a kind its clause never states.
         self._family_label = QLabel(fact_kind, self._editor_box)
         self._editor_form.addRow("fact family", self._family_label)
+        variants = fact_variants(fact_kind)
+        self._variant_combo = None
+        if variants:
+            # Blank first, like every dimension: which kind of statement this is is part of the
+            # reading, and the family's two kinds answer normatively different questions.
+            variant_combo = QComboBox(self._editor_box)
+            variant_combo.addItem("")
+            variant_combo.addItems(variants)
+            variant_combo.currentIndexChanged.connect(self._variant_chosen)
+            self._editor_form.addRow("statement kind", variant_combo)
+            self._variant_combo = variant_combo
         self.statement_index = QSpinBox(self._editor_box)
         self.statement_index.setRange(0, 9999)
         self._editor_form.addRow("statement index", self.statement_index)
-        for field, kind, options in fact_dimensions(fact_kind):
+        self._fixed_rows = self._editor_form.rowCount()
+        self._editor_kind = fact_kind
+        self._build_dimensions()
+
+    def _variant_chosen(self) -> None:
+        """Offer the chosen statement kind's own dimensions, unchosen."""
+
+        self._build_dimensions()
+        row = self._current_route_row()
+        if row is not None:
+            self._reset_dimensions(row.rule_route)
+        self._refresh_author_enabled()
+
+    def _build_dimensions(self) -> None:
+        """One row per dimension of the selected statement kind; none until a kind is chosen."""
+
+        while self._editor_form.rowCount() > self._fixed_rows:
+            self._editor_form.removeRow(self._editor_form.rowCount() - 1)
+        self._combos = {}
+        self._edits = {}
+        self._scope_lists = {}
+        self._kinds = {}
+        fact_kind = self._editor_kind
+        if fact_kind is None or self._variant_unchosen():
+            return
+        declared = fact_dimensions(fact_kind, self._editor_variant())
+        self._kinds = {name: kind for name, kind, _options in declared}
+        for field, kind, options in declared:
             if kind == "identifier":
                 edit = QLineEdit(self._editor_box)
                 edit.textChanged.connect(self._refresh_author_enabled)
@@ -1063,7 +1159,6 @@ class ClauseFactReviewDialog(QDialog):
             combo.currentIndexChanged.connect(self._refresh_author_enabled)
             self._editor_form.addRow(field.replace("_", " "), combo)
             self._combos[field] = combo
-        self._editor_kind = fact_kind
 
     @staticmethod
     def _set_enabled(button: QPushButton, enabled: bool, reason: str) -> None:
@@ -1113,7 +1208,7 @@ class ClauseFactReviewDialog(QDialog):
         cited = bool(self.nodes_list.selectedItems())
         self._set_enabled(
             self.author_button,
-            bool(self._kinds) and not unchosen and cited,
+            bool(self._kinds) and not unchosen and cited and not self._variant_unchosen(),
             "author",
         )
         self._describe_next_step(unchosen, cited)
@@ -1128,6 +1223,8 @@ class ClauseFactReviewDialog(QDialog):
         if self._current_proposal() is None and self._current_fact_row() is None:
             return
         missing: list[str] = []
+        if self._variant_unchosen():
+            missing.append("no statement kind chosen")
         if unchosen:
             missing.append(f"unchosen dimension(s): {', '.join(unchosen)}")
         if not cited:

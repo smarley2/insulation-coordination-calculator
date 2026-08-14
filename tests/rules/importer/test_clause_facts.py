@@ -16,8 +16,10 @@ from insulation_coordination.rules.importer.clause_facts import (
     DimensionScope,
     SpdMonitoringFact,
     SpdReductionFact,
-    SystemVoltageFact,
+    SystemVoltageApplicabilityFact,
+    SystemVoltageMeasureFact,
     evidence_sha256,
+    same_clause_fact_reading,
 )
 from insulation_coordination.rules.importer.extract import (
     canonical_model_sha256,
@@ -42,9 +44,8 @@ def _spd_fact() -> SpdReductionFact:
     )
 
 
-def test_each_family_is_its_own_type_under_one_discriminator() -> None:
-    fact = _spd_fact()
-    system = SystemVoltageFact(
+def _measure_fact() -> SystemVoltageMeasureFact:
+    return SystemVoltageMeasureFact(
         statement_index=1,
         node_references=(CitedNode(fragment_id="raw-b", node_order=2, node_sha256="b" * 64),),
         obligation="requirement",
@@ -56,8 +57,84 @@ def test_each_family_is_its_own_type_under_one_discriminator() -> None:
         measure="phase_to_artificial_neutral_rms",
     )
 
+
+def _applicability_fact() -> SystemVoltageApplicabilityFact:
+    return SystemVoltageApplicabilityFact(
+        statement_index=2,
+        node_references=(CitedNode(fragment_id="raw-b", node_order=3, node_sha256="c" * 64),),
+        obligation="requirement",
+        supply_kind="mains",
+        input_topology="isolated_secondary",
+        purpose="impulse",
+        counts_as_system_voltage=True,
+    )
+
+
+def test_each_family_is_its_own_type_under_one_discriminator() -> None:
+    fact = _spd_fact()
+    system = _measure_fact()
+
     assert fact.fact_kind == "spd_reduction"
     assert system.fact_kind == "system_voltage"
+
+
+def test_a_familys_variants_share_its_kind_and_differ_on_the_statement_kind() -> None:
+    """The route-to-family contract is unchanged: one clause, one family, two kinds of reading."""
+
+    measure = _measure_fact()
+    applicability = _applicability_fact()
+
+    assert measure.fact_kind == applicability.fact_kind == "system_voltage"
+    assert (measure.statement_kind, applicability.statement_kind) == ("measure", "applicability")
+
+
+def test_a_variant_carries_only_the_dimensions_its_own_statements_state() -> None:
+    """An applicability statement selects no measure and scopes no phase system.
+
+    Carrying them would record dimensions the reviewer never read, and a projector filling its
+    output from such a field is the same defect from the other side.
+    """
+
+    applicability = set(SystemVoltageApplicabilityFact.model_fields)
+
+    assert applicability.isdisjoint({"measure", "phase_system", "earthing"})
+    assert "counts_as_system_voltage" not in SystemVoltageMeasureFact.model_fields
+    # What both kinds do state stays shared rather than repeated per variant.
+    assert {"supply_kind", "input_topology", "purpose", "obligation"} <= applicability
+
+
+def test_a_variant_union_round_trips_through_the_family_discriminator() -> None:
+    """Both kinds must survive the archive shape a review is stored and read back in."""
+
+    for fact in (_measure_fact(), _applicability_fact()):
+        review = ClauseFactReview(
+            rule_route="iec62477_2022.supply.system_voltage_resolution",
+            statement_index=fact.statement_index,
+            fact=fact,
+            fact_sha256=canonical_model_sha256(fact),
+            evidence_sha256=evidence_sha256(fact.node_references),
+            actor="tester",
+            recorded_at=datetime(2026, 8, 14, tzinfo=UTC),
+            notes="authored",
+        )
+
+        assert ClauseFactReview.model_validate(review.model_dump(mode="json")) == review
+
+
+def test_two_readings_of_different_kinds_are_never_one_reading() -> None:
+    """The duplicate refusal compares kind as well as dimensions.
+
+    Comparing a measure statement's field list against an applicability statement would ask it for
+    dimensions it does not carry -- and two statements of different kinds citing one node are two
+    readings of it, not one recorded twice.
+    """
+
+    node = (CitedNode(fragment_id="raw-b", node_order=2, node_sha256="b" * 64),)
+    measure = _measure_fact().model_copy(update={"node_references": node})
+    applicability = _applicability_fact().model_copy(update={"node_references": node})
+
+    assert same_clause_fact_reading(measure, applicability) is False
+    assert same_clause_fact_reading(measure, measure) is True
 
 
 def test_monitoring_is_its_own_family_and_reduction_carries_no_placement() -> None:

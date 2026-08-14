@@ -88,9 +88,12 @@ def test_a_reached_dimension_is_never_reached_with_a_value_outside_its_vocabular
 ) -> None:
     """A proposal a reviewer cannot author is worse than no proposal at all."""
 
+    grammar = SUPPLY_FACT_PROPOSAL_GRAMMARS[route]
+    # The grammar's own statement kind, not the family's: a family with variants has no single
+    # dimension list, and the drafts this route proposes are of exactly one kind.
     declared = {
         name: (kind, options)
-        for name, kind, options in fact_dimensions(SUPPLY_FACT_PROPOSAL_GRAMMARS[route].fact_kind)
+        for name, kind, options in fact_dimensions(grammar.fact_kind, grammar.variant)
     }
 
     for proposal in propose_supply_facts(_fragment(extracted_draft, route), route):

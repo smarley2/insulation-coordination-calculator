@@ -32,7 +32,7 @@ from insulation_coordination.rules.importer.clause_facts import (
     SpdMonitoringFact,
     SpdReductionFact,
     SupplyFact,
-    SystemVoltageFact,
+    SystemVoltageMeasureFact,
 )
 from insulation_coordination.rules.importer.extract import (
     ImportedRuleDraft,
@@ -104,7 +104,7 @@ def _placeholder_facts(draft: ImportedRuleDraft) -> dict[str, SupplyFact]:
     """
 
     return {
-        SV_ROUTE: SystemVoltageFact(
+        SV_ROUTE: SystemVoltageMeasureFact(
             statement_index=0,
             node_references=_first_cited_node(draft, SV_ROUTE),
             obligation="requirement",
@@ -115,7 +115,7 @@ def _placeholder_facts(draft: ImportedRuleDraft) -> dict[str, SupplyFact]:
             purpose="impulse",
             measure="phase_to_earth_rms",
         ),
-        SUPPLY_SYSTEM_VOLTAGE_NON_MAINS: SystemVoltageFact(
+        SUPPLY_SYSTEM_VOLTAGE_NON_MAINS: SystemVoltageMeasureFact(
             statement_index=0,
             node_references=_first_cited_node(draft, SUPPLY_SYSTEM_VOLTAGE_NON_MAINS),
             obligation="requirement",

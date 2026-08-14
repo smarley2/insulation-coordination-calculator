@@ -33,14 +33,16 @@ from insulation_coordination.rules.importer.clause_facts import (
     SpdMonitoringFact,
     SpdReductionFact,
     SupplyFact,
-    SystemVoltageFact,
+    SystemVoltageApplicabilityFact,
+    SystemVoltageMeasureFact,
     scope_vocabulary,
 )
 from insulation_coordination.rules.importer.clauses import RawClauseFragment
 from insulation_coordination.rules.importer.extract import canonical_model_sha256
 
 FactModel = type[
-    SystemVoltageFact
+    SystemVoltageMeasureFact
+    | SystemVoltageApplicabilityFact
     | PropagationStepFact
     | BarrierTransferFact
     | SpdReductionFact
@@ -48,21 +50,28 @@ FactModel = type[
     | HfAttenuationFact
 ]
 
-#: The one model each declared fact family builds. The single source the editor, the proposer
-#: and the recipe's own family checks all read, so a family added to one of them and forgotten
-#: in another cannot happen.
-FACT_MODEL_BY_KIND: dict[str, FactModel] = {
-    "system_voltage": SystemVoltageFact,
-    "propagation_step": PropagationStepFact,
-    "barrier_transfer": BarrierTransferFact,
-    "spd_reduction": SpdReductionFact,
-    "spd_monitoring": SpdMonitoringFact,
-    "hf_attenuation": HfAttenuationFact,
+#: Every statement variant each declared fact family builds, in declaration order. The single
+#: source the editor, the proposer and the recipe's own family checks all read, so a family added
+#: to one of them and forgotten in another cannot happen.
+#:
+#: A tuple per family rather than one model, because a family whose clause states normatively
+#: different *kinds* of reading has no single model whose fields answer for all of it -- amendment
+#: A3-C. A one-kind family is a one-member tuple and its callers pass no statement kind at all.
+FACT_MODELS_BY_KIND: dict[str, tuple[FactModel, ...]] = {
+    "system_voltage": (SystemVoltageMeasureFact, SystemVoltageApplicabilityFact),
+    "propagation_step": (PropagationStepFact,),
+    "barrier_transfer": (BarrierTransferFact,),
+    "spd_reduction": (SpdReductionFact,),
+    "spd_monitoring": (SpdMonitoringFact,),
+    "hf_attenuation": (HfAttenuationFact,),
 }
 
-#: ``fact_kind`` is the family itself, fixed per route; ``statement_index`` has its own spinner;
+#: ``fact_kind`` is the family itself, fixed per route; ``statement_kind`` is which variant of it,
+#: chosen before the dimensions are shown at all; ``statement_index`` has its own spinner;
 #: ``node_references`` come from the node reader, never typed by hand.
-_UNDIMENSIONED_FIELDS = frozenset({"fact_kind", "statement_index", "node_references"})
+_UNDIMENSIONED_FIELDS = frozenset(
+    {"fact_kind", "statement_kind", "statement_index", "node_references"}
+)
 
 DimensionKind = Literal["choice", "boolean", "identifier", "scope"]
 
@@ -88,8 +97,45 @@ _MAX_KEYWORD_WORDS = 4
 _MAX_KEYWORD_LENGTH = 40
 
 
-def fact_dimensions(fact_kind: str) -> tuple[tuple[str, DimensionKind, tuple[str, ...]], ...]:
-    """Each authored dimension of one fact family with its widget kind and vocabulary.
+def fact_variants(fact_kind: str) -> tuple[str, ...]:
+    """Each statement kind one family declares, in declaration order.
+
+    Empty for a family that states one kind of reading: such a family has no variant to choose, and
+    an empty tuple is what lets every caller ask without special-casing the families that have none.
+    """
+
+    models = FACT_MODELS_BY_KIND[fact_kind]
+    if len(models) == 1:
+        return ()
+    return tuple(
+        str(get_args(model.model_fields["statement_kind"].annotation)[0]) for model in models
+    )
+
+
+def fact_model(fact_kind: str, statement_kind: str | None = None) -> FactModel:
+    """The one model a family's statement kind builds.
+
+    ``statement_kind`` is required exactly when the family declares variants, and refused when it
+    does not: a caller that guesses a variant would author a reading of a kind nobody chose, and a
+    caller that omits one for a family that has them would silently get whichever variant happens to
+    be declared first.
+    """
+
+    models = FACT_MODELS_BY_KIND[fact_kind]
+    variants = fact_variants(fact_kind)
+    if not variants:
+        if statement_kind is not None:
+            raise RulePackageError(f"{fact_kind} declares one statement kind, not {statement_kind}")
+        return models[0]
+    if statement_kind not in variants:
+        raise RulePackageError(f"{fact_kind} states {list(variants)}, not {statement_kind}")
+    return models[variants.index(statement_kind)]
+
+
+def fact_dimensions(
+    fact_kind: str, statement_kind: str | None = None
+) -> tuple[tuple[str, DimensionKind, tuple[str, ...]], ...]:
+    """Each authored dimension of one statement kind with its widget kind and vocabulary.
 
     Read from the model's own annotations, so neither the editor nor a declared rule carries a
     hand-written copy of a vocabulary that could drift from the model it has to build. A boolean
@@ -103,7 +149,7 @@ def fact_dimensions(fact_kind: str) -> tuple[tuple[str, DimensionKind, tuple[str
     """
 
     dimensions: list[tuple[str, DimensionKind, tuple[str, ...]]] = []
-    for name, field in FACT_MODEL_BY_KIND[fact_kind].model_fields.items():
+    for name, field in fact_model(fact_kind, statement_kind).model_fields.items():
         if name in _UNDIMENSIONED_FIELDS:
             continue
         if field.annotation is bool:
@@ -276,14 +322,19 @@ class ClauseSequenceRule(FrozenModel):
 
 
 class ClauseFactGrammar(FrozenModel):
-    """One route's declared rules for proposing the dimensions of its fact family.
+    """One route's declared rules for proposing the dimensions of one statement kind.
 
-    Validated against the family's own model at construction: a dimension the family does not
+    Validated against that kind's own model at construction: a dimension the variant does not
     declare, or a value outside that dimension's vocabulary, would otherwise propose a reading
     no reviewer could author and no editor could show.
     """
 
     fact_kind: str
+    #: Which of the family's statement kinds these rules propose, for a family that declares
+    #: variants; empty for a family that states one kind. Declared rather than inferred, because a
+    #: grammar's rules only make sense against one variant's dimensions -- and a kind a grammar
+    #: cannot reach is a statement a reviewer authors by hand, not one this file may guess at.
+    statement_kind: str = ""
     keyword_rules: tuple[ClauseKeywordRule, ...] = ()
     sequence_rules: tuple[ClauseSequenceRule, ...] = ()
     #: Dimensions every sentence of the route shares, such as the identifier of another route
@@ -296,11 +347,21 @@ class ClauseFactGrammar(FrozenModel):
     #: a second draft from the stem.
     inherited_dimensions: tuple[str, ...] = ()
 
+    @property
+    def variant(self) -> str | None:
+        """The statement kind these rules propose, spelled as ``fact_dimensions`` expects it."""
+
+        return self.statement_kind or None
+
     @model_validator(mode="after")
     def _dimensions_and_values_are_the_families_own(self) -> ClauseFactGrammar:
-        if self.fact_kind not in FACT_MODEL_BY_KIND:
+        if self.fact_kind not in FACT_MODELS_BY_KIND:
             raise ValueError(f"unknown fact family: {self.fact_kind}")
-        vocabularies = {name: options for name, _kind, options in fact_dimensions(self.fact_kind)}
+        try:
+            declared = fact_dimensions(self.fact_kind, self.variant)
+        except RulePackageError as error:
+            raise ValueError(str(error)) from error
+        vocabularies = {name: options for name, _kind, options in declared}
         for dimension, value in (
             *((rule.dimension, rule.value) for rule in self.keyword_rules),
             *self.constants.items(),
@@ -359,6 +420,10 @@ class ClauseFactProposal(FrozenModel):
 
     rule_route: Identifier
     fact_kind: str
+    #: Which of the family's statement kinds this draft is of; empty for a one-kind family. Carried
+    #: on the draft rather than derived from ``chosen``, because it decides *which* dimensions the
+    #: draft has to settle before any of them is read.
+    statement_kind: str = ""
     sentence_index: int = Field(ge=0)
     sentence_text: str = Field(min_length=1, max_length=4_000)
     node_references: tuple[CitedNode, ...] = Field(min_length=1)
@@ -446,7 +511,9 @@ def keyword_proposer(grammar: ClauseFactGrammar) -> SentenceProposer:
     """
 
     scopes = {
-        name for name, kind, _options in fact_dimensions(grammar.fact_kind) if kind == "scope"
+        name
+        for name, kind, _options in fact_dimensions(grammar.fact_kind, grammar.variant)
+        if kind == "scope"
     }
 
     def propose(sentence: ClauseSentence) -> tuple[Mapping[str, str], ...]:
@@ -487,17 +554,22 @@ def propose_clause_facts(
     *,
     rule_route: str,
     fact_kind: str,
+    statement_kind: str | None = None,
     propose: SentenceProposer,
     locked: Mapping[str, str] = MappingProxyType({}),
 ) -> tuple[ClauseFactProposal, ...]:
-    """One draft per reading per sentence, for one route's own fragment.
+    """One draft per reading per sentence, for one route's own fragment and one statement kind.
 
     Every sentence yields at least one draft, so the reviewer starts from the clause's own
     statements rather than from a blank editor. ``locked`` carries the dimensions the route
     itself determines rather than the sentence, and a reading never overrides one.
+
+    A route whose family declares variants is proposed one kind at a time: which dimensions a draft
+    must settle depends on the kind of reading it is, and a family's other kinds are authored by
+    hand until a grammar reaches them.
     """
 
-    dimensions = tuple(name for name, _kind, _options in fact_dimensions(fact_kind))
+    dimensions = tuple(name for name, _kind, _options in fact_dimensions(fact_kind, statement_kind))
     proposals: list[ClauseFactProposal] = []
     for sentence in clause_sentences(fragment):
         citation = CitedNode(
@@ -511,6 +583,7 @@ def propose_clause_facts(
                 ClauseFactProposal(
                     rule_route=rule_route,
                     fact_kind=fact_kind,
+                    statement_kind=statement_kind or "",
                     sentence_index=sentence.index,
                     sentence_text=sentence.text,
                     node_references=(citation,),
@@ -533,18 +606,19 @@ def proposed_fact(proposal: ClauseFactProposal, *, statement_index: int) -> Supp
             f"{proposal.rule_route} sentence {proposal.sentence_index} leaves "
             f"{list(proposal.unchosen)} unchosen"
         )
-    kinds = {name: kind for name, kind, _options in fact_dimensions(proposal.fact_kind)}
+    variant = proposal.statement_kind or None
+    kinds = {name: kind for name, kind, _options in fact_dimensions(proposal.fact_kind, variant)}
     values: dict[str, object] = {
         "statement_index": statement_index,
         "node_references": proposal.node_references,
         **{name: authored_dimension(kinds[name], value) for name, value in proposal.chosen.items()},
     }
-    fact: SupplyFact = FACT_MODEL_BY_KIND[proposal.fact_kind].model_validate(values)
+    fact: SupplyFact = fact_model(proposal.fact_kind, variant).model_validate(values)
     return fact
 
 
 __all__ = [
-    "FACT_MODEL_BY_KIND",
+    "FACT_MODELS_BY_KIND",
     "SCOPE_UNRESTRICTED",
     "ClauseFactGrammar",
     "ClauseFactProposal",
@@ -556,6 +630,8 @@ __all__ = [
     "authored_dimension",
     "clause_sentences",
     "fact_dimensions",
+    "fact_model",
+    "fact_variants",
     "keyword_proposer",
     "propose_clause_facts",
     "proposed_fact",

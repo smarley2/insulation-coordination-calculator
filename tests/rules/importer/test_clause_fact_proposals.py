@@ -10,13 +10,14 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from insulation_coordination.domain.rules import SourceReference
+from insulation_coordination.domain.rules import RulePackageError, SourceReference
 from insulation_coordination.rules.importer.clause_fact_proposals import (
     ClauseFactGrammar,
     ClauseKeywordRule,
     ClauseSequenceRule,
     clause_sentences,
     fact_dimensions,
+    fact_variants,
     keyword_proposer,
     propose_clause_facts,
     proposed_fact,
@@ -482,6 +483,93 @@ def test_a_fully_proposed_draft_builds_its_typed_statement() -> None:
     assert fact.node_references == proposal.node_references
     # The scope dimension arrives as its wire form and is decoded exactly once.
     assert fact.dvc_gate == DimensionScope.of("dvc_as")
+
+
+def test_a_variant_family_offers_each_kinds_own_dimensions() -> None:
+    """A family with variants has no single model whose fields answer for all of it.
+
+    ``fact_dimensions`` reads the variant the caller names, so the editor and the proposer cannot
+    offer one kind's dimensions while building the other kind's statement.
+    """
+
+    measure = {name for name, _kind, _options in fact_dimensions("system_voltage", "measure")}
+    applicability = {
+        name for name, _kind, _options in fact_dimensions("system_voltage", "applicability")
+    }
+
+    assert fact_variants("system_voltage") == ("measure", "applicability")
+    assert "measure" in measure and "measure" not in applicability
+    assert "counts_as_system_voltage" in applicability
+    # The kind itself is not a dimension of the statement: it decides which dimensions there are.
+    assert "statement_kind" not in measure | applicability
+
+
+def test_a_one_kind_family_declares_no_variant_and_refuses_one() -> None:
+    """Naming a kind for a family that states one would author a variant nobody declared."""
+
+    assert fact_variants("hf_attenuation") == ()
+    with pytest.raises(RulePackageError, match="one statement kind"):
+        fact_dimensions("hf_attenuation", "measure")
+
+
+def test_a_variant_family_refuses_to_be_read_without_a_kind() -> None:
+    """Defaulting to the first variant would silently author the wrong kind of statement."""
+
+    with pytest.raises(RulePackageError, match="applicability"):
+        fact_dimensions("system_voltage")
+
+
+def test_a_grammar_for_a_variant_family_must_name_the_kind_it_proposes() -> None:
+    with pytest.raises(ValidationError, match="applicability"):
+        ClauseFactGrammar(
+            fact_kind="system_voltage",
+            keyword_rules=(_keyword("earthing", "tn", "synthetic"),),
+        )
+
+
+def test_a_grammar_naming_a_dimension_of_another_variant_is_refused() -> None:
+    """Each variant's rules are validated against its own model, not against the family's union."""
+
+    with pytest.raises(ValidationError, match="no dimension"):
+        ClauseFactGrammar(
+            fact_kind="system_voltage",
+            statement_kind="applicability",
+            keyword_rules=(_keyword("measure", "phase_to_phase_rms", "synthetic"),),
+        )
+
+
+def test_a_draft_of_one_kind_builds_that_kinds_statement() -> None:
+    """The draft carries its own kind, so the typed statement it records is of that kind."""
+
+    grammar = ClauseFactGrammar(
+        fact_kind="system_voltage",
+        statement_kind="applicability",
+        keyword_rules=(
+            _keyword("obligation", "requirement", "shall"),
+            _keyword("supply_kind", "mains", "synthetic"),
+            _keyword("input_topology", "isolated_secondary", "secondaries"),
+            _keyword("purpose", "impulse", "impulse"),
+            _keyword("counts_as_system_voltage", "true", "shall"),
+        ),
+    )
+    fragment = fragment_with_sentences(
+        ROUTE, ("Synthetic impulse reading of secondaries which shall apply.",)
+    )
+
+    (proposal,) = propose_clause_facts(
+        fragment,
+        rule_route=ROUTE,
+        fact_kind="system_voltage",
+        statement_kind="applicability",
+        propose=keyword_proposer(grammar),
+    )
+    fact = proposed_fact(proposal, statement_index=0)
+
+    assert proposal.statement_kind == "applicability"
+    assert proposal.fully_proposed is True
+    assert fact.fact_kind == "system_voltage"
+    assert fact.statement_kind == "applicability"
+    assert fact.counts_as_system_voltage is True
 
 
 def test_a_scope_dimension_is_offered_as_a_scope_over_its_own_vocabulary() -> None:
