@@ -73,6 +73,7 @@ from insulation_coordination.rules.importer.review import (
     live_evidence_sha256,
     record_fact_completion,
     retract_clause_fact,
+    uncovered_clause_fact_statements,
 )
 from insulation_coordination.ui.page_preview import PagePreview, Region
 
@@ -85,16 +86,30 @@ _DISABLED_REASONS = {
         "Choose the kind of statement and every dimension of it, and select at least one clause "
         "node it rests on."
     ),
-    "author_proposed": (
-        "No draft for this route has every dimension proposed. Fill the unchosen ones in by hand "
-        "and use Author fact."
-    ),
+    "use_suggested": "Select a proposed draft in the list first.",
     "retract": "Select an authored statement in the list first.",
     "duplicate": "Select an authored statement in the list first.",
 }
 _NO_SOURCE_REGION = (
     "Source region not available: re-extract from the licensed PDFs to see the clause's own page."
 )
+
+
+def _completion_blocked_text(uncovered: tuple[str, ...]) -> str:
+    """Why completion is unavailable, and the one action that makes it available.
+
+    Named statements and a next step, never a bare grey button: the reviewer has to be able to see
+    which statements the clause still carries unauthored, and that authoring them -- or re-authoring
+    one statement so it cites the nodes they rest on -- is what clears this.
+    """
+
+    return (
+        "Completion is blocked while this clause carries a statement no authored fact covers: "
+        f"{'; '.join(uncovered)}. Select each draft below, author a statement for it -- or "
+        "re-author one statement citing every node it rests on -- and Record completion becomes "
+        "available."
+    )
+
 
 #: The scope widget's explicit unrestricted row. Its own entry rather than "select every value",
 #: because the two are different readings: unrestricted projects over the reviewed domain, while a
@@ -144,15 +159,11 @@ def _reading_summary(fact: SupplyFact) -> str:
     return reading if variant is None else f"{variant} · {reading}"
 
 
-#: What each authoring path writes into a fact's notes, so the audit distinguishes a confirmed
-#: proposal from a reading a maintainer typed from scratch. Both name the dialog; only the
-#: proposed ones name the grammar, and the batch note also records that nothing was edited
-#: between the proposal and the confirmation.
+#: What each authoring path writes into a fact's notes, so the audit distinguishes a statement
+#: whose editor was prefilled from a suggestion from one a maintainer typed from scratch. Both
+#: name the dialog; only the prefilled one names the grammar.
 _HAND_AUTHORED_NOTES = "authored in the clause fact review dialog"
 _FROM_PROPOSAL_NOTES = "authored from a grammar proposal in the clause fact review dialog"
-_CONFIRMED_PROPOSAL_NOTES = (
-    "confirmed a fully grammar-proposed statement in the clause fact review dialog"
-)
 
 
 class ClauseFactRouteRow(FrozenModel):
@@ -162,9 +173,11 @@ class ClauseFactRouteRow(FrozenModel):
     fragment_id: str
     authored: int
     status: Literal["needs_facts", "needs_completion", "complete", "stale"]
-    #: Why ``status`` is ``stale``, straight from ``clause_fact_route_defect``; ``None`` for
-    #: every other status, ``needs_completion`` included -- that one names an ordinary next
-    #: step, not a defect.
+    #: Why this route is not complete, straight from ``clause_fact_route_defect``, for the two
+    #: statuses a reviewer cannot act on without being told: ``stale``, and the
+    #: ``needs_completion`` that the completion guard is blocking. ``None`` for a
+    #: ``needs_completion`` that only awaits the maintainer's own assertion -- that one names an
+    #: ordinary next step, not a defect.
     defect: str | None
 
 
@@ -257,6 +270,10 @@ class ClauseFactReviewModel:
                 status = "complete"
             elif not completions:
                 status = "needs_completion"
+                # The one reason a route short of completion needs stated in the table: the
+                # reviewer cannot record completion at all until it is cleared, so leaving it to
+                # a hover would be a route that simply refuses with no visible cause.
+                reason = defect if self.uncovered(route) else None
             else:
                 status = "stale"
                 reason = defect
@@ -360,6 +377,16 @@ class ClauseFactReviewModel:
             item for item in self.proposals(rule_route) if self.covered_by(rule_route, item) is None
         )
 
+    def uncovered(self, rule_route: str) -> tuple[str, ...]:
+        """The known statements of one route no authored fact covers, for the reviewer.
+
+        The completion guard's own list, through the same function ``record_fact_completion`` and
+        the approval gate call, so this surface can never offer a completion the importer refuses
+        or withhold one it would accept.
+        """
+
+        return uncovered_clause_fact_statements(self._draft, rule_route)
+
     def next_statement_index(self, rule_route: str) -> int:
         """The first index this route's authored statements have not already used.
 
@@ -384,36 +411,6 @@ class ClauseFactReviewModel:
             self._draft, rule_route=rule_route, fact=fact, actor=actor, notes=notes
         )
         return self._draft
-
-    def author_proposed(self, rule_route: str, *, actor: str, notes: str) -> int:
-        """Record every fully proposed draft of one route, and return how many were recorded.
-
-        One ``author_clause_fact`` per statement, never a bulk write: each fact keeps its own
-        actor, notes and audited correction, so the audit shows a human took each action rather
-        than one action standing for several. A draft with any unchosen dimension is skipped --
-        confirming a reading nobody has read is exactly what the unchosen state exists to
-        prevent -- and the index is re-read each time so the batch appends without reusing one.
-
-        A draft whose reading is already authored is skipped too. Without that the batch walked
-        into the duplicate refusal on its first already-covered draft and died there, taking every
-        later draft with it. Coverage is re-checked per draft rather than snapshotted, because a
-        draft this batch has just authored can cover a later one -- two sentences of one node can
-        state one reading.
-        """
-
-        recorded = 0
-        for proposal in self.proposals(rule_route):
-            if not proposal.fully_proposed or self.covered_by(rule_route, proposal) is not None:
-                continue
-            self._draft = author_clause_fact(
-                self._draft,
-                rule_route=rule_route,
-                fact=proposed_fact(proposal, statement_index=self.next_statement_index(rule_route)),
-                actor=actor,
-                notes=notes,
-            )
-            recorded += 1
-        return recorded
 
     def retract(
         self,
@@ -456,7 +453,10 @@ class ClauseFactReviewDialog(QDialog):
     No wizard: the reviewer sees every route at once, reads the selected route's fragment
     nodes, and authors, replaces, duplicates, retracts or completes. Below the route's authored
     statements sit its proposed drafts, one per reading the recipe's grammar reads out of one
-    clause sentence, described in ``_list_proposals``. The editor's fields come
+    clause sentence, described in ``_list_proposals``. A draft's suggested values reach the editor
+    only as a prefill, one draft at a time, and **no action records more than one statement**: a
+    suggestion is assistance, the maintainer is the authority, and a press that certified several
+    machine-derived normative facts at once would not be review. The editor's fields come
     from the fact models themselves and its family is fixed by the route's declaration, so a
     statement can only be authored as the kind its clause states; a dimension the route itself
     determines, such as ``supply_kind``, is shown rather than chosen for the same reason.
@@ -537,6 +537,13 @@ class ClauseFactReviewDialog(QDialog):
         self.facts_list.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.facts_list.setResizeMode(QListView.ResizeMode.Adjust)
         facts_layout.addWidget(self.facts_list)
+        # A prefill the reviewer asks for by name, beside the drafts it reads from. Selecting a
+        # draft already loads it; this makes the suggestion an explicit act rather than a side
+        # effect of looking at a row, and it records nothing -- Author still does that.
+        self.use_suggested_button = QPushButton("Use suggested values", facts_box)
+        self.use_suggested_button.setEnabled(False)
+        self.use_suggested_button.clicked.connect(self.use_suggested_selected)
+        facts_layout.addWidget(self.use_suggested_button)
         self.retract_button = QPushButton("Retract fact", facts_box)
         self.retract_button.setEnabled(False)
         self.retract_button.clicked.connect(self.retract_selected)
@@ -583,9 +590,6 @@ class ClauseFactReviewDialog(QDialog):
         # ``_load_route`` would never run to disable these.
         self.author_button.setEnabled(False)
         self.author_button.clicked.connect(self.author_selected)
-        self.author_proposed_button = QPushButton("Author all fully proposed statements", self)
-        self.author_proposed_button.setEnabled(False)
-        self.author_proposed_button.clicked.connect(self.author_proposed_selected)
         self.complete_button = QPushButton("Record completion", self)
         self.complete_button.setEnabled(False)
         self.complete_button.clicked.connect(self.complete_selected)
@@ -593,7 +597,6 @@ class ClauseFactReviewDialog(QDialog):
         buttons.rejected.connect(self.reject)
         actions = QHBoxLayout()
         actions.addWidget(self.author_button)
-        actions.addWidget(self.author_proposed_button)
         actions.addWidget(self.complete_button)
         actions.addWidget(buttons)
 
@@ -744,36 +747,23 @@ class ClauseFactReviewDialog(QDialog):
         self._load_route()
         self._status.setText("Statement recorded for this route.")
 
-    def author_proposed_selected(self) -> None:
-        """Record every fully proposed draft of the selected route. The model owns the mutation.
+    def use_suggested_selected(self) -> None:
+        """Load one selected draft's suggested dimensions and its citation into the editor.
 
-        Per-statement Author stays the unit of confirmation: this is the same call, run once per
-        draft, so every fact still carries an actor and notes and the audit shows a human took
-        each action. What it removes is the clicking, not the gate -- which is why the drafts sit
-        beside the sentences they were read from, and why a draft with any unchosen dimension is
-        left for the reviewer.
+        A prefill and nothing else: it records no statement, and every dimension the grammar could
+        not settle stays unchosen, so Author stays disabled until the reviewer reads it out of the
+        sentence themselves. There is no action that authors several statements at once -- one
+        explicit authoring action records exactly one statement, because one press certifying
+        several machine-derived normative facts is not review.
+
+        The same ``_load_proposal`` that selecting a draft runs, rather than a second prefill path
+        beside it: two paths could disagree about which dimensions a suggestion fills.
         """
 
-        position = self.table.currentRow()
-        row = self._current_route_row()
-        if row is None:
-            self._status.setText("Select a rule route first.")
+        if self._current_proposal() is None:
+            self._status.setText("Select a proposed draft to load its suggested values first.")
             return
-        try:
-            recorded = self._model.author_proposed(
-                row.rule_route, actor="maintainer", notes=_CONFIRMED_PROPOSAL_NOTES
-            )
-        except (ValidationError, ValueError) as error:
-            self._status.setText(f"Fact refused: {error}")
-            return
-        self.refresh()
-        self.table.selectRow(position)
-        self._load_route()
-        self._status.setText(
-            f"Recorded {recorded} confirmed proposal(s) for this route."
-            if recorded
-            else "No draft for this route has every dimension proposed."
-        )
+        self._load_proposal()
 
     def retract_selected(self) -> None:
         """Remove the selected authored statement. The model owns the mutation."""
@@ -866,8 +856,9 @@ class ClauseFactReviewDialog(QDialog):
             self._fact_rows = ()
             self._proposal_rows = ()
             self._set_enabled(self.author_button, False, "author")
-            self._set_enabled(self.author_proposed_button, False, "author_proposed")
+            self._set_enabled(self.use_suggested_button, False, "use_suggested")
             self.complete_button.setEnabled(False)
+            self.complete_button.setToolTip("")
             self._set_enabled(self.retract_button, False, "retract")
             self._set_enabled(self.duplicate_button, False, "duplicate")
             return
@@ -905,12 +896,12 @@ class ClauseFactReviewDialog(QDialog):
         self._reset_statement_kind()
         self.statement_index.setValue(self._model.next_statement_index(row.rule_route))
         self._reset_dimensions(row.rule_route)
-        self.complete_button.setEnabled(True)
-        self._set_enabled(
-            self.author_proposed_button,
-            any(proposal.fully_proposed for proposal in self._proposal_rows),
-            "author_proposed",
+        uncovered = self._model.uncovered(row.rule_route)
+        self.complete_button.setEnabled(not uncovered)
+        self.complete_button.setToolTip(
+            "" if not uncovered else _completion_blocked_text(uncovered)
         )
+        self._set_enabled(self.use_suggested_button, False, "use_suggested")
         self._set_enabled(self.retract_button, False, "retract")
         self._set_enabled(self.duplicate_button, False, "duplicate")
         self._refresh_author_enabled()
@@ -1002,6 +993,9 @@ class ClauseFactReviewDialog(QDialog):
         fact_row = self._current_fact_row()
         self._set_enabled(self.retract_button, fact_row is not None, "retract")
         self._set_enabled(self.duplicate_button, fact_row is not None, "duplicate")
+        self._set_enabled(
+            self.use_suggested_button, self._current_proposal() is not None, "use_suggested"
+        )
         if fact_row is None:
             self._load_proposal()
             return

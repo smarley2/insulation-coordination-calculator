@@ -2114,9 +2114,12 @@ for the remaining #53B work:
         the placeholder could not have been left as it was.
 - [ ] Grammar relocation, context-node handling — the set/pair collections landed with family 4
 - [ ] Variant editor: value-set widgets, repeating pair rows, `statement_kind` switching
-- [ ] Removal of multi-statement authoring; per-statement suggestion action
-- [ ] Completion guard
-- [ ] Private placeholder replacement, including the invalid positive-isolation placeholder
+- [x] Removal of multi-statement authoring; per-statement suggestion action — `0a7141d`
+- [x] Completion guard — coverage anchored on route + cited-node identity + evidence hash
+- [ ] Private placeholder replacement, including the invalid positive-isolation placeholder —
+      the guard forced part of this early: the private `_placeholder_facts` now returns a tuple per
+      route and the system voltage subclauses author one statement per fragment node, driven off the
+      node count rather than a written number. What remains is replacing the invented readings.
 - [ ] **Separate, separately reviewed, mandatory before #53B completes:** clause-region widening,
       with the private normative-paragraph inventory and the version inspection A6 requires
 
@@ -2253,10 +2256,19 @@ these two routes' inputs and outputs look different from their siblings'.
   still spells that could contradict it. A third such dimension should follow the same three pieces.
 - `_placement_matcher` is gone; `_dimension_matcher` is the last shim, and item 5 above still stands
   for it.
-- `_placeholder_facts` is now `dict[str, tuple[SupplyFact, ...]]`, widened by family 4: a reduction
-  route projects two rules and the second exists only if a statement was reviewed for it, so that
-  route needs two placeholders. Completion is recorded once per route *after* all of its statements,
-  because the record binds the route's whole fact-set digest.
+- `_placeholder_facts` is now `dict[str, tuple[SupplyFact, ...]]`, widened by family 4 **and** by the
+  completion guard, independently: a reduction route projects two rules and the second exists only if
+  a statement was reviewed for it, so that route needs two placeholders; and the guard refuses a route
+  that leaves a known statement of its clause unauthored, so the system voltage subclauses author one
+  statement per fragment node. Either reason alone justifies the tuple; neither may be removed on the
+  strength of the other having gone away. Completion is recorded once per route *after* all of its
+  statements, because the record binds the route's whole fact-set digest.
+- The two gates are **not** the same gate, and a successor must not conflate them. The guard's
+  coverage anchor is route plus cited-node identity, so it counts one obligation per *source
+  statement*, never one per variant: a reduction route whose permission and monitoring statements
+  rest on the same node is covered by either one of them alone. What forces the monitoring statement
+  to exist is family 4's `projected_rule_ids`, through `inventory_report`. See "The guard and the
+  second projected rule" below.
 
 **What family 4 changed, and the collections it introduced.**
 
@@ -2287,6 +2299,27 @@ these two routes' inputs and outputs look different from their siblings'.
   that one is still #53C item 5.
 - Both new rule ids are declared in the clause specs' `projected_rule_ids`, which is what makes the
   inventory gate require them. That is why the private placeholders had to widen.
+
+**The guard and the second projected rule.** The completion guard and the inventory gate look like
+one rule and are two. Measured on the merged tree, so nobody has to re-derive it:
+
+- The guard's obligations are one per *source statement*, anchored on route plus cited-node identity.
+  Restricting a route's proposals to one variant — `_SPD_REDUCTION_GRAMMAR` proposes `permission`
+  only — changes no obligation, because every sentence yields at least one draft and the anchor
+  ignores which kind of reading that draft is.
+- A statement of **any** variant covers its anchor, carried ones included. That is exactly what lets
+  the private system voltage placeholders cover a list item with the carried applicability variant
+  while the proposer offers a measure draft for it. It also means a reduction route whose permission
+  and monitoring statements rest on the same node is completed by either one alone.
+- So what requires the monitoring statement is `projected_rule_ids`, never the guard. Measured with
+  the monitoring placeholders dropped: `uncovered_clause_fact_statements` is empty, completion is
+  accepted, the route projects its permission rule only, and approval then refuses through
+  `_require_complete_inventory`, naming `iec62477_2022.supply.spd_reduction_requirements`.
+- The gap that leaves, for whoever wants it closed: the refusal names the clause and not the kind of
+  statement nobody authored, and the route table reads `complete` while the package is not. Moving
+  this into the guard needs a per-variant obligation, which needs a grammar that proposes the other
+  variants first — the guard derives its obligations from proposals, so it cannot know about a
+  variant nothing suggests.
 
 **Why family 4 needed that contract change, so nobody re-derives it.**
 `supply.spd_reduction_requirements.{mains,

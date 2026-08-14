@@ -7,7 +7,7 @@ from typing import Literal, get_args
 import pytest
 from pydantic import BaseModel
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHeaderView
+from PySide6.QtWidgets import QHeaderView, QPushButton
 
 from insulation_coordination.domain.rules import RulePackageError
 from insulation_coordination.rules.importer import clause_fact_proposals
@@ -1144,32 +1144,60 @@ def test_a_partly_proposed_draft_is_never_covered(
     assert all(item in model.open_proposals(HF_ROUTE) for item in partly)
 
 
-def test_the_batch_action_skips_a_covered_draft_instead_of_dying_on_it(
+def test_no_action_authors_more_than_one_statement(
     qtbot, draft_with_fully_proposed_sentences
 ) -> None:
-    """The live failure: the batch hit the duplicate refusal and took every later draft with it.
+    """Amendment A1: the route-level "author every fully proposed draft" action is gone.
 
-    Authoring one draft by hand first is exactly the state the maintainer was in when
-    "Author all fully proposed statements" errored out.
+    Not disabled and not hidden -- removed, on both the dialog and the model. A proposal is
+    assistance and the maintainer is the authority, so one press certifying several
+    machine-derived normative facts is not review, and leaving the affordance reachable from
+    either layer would leave that press available.
     """
 
     model = ClauseFactReviewModel(draft_with_fully_proposed_sentences)
     dialog = ClauseFactReviewDialog(model)
     qtbot.addWidget(dialog)
-    _author_first_draft(model, dialog)
-    remaining = sum(1 for item in model.open_proposals(HF_ROUTE) if item.fully_proposed)
 
-    dialog.author_proposed_selected()
+    assert not hasattr(model, "author_proposed")
+    assert not hasattr(dialog, "author_proposed_button")
+    assert not hasattr(dialog, "author_proposed_selected")
+    # No surviving control offers to author more than the one statement in the editor.
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+    labels = [button.text() for button in dialog.findChildren(QPushButton)]
+    assert labels
+    assert not any("all" in label.lower() for label in labels)
 
-    assert "refused" not in dialog.status_text
-    assert f"Recorded {remaining}" in dialog.status_text
+
+def test_one_authoring_action_records_exactly_one_statement(
+    qtbot, draft_with_fully_proposed_sentences
+) -> None:
+    """Every fully proposed draft is still reachable -- one suggestion, one Author, one fact."""
+
+    model = ClauseFactReviewModel(draft_with_fully_proposed_sentences)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+    fully_proposed = sum(1 for item in model.open_proposals(HF_ROUTE) if item.fully_proposed)
+    assert fully_proposed > 1
+
+    recorded = []
+    for _press in range(fully_proposed):
+        position = next(
+            index
+            for index, item in enumerate(model.open_proposals(HF_ROUTE))
+            if item.fully_proposed
+        )
+        dialog.facts_list.setCurrentRow(len(model.facts(HF_ROUTE)) + position)
+        dialog.use_suggested_button.click()
+        dialog.author_selected()
+        recorded.append(len(model.facts(HF_ROUTE)))
+
+    # One statement per authoring action, never two, and never none.
+    assert recorded == list(range(1, fully_proposed + 1))
     reviews = [item for item in model.draft.clause_fact_reviews if item.rule_route == HF_ROUTE]
-    assert len(reviews) == 1 + remaining
-    # Nothing was authored twice: the batch ran to completion and every reading is distinct.
     assert len({item.fact_sha256 for item in reviews}) == len(reviews)
-    # And a second press records nothing, because every draft is now covered.
-    dialog.author_proposed_selected()
-    assert "No draft" in dialog.status_text
+    assert all("proposal" in item.notes for item in reviews)
 
 
 def test_the_dialog_reports_the_duplicate_refusal_rather_than_raising(
@@ -1196,22 +1224,28 @@ def test_the_dialog_reports_the_duplicate_refusal_rather_than_raising(
     assert len(model.draft.clause_fact_reviews) == 1
 
 
-def test_the_batch_action_stays_disabled_while_no_draft_is_fully_proposed(
+def test_the_suggestion_action_needs_a_selected_draft_and_records_nothing(
     qtbot, draft_with_a_multi_node_fragment
 ) -> None:
-    """The gate the batch action must not dissolve: it can only confirm complete readings."""
+    """The gate the prefill must not dissolve: it fills the editor and records no statement."""
 
     model = ClauseFactReviewModel(draft_with_a_multi_node_fragment)
     dialog = ClauseFactReviewDialog(model)
     qtbot.addWidget(dialog)
     dialog.table.selectRow(_route_position(model, HF_ROUTE))
 
-    assert dialog.author_proposed_button.isEnabled() is False
+    assert dialog.use_suggested_button.isEnabled() is False
+    dialog.use_suggested_selected()
+    assert "Select a proposed draft" in dialog.status_text
 
-    dialog.author_proposed_selected()
+    # These nodes settle no dimension, so the suggestion leaves the reading unauthorable.
+    dialog.facts_list.setCurrentRow(0)
+    assert dialog.use_suggested_button.isEnabled() is True
+    dialog.use_suggested_button.click()
 
     assert not model.draft.clause_fact_reviews
-    assert "No draft" in dialog.status_text
+    assert dialog.author_button.isEnabled() is False
+    assert "unchosen dimension(s)" in dialog.status_text
 
 
 # --- the clause as printed, and telling the reviewer what to do -----------------------
@@ -1270,7 +1304,7 @@ def test_every_disabled_action_states_why_it_is_disabled(
 
     for button in (
         dialog.author_button,
-        dialog.author_proposed_button,
+        dialog.use_suggested_button,
         dialog.retract_button,
         dialog.duplicate_button,
     ):
@@ -1283,6 +1317,55 @@ def test_every_disabled_action_states_why_it_is_disabled(
     assert dialog.author_button.isEnabled() is True
     # Cleared once the action works, so a tooltip never states a reason that is no longer true.
     assert dialog.author_button.toolTip() == ""
+
+
+def test_a_blocked_completion_names_the_uncovered_statements_and_the_way_out(
+    qtbot, draft_with_a_multi_node_fragment
+) -> None:
+    """The completion guard on this surface: which statements are missing, and what clears it.
+
+    A disabled control with no path forward is the specific complaint an earlier iteration earned,
+    so the route row states the reason and the button itself carries the remedy. Once every known
+    statement is authored, completion becomes available -- and it still has to be pressed, because
+    consuming the drafts is a lower bound on review and never the assertion itself.
+    """
+
+    model = ClauseFactReviewModel(draft_with_a_multi_node_fragment)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    position = _route_position(model, HF_ROUTE)
+    dialog.table.selectRow(position)
+
+    assert dialog.complete_button.isEnabled() is False
+    tooltip = dialog.complete_button.toolTip()
+    for node_order in range(_SEEDED_NODE_COUNT):
+        assert f"node(s) {node_order}" in tooltip
+    assert "Record completion becomes available" in tooltip
+
+    # One statement per node, each from that node's own draft: the authored ones come first in the
+    # list, and these drafts settle no dimension so none of them ever leaves it.
+    for index in range(_SEEDED_NODE_COUNT):
+        dialog.facts_list.setCurrentRow(len(model.facts(HF_ROUTE)) + index)
+        _fill_hf_dimensions(dialog)
+        dialog.choose_scope("dvc_gate", "dvc_as" if index % 2 else "dvc_b")
+        dialog.author_selected()
+        if index == 0:
+            # Part-way through: the row itself names what is still missing, so a reviewer scanning
+            # the table sees the blocked completion without having to hover the button.
+            row_text = dialog.table.item(position, _STATUS_COLUMN).text()
+            assert row_text.startswith("needs_completion")
+            assert "node(s) 1" in row_text
+
+    dialog.table.selectRow(position)
+    assert model.uncovered(HF_ROUTE) == ()
+    assert dialog.complete_button.isEnabled() is True
+    assert dialog.complete_button.toolTip() == ""
+    # Available, not done: the maintainer's own assertion is still the thing that completes it.
+    assert dialog.table.item(position, _STATUS_COLUMN).text() == "needs_completion"
+
+    dialog.complete_selected()
+
+    assert dialog.table.item(position, _STATUS_COLUMN).text() == "complete"
 
 
 def test_selecting_a_partly_proposed_draft_names_the_dimensions_still_needed(
@@ -1327,7 +1410,7 @@ def test_the_routes_table_stretches_the_columns_a_reviewer_picks_a_row_by(
     )
 
 
-# --- authoring every fully proposed statement of a route ------------------------------
+# --- one suggestion at a time ---------------------------------------------------------
 
 #: Invented sentences carrying, between them, every term the attenuation route's declared rules
 #: name -- two that settle every dimension and one that settles none. They are written for this
@@ -1352,14 +1435,14 @@ def draft_with_fully_proposed_sentences() -> ImportedRuleDraft:
     return _logged(_draft(fragments=fragments))
 
 
-def test_authoring_every_fully_proposed_statement_records_each_one_individually(
+def test_the_suggestion_loads_one_drafts_values_and_its_citation(
     qtbot, draft_with_fully_proposed_sentences
 ) -> None:
-    """Speed without dissolving the gate: one ``author_clause_fact`` per statement, marked.
+    """The permitted half of amendment A1: one draft's suggested dimensions, then Author.
 
-    The action is a shortcut through the clicking, never through the recording: each statement
-    keeps its own actor, notes and audited correction, and the partly proposed draft is left for
-    the reviewer rather than completed with a guess.
+    The prefill carries the draft's own citation and its settled dimensions and nothing else, and
+    the statement is recorded by the ordinary per-statement Author -- so the reviewer sees the
+    reading and the evidence before anything is written.
     """
 
     model = ClauseFactReviewModel(draft_with_fully_proposed_sentences)
@@ -1367,30 +1450,49 @@ def test_authoring_every_fully_proposed_statement_records_each_one_individually(
     qtbot.addWidget(dialog)
     position = _route_position(model, HF_ROUTE)
     dialog.table.selectRow(position)
-    assert dialog.author_proposed_button.isEnabled() is True
+    proposal = model.open_proposals(HF_ROUTE)[0]
 
-    dialog.author_proposed_selected()
+    dialog.facts_list.setCurrentRow(0)
+    dialog.use_suggested_button.click()
+
+    assert _selected_scope(dialog, "dvc_gate") == list(proposal.chosen["dvc_gate"].split("|"))
+    assert [item.text() for item in dialog.nodes_list.selectedItems()] == [
+        dialog.nodes_list.item(proposal.node_references[0].node_order).text()
+    ]
+    # Loading a suggestion records nothing at all.
+    assert model.draft == draft_with_fully_proposed_sentences
+
+    dialog.author_selected()
 
     reviews = [item for item in model.draft.clause_fact_reviews if item.rule_route == HF_ROUTE]
-    assert [item.statement_index for item in reviews] == [0, 1]
-    assert {scope_wire(item.fact.dvc_gate) for item in reviews} == {"dvc_as", "dvc_b"}
-    assert all(item.actor == "maintainer" for item in reviews)
-    assert all("grammar-proposed" in item.notes for item in reviews)
-    assert dialog.table.item(position, _STATUS_COLUMN).text() == "needs_completion"
-    assert "Recorded 2" in dialog.status_text
+    assert [item.statement_index for item in reviews] == [0]
+    assert scope_wire(reviews[0].fact.dvc_gate) == proposal.chosen["dvc_gate"]
+    assert reviews[0].actor == "maintainer"
+    assert "proposal" in reviews[0].notes
+    # The route's other drafts are still unauthored, which the completion guard names in the row.
+    assert dialog.table.item(position, _STATUS_COLUMN).text().startswith("needs_completion")
 
 
 def test_the_statement_the_grammar_could_not_settle_is_left_for_the_reviewer(
     qtbot, draft_with_fully_proposed_sentences
 ) -> None:
-    """A partly proposed draft survives the batch and keeps its prefill and its blank fields."""
+    """A partly proposed draft keeps its prefill and its blank fields, however many are authored."""
 
     model = ClauseFactReviewModel(draft_with_fully_proposed_sentences)
     dialog = ClauseFactReviewDialog(model)
     qtbot.addWidget(dialog)
     dialog.table.selectRow(_route_position(model, HF_ROUTE))
 
-    dialog.author_proposed_selected()
+    # One suggestion, one Author, twice over: the two fully proposed drafts, one at a time.
+    for _press in range(2):
+        position = next(
+            index
+            for index, item in enumerate(model.open_proposals(HF_ROUTE))
+            if item.fully_proposed
+        )
+        dialog.facts_list.setCurrentRow(len(model.facts(HF_ROUTE)) + position)
+        dialog.use_suggested_button.click()
+        dialog.author_selected()
 
     remaining = [item for item in model.proposals(HF_ROUTE) if not item.fully_proposed]
     assert len(remaining) == 1

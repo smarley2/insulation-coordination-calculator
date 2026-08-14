@@ -1120,6 +1120,12 @@ def _clause_fact_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, .
     clause gives the maintainer nothing to author from, so it must not be blocked for facts
     about a clause it does not hold. The legacy routes keep their branch authority in the
     recipe and are skipped here.
+
+    ``clause_fact_route_defect`` blocks a route that leaves a known statement of its clause
+    unauthored *and* a route carrying no completion record, and the two stay separate conditions
+    here on purpose (amendment A5): consuming every known proposal is a lower bound on review, not
+    a definition of it, so it never stands in for the maintainer's own assertion that no additional
+    statement was missed.
     """
     from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
         LEGACY_BRANCH_AUTHORITY_RULE_IDS,
