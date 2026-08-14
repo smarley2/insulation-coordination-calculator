@@ -16,10 +16,14 @@ from insulation_coordination.rules.importer.clause_facts import (
     SpdReductionFact,
     SystemVoltageFact,
 )
-from insulation_coordination.rules.importer.extract import canonical_model_sha256
+from insulation_coordination.rules.importer.extract import (
+    ImportedRuleDraft,
+    canonical_model_sha256,
+)
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
     LEGACY_BRANCH_AUTHORITY_RULE_IDS,
+    SUPPLY_CLAUSES,
     SUPPLY_FACT_FAMILY_BY_ROUTE,
     SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE,
 )
@@ -28,6 +32,9 @@ from insulation_coordination.ui.clause_fact_review import (
     ClauseFactReviewDialog,
     ClauseFactReviewModel,
 )
+from tests.conftest import _logged
+from tests.rules.importer.iec62477_2022.test_procedure_recipes import _draft
+from tests.rules.importer.iec62477_2022.test_supply_clause_recipes import _fragment
 from tests.rules.importer.test_clause_fact_review_api import _hf_fact
 
 HF_ROUTE = ids.SUPPLY_HF_TRANSFORMER_ATTENUATION
@@ -65,17 +72,23 @@ def _route_position(model: ClauseFactReviewModel, rule_route: str) -> int:
     )
 
 
+def _fill_hf_dimensions(dialog: ClauseFactReviewDialog) -> None:
+    """Choose every dimension of the HF family, leaving only the index and the citation."""
+
+    dialog.dimension_combo("obligation").setCurrentText("requirement")
+    dialog.dimension_combo("dvc_gate").setCurrentText("dvc_as")
+    dialog.dimension_combo("evidence_kind").setCurrentText("test")
+    dialog.dimension_edit("threshold_reference").setText(ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC)
+    dialog.dimension_combo("comparison_required").setCurrentText("true")
+
+
 def _author_hf_through_dialog(model: ClauseFactReviewModel, dialog: ClauseFactReviewDialog) -> int:
     """Select the HF route, read its first node, fill every dimension, and author."""
 
     position = _route_position(model, HF_ROUTE)
     dialog.table.selectRow(position)
     dialog.nodes_list.item(0).setSelected(True)
-    dialog.dimension_combo("obligation").setCurrentText("requirement")
-    dialog.dimension_combo("dvc_gate").setCurrentText("dvc_as")
-    dialog.dimension_combo("evidence_kind").setCurrentText("test")
-    dialog.dimension_edit("threshold_reference").setText(ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC)
-    dialog.dimension_combo("comparison_required").setCurrentText("true")
+    _fill_hf_dimensions(dialog)
     dialog.author_selected()
     return position
 
@@ -657,6 +670,139 @@ def test_the_node_reader_wraps_full_text_without_eliding(
 
     assert dialog.nodes_list.wordWrap() is True
     assert dialog.nodes_list.textElideMode() == Qt.TextElideMode.ElideNone
+
+
+# --- seeded drafts on a route with nothing authored yet -------------------------------
+
+#: Invented node count for the fragment below. It says nothing about any real clause: the point
+#: of these tests is that the dialog offers one draft per node whatever that number is.
+_SEEDED_NODE_COUNT = 3
+
+
+@pytest.fixture
+def draft_with_a_multi_node_fragment() -> ImportedRuleDraft:
+    """Every supply fragment, one of them carrying several nodes.
+
+    The shared fixture gives each fragment a single node, which cannot show a surface that
+    offers one draft per node. Node text stays invented here exactly as it is there. Rebuilt
+    rather than copied from that fixture, because the extraction audit record every correction
+    verifies is a digest of the fragments themselves.
+    """
+
+    fragments = tuple(
+        _fragment(
+            spec.semantic_id,
+            count=_SEEDED_NODE_COUNT if spec.semantic_id == HF_ROUTE else 1,
+        )
+        for spec in SUPPLY_CLAUSES
+    )
+    return _logged(_draft(fragments=fragments))
+
+
+def test_a_route_with_nothing_authored_offers_one_draft_per_node(
+    qtbot, draft_with_a_multi_node_fragment
+) -> None:
+    """The first statement of a route is the expensive one: there is nothing to duplicate from."""
+
+    model = ClauseFactReviewModel(draft_with_a_multi_node_fragment)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+
+    assert dialog.facts_list.count() == _SEEDED_NODE_COUNT
+    # A seeded draft is not an authored statement, so there is nothing to retract or duplicate.
+    assert dialog.retract_button.isEnabled() is False
+    assert dialog.duplicate_button.isEnabled() is False
+
+
+def test_the_seeded_drafts_are_not_offered_as_a_statement_count(
+    qtbot, draft_with_a_multi_node_fragment
+) -> None:
+    """A node is not a statement, and nothing on this surface may imply that it is.
+
+    The reviewer decides how many statements a clause makes; a wording that reads as a count
+    would make this prefill look like a reading of the source, which it is not.
+    """
+
+    model = ClauseFactReviewModel(draft_with_a_multi_node_fragment)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+
+    assert "Node count is not statement count" in dialog.seed_hint.text()
+    assert all(
+        "statement" not in dialog.facts_list.item(index).text()
+        for index in range(dialog.facts_list.count())
+    )
+
+
+def test_selecting_a_seeded_draft_cites_its_own_node_and_chooses_no_dimension(
+    qtbot, draft_with_a_multi_node_fragment
+) -> None:
+    """The saving: the reviewer fills dimensions instead of also picking an index and a node."""
+
+    model = ClauseFactReviewModel(draft_with_a_multi_node_fragment)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+    nodes = model.nodes(f"raw-{HF_ROUTE}")
+
+    dialog.facts_list.setCurrentRow(1)
+
+    assert dialog.statement_index.value() == 1
+    assert [item.text() for item in dialog.nodes_list.selectedItems()] == [
+        dialog.nodes_list.item(1).text()
+    ]
+    assert all(
+        dialog.dimension_combo(field).currentText() == "" for field in dialog.dimension_options
+    )
+    assert dialog.author_button.isEnabled() is False
+
+    _fill_hf_dimensions(dialog)
+    dialog.author_selected()
+
+    (review,) = model.draft.clause_fact_reviews
+    assert review.statement_index == 1
+    (citation,) = review.fact.node_references
+    assert citation.node_order == nodes[1].node_order
+
+
+def test_walking_the_seeded_drafts_records_nothing(qtbot, draft_with_a_multi_node_fragment) -> None:
+    """Seeding is a prefill of the editor: a reviewer who authors nothing has changed nothing."""
+
+    model = ClauseFactReviewModel(draft_with_a_multi_node_fragment)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+
+    for index in range(dialog.facts_list.count()):
+        dialog.facts_list.setCurrentRow(index)
+
+    assert model.draft == draft_with_a_multi_node_fragment
+
+
+def test_a_seeded_draft_can_be_authored_citing_more_than_its_own_node(
+    qtbot, draft_with_a_multi_node_fragment
+) -> None:
+    """Seeding must not narrow what a statement may rest on: further nodes are added by hand."""
+
+    model = ClauseFactReviewModel(draft_with_a_multi_node_fragment)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+    dialog.facts_list.setCurrentRow(0)
+    _fill_hf_dimensions(dialog)
+
+    dialog.nodes_list.item(2).setSelected(True)
+    dialog.author_selected()
+
+    (review,) = model.draft.clause_fact_reviews
+    assert {item.node_order for item in review.fact.node_references} == {0, 2}
+    # Once the route carries a statement the offer is gone, and duplicate takes over.
+    assert dialog.facts_list.count() == 1
+    assert dialog.seed_hint.text() == ""
 
 
 def test_the_button_is_enabled_by_clause_fragments(qtbot, draft_with_supply_fragments) -> None:

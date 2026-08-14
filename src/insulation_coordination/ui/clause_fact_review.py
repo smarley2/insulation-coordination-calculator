@@ -327,7 +327,9 @@ class ClauseFactReviewDialog(QDialog):
     """One table of routes, a node reader, the route's authored facts, and a typed editor.
 
     No wizard: the reviewer sees every route at once, reads the selected route's fragment
-    nodes, and authors, replaces, duplicates, retracts or completes. The editor's fields come
+    nodes, and authors, replaces, duplicates, retracts or completes. A route with nothing
+    authored yet offers one blank draft per node to start from, described in ``_seed_drafts``.
+    The editor's fields come
     from the fact models themselves and its family is fixed by the route's declaration, so a
     statement can only be authored as the kind its clause states; a dimension the route itself
     determines, such as ``supply_kind``, is shown rather than chosen for the same reason.
@@ -367,8 +369,12 @@ class ClauseFactReviewDialog(QDialog):
         self.nodes_list.setMinimumHeight(220)
         nodes_layout.addWidget(self.nodes_list)
 
-        facts_box = QGroupBox("Authored statements for the selected route", self)
+        facts_box = QGroupBox("Statements for the selected route", self)
         facts_layout = QVBoxLayout(facts_box)
+        # Empty except while the list holds seeded drafts, so it collapses out of the way.
+        self.seed_hint = QLabel("", facts_box)
+        self.seed_hint.setWordWrap(True)
+        facts_layout.addWidget(self.seed_hint)
         self.facts_list = QListWidget(facts_box)
         self.facts_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.facts_list.itemSelectionChanged.connect(self._load_fact)
@@ -583,6 +589,7 @@ class ClauseFactReviewDialog(QDialog):
         if row is None:
             self.nodes_list.clear()
             self.facts_list.clear()
+            self.seed_hint.clear()
             self._node_rows = ()
             self._fact_rows = ()
             self.author_button.setEnabled(False)
@@ -601,6 +608,7 @@ class ClauseFactReviewDialog(QDialog):
                 f"statement {fact_row.statement_index} · {fact_row.fact.fact_kind}"
                 f" · evidence {fact_row.evidence}"
             )
+        self._seed_drafts()
         family = SUPPLY_FACT_FAMILY_BY_ROUTE[row.rule_route]
         if self._editor_kind != family:
             self._build_editor(family)
@@ -609,6 +617,15 @@ class ClauseFactReviewDialog(QDialog):
         # to the next free slot for this route rather than starting blank, because appending a
         # statement is the normal case and typing an index is only for the sanctioned replace path.
         self.statement_index.setValue(self._model.next_statement_index(row.rule_route))
+        self._reset_dimensions(row.rule_route)
+        self.complete_button.setEnabled(True)
+        self.retract_button.setEnabled(False)
+        self.duplicate_button.setEnabled(False)
+        self._refresh_author_enabled()
+
+    def _reset_dimensions(self, rule_route: str) -> None:
+        """Put every dimension back to unchosen for one route, ready to be filled in."""
+
         for combo in self._combos.values():
             combo.setCurrentIndex(0)
         for edit in self._edits.values():
@@ -618,12 +635,34 @@ class ClauseFactReviewDialog(QDialog):
         # this can look it up unconditionally rather than falling back to an editable combo.
         if "supply_kind" in self._combos:
             supply_kind_combo = self._combos["supply_kind"]
-            supply_kind_combo.setCurrentText(SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE[row.rule_route])
+            supply_kind_combo.setCurrentText(SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE[rule_route])
             supply_kind_combo.setEnabled(False)
-        self.complete_button.setEnabled(True)
-        self.retract_button.setEnabled(False)
-        self.duplicate_button.setEnabled(False)
-        self._refresh_author_enabled()
+
+    def _seed_drafts(self) -> None:
+        """Offer one blank draft per fragment node while the route has nothing authored yet.
+
+        Authoring the first statement of a route used to be every dimension blank *and* a
+        decision about how many statements to write and which node each rests on. These drafts
+        remove the second half: each carries one node's citation and its own index, and the
+        reviewer fills in the dimensions.
+
+        They are drafts to edit, never a reading of the source. A node is not a statement, so
+        their count says nothing about how many statements the fragment makes, and a reviewer is
+        free to author fewer, more, or differently cited ones -- a statement resting on two nodes
+        is still selected by hand. Seeding is a prefill of this editor and nothing else: no draft
+        collection, no importer call, nothing recorded until Author is pressed.
+        """
+
+        if self._fact_rows or not self._node_rows:
+            self.seed_hint.clear()
+            return
+        self.seed_hint.setText(
+            "No statement authored yet. Below is one blank draft per clause node, each citing "
+            "its own node, as somewhere to start. Node count is not statement count -- author "
+            "fewer, more, or differently cited statements as you read them."
+        )
+        for node in self._node_rows:
+            self.facts_list.addItem(f"draft · cites node {node.node_order} · no dimension chosen")
 
     def _fill_editor_from_fact(self, fact: SupplyFact) -> None:
         """Load one statement's field values and cited nodes into the editor.
@@ -649,14 +688,38 @@ class ClauseFactReviewDialog(QDialog):
         self._refresh_author_enabled()
 
     def _load_fact(self) -> None:
-        """Pre-fill the editor with the selected statement, so authoring replaces it."""
+        """Pre-fill the editor from the selected entry of the list.
+
+        An authored statement fills every field, so authoring replaces it. A seeded draft fills
+        only what it stands for -- its own node and index -- and there is nothing to retract or
+        duplicate, because nothing has been authored.
+        """
 
         fact_row = self._current_fact_row()
         self.retract_button.setEnabled(fact_row is not None)
         self.duplicate_button.setEnabled(fact_row is not None)
         if fact_row is None:
+            self._load_seeded_draft()
             return
         self._fill_editor_from_fact(fact_row.fact)
+
+    def _load_seeded_draft(self) -> None:
+        """Load the selected seeded draft: its own node cited, its index, nothing else chosen."""
+
+        row = self._current_route_row()
+        position = self.facts_list.currentRow()
+        if (
+            row is None
+            or self._fact_rows
+            or not self.facts_list.selectedItems()
+            or not 0 <= position < len(self._node_rows)
+        ):
+            return
+        self._reset_dimensions(row.rule_route)
+        self.statement_index.setValue(position)
+        for index in range(self.nodes_list.count()):
+            self.nodes_list.item(index).setSelected(index == position)
+        self._refresh_author_enabled()
 
     def duplicate_selected(self) -> None:
         """Load the selected statement under the next free index, for authoring a sibling.
