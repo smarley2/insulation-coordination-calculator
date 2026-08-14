@@ -416,8 +416,16 @@ _SPD_REDUCTION_GRAMMAR = ClauseFactGrammar(
     fact_kind="spd_reduction",
     keyword_rules=(
         *_OBLIGATION_RULES,
-        _keyword("insulation_class", "basic", "basic"),
-        _keyword("insulation_class", "supplementary", "supplementary"),
+        # Excluded on the two classes that are not being permitted anything: a sentence naming
+        # the double or reinforced classes states a floor over them, not a permission for the
+        # class whose name it also happens to carry, and proposing that name there is a value
+        # the maintainer has to notice and correct. A blank field cannot be confirmed by
+        # accident; a wrong one can. Both excluded terms are this rule's own declared
+        # vocabulary, and neither occurs in a sentence that does state a permission.
+        _keyword("insulation_class", "basic", "basic", without=("double", "reinforced")),
+        _keyword(
+            "insulation_class", "supplementary", "supplementary", without=("double", "reinforced")
+        ),
         _keyword("degradable", "true", "damaged", "overvoltages", "monitored"),
         _keyword("monitoring_obligation", "required", "damaged", "overvoltages", "monitored"),
     ),

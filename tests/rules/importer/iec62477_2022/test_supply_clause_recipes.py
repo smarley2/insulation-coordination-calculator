@@ -55,6 +55,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply impor
     project_verified_barrier_transfer,
 )
 from tests.rules.importer.iec62477_2022.test_procedure_recipes import _draft as _empty_draft
+from tests.rules.importer.test_clause_fact_proposals import fragment_with_sentences
 
 SOURCE = SourceReference(
     document_id="synthetic-supply",
@@ -535,6 +536,38 @@ def test_every_non_legacy_route_declares_a_proposal_grammar_of_its_own_family() 
         grammar.fact_kind == SUPPLY_FACT_FAMILY_BY_ROUTE[route]
         for route, grammar in SUPPLY_FACT_PROPOSAL_GRAMMARS.items()
     )
+
+
+def test_a_floor_sentence_proposes_no_insulation_class() -> None:
+    """A reading the sentence does not make is worse than a blank field.
+
+    A blank field cannot be confirmed by accident; a wrong value can. Both sentences below are
+    invented for this test out of the reduction family's own declared vocabulary: one shapes a
+    permission over two classes, the other names the two classes a floor is stated over. Only
+    the first may propose a class.
+    """
+
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        propose_supply_facts,
+    )
+
+    route = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains"
+    permission_sentence = (
+        "Synthetic permission naming basic insulation and supplementary insulation."
+    )
+    floor_sentence = (
+        "Synthetic floor naming double insulation and reinforced insulation, "
+        "not less than basic insulation."
+    )
+    fragment = fragment_with_sentences(route, (permission_sentence, floor_sentence))
+
+    proposals = propose_supply_facts(fragment, route)
+    permission = [item for item in proposals if item.sentence_index == 0]
+    floor = [item for item in proposals if item.sentence_index == 1]
+
+    assert {item.chosen["insulation_class"] for item in permission} == {"basic", "supplementary"}
+    assert floor
+    assert all("insulation_class" in item.unchosen for item in floor)
 
 
 def test_a_route_with_no_declared_grammar_proposes_nothing() -> None:
