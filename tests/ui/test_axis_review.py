@@ -1,10 +1,17 @@
-"""The axis review surface: proposals in, decisions out. No review logic in Qt."""
+"""The axis review surface: proposals in, decisions out. No review logic in Qt.
+
+Confirming a selector happens in the raw grid review dialog, beside the row or column it
+describes, so the editor's tests drive that dialog. ``AxisReviewDialog`` is the read-only
+overview of every position across every grid.
+"""
 
 from __future__ import annotations
 
 from typing import get_args
 
 import pytest
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QComboBox
 
 from insulation_coordination.domain.rules import RulePackageError
 from insulation_coordination.rules.importer.axis_selectors import (
@@ -12,9 +19,15 @@ from insulation_coordination.rules.importer.axis_selectors import (
     ProtectionTargetSelector,
     Table2QuantitySelector,
 )
+from insulation_coordination.rules.importer.extract import ImportedRuleDraft
 from insulation_coordination.rules.importer.review import review_axis_selector
 from insulation_coordination.ui import axis_review
-from insulation_coordination.ui.axis_review import AxisReviewDialog, AxisReviewModel
+from insulation_coordination.ui.axis_review import (
+    AxisReviewDialog,
+    AxisReviewModel,
+    AxisReviewRow,
+)
+from insulation_coordination.ui.raw_grid_review import RawGridReviewDialog
 from tests.rules.importer.test_axis_resolution import _with_one_corrected_header_cell
 
 # Stated here independently of the UI's own mapping, so these tests prove the editor offers the
@@ -35,8 +48,20 @@ def _expected_options(selector_kind: str) -> dict[str, tuple[str, ...]]:
     }
 
 
-def _unproposed_position(model: AxisReviewModel) -> int:
-    return next(position for position, row in enumerate(model.rows()) if row.proposed is None)
+def _unproposed_position(model: AxisReviewModel) -> AxisReviewRow:
+    return next(row for row in model.rows() if row.proposed is None)
+
+
+def _position(model: AxisReviewModel, axis: str) -> AxisReviewRow:
+    return next(row for row in model.rows() if row.axis == axis and row.proposed is not None)
+
+
+def _grid_dialog(qtbot, draft: ImportedRuleDraft, actor: str = "maintainer") -> RawGridReviewDialog:
+    """The dialog the selector is now edited in, beside the grid it belongs to."""
+
+    dialog = RawGridReviewDialog(draft, actor=actor)
+    qtbot.addWidget(dialog)
+    return dialog
 
 
 class _DriftedSelector(DvcDesignationSelector):
@@ -61,17 +86,30 @@ def test_a_dimension_without_a_string_vocabulary_is_refused(
         axis_review._dimensions("dvc_designation")
 
 
-def test_confirm_starts_disabled_when_there_is_no_position_to_select(
+def test_confirm_starts_disabled_when_no_position_has_been_selected(
     qtbot, draft_with_axis_proposals
 ) -> None:
-    """With no rows the dialog never selects one, so nothing else would ever disable this."""
+    """Nothing is selected when the dialog opens, so nothing else would ever disable this."""
+
+    dialog = _grid_dialog(qtbot, draft_with_axis_proposals)
+
+    assert dialog._axis_editor.dimension_options == {}
+    assert dialog._confirm_axis_button.isEnabled() is False
+
+
+def test_a_grid_with_no_axis_positions_offers_no_selector_editor(
+    qtbot, draft_with_axis_proposals
+) -> None:
+    """A grid whose rows and columns carry no declared selector must offer nothing to confirm."""
 
     empty = draft_with_axis_proposals.model_copy(update={"axis_selector_proposals": ()})
-    dialog = AxisReviewDialog(AxisReviewModel(empty))
-    qtbot.addWidget(dialog)
+    dialog = _grid_dialog(qtbot, empty)
 
-    assert dialog.table.rowCount() == 0
-    assert dialog.confirm_button.isEnabled() is False
+    dialog.show_axis_position("row", 3)
+
+    assert dialog._axis_editor.dimension_options == {}
+    assert dialog._confirm_axis_button.isEnabled() is False
+    assert "no axis selector position" in dialog._axis_position_label.text()
 
 
 def test_the_model_lists_every_position_with_its_status(draft_with_axis_proposals) -> None:
@@ -143,32 +181,99 @@ def test_a_position_whose_own_evidence_changed_reads_as_needing_review(
     assert all(status == "reviewed" for key, status in rows.items() if key != ("row", 3))
 
 
-def test_the_dialog_shows_one_row_per_position(qtbot, draft_with_axis_proposals) -> None:
+def test_the_overview_shows_one_row_per_position(qtbot, draft_with_axis_proposals) -> None:
+    """One screen still answers what is pending across every grid of the draft."""
+
     dialog = AxisReviewDialog(AxisReviewModel(draft_with_axis_proposals))
     qtbot.addWidget(dialog)
 
     assert dialog.table.rowCount() == len(draft_with_axis_proposals.axis_selector_proposals)
     assert dialog.table.columnCount() == 5
+    assert {
+        dialog.table.item(row, _STATUS_COLUMN).text() for row in range(dialog.table.rowCount())
+    } == {"needs_review"}
+
+
+def test_the_overview_offers_no_editor(qtbot, draft_with_axis_proposals) -> None:
+    """Deciding moved beside the row or column; this screen only reports status."""
+
+    dialog = AxisReviewDialog(AxisReviewModel(draft_with_axis_proposals))
+    qtbot.addWidget(dialog)
+
+    assert dialog.findChildren(QComboBox) == []
+
+
+def test_selecting_a_row_header_shows_that_row_positions_selector_editor(
+    qtbot, draft_with_axis_proposals
+) -> None:
+    """A row's selector is edited against the row itself, at the position it describes."""
+
+    row = _position(AxisReviewModel(draft_with_axis_proposals), "row")
+    dialog = _grid_dialog(qtbot, draft_with_axis_proposals)
+
+    dialog._table.verticalHeader().sectionClicked.emit(row.index)
+
+    assert dialog._axis_editor.dimension_options == _expected_options(row.selector_kind)
+    assert dialog._axis_position == ("row", row.index)
+
+
+def test_selecting_a_column_header_shows_that_columns_selector_editor(
+    qtbot, draft_with_axis_proposals
+) -> None:
+    """The column axis of the same grid declares its own kind, and gets its own editor."""
+
+    column = _position(AxisReviewModel(draft_with_axis_proposals), "column")
+    dialog = _grid_dialog(qtbot, draft_with_axis_proposals)
+
+    dialog._table.horizontalHeader().sectionClicked.emit(column.index)
+
+    assert dialog._axis_editor.dimension_options == _expected_options(column.selector_kind)
+    assert dialog._axis_position == ("column", column.index)
+
+
+def test_each_position_shows_its_status_against_its_own_row_or_column(
+    qtbot, draft_with_axis_proposals
+) -> None:
+    """The reviewer sees what is still pending without leaving the table."""
+
+    model = AxisReviewModel(draft_with_axis_proposals)
+    row = _position(model, "row")
+    column = _position(model, "column")
+    dialog = _grid_dialog(qtbot, draft_with_axis_proposals)
+
+    assert dialog._table.verticalHeaderItem(row.index).text().endswith("needs_review")
+    assert dialog._table.horizontalHeaderItem(column.index).text().endswith("needs_review")
+    # A row the grid carries but the axis does not declare stays unannotated rather than
+    # reading as a position that needs a decision.
+    unlabelled = next(
+        index
+        for index in range(dialog._table.rowCount())
+        if index not in {item.index for item in model.rows() if item.axis == "row"}
+    )
+    assert "needs_review" not in dialog._table.verticalHeaderItem(unlabelled).text()
 
 
 def test_confirming_the_selected_position_records_a_review(
     qtbot, draft_with_axis_proposals
 ) -> None:
-    """Without this the dialog is read-only and no draft with axis selectors can be approved."""
+    """Without this no draft with axis selectors can be approved."""
 
-    model = AxisReviewModel(draft_with_axis_proposals)
-    dialog = AxisReviewDialog(model)
-    qtbot.addWidget(dialog)
-    dialog.table.selectRow(0)
+    row = _position(AxisReviewModel(draft_with_axis_proposals), "row")
+    dialog = _grid_dialog(qtbot, draft_with_axis_proposals, actor="Maintainer")
+    changed: list[ImportedRuleDraft] = []
+    dialog.draft_changed.connect(changed.append)
+    dialog.show_axis_position("row", row.index)
 
-    dialog.confirm_selected()
+    qtbot.mouseClick(dialog._confirm_axis_button, Qt.MouseButton.LeftButton)
 
-    assert dialog.table.item(0, _STATUS_COLUMN).text() == "reviewed"
-    assert len(model.draft.axis_selector_reviews) == 1
-    assert model.draft.axis_selector_reviews[0].actor == "maintainer"
+    assert dialog.axis_status_text == "Selector confirmed for this position."
+    assert dialog._table.verticalHeaderItem(row.index).text().endswith("reviewed")
+    assert len(dialog.reviewed_draft.axis_selector_reviews) == 1
+    assert dialog.reviewed_draft.axis_selector_reviews[0].actor == "Maintainer"
+    assert changed == [dialog.reviewed_draft]
 
 
-def test_a_position_with_no_proposal_can_be_supplied_through_the_dialog(
+def test_a_position_with_no_proposal_can_be_supplied_beside_its_row(
     qtbot, draft_with_unmatched_row
 ) -> None:
     """Table 3's whole column axis is reviewer-supplied, so this is the only way to approve it.
@@ -177,19 +282,19 @@ def test_a_position_with_no_proposal_can_be_supplied_through_the_dialog(
     the duplicate-selector refusal would fire instead of the supplied-reading path.
     """
 
-    model = AxisReviewModel(draft_with_unmatched_row)
-    dialog = AxisReviewDialog(model)
-    qtbot.addWidget(dialog)
-    position = _unproposed_position(model)
-    dialog.table.selectRow(position)
+    position = _unproposed_position(AxisReviewModel(draft_with_unmatched_row))
+    dialog = _grid_dialog(qtbot, draft_with_unmatched_row)
+    dialog.show_axis_position(position.axis, position.index)
 
-    assert dialog.dimension_options == _expected_options("dvc_designation")
-    dialog.dimension_combo("designation").setCurrentText("dvc_c")
-    dialog.dimension_combo("environment").setCurrentText("not_applicable")
-    dialog.confirm_selected()
+    assert dialog._axis_editor.dimension_options == _expected_options("dvc_designation")
+    dialog._axis_editor.dimension_combo("designation").setCurrentText("dvc_c")
+    dialog._axis_editor.dimension_combo("environment").setCurrentText("not_applicable")
+    qtbot.mouseClick(dialog._confirm_axis_button, Qt.MouseButton.LeftButton)
 
-    assert dialog.table.item(position, _STATUS_COLUMN).text() == "reviewed"
-    assert model.draft.axis_selector_reviews[0].confirmed_selector == DvcDesignationSelector(
+    assert dialog._table.verticalHeaderItem(position.index).text().endswith("reviewed")
+    assert dialog.reviewed_draft.axis_selector_reviews[
+        0
+    ].confirmed_selector == DvcDesignationSelector(
         designation="dvc_c", environment="not_applicable"
     )
 
@@ -199,29 +304,27 @@ def test_confirming_stays_disabled_while_any_dimension_is_unchosen(
 ) -> None:
     """A position nothing was proposed for starts unchosen rather than on a first option."""
 
-    model = AxisReviewModel(draft_with_unmatched_row)
-    dialog = AxisReviewDialog(model)
-    qtbot.addWidget(dialog)
-    dialog.table.selectRow(_unproposed_position(model))
+    position = _unproposed_position(AxisReviewModel(draft_with_unmatched_row))
+    dialog = _grid_dialog(qtbot, draft_with_unmatched_row)
+    dialog.show_axis_position(position.axis, position.index)
 
-    assert dialog.confirm_button.isEnabled() is False
-    dialog.dimension_combo("designation").setCurrentText("dvc_c")
-    assert dialog.confirm_button.isEnabled() is False
-    dialog.dimension_combo("environment").setCurrentText("not_applicable")
-    assert dialog.confirm_button.isEnabled() is True
+    assert dialog._confirm_axis_button.isEnabled() is False
+    dialog._axis_editor.dimension_combo("designation").setCurrentText("dvc_c")
+    assert dialog._confirm_axis_button.isEnabled() is False
+    dialog._axis_editor.dimension_combo("environment").setCurrentText("not_applicable")
+    assert dialog._confirm_axis_button.isEnabled() is True
 
 
 def test_each_combo_offers_exactly_its_fields_vocabulary(qtbot, draft_with_axis_proposals) -> None:
     """The editor is built from the selector models, so a wrong-kind editor cannot be offered."""
 
     model = AxisReviewModel(draft_with_axis_proposals)
-    dialog = AxisReviewDialog(model)
-    qtbot.addWidget(dialog)
+    dialog = _grid_dialog(qtbot, draft_with_axis_proposals)
 
     offered = []
-    for position, row in enumerate(model.rows()):
-        dialog.table.selectRow(position)
-        offered.append((row.selector_kind, dialog.dimension_options))
+    for row in model.rows():
+        dialog.show_axis_position(row.axis, row.index)
+        offered.append((row.selector_kind, dialog._axis_editor.dimension_options))
 
     assert {kind for kind, _options in offered} == {"dvc_designation", "table2_quantity"}
     assert all(options == _expected_options(kind) for kind, options in offered)
@@ -233,21 +336,23 @@ def test_a_duplicate_selector_is_surfaced_rather_than_raised(
     """Two positions of one axis confirming the same selector is refused at review time."""
 
     model = AxisReviewModel(draft_with_axis_proposals)
-    dialog = AxisReviewDialog(model)
-    qtbot.addWidget(dialog)
-    dialog.table.selectRow(0)
-    dialog.confirm_selected()
-    confirmed = model.rows()[0].confirmed
+    first, second = [row for row in model.rows() if row.axis == "row" and row.proposed is not None][
+        :2
+    ]
+    dialog = _grid_dialog(qtbot, draft_with_axis_proposals)
+    dialog.show_axis_position("row", first.index)
+    qtbot.mouseClick(dialog._confirm_axis_button, Qt.MouseButton.LeftButton)
+    confirmed = dialog.reviewed_draft.axis_selector_reviews[0].confirmed_selector
     assert isinstance(confirmed, DvcDesignationSelector)
 
-    dialog.table.selectRow(1)
-    dialog.dimension_combo("designation").setCurrentText(confirmed.designation)
-    dialog.dimension_combo("environment").setCurrentText(confirmed.environment)
-    dialog.confirm_selected()
+    dialog.show_axis_position("row", second.index)
+    dialog._axis_editor.dimension_combo("designation").setCurrentText(confirmed.designation)
+    dialog._axis_editor.dimension_combo("environment").setCurrentText(confirmed.environment)
+    qtbot.mouseClick(dialog._confirm_axis_button, Qt.MouseButton.LeftButton)
 
-    assert "refused" in dialog.status_text
-    assert dialog.table.item(1, _STATUS_COLUMN).text() == "needs_review"
-    assert len(model.draft.axis_selector_reviews) == 1
+    assert "refused" in dialog.axis_status_text
+    assert dialog._table.verticalHeaderItem(second.index).text().endswith("needs_review")
+    assert len(dialog.reviewed_draft.axis_selector_reviews) == 1
 
 
 def test_the_button_is_enabled_by_axis_state_not_by_curve_content(

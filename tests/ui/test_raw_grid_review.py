@@ -4,10 +4,12 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QDialog
+from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtGui import QWheelEvent
+from PySide6.QtWidgets import QDialog, QGraphicsView
 
 from insulation_coordination.rules.importer import recipes as recipe_registry
+from insulation_coordination.rules.importer.axis_selectors import AxisSelectorProposal
 from insulation_coordination.rules.importer.extract import (
     RawGrid,
     RawGridCell,
@@ -19,7 +21,9 @@ from insulation_coordination.rules.importer.review import (
     unresolved_raw_review_items,
     unresolved_table_items,
 )
+from insulation_coordination.ui import raw_grid_review
 from insulation_coordination.ui.raw_grid_review import RawGridReviewDialog, source_pdf_paths
+from tests.conftest import _logged
 from tests.rules.test_importer import _compound_draft, _test_recipes
 
 
@@ -31,6 +35,21 @@ def injected_recipes(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def draft(tmp_path):
     return _compound_draft(tmp_path)
+
+
+def _wheel(view: QGraphicsView, delta: int) -> QWheelEvent:
+    """One wheel notch over the middle of the view."""
+    position = QPointF(view.viewport().rect().center())
+    return QWheelEvent(
+        position,
+        view.viewport().mapToGlobal(position),
+        QPoint(0, 0),
+        QPoint(0, delta),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
 
 
 def test_dialog_shows_complete_grid_and_flags_review_cells(qtbot, draft) -> None:
@@ -92,8 +111,35 @@ def test_dialog_shows_the_source_page_next_to_the_grid(qtbot, tmp_path, draft) -
     dialog = RawGridReviewDialog(draft, actor="Maintainer", pdf_paths=pdf_paths)
     qtbot.addWidget(dialog)
 
-    assert dialog._page_label.text() == ""
-    assert not dialog._page_label.pixmap().isNull()
+    assert dialog.page_messages == ()
+    assert len(dialog.page_pixmaps) == 1
+    assert not dialog.page_pixmaps[0].isNull()
+
+
+def test_the_page_pane_zooms_about_the_cursor_and_pans_by_dragging(qtbot, tmp_path, draft) -> None:
+    """A reviewer has to read the page's small print, not just see that it is there."""
+    pdf_paths = source_pdf_paths(draft, (tmp_path / "part1.pdf", tmp_path / "part4.pdf"))
+    dialog = RawGridReviewDialog(draft, actor="Maintainer", pdf_paths=pdf_paths)
+    qtbot.addWidget(dialog)
+    view = dialog._page_view
+
+    assert view.dragMode() == QGraphicsView.DragMode.ScrollHandDrag
+    assert view.transformationAnchor() == QGraphicsView.ViewportAnchor.AnchorUnderMouse
+
+    opened = view.transform().m11()
+    view.wheelEvent(_wheel(view, 120))
+    zoomed_in = view.transform().m11()
+    view.wheelEvent(_wheel(view, -120))
+
+    assert zoomed_in > opened
+    assert view.transform().m11() < zoomed_in
+    # Rendered at twice the scale it opens at, so zooming in reads the print rather than
+    # an upscaled bitmap.
+    assert opened < 1.0
+    # Clamped: without this a reviewer can scroll the page away to nothing.
+    for _ in range(40):
+        view.wheelEvent(_wheel(view, -120))
+    assert view.transform().m11() >= raw_grid_review._MIN_PAGE_SCALE
 
 
 def test_page_numbers_list_each_source_page_once_in_reading_order() -> None:
@@ -108,7 +154,7 @@ def test_page_numbers_list_each_source_page_once_in_reading_order() -> None:
     assert RawGridReviewDialog._page_numbers(grid) == (73, 74)
 
 
-def test_multi_page_grid_shows_a_panel_for_every_page(qtbot, tmp_path, draft) -> None:
+def test_multi_page_grid_accounts_for_every_page(qtbot, tmp_path, draft) -> None:
     """A table split across pages must offer both pages, not only the first."""
     original = draft.raw_grids[0]
     source = original.source
@@ -147,12 +193,12 @@ def test_multi_page_grid_shows_a_panel_for_every_page(qtbot, tmp_path, draft) ->
     dialog = RawGridReviewDialog(spanning, actor="Maintainer", pdf_paths=pdf_paths)
     qtbot.addWidget(dialog)
 
-    assert not dialog._page_label.pixmap().isNull()
-    assert len(dialog._extra_page_labels) == 1
-    assert dialog._extra_page_labels[0].isVisibleTo(dialog._pages_widget)
+    assert len(dialog.page_pixmaps) == 1
+    assert not dialog.page_pixmaps[0].isNull()
     # The synthetic source has a single page, so page 2 reports itself as missing
     # rather than silently leaving half the grid unverifiable.
-    assert "Source page 2 could not be rendered" in dialog._extra_page_labels[0].text()
+    assert len(dialog.page_messages) == 1
+    assert "Source page 2 could not be rendered" in dialog.page_messages[0]
 
 
 def test_accepting_the_last_table_closes_the_dialog(qtbot, draft) -> None:
@@ -176,11 +222,56 @@ def test_accepting_the_last_table_closes_the_dialog(qtbot, draft) -> None:
     assert dialog.result() == QDialog.DialogCode.Accepted
 
 
+def test_accepting_a_table_does_not_require_its_axis_positions_to_be_confirmed(
+    qtbot,
+    draft,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Extraction fidelity and semantic meaning are separate judgements.
+
+    ``AXIS_SELECTOR_REVIEW_REQUIRED`` gates approval on the axes on its own, so an unconfirmed
+    position must not stop a reviewer accepting what this table's cells say.
+    """
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "insulation_coordination.ui.raw_grid_review.QMessageBox.warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    grid = draft.raw_grids[0]
+    pending_axis = _logged(
+        draft.model_copy(
+            update={
+                "axis_selector_proposals": (
+                    AxisSelectorProposal(
+                        grid_id=grid.id,
+                        axis="row",
+                        index=2,
+                        selector=None,
+                        selector_kind="dvc_designation",
+                        proposal_sha256="0" * 64,
+                        evidence_sha256="0" * 64,
+                    ),
+                )
+            }
+        )
+    )
+    dialog = RawGridReviewDialog(pending_axis, actor="Maintainer")
+    qtbot.addWidget(dialog)
+    assert dialog._table.verticalHeaderItem(2).text().endswith("needs_review")
+
+    dialog._notes_edit.setText("Compared against the source page")
+    qtbot.mouseClick(dialog._accept_button, Qt.MouseButton.LeftButton)
+
+    assert warnings == []
+    assert len(unresolved_table_items(dialog.reviewed_draft)) == 2
+    assert dialog.reviewed_draft.axis_selector_reviews == ()
+
+
 def test_dialog_says_when_no_source_page_is_available(qtbot, draft) -> None:
     dialog = RawGridReviewDialog(draft, actor="Maintainer")
     qtbot.addWidget(dialog)
 
-    assert "Source page not available" in dialog._page_label.text()
+    assert "Source page not available" in "".join(dialog.page_messages)
 
 
 def test_dialog_reports_an_unreadable_source_pdf(qtbot, tmp_path, draft) -> None:
@@ -194,7 +285,7 @@ def test_dialog_reports_an_unreadable_source_pdf(qtbot, tmp_path, draft) -> None
     )
     qtbot.addWidget(dialog)
 
-    assert "could not be rendered" in dialog._page_label.text()
+    assert "could not be rendered" in "".join(dialog.page_messages)
 
 
 def test_source_pdf_paths_ignores_files_that_do_not_match_a_source(tmp_path, draft) -> None:
