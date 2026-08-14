@@ -6,7 +6,6 @@ from typing import Literal, get_args
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QHeaderView
 
 from insulation_coordination.domain.rules import RulePackageError
@@ -893,46 +892,30 @@ def _author_first_draft(model: ClauseFactReviewModel, dialog: ClauseFactReviewDi
     dialog.author_selected()
 
 
-def test_a_draft_already_authored_is_marked_and_greyed(
-    qtbot, draft_with_fully_proposed_sentences
-) -> None:
-    """A covered draft shown as an open item is a duplicate waiting to be authored again.
-
-    Greyed rather than removed: the reviewer may still want to read the sentence, and a row that
-    vanished would look like a draft they had missed.
-    """
+def test_an_authored_draft_leaves_the_list(qtbot, draft_with_fully_proposed_sentences) -> None:
+    """A draft the reviewer has authored is done; leaving it open invites a second copy of it."""
 
     model = ClauseFactReviewModel(draft_with_fully_proposed_sentences)
     dialog = ClauseFactReviewDialog(model)
     qtbot.addWidget(dialog)
+    before = len(model.open_proposals(HF_ROUTE))
 
     _author_first_draft(model, dialog)
 
-    covered = [
-        dialog.facts_list.item(index)
-        for index in range(dialog.facts_list.count())
-        if "authored as statement 0" in dialog.facts_list.item(index).text()
-    ]
-
-    assert len(covered) == 1
-    disabled = dialog.palette().brush(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText)
-    assert covered[0].foreground().color() == disabled.color()
-    # The other fully proposed draft states a different reading, so it stays an open item.
-    open_drafts = [
-        index
-        for index in range(dialog.facts_list.count())
-        if "every dimension proposed" in dialog.facts_list.item(index).text()
-        and "authored as" not in dialog.facts_list.item(index).text()
-    ]
-    assert len(open_drafts) == 1
+    assert len(model.open_proposals(HF_ROUTE)) == before - 1
+    # One authored statement plus the drafts still open, and the authored one's sentence is not
+    # offered again as a draft.
+    assert dialog.facts_list.count() == 1 + before - 1
+    assert model.covered_by(HF_ROUTE, model.proposals(HF_ROUTE)[0]) == 0
 
 
-def test_a_partly_proposed_draft_is_never_marked_as_covered(
+def test_a_partly_proposed_draft_is_never_covered(
     qtbot, draft_with_fully_proposed_sentences
 ) -> None:
     """An incomplete reading is not the same reading as one that settles more than it does.
 
-    Comparing on the chosen subset would mark a draft as done that nobody has finished reading.
+    Comparing on the chosen subset would call a draft done that nobody has finished reading, and
+    would then drop it from the list unauthored.
     """
 
     model = ClauseFactReviewModel(draft_with_fully_proposed_sentences)
@@ -943,21 +926,46 @@ def test_a_partly_proposed_draft_is_never_marked_as_covered(
     partly = [item for item in model.proposals(HF_ROUTE) if not item.fully_proposed]
 
     assert partly
-    assert all(dialog._covering_statement(item) is None for item in partly)
-    assert all(
-        "authored as" not in dialog.facts_list.item(index).text()
-        for index in range(dialog.facts_list.count())
-        if "unchosen" in dialog.facts_list.item(index).text()
-    )
+    assert all(model.covered_by(HF_ROUTE, item) is None for item in partly)
+    assert all(item in model.open_proposals(HF_ROUTE) for item in partly)
+
+
+def test_the_batch_action_skips_a_covered_draft_instead_of_dying_on_it(
+    qtbot, draft_with_fully_proposed_sentences
+) -> None:
+    """The live failure: the batch hit the duplicate refusal and took every later draft with it.
+
+    Authoring one draft by hand first is exactly the state the maintainer was in when
+    "Author all fully proposed statements" errored out.
+    """
+
+    model = ClauseFactReviewModel(draft_with_fully_proposed_sentences)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    _author_first_draft(model, dialog)
+    remaining = sum(1 for item in model.open_proposals(HF_ROUTE) if item.fully_proposed)
+
+    dialog.author_proposed_selected()
+
+    assert "refused" not in dialog.status_text
+    assert f"Recorded {remaining}" in dialog.status_text
+    reviews = [item for item in model.draft.clause_fact_reviews if item.rule_route == HF_ROUTE]
+    assert len(reviews) == 1 + remaining
+    # Nothing was authored twice: the batch ran to completion and every reading is distinct.
+    assert len({item.fact_sha256 for item in reviews}) == len(reviews)
+    # And a second press records nothing, because every draft is now covered.
+    dialog.author_proposed_selected()
+    assert "No draft" in dialog.status_text
 
 
 def test_the_dialog_reports_the_duplicate_refusal_rather_than_raising(
     qtbot, draft_with_fully_proposed_sentences
 ) -> None:
-    """The maintainer's own path: select the same draft again and press Author again.
+    """The path still reachable once a covered draft leaves the list: a hand-typed index.
 
-    The refusal is the importer's, surfaced where the reviewer pressed the button, and nothing is
-    recorded -- rather than a second copy of the reading appearing under the next free index.
+    Selecting the authored statement loads it for replacement at its own index, which is the
+    sanctioned path. Typing a free index instead asks for a second copy of it, and that is the
+    importer's refusal, surfaced where the reviewer pressed the button with nothing recorded.
     """
 
     model = ClauseFactReviewModel(draft_with_fully_proposed_sentences)
@@ -965,9 +973,9 @@ def test_the_dialog_reports_the_duplicate_refusal_rather_than_raising(
     qtbot.addWidget(dialog)
     _author_first_draft(model, dialog)
 
-    # Row 0 is now the authored statement; row 1 is the draft it came from.
-    dialog.facts_list.setCurrentRow(1)
-    assert dialog.statement_index.value() == 1
+    dialog.facts_list.setCurrentRow(0)
+    assert dialog.statement_index.value() == 0
+    dialog.statement_index.setValue(1)
     dialog.author_selected()
 
     assert "already authored as statement 0" in dialog.status_text
@@ -1172,9 +1180,10 @@ def test_the_statement_the_grammar_could_not_settle_is_left_for_the_reviewer(
 
     remaining = [item for item in model.proposals(HF_ROUTE) if not item.fully_proposed]
     assert len(remaining) == 1
-    # Two authored statements and every draft still listed: the unsettled one stays reachable.
-    assert dialog.facts_list.count() == 2 + len(_FULLY_PROPOSED_SENTENCES)
-    dialog.facts_list.setCurrentRow(2 + 2)
+    # The two authored drafts have left the list; the one the grammar could not settle stays,
+    # keeping its prefill and its blank fields.
+    assert dialog.facts_list.count() == 2 + len(remaining)
+    dialog.facts_list.setCurrentRow(2)
     assert dialog.dimension_combo("dvc_gate").currentText() == ""
     assert dialog.author_button.isEnabled() is False
 

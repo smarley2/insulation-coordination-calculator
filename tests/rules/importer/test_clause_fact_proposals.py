@@ -143,6 +143,43 @@ def test_a_mid_sentence_period_does_not_split_a_statement(text: str) -> None:
     assert [item.text for item in sentences] == [text]
 
 
+def test_a_sentence_naming_several_clause_references_is_emitted_once() -> None:
+    """Regression for a duplicated draft row that was blamed on the splitter and is not its fault.
+
+    A row appeared twice for one clause sentence, and a decimal clause reference splitting the
+    sentence in two was the obvious suspect. It is not: a sentence carrying several of them is one
+    sentence, emitted once. The duplication is a *fact model* defect -- a dimension whose source
+    states a disjunction is forced into a scalar, so the proposer expands one statement into one
+    draft per value -- and the fix is the schema work, not the splitter.
+
+    This pins the half that is correct, so a later splitter change cannot silently reintroduce the
+    symptom the diagnosis has already cleared.
+    """
+
+    text = "Synthetic reading through one route in 5.2.1 or another according to 5.2.3.15."
+
+    sentences = clause_sentences(fragment_with_sentences(ROUTE, (text,)))
+
+    assert [item.text for item in sentences] == [text]
+
+
+def test_no_fragment_emits_one_sentence_twice() -> None:
+    """A sentence emitted twice would cite one node twice and read as two statements."""
+
+    fragment = fragment_with_sentences(
+        ROUTE,
+        (
+            "Synthetic first reading in 5.2.1. Synthetic second reading in 5.2.3.15.",
+            "Synthetic third reading, according to 5.2.1 or 5.2.3.15 as appropriate.",
+        ),
+    )
+
+    texts = [item.text for item in clause_sentences(fragment)]
+
+    assert len(texts) == len(set(texts)) == 3
+    assert [item.index for item in clause_sentences(fragment)] == [0, 1, 2]
+
+
 def test_a_sentence_ending_before_a_capital_does_split() -> None:
     """The other half of the same rule: a real boundary must still be found."""
 

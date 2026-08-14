@@ -15,7 +15,6 @@ from typing import Literal
 
 from pydantic import ValidationError
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -288,6 +287,43 @@ class ClauseFactReviewModel:
         fragment = self._fragment(rule_route)
         return () if fragment is None else propose_supply_facts(fragment, rule_route)
 
+    def covered_by(self, rule_route: str, proposal: ClauseFactProposal) -> int | None:
+        """The authored statement already carrying this draft's reading, or ``None``.
+
+        The same predicate ``clause_fact_defect`` refuses a duplicate with, so a draft this calls
+        covered is exactly one Author would refuse -- the two cannot drift into disagreeing about
+        what a duplicate is.
+
+        Only a fully proposed draft can be covered. A draft with an unchosen dimension carries an
+        incomplete reading, and an authored statement that settles more than the draft proposes is
+        a *different* reading, not the same one -- so comparing on the chosen subset would call a
+        draft done that nobody has finished reading. ``statement_index`` is arbitrary here because
+        the predicate ignores it.
+        """
+
+        if not proposal.fully_proposed:
+            return None
+        candidate = proposed_fact(proposal, statement_index=0)
+        return next(
+            (
+                row.statement_index
+                for row in self.facts(rule_route)
+                if same_clause_fact_reading(row.fact, candidate)
+            ),
+            None,
+        )
+
+    def open_proposals(self, rule_route: str) -> tuple[ClauseFactProposal, ...]:
+        """The route's drafts whose reading no authored statement already carries.
+
+        A draft the reviewer has authored is done, so it leaves the list rather than sitting there
+        as an open item inviting a second copy of itself.
+        """
+
+        return tuple(
+            item for item in self.proposals(rule_route) if self.covered_by(rule_route, item) is None
+        )
+
     def next_statement_index(self, rule_route: str) -> int:
         """The first index this route's authored statements have not already used.
 
@@ -321,11 +357,17 @@ class ClauseFactReviewModel:
         than one action standing for several. A draft with any unchosen dimension is skipped --
         confirming a reading nobody has read is exactly what the unchosen state exists to
         prevent -- and the index is re-read each time so the batch appends without reusing one.
+
+        A draft whose reading is already authored is skipped too. Without that the batch walked
+        into the duplicate refusal on its first already-covered draft and died there, taking every
+        later draft with it. Coverage is re-checked per draft rather than snapshotted, because a
+        draft this batch has just authored can cover a later one -- two sentences of one node can
+        state one reading.
         """
 
         recorded = 0
         for proposal in self.proposals(rule_route):
-            if not proposal.fully_proposed:
+            if not proposal.fully_proposed or self.covered_by(rule_route, proposal) is not None:
                 continue
             self._draft = author_clause_fact(
                 self._draft,
@@ -777,7 +819,9 @@ class ClauseFactReviewDialog(QDialog):
                 f"statement {fact_row.statement_index} · {_reading_summary(fact_row.fact)}"
                 f" · evidence {fact_row.evidence}"
             )
-        self._proposal_rows = self._model.proposals(row.rule_route)
+        # Only the drafts still open: an authored one is done and leaves the list, rather than
+        # sitting there as an open item inviting a second copy of itself.
+        self._proposal_rows = self._model.open_proposals(row.rule_route)
         self._list_proposals()
         family = SUPPLY_FACT_FAMILY_BY_ROUTE[row.rule_route]
         if self._editor_kind != family:
@@ -830,55 +874,16 @@ class ClauseFactReviewDialog(QDialog):
         """
 
         for proposal in self._proposal_rows:
-            covered_by = self._covering_statement(proposal)
             reading = (
                 "every dimension proposed"
                 if proposal.fully_proposed
                 else f"unchosen: {', '.join(proposal.unchosen)}"
             )
-            if covered_by is not None:
-                reading = f"{reading} · authored as statement {covered_by}"
             self.facts_list.addItem(
                 f"draft · sentence {proposal.sentence_index} · cites node "
                 f"{proposal.node_references[0].node_order} · {reading} · "
                 f"{proposal.sentence_text}"
             )
-            if covered_by is not None:
-                # Greyed rather than removed or disabled: the reviewer may still want to read the
-                # sentence, and a row that vanished would look like a draft they had missed. The
-                # palette's own disabled colour, so no theme is pinned by a named colour.
-                item = self.facts_list.item(self.facts_list.count() - 1)
-                item.setForeground(
-                    self.palette().brush(
-                        QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText
-                    )
-                )
-
-    def _covering_statement(self, proposal: ClauseFactProposal) -> int | None:
-        """The authored statement already carrying this draft's reading, or ``None``.
-
-        The same predicate ``clause_fact_defect`` refuses a duplicate with, so a draft this marks
-        as covered is exactly one Author would refuse -- the two cannot drift into disagreeing
-        about what a duplicate is.
-
-        Only a fully proposed draft can be covered. A draft with an unchosen dimension carries an
-        incomplete reading, and an authored statement that settles more than the draft proposes is
-        a *different* reading, not the same one -- so comparing on the chosen subset would mark a
-        draft as done that nobody has finished reading. ``statement_index`` is arbitrary here
-        because the predicate ignores it.
-        """
-
-        if not proposal.fully_proposed:
-            return None
-        candidate = proposed_fact(proposal, statement_index=0)
-        return next(
-            (
-                row.statement_index
-                for row in self._fact_rows
-                if same_clause_fact_reading(row.fact, candidate)
-            ),
-            None,
-        )
 
     def _fill_editor_from_fact(self, fact: SupplyFact) -> None:
         """Load one statement's field values and cited nodes into the editor.
