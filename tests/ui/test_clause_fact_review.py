@@ -6,6 +6,7 @@ from typing import Literal, get_args
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QHeaderView
 
 from insulation_coordination.domain.rules import RulePackageError
@@ -209,9 +210,13 @@ def test_a_later_authoring_makes_a_completed_route_stale(
     model.author(HF_ROUTE, hf_fact, actor="tester", notes="authored")
     model.complete(HF_ROUTE, f"raw-{HF_ROUTE}", actor="tester", notes="complete")
 
+    # Another index *and* another reading: a statement repeating a reading is refused as a
+    # duplicate, so bumping the index alone would test that refusal instead of staleness.
     model.author(
         HF_ROUTE,
-        _hf_fact(draft_with_supply_fragments, statement_index=1),
+        _hf_fact(draft_with_supply_fragments, statement_index=1).model_copy(
+            update={"dvc_gate": "dvc_b"}
+        ),
         actor="tester",
         notes="one more",
     )
@@ -858,6 +863,115 @@ def test_a_proposed_draft_can_be_authored_citing_more_than_its_own_node(
     # The authored statement joins the list; the remaining drafts stay reachable, so the
     # statements a proposal could not settle keep their prefill.
     assert dialog.facts_list.count() == 1 + _SEEDED_NODE_COUNT
+
+
+def test_an_authored_row_shows_its_reading_not_just_its_index(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """A row naming only the index and the family is what made ten duplicates look distinct."""
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    _author_hf_through_dialog(model, dialog)
+
+    text = dialog.facts_list.item(0).text()
+
+    assert "statement 0" in text
+    # Every dimension of the family, derived from the model rather than a per-family format.
+    for value in ("requirement", "dvc_as", "test", ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC):
+        assert value in text
+    # A boolean reads as the editor's own two values, so a row and the editor agree.
+    assert "true" in text
+
+
+def _author_first_draft(model: ClauseFactReviewModel, dialog: ClauseFactReviewDialog) -> None:
+    """Select the route's first draft and author exactly the reading it proposes."""
+
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+    dialog.facts_list.setCurrentRow(0)
+    dialog.author_selected()
+
+
+def test_a_draft_already_authored_is_marked_and_greyed(
+    qtbot, draft_with_fully_proposed_sentences
+) -> None:
+    """A covered draft shown as an open item is a duplicate waiting to be authored again.
+
+    Greyed rather than removed: the reviewer may still want to read the sentence, and a row that
+    vanished would look like a draft they had missed.
+    """
+
+    model = ClauseFactReviewModel(draft_with_fully_proposed_sentences)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+
+    _author_first_draft(model, dialog)
+
+    covered = [
+        dialog.facts_list.item(index)
+        for index in range(dialog.facts_list.count())
+        if "authored as statement 0" in dialog.facts_list.item(index).text()
+    ]
+
+    assert len(covered) == 1
+    disabled = dialog.palette().brush(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText)
+    assert covered[0].foreground().color() == disabled.color()
+    # The other fully proposed draft states a different reading, so it stays an open item.
+    open_drafts = [
+        index
+        for index in range(dialog.facts_list.count())
+        if "every dimension proposed" in dialog.facts_list.item(index).text()
+        and "authored as" not in dialog.facts_list.item(index).text()
+    ]
+    assert len(open_drafts) == 1
+
+
+def test_a_partly_proposed_draft_is_never_marked_as_covered(
+    qtbot, draft_with_fully_proposed_sentences
+) -> None:
+    """An incomplete reading is not the same reading as one that settles more than it does.
+
+    Comparing on the chosen subset would mark a draft as done that nobody has finished reading.
+    """
+
+    model = ClauseFactReviewModel(draft_with_fully_proposed_sentences)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    _author_first_draft(model, dialog)
+
+    partly = [item for item in model.proposals(HF_ROUTE) if not item.fully_proposed]
+
+    assert partly
+    assert all(dialog._covering_statement(item) is None for item in partly)
+    assert all(
+        "authored as" not in dialog.facts_list.item(index).text()
+        for index in range(dialog.facts_list.count())
+        if "unchosen" in dialog.facts_list.item(index).text()
+    )
+
+
+def test_the_dialog_reports_the_duplicate_refusal_rather_than_raising(
+    qtbot, draft_with_fully_proposed_sentences
+) -> None:
+    """The maintainer's own path: select the same draft again and press Author again.
+
+    The refusal is the importer's, surfaced where the reviewer pressed the button, and nothing is
+    recorded -- rather than a second copy of the reading appearing under the next free index.
+    """
+
+    model = ClauseFactReviewModel(draft_with_fully_proposed_sentences)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    _author_first_draft(model, dialog)
+
+    # Row 0 is now the authored statement; row 1 is the draft it came from.
+    dialog.facts_list.setCurrentRow(1)
+    assert dialog.statement_index.value() == 1
+    dialog.author_selected()
+
+    assert "already authored as statement 0" in dialog.status_text
+    assert len(model.draft.clause_fact_reviews) == 1
 
 
 def test_the_batch_action_stays_disabled_while_no_draft_is_fully_proposed(

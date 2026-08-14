@@ -203,6 +203,41 @@ SupplyFact = Annotated[
 ]
 
 
+#: Fields that identify *which* statement this is rather than *what* it reads. Two statements
+#: differing only in these record the same reading twice.
+_STATEMENT_IDENTITY_FIELDS = frozenset({"statement_index", "node_references"})
+
+
+def same_clause_fact_reading(first: SupplyFact, second: SupplyFact) -> bool:
+    """Whether two statements record one reading: same dimensions and the same cited nodes.
+
+    ``statement_index`` is excluded because it names the slot, not the reading -- comparing it
+    would make every statement unique and catch nothing. Citations are compared by node
+    *identity* rather than by recorded digest: two statements citing one node record one
+    evidentiary claim whether or not one of them has gone stale.
+
+    Citations are compared *as well as* the dimensions, not instead of them. Two statements may
+    legitimately agree on every dimension while resting on different nodes -- that is two
+    readings of two parts of a clause that happen to say the same thing, and the projector's
+    ``_require_distinct_branches`` is what judges whether their branches collide. Only a
+    statement that agrees on both is a second copy of the first.
+    """
+
+    if first.fact_kind != second.fact_kind:
+        return False
+    if any(
+        getattr(first, name) != getattr(second, name)
+        for name in type(first).model_fields
+        if name not in _STATEMENT_IDENTITY_FIELDS
+    ):
+        return False
+    return _cited_nodes(first) == _cited_nodes(second)
+
+
+def _cited_nodes(fact: SupplyFact) -> frozenset[tuple[str, int]]:
+    return frozenset((node.fragment_id, node.node_order) for node in fact.node_references)
+
+
 def evidence_sha256(nodes: tuple[CitedNode, ...]) -> str:
     """Digest of every cited node's identity and content, independent of citation order.
 
@@ -266,4 +301,5 @@ __all__ = [
     "SupplyFact",
     "SystemVoltageFact",
     "evidence_sha256",
+    "same_clause_fact_reading",
 ]

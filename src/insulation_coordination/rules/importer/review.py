@@ -61,6 +61,7 @@ from insulation_coordination.rules.importer.clause_facts import (
     ConfirmedFacts,
     SupplyFact,
     evidence_sha256,
+    same_clause_fact_reading,
 )
 from insulation_coordination.rules.importer.curves import (
     ManualPlotCalibration,
@@ -2146,7 +2147,11 @@ def live_evidence_sha256(draft: ImportedRuleDraft, nodes: tuple[CitedNode, ...])
     return evidence_sha256(tuple(live))
 
 
-def clause_fact_defect(rule_route: str, fact: SupplyFact) -> str | None:
+def clause_fact_defect(
+    rule_route: str,
+    fact: SupplyFact,
+    existing: tuple[SupplyFact, ...] = (),
+) -> str | None:
     """Why one fact cannot stand for one route, or ``None`` if it can.
 
     Identity rather than evidence, the half ``axis_review_is_current`` keeps for an axis position
@@ -2164,6 +2169,13 @@ def clause_fact_defect(rule_route: str, fact: SupplyFact) -> str | None:
     so it never contradicts a route the way a concrete, wrong kind does. Authoring raises on a
     defect and the approval gate blocks on one, so a hand-built draft cannot bypass what authoring
     enforces.
+
+    ``existing`` is the route's other authored statements, and a fact repeating one of their
+    readings is the fifth defect. Without it, pressing Author twice on one draft recorded the same
+    reading under two indices, silently, and a reviewer could reach statement 10 without noticing
+    they had authored one reading ten times -- a fact set that certifies a route with far less
+    review than its size claims. A statement at an index ``existing`` already holds is the
+    sanctioned replace path and is never compared against itself, so replacing stays free.
     """
 
     from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
@@ -2186,6 +2198,17 @@ def clause_fact_defect(rule_route: str, fact: SupplyFact) -> str | None:
         and fact_supply_kind != expected_supply_kind
     ):
         return f"states supply_kind {fact_supply_kind} where {rule_route} is {expected_supply_kind}"
+    duplicate = next(
+        (
+            other.statement_index
+            for other in existing
+            if other.statement_index != fact.statement_index
+            and same_clause_fact_reading(other, fact)
+        ),
+        None,
+    )
+    if duplicate is not None:
+        return f"repeats the reading already authored as statement {duplicate}"
     return None
 
 
@@ -2212,8 +2235,11 @@ def clause_fact_route_defect(draft: ImportedRuleDraft, route: str) -> str | None
         return None
     reviews = tuple(item for item in draft.clause_fact_reviews if item.rule_route == route)
     completions = tuple(item for item in draft.clause_fact_completions if item.rule_route == route)
+    authored = tuple(item.fact for item in reviews)
     defects = tuple(
-        defect for item in reviews if (defect := clause_fact_defect(route, item.fact)) is not None
+        defect
+        for item in reviews
+        if (defect := clause_fact_defect(route, item.fact, authored)) is not None
     )
     if not reviews:
         return "carries no authored clause fact"
@@ -2256,7 +2282,11 @@ def author_clause_fact(
 
     if not actor.strip() or not notes.strip():
         raise ApprovalError("clause fact actor and notes are required")
-    defect = clause_fact_defect(rule_route, fact)
+    defect = clause_fact_defect(
+        rule_route,
+        fact,
+        tuple(item.fact for item in draft.clause_fact_reviews if item.rule_route == rule_route),
+    )
     if defect is not None:
         raise ValueError(f"clause fact {defect}")
     for cited in fact.node_references:
@@ -2406,8 +2436,9 @@ def resolve_confirmed_clause_facts(
         # function the authoring API refuses on: resolution must not accept a fact
         # ``author_clause_fact`` would have rejected, and a fact of the wrong family or one
         # resting entirely on another clause has perfectly current digests.
+        authored = tuple(item.fact for item in reviews)
         for review in reviews:
-            defect = clause_fact_defect(route, review.fact)
+            defect = clause_fact_defect(route, review.fact, authored)
             if defect is not None:
                 raise ClauseFactResolutionError(
                     f"{route} statement {review.statement_index} {defect}"

@@ -120,7 +120,9 @@ def _hand_built(
     )
     injected = record_correction(
         draft,
-        draft.model_copy(update={"clause_fact_reviews": (review,)}),
+        # Appended rather than replacing, so two calls build the two-review draft a
+        # duplicate-reading test needs; every existing caller starts from no reviews.
+        draft.model_copy(update={"clause_fact_reviews": (*draft.clause_fact_reviews, review)}),
         actor="tester",
         notes="inject a review the authoring API refuses",
     )
@@ -148,7 +150,16 @@ def hf_fact(draft_with_supply_fragments: ImportedRuleDraft) -> HfAttenuationFact
 
 @pytest.fixture
 def second_hf_fact(draft_with_supply_fragments: ImportedRuleDraft) -> HfAttenuationFact:
-    return _hf_fact(draft_with_supply_fragments, statement_index=1)
+    """A genuinely second statement: another index *and* another reading.
+
+    One dimension differs, because a statement that repeats a reading under a new index is now
+    refused as a duplicate -- so a fixture that only bumped the index would be testing that
+    refusal instead of the staleness it is here for.
+    """
+
+    return _hf_fact(draft_with_supply_fragments, statement_index=1).model_copy(
+        update={"dvc_gate": "dvc_b"}
+    )
 
 
 def test_a_route_without_facts_blocks_approval(draft_with_supply_fragments) -> None:
@@ -381,6 +392,96 @@ def test_a_clause_spec_with_no_fact_family_is_refused_at_import() -> None:
 
     with pytest.raises(ValueError, match="invented.route"):
         _require_declared_fact_families((*SUPPLY_CLAUSES, invented), SUPPLY_FACT_FAMILY_BY_ROUTE)
+
+
+def test_a_statement_repeating_an_authored_reading_is_refused(
+    draft_with_supply_fragments, hf_fact
+) -> None:
+    """Pressing Author twice on one draft used to record the same reading under two indices.
+
+    Silently, and repeatably: a reviewer reached statement 10 without noticing they had authored
+    one reading ten times, and the route certified as reviewed with a fact set whose size claimed
+    ten readings. The refusal names the index that already carries it, so the reviewer can go and
+    read that statement instead of guessing which of ten is the original.
+    """
+
+    draft = author_clause_fact(
+        draft_with_supply_fragments,
+        rule_route=HF_ROUTE,
+        fact=hf_fact,
+        actor="tester",
+        notes="authored",
+    )
+    repeat = hf_fact.model_copy(update={"statement_index": 1})
+
+    with pytest.raises(ValueError, match="already authored as statement 0"):
+        author_clause_fact(draft, rule_route=HF_ROUTE, fact=repeat, actor="tester", notes="again")
+
+
+def test_replacing_a_statement_at_its_own_index_stays_free(
+    draft_with_supply_fragments, hf_fact
+) -> None:
+    """The sanctioned replace path: a statement is never compared against itself."""
+
+    draft = author_clause_fact(
+        draft_with_supply_fragments,
+        rule_route=HF_ROUTE,
+        fact=hf_fact,
+        actor="tester",
+        notes="authored",
+    )
+
+    replaced = author_clause_fact(
+        draft, rule_route=HF_ROUTE, fact=hf_fact, actor="tester", notes="re-authored"
+    )
+
+    reviews = [item for item in replaced.clause_fact_reviews if item.rule_route == HF_ROUTE]
+    assert [item.statement_index for item in reviews] == [0]
+
+
+def test_two_statements_may_share_every_dimension_on_different_nodes(
+    draft_with_supply_fragments, hf_fact
+) -> None:
+    """Different cited nodes make a different evidentiary claim, not a duplicate reading.
+
+    Two parts of a clause can state the same thing, and each is its own statement resting on its
+    own node. Whether their projected branches then collide is
+    ``_require_distinct_branches``'s judgement, not this predicate's.
+    """
+
+    draft = author_clause_fact(
+        draft_with_supply_fragments,
+        rule_route=HF_ROUTE,
+        fact=hf_fact,
+        actor="tester",
+        notes="authored",
+    )
+    elsewhere = hf_fact.model_copy(
+        update={
+            "statement_index": 1,
+            "node_references": (_cited(draft, HF_FRAGMENT_ID), _cited(draft, f"raw-{MAINS_ROUTE}")),
+        }
+    )
+
+    accepted = author_clause_fact(
+        draft, rule_route=HF_ROUTE, fact=elsewhere, actor="tester", notes="another node"
+    )
+
+    reviews = [item for item in accepted.clause_fact_reviews if item.rule_route == HF_ROUTE]
+    assert [item.statement_index for item in reviews] == [0, 1]
+
+
+def test_a_hand_built_duplicate_reading_still_blocks_the_route(
+    draft_with_supply_fragments, hf_fact
+) -> None:
+    """The gate cannot trust the authoring API to have been the only writer."""
+
+    draft = _hand_built(draft_with_supply_fragments, rule_route=HF_ROUTE, fact=hf_fact)
+    draft = _hand_built(
+        draft, rule_route=HF_ROUTE, fact=hf_fact.model_copy(update={"statement_index": 1})
+    )
+
+    assert HF_ROUTE in _blocked(draft)
 
 
 def test_a_fact_of_the_wrong_family_cannot_be_authored_on_a_route(

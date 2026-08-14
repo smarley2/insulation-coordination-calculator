@@ -15,6 +15,7 @@ from typing import Literal
 
 from pydantic import ValidationError
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -46,6 +47,7 @@ from insulation_coordination.rules.importer.clause_fact_proposals import (
 from insulation_coordination.rules.importer.clause_facts import (
     CitedNode,
     SupplyFact,
+    same_clause_fact_reading,
 )
 from insulation_coordination.rules.importer.clauses import RawClauseFragment
 from insulation_coordination.rules.importer.extract import (
@@ -85,6 +87,27 @@ _DISABLED_REASONS = {
 _NO_SOURCE_REGION = (
     "Source region not available: re-extract from the licensed PDFs to see the clause's own page."
 )
+
+
+def _reading_summary(fact: SupplyFact) -> str:
+    """One statement's reading, compactly, from whatever dimensions its family declares.
+
+    Derived from the family's own dimension list rather than formatted per family: a hand-written
+    format per family is one more place a new dimension can be forgotten, and a row that omits a
+    dimension is exactly the blindness that let ten copies of one reading look distinct. Booleans
+    read as the editor's own two values so a row and the editor beside it agree.
+    """
+
+    booleans = {
+        name for name, kind, _options in fact_dimensions(fact.fact_kind) if kind == "boolean"
+    }
+    return " · ".join(
+        ("true" if getattr(fact, name) else "false")
+        if name in booleans
+        else str(getattr(fact, name))
+        for name, _kind, _options in fact_dimensions(fact.fact_kind)
+    )
+
 
 #: What each authoring path writes into a fact's notes, so the audit distinguishes a confirmed
 #: proposal from a reading a maintainer typed from scratch. Both name the dialog; only the
@@ -748,8 +771,10 @@ class ClauseFactReviewDialog(QDialog):
         self._fact_rows = self._model.facts(row.rule_route)
         self.facts_list.clear()
         for fact_row in self._fact_rows:
+            # The reading itself, not just the family: rows naming only the index and the family
+            # made ten copies of one statement look like ten statements.
             self.facts_list.addItem(
-                f"statement {fact_row.statement_index} · {fact_row.fact.fact_kind}"
+                f"statement {fact_row.statement_index} · {_reading_summary(fact_row.fact)}"
                 f" · evidence {fact_row.evidence}"
             )
         self._proposal_rows = self._model.proposals(row.rule_route)
@@ -805,16 +830,55 @@ class ClauseFactReviewDialog(QDialog):
         """
 
         for proposal in self._proposal_rows:
+            covered_by = self._covering_statement(proposal)
             reading = (
                 "every dimension proposed"
                 if proposal.fully_proposed
                 else f"unchosen: {', '.join(proposal.unchosen)}"
             )
+            if covered_by is not None:
+                reading = f"{reading} · authored as statement {covered_by}"
             self.facts_list.addItem(
                 f"draft · sentence {proposal.sentence_index} · cites node "
                 f"{proposal.node_references[0].node_order} · {reading} · "
                 f"{proposal.sentence_text}"
             )
+            if covered_by is not None:
+                # Greyed rather than removed or disabled: the reviewer may still want to read the
+                # sentence, and a row that vanished would look like a draft they had missed. The
+                # palette's own disabled colour, so no theme is pinned by a named colour.
+                item = self.facts_list.item(self.facts_list.count() - 1)
+                item.setForeground(
+                    self.palette().brush(
+                        QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText
+                    )
+                )
+
+    def _covering_statement(self, proposal: ClauseFactProposal) -> int | None:
+        """The authored statement already carrying this draft's reading, or ``None``.
+
+        The same predicate ``clause_fact_defect`` refuses a duplicate with, so a draft this marks
+        as covered is exactly one Author would refuse -- the two cannot drift into disagreeing
+        about what a duplicate is.
+
+        Only a fully proposed draft can be covered. A draft with an unchosen dimension carries an
+        incomplete reading, and an authored statement that settles more than the draft proposes is
+        a *different* reading, not the same one -- so comparing on the chosen subset would mark a
+        draft as done that nobody has finished reading. ``statement_index`` is arbitrary here
+        because the predicate ignores it.
+        """
+
+        if not proposal.fully_proposed:
+            return None
+        candidate = proposed_fact(proposal, statement_index=0)
+        return next(
+            (
+                row.statement_index
+                for row in self._fact_rows
+                if same_clause_fact_reading(row.fact, candidate)
+            ),
+            None,
+        )
 
     def _fill_editor_from_fact(self, fact: SupplyFact) -> None:
         """Load one statement's field values and cited nodes into the editor.
