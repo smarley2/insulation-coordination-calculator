@@ -18,6 +18,7 @@ import pytest
 
 from insulation_coordination.rules.importer.clause_fact_proposals import (
     clause_sentences,
+    context_sentences,
     fact_dimensions,
     pair_tokens,
     scope_tokens,
@@ -125,24 +126,30 @@ def test_a_reached_dimension_is_never_reached_with_a_value_outside_its_vocabular
 
 
 @pytest.mark.parametrize("route", ROUTES)
-def test_every_sentence_of_every_route_yields_at_least_one_draft(
+def test_every_statement_sentence_of_every_route_yields_at_least_one_draft(
     extracted_draft: ImportedRuleDraft, route: str
 ) -> None:
-    """The prefill's whole point: no sentence is left with a blank editor and no citation.
+    """The prefill's whole point: no statement is left with a blank editor and no citation.
 
-    Asserted as a relation between two counts derived at runtime -- drafts are at least
-    sentences, because a sentence multiplying a dimension yields several -- so neither count is
+    Asserted as a relation between counts derived at runtime -- drafts are at least statement
+    sentences, because a sentence multiplying a scalar dimension yields several -- so no count is
     written down here.
+
+    A sentence that only scopes the ones after it is deliberately *not* among them (amendment A4):
+    it selects no branch, so it gets no draft. Which sentences those are is derived from the stems
+    the items themselves record, never listed.
     """
 
     fragment = _fragment(extracted_draft, route)
     sentences = clause_sentences(fragment)
+    context = context_sentences(sentences)
+    statements = [item for item in sentences if item.text not in context]
     proposals = propose_supply_facts(fragment, route)
 
-    assert sentences, route
-    assert len(proposals) >= len(sentences), route
+    assert statements, route
+    assert len(proposals) >= len(statements), route
     assert {proposal.sentence_index for proposal in proposals} == {
-        sentence.index for sentence in sentences
+        sentence.index for sentence in statements
     }, route
     # Each draft cites exactly the node its own sentence came from, so its evidence digest
     # binds the node a reviewer read rather than the whole clause.

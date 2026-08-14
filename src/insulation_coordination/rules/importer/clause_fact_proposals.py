@@ -652,6 +652,22 @@ def clause_sentences(fragment: RawClauseFragment) -> tuple[ClauseSentence, ...]:
     return tuple(sentences)
 
 
+def context_sentences(sentences: Sequence[ClauseSentence]) -> frozenset[str]:
+    """Every sentence of one fragment that scopes the sentences after it (amendment A4).
+
+    A clause's opening sentence introducing a list selects no branch: it is the modality source and
+    part of the evidence its items rest on, not a statement of its own. Read off the stem each item
+    already records, so a sentence *nobody completes* is never treated as context -- a colon is only
+    a lead-in when something leads on from it.
+
+    ponytail: matched by text, which is what the stem records. A colon-ending sentence repeated
+    verbatim elsewhere in one fragment would be skipped there too; give ``ClauseSentence`` the
+    stem's index if a real fragment ever does that.
+    """
+
+    return frozenset(item.stem_text for item in sentences if item.stem_text)
+
+
 def keyword_proposer(grammar: ClauseFactGrammar) -> SentenceProposer:
     """The declared grammar as one sentence proposer.
 
@@ -720,11 +736,18 @@ def propose_clause_facts(
     propose: SentenceProposer,
     locked: Mapping[str, str] = MappingProxyType({}),
 ) -> tuple[ClauseFactProposal, ...]:
-    """One draft per reading per sentence, for one route's own fragment and one statement kind.
+    """One draft per reading per statement sentence, for one route's fragment and one kind.
 
-    Every sentence yields at least one draft, so the reviewer starts from the clause's own
-    statements rather than from a blank editor. ``locked`` carries the dimensions the route
+    Every *statement* sentence yields at least one draft, so the reviewer starts from the clause's
+    own statements rather than from a blank editor. ``locked`` carries the dimensions the route
     itself determines rather than the sentence, and a reading never overrides one.
+
+    A sentence that only scopes the ones after it yields **no** draft (amendment A4): it selects no
+    branch, so offering it as authorable asks the reviewer to invent dimensions it does not state,
+    and a statement manufactured for it would be a reading nobody made. It stays in the fragment as
+    evidence and as the modality source, and a statement completing it cites *both* nodes -- which
+    plural citation and the order-independent evidence digest already support, so the opener's
+    movement re-opens the dependent statement.
 
     A route whose family declares variants is proposed one kind at a time: which dimensions a draft
     must settle depends on the kind of reading it is, and a family's other kinds are authored by
@@ -732,8 +755,12 @@ def propose_clause_facts(
     """
 
     dimensions = tuple(name for name, _kind, _options in fact_dimensions(fact_kind, statement_kind))
+    sentences = clause_sentences(fragment)
+    context = context_sentences(sentences)
     proposals: list[ClauseFactProposal] = []
-    for sentence in clause_sentences(fragment):
+    for sentence in sentences:
+        if sentence.text in context:
+            continue
         citation = CitedNode(
             fragment_id=sentence.fragment_id,
             node_order=sentence.node_order,
@@ -792,6 +819,7 @@ __all__ = [
     "SentenceProposer",
     "authored_dimension",
     "clause_sentences",
+    "context_sentences",
     "fact_dimensions",
     "fact_model",
     "fact_variants",

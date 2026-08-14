@@ -54,7 +54,6 @@ from insulation_coordination.rules.importer.axis_selectors import (
     ConfirmedAxes,
     selector_sha256,
 )
-from insulation_coordination.rules.importer.clause_fact_proposals import clause_sentences
 from insulation_coordination.rules.importer.clause_facts import (
     CitedNode,
     ClauseFactCompletion,
@@ -64,7 +63,6 @@ from insulation_coordination.rules.importer.clause_facts import (
     evidence_sha256,
     same_clause_fact_reading,
 )
-from insulation_coordination.rules.importer.clauses import RawClauseFragment
 from insulation_coordination.rules.importer.curves import (
     ManualPlotCalibration,
     RawFigure,
@@ -2172,19 +2170,6 @@ def _statement_anchor(nodes: tuple[CitedNode, ...]) -> _StatementAnchor:
     return frozenset((node.fragment_id, node.node_order, node.node_sha256) for node in nodes)
 
 
-def _context_sentences(fragment: RawClauseFragment) -> frozenset[str]:
-    """Every sentence of one fragment that scopes the statements following it.
-
-    A clause's opening sentence introducing a list selects no branch: it is the modality source and
-    part of the evidence its bullets rest on, not a statement of its own, so it is no outstanding
-    obligation even while the proposal engine still offers a draft for it (amendment A4).
-    ``clause_sentences`` already records which stem each bullet completes, so this reads that
-    rather than re-deriving it -- a sentence no bullet completes is never treated as context.
-    """
-
-    return frozenset(item.stem_text for item in clause_sentences(fragment) if item.stem_text)
-
-
 def _statement_label(anchor: _StatementAnchor) -> str:
     """One uncovered statement as the reviewer is told about it, by the nodes it rests on."""
 
@@ -2206,6 +2191,12 @@ def uncovered_clause_fact_statements(draft: ImportedRuleDraft, route: str) -> tu
     a list's opener cite the opener as well and still cover its own bullet -- and each fact covers at
     most one anchor, so one authored fact can never mark two distinct source statements as reviewed.
 
+    Context-only nodes are not obligations, and this needs no branch of its own for it: a sentence
+    that only scopes the ones after it yields no proposal at all (amendment A4, in
+    ``propose_clause_facts``), so no anchor of its own ever reaches this function. The filter that
+    used to sit here read the same stems the proposer reads and is gone with the drafts it skipped
+    -- one enforcement point rather than two that can disagree.
+
     Knowingly partial, and knowingly so by design: it cannot catch a statement no proposal ever
     suggested, and it cannot tell one statement resting on two normative nodes from two statements
     resting on one each. Both are why the maintainer's assertion remains the definition of
@@ -2226,12 +2217,10 @@ def uncovered_clause_fact_statements(draft: ImportedRuleDraft, route: str) -> tu
     )
     if fragment is None:
         return ()
-    context = _context_sentences(fragment)
-    obligations: dict[_StatementAnchor, list[str]] = {}
-    for proposal in propose_supply_facts(fragment, route):
-        obligations.setdefault(_statement_anchor(proposal.node_references), []).append(
-            proposal.sentence_text
-        )
+    obligations: set[_StatementAnchor] = {
+        _statement_anchor(proposal.node_references)
+        for proposal in propose_supply_facts(fragment, route)
+    }
     unused = [
         _statement_anchor(item.fact.node_references)
         for item in draft.clause_fact_reviews
@@ -2239,8 +2228,6 @@ def uncovered_clause_fact_statements(draft: ImportedRuleDraft, route: str) -> tu
     ]
     uncovered: list[str] = []
     for anchor in sorted(obligations, key=sorted):
-        if all(sentence in context for sentence in obligations[anchor]):
-            continue
         covering = [cited for cited in unused if anchor <= cited]
         if not covering:
             uncovered.append(_statement_label(anchor))

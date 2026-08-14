@@ -910,9 +910,12 @@ def test_a_context_only_node_is_not_an_outstanding_obligation(
 ) -> None:
     """Amendment A4: a clause's opening sentence scopes what follows and selects no branch.
 
-    So it is evidence and a modality source, not a statement, even while the proposal engine still
-    offers a draft for it -- and a route whose bullets are all authored completes without anybody
-    inventing a statement for the opener.
+    So it is evidence and a modality source, not a statement: no draft is offered for it, no
+    obligation is counted for it, and a route whose bullets are all authored completes without
+    anybody inventing a statement for the opener.
+
+    Asserted end to end rather than at the proposer, because it is the guard that would block
+    completion for ever on an obligation nobody can cover.
     """
 
     draft = _with_fragment(
@@ -926,6 +929,11 @@ def test_a_context_only_node_is_not_an_outstanding_obligation(
             ),
         ),
     )
+    fragment = next(item for item in draft.raw_clause_fragments if item.id == HF_FRAGMENT_ID)
+    # No draft for the opener at all, which is where A4 is now enforced.
+    assert {
+        item.node_references[0].node_order for item in propose_supply_facts(fragment, HF_ROUTE)
+    } == {1, 2}
     assert uncovered_clause_fact_statements(draft, HF_ROUTE) == (
         "the statement resting on clause node(s) 1",
         "the statement resting on clause node(s) 2",

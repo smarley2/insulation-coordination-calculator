@@ -67,6 +67,15 @@ def _keyword(dimension: str, value: str, *keywords: str, without: tuple[str, ...
 
 #: A grammar over the attenuation family, built from that family's own vocabulary and from terms
 #: invented for this file.
+#:
+#: Kept in the public tree after amendment A1 moved the *recipe's* grammar out, on this line: every
+#: keyword below either spells a token the public typed vocabulary already declares (``dvc_as`` reads
+#: "DVC As"; ``test``, ``simulation`` and ``calculation`` are their own spellings) or is the
+#: ISO/IEC drafting convention for modality, which no one standard owns. None of it says anything
+#: about a licensed document that the models here do not already say, and the sentences it is
+#: matched against are written for this file. What moved was every term the typed vocabulary does
+#: *not* spell -- and the exclusion lists, which are where a reading of one clause's actual wording
+#: lived.
 _GRAMMAR = ClauseFactGrammar(
     fact_kind="hf_attenuation",
     keyword_rules=(
@@ -449,6 +458,43 @@ def test_a_stem_carries_across_node_boundaries() -> None:
         for item in proposals
         if item.node_references[0].node_order in (1, 2)
     ] == ["requirement", "requirement"]
+
+
+def test_a_sentence_that_scopes_the_ones_after_it_yields_no_draft() -> None:
+    """Amendment A4: a context node selects no branch, so it is never offered as authorable.
+
+    Offering one asks the reviewer to invent the dimensions it does not state, and a statement
+    manufactured for it -- unstated dimensions filled with wildcards and an arbitrary answer -- is a
+    reading nobody made. It stays a sentence of the fragment, because it is still evidence and still
+    where its items' modality is read from.
+    """
+
+    nodes = (
+        ("paragraph", "Synthetic stem which shall be completed by the items:"),
+        ("bullet", "synthetic first item naming DVC As;"),
+        ("bullet", "synthetic second item naming DVC B."),
+    )
+
+    assert {item.node_references[0].node_order for item in _propose_nodes(nodes)} == {1, 2}
+    # Still a sentence, and still the stem its items inherit from.
+    assert [item.node_order for item in clause_sentences(_bullet_fragment(nodes))] == [0, 1, 2]
+
+
+def test_a_paragraph_no_item_completes_still_yields_its_own_draft() -> None:
+    """The other half: a colon is only a lead-in when something leads on from it.
+
+    Without this the rule would silently swallow any sentence that happens to end in a colon,
+    which is a statement lost rather than a context node skipped.
+    """
+
+    proposals = _propose_nodes(
+        (
+            ("paragraph", "Synthetic standalone reading naming DVC As, listing nothing:"),
+            ("paragraph", "Synthetic second standalone reading naming DVC B."),
+        )
+    )
+
+    assert {item.node_references[0].node_order for item in proposals} == {0, 1}
 
 
 def test_a_grammar_declaring_an_unknown_inherited_dimension_is_refused() -> None:
