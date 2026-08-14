@@ -2103,15 +2103,18 @@ for the remaining #53B work:
         machinery; see "Handoff: what family 1 must touch" below.
   - [x] **2. system_voltage** — measure | applicability. Introduces `statement_kind` and the
         carried-not-projected variant.
-  - [ ] **3. spd_monitoring** — requirement | exemption | compliance. See "Handoff: what families 3
-        to 5 inherit" below.
-  - [ ] **4. spd_reduction** — permission | floor | monitoring. Introduces the ordered
-        source-to-target pair collection; two independent value sets are forbidden.
-  - [ ] **5. barrier_transfer** — rating_resolution | combined_requirement |
-        downstream_inheritance. Its route-declared isolation scope and the invalid placeholder
-        belong to the placeholder slice; pull that forward into this commit only if the variant work
-        would otherwise leave the placeholder unauthorable, and say so.
-- [ ] Grammar relocation, context-node handling, set/pair collections
+  - [x] **3. spd_monitoring** — requirement | exemption | compliance. Also converted
+        `any_placement` to a scope, deleting `_placement_matcher`.
+  - [ ] **4. spd_reduction** — permission | floor | monitoring. **Blocked on a contract decision,
+        not on effort — see "Handoff: why family 4 stopped" below.** The three variants cannot all
+        project into this route's declared row shape, and the one that must project cannot fill two
+        of the six declared outputs from what it states.
+  - [x] **5. barrier_transfer** — rating_resolution | combined_requirement |
+        downstream_inheritance. The route-declared isolation scope and the invalid positive-isolation
+        placeholder were pulled forward into this commit: the isolation field leaves the model, so
+        the placeholder could not have been left as it was.
+- [ ] Grammar relocation, context-node handling, set/pair collections — **family 4's pair collection
+      now lives here, or in whichever slice resolves the contract question below**
 - [ ] Variant editor: value-set widgets, repeating pair rows, `statement_kind` switching
 - [ ] Removal of multi-statement authoring; per-statement suggestion action
 - [ ] Completion guard
@@ -2227,3 +2230,71 @@ one commit after family 5; say which in your report.
 system voltage. The carried variant is proven in the public suite only. Widening that dict to several
 statements per route belongs to the private placeholder slice, which has to replace the invalid
 positive-isolation placeholder anyway.
+
+### Handoff: families 3 and 5 landed, and why family 4 stopped
+
+Written after families 3 and 5. Both are on the branch and green on the public and private suites.
+Family 4 is **not** an effort problem: its model reshape is straightforward, and the reshape makes
+the route's declared rule unprojectable. That needs a contract decision, so it was reported rather
+than guessed at.
+
+**What families 3 and 5 changed that a successor inherits.**
+
+- A carried-not-projected variant costs nothing new, as family 2's handoff said. Three more of them
+  landed (`spd_monitoring.compliance`, `barrier_transfer.rating_resolution`,
+  `barrier_transfer.downstream_inheritance`) with no change to resolution, the digest or the gate.
+  The pattern is: filter the route's facts to the variants the rule's declared outputs can carry,
+  refuse with `ClauseStructureError` when none is present, and assert in a test that the projected
+  rule is *identical* with and without the carried statement.
+- **Route-declared structural scope has a second member.** `SUPPLY_FACT_ISOLATION_BY_ROUTE` joins
+  `SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE`, with its own import-time symmetric-difference check and its own
+  branch in `clause_fact_defect`. Both halves are live: the projector reads the declared scope for
+  every answer that follows from it, and the defect predicate refuses the one dimension a statement
+  still spells that could contradict it. A third such dimension should follow the same three pieces.
+- `_placement_matcher` is gone; `_dimension_matcher` is the last shim, and item 5 above still stands
+  for it.
+- `_placeholder_facts` is still `dict[str, SupplyFact]` and did not need widening: every route's
+  projected variant is a single statement. It will need widening only when a route's projection needs
+  two statements at once.
+
+**Why family 4 stopped, so nobody re-derives it.** `supply.spd_reduction_requirements.{mains,
+non_mains}` declares four inputs -- device placement, insulation class, device degradability,
+participation in a category reduction -- and six outputs, and `DecisionRule` requires **every** row to
+set **exactly** the declared outputs (`_rows_agree_with_declarations`). Today one `SpdReductionFact`
+fills all six because it is a merge of the three statements A3 splits apart. After the split:
+
+1. **The permission cannot fill `reduced_category`.** A `DecisionValue` carries one categorical
+   value, and the permission's reviewed content is an ordered collection of source-to-target steps,
+   which A3 requires and which may hold more than one member. One row per step gives rows whose
+   matchers are identical -- `_require_distinct_branches` refuses them, and it zips facts against
+   rows strictly, so a statement producing several rows is not even the shape that function takes.
+   There is no source-category input to separate them by.
+2. **The permission's row and the monitoring statement's row necessarily overlap.** The permission
+   scopes the insulation class and states no degradability; the monitoring statement states the
+   degradability and no insulation class; both are inside a category reduction. `_rows_overlap`
+   treats a wildcard as never discriminating, so the two rows collide and the projector refuses the
+   pair. Making them disjoint means the projector inventing a dimension one of the statements does
+   not state, which is the defect A3 forbids from the other side.
+3. **Whichever variant is dropped to a carried one takes two of the six outputs with it**, and the
+   surviving row must still assert them. A permission-only projection asserts that monitoring is not
+   required, which for a degradable device is a wrong answer rather than an absent one -- and a row
+   may not omit an output to stay silent.
+
+The floor variant is the one part that is clean: it is carried by instruction, and a consumer asking
+about the double or reinforced classes reaches **no** row rather than a wrong one, because the
+permission's own class scope excludes them.
+
+Three ways out, for the maintainer to choose:
+
+- **(c), and the one the amendments' own pointers keep naming.** Let #53C item 5's contract change
+  land first -- a source-category input, and the monitoring and floor outputs right-sized off these
+  routes -- and family 4 then projects all three variants with no loss. Every note in the recipe that
+  says "#53C item 5" is about exactly this output tuple.
+- **(a)** Ship the model reshape now, project the permission only, and accept a deferral token for
+  `reduced_category` plus a wrong monitoring answer for a degradable device. Needs a version decision
+  under A6-C, since it changes projected rule semantics.
+- **(b)** As (a), but let the projector narrow the permission's row to the non-degradable case so the
+  degradable branch is uncovered instead of wrongly answered. Cheaper than (c) and honest at runtime,
+  but it is the projector adding a matcher no statement states.
+
+Nothing about family 4 is implemented, so the tree carries no half-finished shape.
