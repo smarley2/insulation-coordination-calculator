@@ -284,11 +284,13 @@ def test_two_rules_naming_one_value_propose_it_once() -> None:
     assert [item.chosen["dvc_gate"] for item in proposals] == ["dvc_as"]
 
 
-def _step_grammar(*tokens: tuple[str, str]) -> ClauseFactGrammar:
+def _step_grammar(*tokens: tuple[str, str], keywords: tuple[str, ...] = ()) -> ClauseFactGrammar:
     return ClauseFactGrammar(
         fact_kind="spd_reduction",
         statement_kind="permission",
-        sequence_rules=(ClauseSequenceRule(tokens=tokens, dimension="permitted_steps"),),
+        sequence_rules=(
+            ClauseSequenceRule(tokens=tokens, dimension="permitted_steps", keywords=keywords),
+        ),
     )
 
 
@@ -328,6 +330,26 @@ def test_a_sequence_rules_trailing_unpaired_token_settles_nothing() -> None:
     (proposal,) = _propose_steps(grammar, "Synthetic step IV to III, and also II.")
 
     assert pair_tokens(proposal.chosen["permitted_steps"]) == (("ovc_iv", "ovc_iii"),)
+
+
+def test_a_sequence_rule_finds_no_pair_where_the_sentence_states_no_relation() -> None:
+    """Two tokens of a scale in order are not a transition unless the sentence relates them.
+
+    A scale token carries no role of its own, so a sentence naming the position that applies and
+    the position that applies instead names two in order exactly as a transition between them does.
+    Ungated it proposed a step -- and one running the wrong way up the scale, which is the reading
+    a reviewer is least likely to catch, because both endpoints are real values of the dimension.
+    Unchosen rather than defaulted: a blank field cannot be confirmed by accident.
+    """
+
+    tokens = (("IV", "ovc_iv"), ("III", "ovc_iii"), ("II", "ovc_ii"))
+    grammar = _step_grammar(*tokens, keywords=("reduce",))
+
+    (listing,) = _propose_steps(grammar, "Synthetic reading of III, and of IV where so required.")
+    (relating,) = _propose_steps(grammar, "Synthetic reading which shall reduce IV to III.")
+
+    assert "permitted_steps" in listing.unchosen
+    assert pair_tokens(relating.chosen["permitted_steps"]) == (("ovc_iv", "ovc_iii"),)
 
 
 # --- a bullet inherits from the stem it completes -------------------------------------

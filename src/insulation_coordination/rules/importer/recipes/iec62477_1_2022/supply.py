@@ -185,10 +185,17 @@ SUPPLY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ClauseAuditSpec(
         semantic_id=f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains",
         clause="4.4.7.2.3",
+        #: One region over the whole subclause, from below its heading to above the next one.
+        #: The earlier bbox opened below two of the subclause's own normative paragraphs, which
+        #: were therefore reachable from no route and cited by no fact, and nothing said so. The
+        #: top edge sits between the heading's last line and the first body line, and the bottom
+        #: between the subclause's own trailing NOTEs and the next heading -- the same reach the
+        #: barrier transfer and attenuation subclauses already declare over theirs. Measured with
+        #: pdfplumber against the licensed document.
         segments=(
             ClauseSegmentSpec(
                 page_number=65,
-                expected_bbox=(65.0, 390.0, 535.0, 518.0),
+                expected_bbox=(65.0, 290.0, 535.0, 588.0),
                 expected_root_kind="paragraph",
             ),
         ),

@@ -388,6 +388,14 @@ class ClauseSequenceRule(FrozenModel):
     and filling two independent scalar dimensions produced one draft per step -- which authored as
     several statements, and read as a cartesian product of the endpoints once more than one step was
     named.
+
+    ``keywords`` is what keeps the reading positional *within* a sentence that states the relation
+    at all. A scale token carries no role of its own: a sentence naming which position of the scale
+    applies, and the position that applies instead under some condition, names two tokens in order
+    exactly as a transition between them does. Ungated, such a sentence proposed a step -- and one
+    running the wrong way up the scale, which is the reading a reviewer is least likely to catch
+    because the endpoints are both real. So a sequence rule states the terms the relation itself is
+    spelled with, and finds no pair in a sentence that spells none of them.
     """
 
     #: Declared token to vocabulary value, longest token first at match time so a shorter token
@@ -395,17 +403,24 @@ class ClauseSequenceRule(FrozenModel):
     tokens: tuple[tuple[str, str], ...] = Field(min_length=1)
     #: The pair-collection dimension these pairs fill.
     dimension: str = Field(min_length=1)
+    #: Terms the sentence must mention for its tokens to be read as pairs at all. Required rather
+    #: than excluded, unlike ``ClauseKeywordRule``: naming the relation is one declaration that
+    #: holds for every phrasing, while excluding each phrasing that merely lists scale positions
+    #: would have to enumerate them and would silently miss the next one.
+    keywords: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _tokens_are_distinct_short_terms(self) -> ClauseSequenceRule:
         if len({token for token, _value in self.tokens}) != len(self.tokens):
             raise ValueError("a clause sequence rule declares each token once")
-        for token, _value in self.tokens:
+        for token, _value in (*self.tokens, *((word, "") for word in self.keywords)):
             if not _valid_keyword(token):
                 raise ValueError("a clause sequence token must be a short term")
         return self
 
     def pairs(self, text: str) -> tuple[tuple[str, str], ...]:
+        if not all(_mentions(text, keyword) for keyword in self.keywords):
+            return ()
         by_token = dict(self.tokens)
         alternation = "|".join(
             re.escape(token) for token in sorted(by_token, key=len, reverse=True)
