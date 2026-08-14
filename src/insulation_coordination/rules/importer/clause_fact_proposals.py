@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
-from typing import Literal, get_args
+from typing import Any, Literal, get_args
 
 from pydantic import Field, model_validator
 
@@ -27,12 +27,14 @@ from insulation_coordination.domain.rules import Identifier, RulePackageError
 from insulation_coordination.rules.importer.clause_facts import (
     BarrierTransferFact,
     CitedNode,
+    DimensionScope,
     HfAttenuationFact,
     PropagationStepFact,
     SpdMonitoringFact,
     SpdReductionFact,
     SupplyFact,
     SystemVoltageFact,
+    scope_vocabulary,
 )
 from insulation_coordination.rules.importer.clauses import RawClauseFragment
 from insulation_coordination.rules.importer.extract import canonical_model_sha256
@@ -62,11 +64,23 @@ FACT_MODEL_BY_KIND: dict[str, FactModel] = {
 #: ``node_references`` come from the node reader, never typed by hand.
 _UNDIMENSIONED_FIELDS = frozenset({"fact_kind", "statement_index", "node_references"})
 
-DimensionKind = Literal["choice", "boolean", "identifier"]
+DimensionKind = Literal["choice", "boolean", "identifier", "scope"]
 
 #: A boolean dimension's two authored values. Spelled as text because that is what an editor
 #: offers and what a declared rule states; converted once, in ``proposed_fact``.
 _BOOLEAN_VALUES = ("true", "false")
+
+#: A scope dimension's wire value on a proposal: this token for the unrestricted reading, otherwise
+#: the canonically ordered tokens joined by ``|``. ``ClauseFactProposal.chosen`` stays
+#: ``dict[str, str]`` because it is a prefill of an editor, not a stored reading -- an absent key
+#: still means unchosen, and a typed payload here would model a wire form the grammar relocation is
+#: about to move anyway.
+#:
+#: ponytail: a string encoding rather than a payload model. One encode point (``scope_wire``) and
+#: one decode point (``scope_from_wire``); upgrade to a typed payload when the private grammar
+#: needs to propose anything a string cannot carry.
+SCOPE_UNRESTRICTED = "*"
+_SCOPE_SEPARATOR = "|"
 
 #: The longest a declared keyword may be. Keywords are short generic engineering terms; this cap
 #: is what stops a whole clause sentence from being pasted into a public file as a "keyword".
@@ -80,10 +94,12 @@ def fact_dimensions(fact_kind: str) -> tuple[tuple[str, DimensionKind, tuple[str
     Read from the model's own annotations, so neither the editor nor a declared rule carries a
     hand-written copy of a vocabulary that could drift from the model it has to build. A boolean
     is a two-value choice starting unchosen -- a reviewer must never record a reading they did
-    not pick, and a checkbox has no unchosen state. An ``Identifier`` field has no vocabulary and
-    gets a line edit. Anything else is refused here rather than degrading silently: a dimension
-    the editor cannot offer is a fact no reviewer can author, and approval would block on the
-    route with nothing to explain why.
+    not pick, and a checkbox has no unchosen state. A ``DimensionScope`` field is a ``"scope"``
+    over the same kind of vocabulary, offered as a multi-selection plus an explicit unrestricted
+    entry rather than as one value. An ``Identifier`` field has no vocabulary and gets a line edit.
+    Anything else is refused here rather than degrading silently: a dimension the editor cannot
+    offer is a fact no reviewer can author, and approval would block on the route with nothing to
+    explain why.
     """
 
     dimensions: list[tuple[str, DimensionKind, tuple[str, ...]]] = []
@@ -92,6 +108,10 @@ def fact_dimensions(fact_kind: str) -> tuple[tuple[str, DimensionKind, tuple[str
             continue
         if field.annotation is bool:
             dimensions.append((name, "boolean", _BOOLEAN_VALUES))
+            continue
+        scoped = scope_vocabulary(field.annotation)
+        if scoped:
+            dimensions.append((name, "scope", scoped))
             continue
         options = get_args(field.annotation)
         if options:
@@ -109,6 +129,54 @@ def fact_dimensions(fact_kind: str) -> tuple[tuple[str, DimensionKind, tuple[str
             f"{fact_kind}.{name} declares no vocabulary of strings the review dialog could offer"
         )
     return tuple(dimensions)
+
+
+def scope_wire(scope: DimensionScope[Any]) -> str:
+    """One reviewed scope as a proposal's wire value, and as a compact display of the reading.
+
+    The values are already canonical, so this neither sorts nor deduplicates: two statements
+    naming one set encode identically because the model made them identical.
+
+    ``DimensionScope[Any]`` because every family parametrizes the scope with its own vocabulary and
+    the parametrizations are invariant: this reads ``mode`` and ``values`` and needs neither.
+    """
+
+    return (
+        SCOPE_UNRESTRICTED if scope.mode == "unrestricted" else _SCOPE_SEPARATOR.join(scope.values)
+    )
+
+
+def scope_tokens(value: str) -> tuple[str, ...]:
+    """The tokens one scope wire value names; empty for the unrestricted reading."""
+
+    return () if value == SCOPE_UNRESTRICTED else tuple(value.split(_SCOPE_SEPARATOR))
+
+
+def scope_from_wire(value: str) -> dict[str, object]:
+    """One scope dimension's authored value, decoded from its wire form.
+
+    Dumped rather than returned as a model: the wire form carries no vocabulary, so the reading is
+    validated against the fact field's own parametrized scope when the statement is built, which is
+    what refuses a token that family never declared.
+    """
+
+    tokens = scope_tokens(value)
+    scope = DimensionScope[str].unrestricted() if not tokens else DimensionScope[str].of(*tokens)
+    return scope.model_dump()
+
+
+def authored_dimension(kind: DimensionKind, value: str) -> object:
+    """One dimension's authored value, from the text a proposal or an editor widget carries.
+
+    The one conversion point both authoring paths share, so a boolean or a scope cannot be decoded
+    one way from a proposal and another way from the dialog that builds the same fact.
+    """
+
+    if kind == "boolean":
+        return value == "true"
+    if kind == "scope":
+        return scope_from_wire(value)
+    return value
 
 
 def _mentions(text: str, keyword: str) -> bool:
@@ -362,15 +430,24 @@ def clause_sentences(fragment: RawClauseFragment) -> tuple[ClauseSentence, ...]:
 def keyword_proposer(grammar: ClauseFactGrammar) -> SentenceProposer:
     """The declared grammar as one sentence proposer.
 
-    A sentence restricting a dimension to several values yields one reading per value, and a
-    sentence multiplying several dimensions yields their cartesian product: a consumer always
-    asks with one concrete value, so a row per concrete value is what a projector needs, and an
-    ``any_*`` token would wrongly answer for the values the sentence leaves out.
+    A sentence restricting a **scope** dimension to several values yields **one** reading whose
+    scope names all of them: that is one statement, and expanding it into one draft per value was
+    where a single sentence turned into several identical-looking drafts and, once authored, into
+    several projected rows for one reading.
+
+    A sentence restricting a scalar dimension to several values still yields one reading per value,
+    and a sentence multiplying several such dimensions yields their cartesian product: a consumer
+    asks with one concrete value, and a scalar field cannot carry a set. The families whose
+    remaining scalar dimensions state disjunctions gain their own scopes in the later slices.
 
     A declared inherited dimension its own text settles nowhere is then read from the sentence's
     stem. Second, and only into an empty dimension, so inheritance can neither override a
     bullet's own reading nor multiply it into two drafts.
     """
+
+    scopes = {
+        name for name, kind, _options in fact_dimensions(grammar.fact_kind) if kind == "scope"
+    }
 
     def propose(sentence: ClauseSentence) -> tuple[Mapping[str, str], ...]:
         by_dimension: dict[str, list[str]] = {}
@@ -388,7 +465,10 @@ def keyword_proposer(grammar: ClauseFactGrammar) -> SentenceProposer:
                 ):
                     by_dimension.setdefault(rule.dimension, []).append(rule.value)
         axes: list[list[dict[str, str]]] = [
-            [{dimension: value} for value in values] for dimension, values in by_dimension.items()
+            [{dimension: scope_wire(DimensionScope[str].of(*values))}]
+            if dimension in scopes
+            else [{dimension: value} for value in values]
+            for dimension, values in by_dimension.items()
         ]
         for sequence in grammar.sequence_rules:
             pairs = sequence.pairs(sentence.text)
@@ -453,16 +533,11 @@ def proposed_fact(proposal: ClauseFactProposal, *, statement_index: int) -> Supp
             f"{proposal.rule_route} sentence {proposal.sentence_index} leaves "
             f"{list(proposal.unchosen)} unchosen"
         )
-    booleans = {
-        name for name, kind, _options in fact_dimensions(proposal.fact_kind) if kind == "boolean"
-    }
+    kinds = {name: kind for name, kind, _options in fact_dimensions(proposal.fact_kind)}
     values: dict[str, object] = {
         "statement_index": statement_index,
         "node_references": proposal.node_references,
-        **{
-            name: (value == "true") if name in booleans else value
-            for name, value in proposal.chosen.items()
-        },
+        **{name: authored_dimension(kinds[name], value) for name, value in proposal.chosen.items()},
     }
     fact: SupplyFact = FACT_MODEL_BY_KIND[proposal.fact_kind].model_validate(values)
     return fact
@@ -470,6 +545,7 @@ def proposed_fact(proposal: ClauseFactProposal, *, statement_index: int) -> Supp
 
 __all__ = [
     "FACT_MODEL_BY_KIND",
+    "SCOPE_UNRESTRICTED",
     "ClauseFactGrammar",
     "ClauseFactProposal",
     "ClauseKeywordRule",
@@ -477,9 +553,13 @@ __all__ = [
     "ClauseSequenceRule",
     "DimensionKind",
     "SentenceProposer",
+    "authored_dimension",
     "clause_sentences",
     "fact_dimensions",
     "keyword_proposer",
     "propose_clause_facts",
     "proposed_fact",
+    "scope_from_wire",
+    "scope_tokens",
+    "scope_wire",
 ]

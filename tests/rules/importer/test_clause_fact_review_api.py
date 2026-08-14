@@ -14,6 +14,7 @@ from insulation_coordination.rules.importer.approval import (
 from insulation_coordination.rules.importer.clause_facts import (
     CitedNode,
     ClauseFactReview,
+    DimensionScope,
     HfAttenuationFact,
     SpdReductionFact,
     SupplyFact,
@@ -64,14 +65,19 @@ def _hf_fact(
     *,
     statement_index: int,
     fragment_id: str = HF_FRAGMENT_ID,
+    dvc_gate: str = "dvc_as",
 ) -> HfAttenuationFact:
-    """One authored statement citing the synthetic HF fragment's own first node."""
+    """One authored statement citing the synthetic HF fragment's own first node.
+
+    The gate is built through the constructor rather than patched in with ``model_copy``: a scope
+    reaching a fact unvalidated is a fact whose digest covers a value its own family never declared.
+    """
 
     return HfAttenuationFact(
         statement_index=statement_index,
         node_references=(_cited(draft, fragment_id),),
         obligation="requirement",
-        dvc_gate="dvc_as",
+        dvc_gate=DimensionScope.of(dvc_gate),  # type: ignore[arg-type]
         evidence_kind="test",
         threshold_reference=ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC,
         comparison_required=True,
@@ -157,9 +163,7 @@ def second_hf_fact(draft_with_supply_fragments: ImportedRuleDraft) -> HfAttenuat
     refusal instead of the staleness it is here for.
     """
 
-    return _hf_fact(draft_with_supply_fragments, statement_index=1).model_copy(
-        update={"dvc_gate": "dvc_b"}
-    )
+    return _hf_fact(draft_with_supply_fragments, statement_index=1, dvc_gate="dvc_b")
 
 
 def test_a_route_without_facts_blocks_approval(draft_with_supply_fragments) -> None:

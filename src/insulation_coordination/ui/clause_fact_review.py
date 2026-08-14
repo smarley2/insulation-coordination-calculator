@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast
 
 from pydantic import ValidationError
 from PySide6.QtCore import Qt
@@ -39,12 +39,18 @@ from PySide6.QtWidgets import (
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.rules.importer.clause_fact_proposals import (
     FACT_MODEL_BY_KIND,
+    SCOPE_UNRESTRICTED,
     ClauseFactProposal,
+    DimensionKind,
+    authored_dimension,
     fact_dimensions,
     proposed_fact,
+    scope_tokens,
+    scope_wire,
 )
 from insulation_coordination.rules.importer.clause_facts import (
     CitedNode,
+    DimensionScope,
     SupplyFact,
     same_clause_fact_reading,
 )
@@ -87,24 +93,38 @@ _NO_SOURCE_REGION = (
     "Source region not available: re-extract from the licensed PDFs to see the clause's own page."
 )
 
+#: The scope widget's explicit unrestricted row. Its own entry rather than "select every value",
+#: because the two are different readings: unrestricted projects over the reviewed domain, while a
+#: set of every value projects over exactly those values -- identical only where the reviewed and
+#: consumer domains coincide, and a reviewer must be able to state either.
+_UNRESTRICTED_ENTRY = "(unrestricted)"
+
+
+def _dimension_text(kind: DimensionKind, value: object) -> str:
+    """One authored dimension as the editor spells it, so a row and the editor agree.
+
+    The inverse of ``authored_dimension``: booleans read as its own two values and a scope as its
+    wire form, which is what the scope widget's selection encodes.
+    """
+
+    if kind == "boolean":
+        return "true" if value else "false"
+    if kind == "scope":
+        return scope_wire(cast("DimensionScope[Any]", value))
+    return str(value)
+
 
 def _reading_summary(fact: SupplyFact) -> str:
     """One statement's reading, compactly, from whatever dimensions its family declares.
 
     Derived from the family's own dimension list rather than formatted per family: a hand-written
     format per family is one more place a new dimension can be forgotten, and a row that omits a
-    dimension is exactly the blindness that let ten copies of one reading look distinct. Booleans
-    read as the editor's own two values so a row and the editor beside it agree.
+    dimension is exactly the blindness that let ten copies of one reading look distinct.
     """
 
-    booleans = {
-        name for name, kind, _options in fact_dimensions(fact.fact_kind) if kind == "boolean"
-    }
     return " · ".join(
-        ("true" if getattr(fact, name) else "false")
-        if name in booleans
-        else str(getattr(fact, name))
-        for name, _kind, _options in fact_dimensions(fact.fact_kind)
+        _dimension_text(kind, getattr(fact, name))
+        for name, kind, _options in fact_dimensions(fact.fact_kind)
     )
 
 
@@ -441,7 +461,8 @@ class ClauseFactReviewDialog(QDialog):
         self._pdf_paths = dict(pdf_paths or {})
         self._combos: dict[str, QComboBox] = {}
         self._edits: dict[str, QLineEdit] = {}
-        self._booleans: set[str] = set()
+        self._scope_lists: dict[str, QListWidget] = {}
+        self._kinds: dict[str, DimensionKind] = {}
         self._editor_kind: str | None = None
         self._node_rows: tuple[ClauseFactNodeRow, ...] = ()
         self._fact_rows: tuple[ClauseFactStatementRow, ...] = ()
@@ -599,11 +620,41 @@ class ClauseFactReviewDialog(QDialog):
             for field, combo in self._combos.items()
         }
 
+    @property
+    def scope_options(self) -> dict[str, tuple[str, ...]]:
+        """The visible editor's vocabulary per scope dimension, without the unrestricted entry."""
+
+        return {
+            field: tuple(
+                widget.item(row).text()
+                for row in range(widget.count())
+                if widget.item(row).text() != _UNRESTRICTED_ENTRY
+            )
+            for field, widget in self._scope_lists.items()
+        }
+
     def dimension_combo(self, field: str) -> QComboBox:
         return self._combos[field]
 
     def dimension_edit(self, field: str) -> QLineEdit:
         return self._edits[field]
+
+    def dimension_scope(self, field: str) -> QListWidget:
+        return self._scope_lists[field]
+
+    def choose_scope(self, field: str, *values: str, unrestricted: bool = False) -> None:
+        """Select one scope dimension's reading: named values, or the unrestricted entry.
+
+        Selecting every value is deliberately *not* the same action as selecting unrestricted: the
+        two project differently wherever the reviewed and consumer domains coincide, so the widget
+        keeps them separately reachable and this helper does not translate one into the other.
+        """
+
+        widget = self._scope_lists[field]
+        wanted = set(values) | ({_UNRESTRICTED_ENTRY} if unrestricted else set())
+        for row in range(widget.count()):
+            item = widget.item(row)
+            item.setSelected(item.text() in wanted)
 
     def refresh(self) -> None:
         rows = self._model.routes()
@@ -636,10 +687,9 @@ class ClauseFactReviewDialog(QDialog):
         if not citations:
             self._status.setText("Select the node(s) the statement rests on first.")
             return
-        chosen = {field: combo.currentText() for field, combo in self._combos.items()}
-        chosen.update({field: edit.text().strip() for field, edit in self._edits.items()})
+        chosen = self._chosen_text()
         # Blankness is checked before any conversion: a blank boolean combo converted first
-        # would read as a chosen ``false``.
+        # would read as a chosen ``false``, and an empty scope selection as an empty set.
         if not all(chosen.values()):
             self._status.setText("Choose every dimension before authoring this statement.")
             return
@@ -647,7 +697,7 @@ class ClauseFactReviewDialog(QDialog):
             "statement_index": self.statement_index.value(),
             "node_references": citations,
             **{
-                field: (text == "true") if field in self._booleans else text
+                field: authored_dimension(self._kinds[field], text)
                 for field, text in chosen.items()
             },
         }
@@ -849,6 +899,8 @@ class ClauseFactReviewDialog(QDialog):
             combo.setCurrentIndex(0)
         for edit in self._edits.values():
             edit.clear()
+        for scope_list in self._scope_lists.values():
+            scope_list.clearSelection()
         # ``supply_kind`` is not a reviewed choice on a route the recipe already determines it
         # for: import-time validation guarantees every such route has a declared expectation, so
         # this can look it up unconditionally rather than falling back to an editable combo.
@@ -895,13 +947,12 @@ class ClauseFactReviewDialog(QDialog):
 
         self.statement_index.setValue(fact.statement_index)
         for field, combo in self._combos.items():
-            value = getattr(fact, field)
-            if field in self._booleans:
-                combo.setCurrentText("true" if value else "false")
-            else:
-                combo.setCurrentText(value)
+            combo.setCurrentText(_dimension_text(self._kinds[field], getattr(fact, field)))
         for field, edit in self._edits.items():
             edit.setText(getattr(fact, field))
+        for field in self._scope_lists:
+            scope: DimensionScope[str] = getattr(fact, field)
+            self.choose_scope(field, *scope.values, unrestricted=scope.mode == "unrestricted")
         cited = {(item.fragment_id, item.node_order) for item in fact.node_references}
         for position, node in enumerate(self._node_rows):
             item = self.nodes_list.item(position)
@@ -944,6 +995,10 @@ class ClauseFactReviewDialog(QDialog):
                 self._combos[field].setCurrentText(value)
             elif field in self._edits:
                 self._edits[field].setText(value)
+            elif field in self._scope_lists:
+                self.choose_scope(
+                    field, *scope_tokens(value), unrestricted=value == SCOPE_UNRESTRICTED
+                )
         cited = {(item.fragment_id, item.node_order) for item in proposal.node_references}
         for position, node in enumerate(self._node_rows):
             self.nodes_list.item(position).setSelected((node.fragment_id, node.node_order) in cited)
@@ -969,7 +1024,8 @@ class ClauseFactReviewDialog(QDialog):
             self._editor_form.removeRow(0)
         self._combos = {}
         self._edits = {}
-        self._booleans = set()
+        self._scope_lists = {}
+        self._kinds = {name: kind for name, kind, _options in fact_dimensions(fact_kind)}
         # The family is the route's declared reading, displayed rather than chosen: offering
         # a choice would let a reviewer certify a route with a kind its clause never states.
         self._family_label = QLabel(fact_kind, self._editor_box)
@@ -984,6 +1040,21 @@ class ClauseFactReviewDialog(QDialog):
                 self._editor_form.addRow(field.replace("_", " "), edit)
                 self._edits[field] = edit
                 continue
+            if kind == "scope":
+                # A multi-selection over the vocabulary plus the explicit unrestricted row: a
+                # statement naming several values is one statement, and nothing selected is
+                # unchosen, exactly as a blank combo is.
+                scope_list = QListWidget(self._editor_box)
+                scope_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+                scope_list.addItem(_UNRESTRICTED_ENTRY)
+                scope_list.addItems(options)
+                scope_list.setMaximumHeight(
+                    scope_list.sizeHintForRow(0) * (len(options) + 1) + 2 * scope_list.frameWidth()
+                )
+                scope_list.itemSelectionChanged.connect(self._refresh_author_enabled)
+                self._editor_form.addRow(field.replace("_", " "), scope_list)
+                self._scope_lists[field] = scope_list
+                continue
             combo = QComboBox(self._editor_box)
             # A blank first entry, so every dimension starts unchosen: a reviewer must never
             # be able to record a reading they did not pick.
@@ -992,8 +1063,6 @@ class ClauseFactReviewDialog(QDialog):
             combo.currentIndexChanged.connect(self._refresh_author_enabled)
             self._editor_form.addRow(field.replace("_", " "), combo)
             self._combos[field] = combo
-            if kind == "boolean":
-                self._booleans.add(field)
         self._editor_kind = fact_kind
 
     @staticmethod
@@ -1008,25 +1077,43 @@ class ClauseFactReviewDialog(QDialog):
         button.setEnabled(enabled)
         button.setToolTip("" if enabled else _DISABLED_REASONS[reason])
 
+    def _scope_text(self, field: str) -> str:
+        """One scope dimension's wire value, blank while nothing is selected.
+
+        The unrestricted row wins over any value rows selected with it. It is the wider reading, so
+        honouring it can never record a narrower reading than the reviewer selected -- and the two
+        are never merged, because unrestricted is not "these values" and must not become them.
+        """
+
+        selected = {item.text() for item in self._scope_lists[field].selectedItems()}
+        if _UNRESTRICTED_ENTRY in selected:
+            return SCOPE_UNRESTRICTED
+        return scope_wire(DimensionScope[str].of(*selected)) if selected else ""
+
+    def _chosen_text(self) -> dict[str, str]:
+        """Every editor dimension's current text, blank where the reviewer chose nothing.
+
+        One reader for all three widget kinds, so the enable check and the authoring path cannot
+        disagree about which dimensions are still unchosen.
+        """
+
+        values = {field: combo.currentText() for field, combo in self._combos.items()}
+        values.update({field: edit.text().strip() for field, edit in self._edits.items()})
+        values.update({field: self._scope_text(field) for field in self._scope_lists})
+        return values
+
     def _unchosen_dimensions(self) -> tuple[str, ...]:
         """Which editor dimensions are still blank, in the order the editor shows them."""
 
-        return tuple(
-            field
-            for field in (*self._combos, *self._edits)
-            if not (
-                self._combos[field].currentText()
-                if field in self._combos
-                else self._edits[field].text().strip()
-            )
-        )
+        chosen = self._chosen_text()
+        return tuple(field for field in self._kinds if not chosen.get(field))
 
     def _refresh_author_enabled(self) -> None:
         unchosen = self._unchosen_dimensions()
         cited = bool(self.nodes_list.selectedItems())
         self._set_enabled(
             self.author_button,
-            bool(self._combos or self._edits) and not unchosen and cited,
+            bool(self._kinds) and not unchosen and cited,
             "author",
         )
         self._describe_next_step(unchosen, cited)

@@ -19,6 +19,7 @@ import pytest
 from insulation_coordination.rules.importer.clause_fact_proposals import (
     clause_sentences,
     fact_dimensions,
+    scope_tokens,
 )
 from insulation_coordination.rules.importer.extract import ImportedRuleDraft
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
@@ -87,16 +88,20 @@ def test_a_reached_dimension_is_never_reached_with_a_value_outside_its_vocabular
 ) -> None:
     """A proposal a reviewer cannot author is worse than no proposal at all."""
 
-    vocabularies = {
-        name: options
-        for name, _kind, options in fact_dimensions(SUPPLY_FACT_PROPOSAL_GRAMMARS[route].fact_kind)
+    declared = {
+        name: (kind, options)
+        for name, kind, options in fact_dimensions(SUPPLY_FACT_PROPOSAL_GRAMMARS[route].fact_kind)
     }
 
     for proposal in propose_supply_facts(_fragment(extracted_draft, route), route):
-        assert set(proposal.chosen) <= set(vocabularies), route
-        assert set(proposal.chosen) | set(proposal.unchosen) == set(vocabularies), route
+        assert set(proposal.chosen) <= set(declared), route
+        assert set(proposal.chosen) | set(proposal.unchosen) == set(declared), route
         for name, value in proposal.chosen.items():
-            assert not vocabularies[name] or value in vocabularies[name], (route, name)
+            kind, options = declared[name]
+            # A scope dimension carries a set on the wire, so its proposal is checked token by
+            # token: every token has to be authorable, and the unrestricted reading names none.
+            proposed = scope_tokens(value) if kind == "scope" else (value,)
+            assert not options or set(proposed) <= set(options), (route, name)
 
 
 @pytest.mark.parametrize("route", ROUTES)

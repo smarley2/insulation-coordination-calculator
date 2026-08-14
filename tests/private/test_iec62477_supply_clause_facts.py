@@ -27,6 +27,7 @@ from insulation_coordination.rules.importer.approval import approval_blockers
 from insulation_coordination.rules.importer.clause_facts import (
     BarrierTransferFact,
     CitedNode,
+    DimensionScope,
     HfAttenuationFact,
     SpdMonitoringFact,
     SpdReductionFact,
@@ -170,7 +171,7 @@ def _placeholder_facts(draft: ImportedRuleDraft) -> dict[str, SupplyFact]:
             statement_index=0,
             node_references=_first_cited_node(draft, ids.SUPPLY_HF_TRANSFORMER_ATTENUATION),
             obligation="permission",
-            dvc_gate="dvc_b",
+            dvc_gate=DimensionScope.of("dvc_b"),
             evidence_kind="simulation",
             threshold_reference=ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC,
             comparison_required=True,

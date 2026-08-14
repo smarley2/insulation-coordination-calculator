@@ -19,7 +19,7 @@ from the maintained curve recipes.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import NoReturn, get_args
+from typing import Any, NoReturn, get_args
 
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import (
@@ -51,6 +51,7 @@ from insulation_coordination.rules.importer.clause_facts import (
     SpdReductionFact,
     SupplyFact,
     SystemVoltageFact,
+    scope_vocabulary,
 )
 from insulation_coordination.rules.importer.clauses import RawClauseFragment
 from insulation_coordination.rules.importer.extract import (
@@ -840,11 +841,14 @@ def _statement_source(
 
 def _scope_matcher(
     input_name: str,
-    scope: DimensionScope[str],
+    scope: DimensionScope[Any],
     reviewed_domain: tuple[str, ...],
     consumer_domain: tuple[str, ...],
 ) -> Matcher:
     """Project one reviewed dimension scope onto one declared consumer input.
+
+    ``DimensionScope[Any]`` because each family parametrizes the scope with its own vocabulary and
+    the parametrizations are invariant; the reviewed domain arrives separately anyway.
 
     ``exact_one`` equals, ``exact_set`` is in -- one reviewed statement, one row, never one row per
     value.
@@ -880,13 +884,16 @@ def _reviewed_domain(
 
     Read from the model rather than written down beside the consumer vocabulary, so the two cannot
     drift: adding a value to a fact field widens this automatically, and no second list has to be
-    remembered. ``unrestricted_token`` drops a legacy ``any_*`` member, which is a scope and not a
-    value of the domain.
+    remembered. A ``DimensionScope`` field's domain is the vocabulary it scopes, and a scalar
+    field's is its own literal members less ``unrestricted_token`` -- a legacy ``any_*`` member,
+    which is a scope and not a value of the domain.
     """
 
-    values = tuple(
-        value for value in get_args(model.model_fields[field].annotation) if isinstance(value, str)
-    )
+    annotation = model.model_fields[field].annotation
+    scoped = scope_vocabulary(annotation)
+    if scoped is not None:
+        return scoped
+    values = tuple(value for value in get_args(annotation) if isinstance(value, str))
     return tuple(value for value in values if value != unrestricted_token)
 
 
@@ -1225,6 +1232,16 @@ def project_verified_barrier_transfer(
 #: no match, which is what the source states about it -- nothing.
 _DEVICE_PLACEMENTS = ("internal_to_pecs", "external_to_pecs", "bundled_external_to_pecs")
 
+#: DVC designations. Designations only; no source value or wording. The document defines
+#: exactly these three (3.19, 3.20, 3.21) and Table 2 and Table 3 name no others; there is
+#: no DVC A and no DVC D. Table 2 splits DVC As into a wet and a dry row, which changes the
+#: voltage limits, not the designation.
+#:
+#: Declared here beside the other consumer question spaces rather than in the attenuation section,
+#: because the reviewed-versus-consumer table below reads it: the gate is a reviewed scope now, and
+#: leaving it out of that table is the drift the table exists to refuse.
+_DVC_DESIGNATIONS = ("dvc_as", "dvc_b", "dvc_c")
+
 #: Per reviewed dimension: the fact field's declared domain, and the consumer input it projects
 #: into. Keyed by fact field name, since two of the inputs are named differently from the field
 #: that feeds them. Where the two domains coincide an unrestricted reading is a wildcard; where the
@@ -1255,6 +1272,7 @@ _REVIEWED_AND_CONSUMER_DOMAINS: dict[str, tuple[tuple[str, ...], tuple[str, ...]
         _reviewed_domain(SpdMonitoringFact, "device_placement", "any_placement"),
         _DEVICE_PLACEMENTS,
     ),
+    "dvc_gate": (_reviewed_domain(HfAttenuationFact, "dvc_gate"), _DVC_DESIGNATIONS),
 }
 
 
@@ -1469,11 +1487,6 @@ def project_spd_reduction_requirements(
 
 # --- high-frequency isolating transformer ------------------------------------------
 
-#: DVC designations. Designations only; no source value or wording. The document defines
-#: exactly these three (3.19, 3.20, 3.21) and Table 2 and Table 3 name no others; there is
-#: no DVC A and no DVC D. Table 2 splits DVC As into a wet and a dry row, which changes the
-#: voltage limits, not the designation.
-_DVC_DESIGNATIONS = ("dvc_as", "dvc_b", "dvc_c")
 #: The consumer's question space for evidence, declared here and never derived from the reviewed
 #: facts. ``none`` -- no evidence yet -- is the first question a consumer asks and no authored
 #: statement can name it, so deriving this vocabulary from the facts would put that question
@@ -1529,7 +1542,10 @@ def project_hf_transformer_attenuation(
     """Project the isolating-transformer attenuation clause into a decision.
 
     Every row comes from one reviewed ``HfAttenuationFact``: it states the DVC gate the clause
-    applies to and the evidence route or routes it accepts.
+    applies to and the evidence route or routes it accepts. The gate is a scope, so a statement
+    naming several designations is one statement and projects one row over them -- and an
+    unrestricted gate reading projects an ``in`` over the reviewed designations rather than a
+    wildcard, because this rule declares a designation no reviewed reading of the clause names.
     ``working_voltage_basis_permitted`` is not independently authored content -- an accepted
     evidence kind is what grants the permission, so it mirrors the fact's presence, the same way
     a verified barrier's transfer permission mirrors its own presence in
@@ -1555,10 +1571,12 @@ def project_hf_transformer_attenuation(
     if len(attenuation_facts) != len(facts):
         raise ValueError(f"{label} projection requires HF attenuation facts")
 
-    def _row(*, gate: str, evidence: Matcher, permitted: bool, required: str) -> DecisionRow:
+    reviewed_gates, consumer_gates = _REVIEWED_AND_CONSUMER_DOMAINS["dvc_gate"]
+
+    def _row(*, gate: Matcher, evidence: Matcher, permitted: bool, required: str) -> DecisionRow:
         return DecisionRow(
             matchers=(
-                _matcher("circuit_dvc", (gate,)),
+                gate,
                 Matcher(input="transformer_frequency_hz", op="range", minimum=threshold_hz),
                 Matcher(input="isolation_provided", op="equals", boolean=True),
                 evidence,
@@ -1570,21 +1588,26 @@ def project_hf_transformer_attenuation(
             source=fragment.nodes[0].source,
         )
 
-    # One outstanding-showing row per gate the facts state rather than per fact: several
-    # statements may accept different routes through one gate, and they all leave the same
-    # showing outstanding.
+    # One outstanding-showing row per concrete designation the facts gate rather than per fact:
+    # several statements may accept different routes through one designation, and they all leave
+    # the same showing outstanding. A statement whose gate restricts nothing leaves it outstanding
+    # for every designation its own reviewed domain names -- never for a designation outside it.
     outstanding = tuple(
         _row(
-            gate=gate,
+            gate=_matcher("circuit_dvc", (designation,)),
             evidence=_matcher("attenuation_evidence_kind", ("none",)),
             permitted=False,
             required="test_or_simulation_or_calculation",
         )
-        for gate in dict.fromkeys(fact.dvc_gate for fact in attenuation_facts)
+        for designation in dict.fromkeys(
+            designation
+            for fact in attenuation_facts
+            for designation in (fact.dvc_gate.values or reviewed_gates)
+        )
     )
     shown = tuple(
         _row(
-            gate=fact.dvc_gate,
+            gate=_scope_matcher("circuit_dvc", fact.dvc_gate, reviewed_gates, consumer_gates),
             evidence=_evidence_matcher(fact.evidence_kind),
             permitted=True,
             required="already_provided",

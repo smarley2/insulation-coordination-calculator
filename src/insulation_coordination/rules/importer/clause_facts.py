@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, get_args
 
 from pydantic import Field, model_validator
 
@@ -66,6 +66,24 @@ class DimensionScope[T: str](FrozenModel):
 
         ordered = tuple(sorted(set(values)))
         return cls(mode="exact_one" if len(ordered) == 1 else "exact_set", values=ordered)
+
+
+def scope_vocabulary(annotation: object) -> tuple[str, ...] | None:
+    """The values one ``DimensionScope`` annotation scopes, or ``None`` for any other annotation.
+
+    ``DimensionScope[X]`` is a concrete model *class* pydantic builds, not a typing alias, so
+    ``get_origin``/``get_args`` return nothing for it and the type argument is read from pydantic's
+    own generic metadata. One reader for every caller that has to know a field is a scope and what
+    it may name -- the editor's vocabulary, the proposer's union, and the projected reviewed
+    domain -- so none of them carries its own copy of that introspection.
+    """
+
+    if not (isinstance(annotation, type) and issubclass(annotation, DimensionScope)):
+        return None
+    parameters = annotation.__pydantic_generic_metadata__["args"]
+    if not parameters:
+        return ()
+    return tuple(value for value in get_args(parameters[0]) if isinstance(value, str))
 
 
 class CitedNode(FrozenModel):
@@ -221,9 +239,19 @@ class SpdMonitoringFact(_Fact):
     compliance_evidence: Literal["visual_inspection", "monitoring_test", "not_required"]
 
 
+#: The DVC designations a gate reading may name. Its own alias because the scope's vocabulary is
+#: read back out of this annotation -- see ``scope_vocabulary`` -- and because the reviewed domain
+#: is deliberately narrower than the consumer input's: the third declared designation is one no
+#: reviewed reading of this clause can name, so an unrestricted gate reading must not answer for it.
+DvcGate = Literal["dvc_as", "dvc_b"]
+
+
 class HfAttenuationFact(_Fact):
     fact_kind: Literal["hf_attenuation"] = "hf_attenuation"
-    dvc_gate: Literal["dvc_as", "dvc_b"]
+    #: A scope rather than one designation, because a statement naming both gates is one
+    #: statement. Authored as a scalar it had to be authored twice, which projected two rows and
+    #: showed as two drafts for one sentence -- a reading duplicated to fit the field's shape.
+    dvc_gate: DimensionScope[DvcGate]
     #: ``any_evidence`` records a reading not restricted to one evidence route, authored once
     #: rather than once per route -- the same shape ``any_purpose`` carries for a calculation
     #: purpose. Without it, authoring such a reading forces a single route and the others reach
@@ -343,6 +371,7 @@ __all__ = [
     "ClauseFactReview",
     "ConfirmedFacts",
     "DimensionScope",
+    "DvcGate",
     "HfAttenuationFact",
     "Obligation",
     "PropagationStepFact",
@@ -353,4 +382,5 @@ __all__ = [
     "SystemVoltageFact",
     "evidence_sha256",
     "same_clause_fact_reading",
+    "scope_vocabulary",
 ]

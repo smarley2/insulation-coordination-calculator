@@ -10,13 +10,16 @@ from PySide6.QtWidgets import QHeaderView
 
 from insulation_coordination.domain.rules import RulePackageError
 from insulation_coordination.rules.importer import clause_fact_proposals
+from insulation_coordination.rules.importer.clause_fact_proposals import scope_wire
 from insulation_coordination.rules.importer.clause_facts import (
     BarrierTransferFact,
     CitedNode,
+    DimensionScope,
     HfAttenuationFact,
     SpdMonitoringFact,
     SpdReductionFact,
     SystemVoltageFact,
+    scope_vocabulary,
 )
 from insulation_coordination.rules.importer.clauses import ClauseNode, RawClauseFragment
 from insulation_coordination.rules.importer.extract import (
@@ -68,17 +71,34 @@ _FACT_MODELS = {
 
 
 def _expected_options(fact_kind: str) -> dict[str, tuple[str, ...]]:
-    """Every combo dimension's vocabulary: literals verbatim, booleans as the two-value choice."""
+    """Every combo dimension's vocabulary: literals verbatim, booleans as the two-value choice.
+
+    Scope dimensions are excluded and checked through ``_expected_scope_options`` instead: a scope
+    is a multi-selection over its vocabulary plus an explicit unrestricted entry, not a combo, and
+    conflating the two would let a scope regress into a single-value widget unnoticed.
+    """
 
     options: dict[str, tuple[str, ...]] = {}
     for name, field in _FACT_MODELS[fact_kind].model_fields.items():
         if name in ("fact_kind", "statement_index", "node_references"):
+            continue
+        if scope_vocabulary(field.annotation) is not None:
             continue
         if field.annotation is bool:
             options[name] = ("true", "false")
         elif get_args(field.annotation):
             options[name] = get_args(field.annotation)
     return options
+
+
+def _expected_scope_options(fact_kind: str) -> dict[str, tuple[str, ...]]:
+    """Every scope dimension's vocabulary, read from the model that declares it."""
+
+    return {
+        name: scoped
+        for name, field in _FACT_MODELS[fact_kind].model_fields.items()
+        if (scoped := scope_vocabulary(field.annotation))
+    }
 
 
 def _fragment_over_segments(
@@ -119,10 +139,14 @@ def _fill_hf_dimensions(dialog: ClauseFactReviewDialog) -> None:
     """Choose every dimension of the HF family, leaving only the index and the citation."""
 
     dialog.dimension_combo("obligation").setCurrentText("requirement")
-    dialog.dimension_combo("dvc_gate").setCurrentText("dvc_as")
+    dialog.choose_scope("dvc_gate", "dvc_as")
     dialog.dimension_combo("evidence_kind").setCurrentText("test")
     dialog.dimension_edit("threshold_reference").setText(ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC)
     dialog.dimension_combo("comparison_required").setCurrentText("true")
+
+
+def _selected_scope(dialog: ClauseFactReviewDialog, field: str) -> list[str]:
+    return [item.text() for item in dialog.dimension_scope(field).selectedItems()]
 
 
 def _author_hf_through_dialog(model: ClauseFactReviewModel, dialog: ClauseFactReviewDialog) -> int:
@@ -213,9 +237,7 @@ def test_a_later_authoring_makes_a_completed_route_stale(
     # duplicate, so bumping the index alone would test that refusal instead of staleness.
     model.author(
         HF_ROUTE,
-        _hf_fact(draft_with_supply_fragments, statement_index=1).model_copy(
-            update={"dvc_gate": "dvc_b"}
-        ),
+        _hf_fact(draft_with_supply_fragments, statement_index=1, dvc_gate="dvc_b"),
         actor="tester",
         notes="one more",
     )
@@ -506,7 +528,7 @@ def test_selecting_a_statement_prefills_the_editor_for_replacement(
     dialog.facts_list.setCurrentRow(0)
 
     assert dialog.statement_index.value() == 0
-    assert dialog.dimension_combo("dvc_gate").currentText() == "dvc_as"
+    assert _selected_scope(dialog, "dvc_gate") == ["dvc_as"]
     assert dialog.dimension_combo("comparison_required").currentText() == "true"
     assert [item.text() for item in dialog.nodes_list.selectedItems()]
 
@@ -548,7 +570,7 @@ def test_authoring_stays_disabled_while_any_dimension_is_unchosen(
     dialog.nodes_list.item(0).setSelected(True)
     assert dialog.author_button.isEnabled() is False
     dialog.dimension_combo("obligation").setCurrentText("requirement")
-    dialog.dimension_combo("dvc_gate").setCurrentText("dvc_as")
+    dialog.choose_scope("dvc_gate", "dvc_as")
     dialog.dimension_combo("evidence_kind").setCurrentText("test")
     dialog.dimension_edit("threshold_reference").setText(ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC)
     assert dialog.author_button.isEnabled() is False
@@ -567,7 +589,7 @@ def test_authoring_stays_disabled_while_no_node_is_selected(
     dialog.table.selectRow(_route_position(model, HF_ROUTE))
 
     dialog.dimension_combo("obligation").setCurrentText("requirement")
-    dialog.dimension_combo("dvc_gate").setCurrentText("dvc_as")
+    dialog.choose_scope("dvc_gate", "dvc_as")
     dialog.dimension_combo("evidence_kind").setCurrentText("test")
     dialog.dimension_edit("threshold_reference").setText(ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC)
     dialog.dimension_combo("comparison_required").setCurrentText("true")
@@ -591,11 +613,73 @@ def test_each_combo_offers_exactly_its_fields_vocabulary(
         dialog.table.selectRow(position)
         family = SUPPLY_FACT_FAMILY_BY_ROUTE[row.rule_route]
         assert dialog.family_text == family
-        offered.append((family, dialog.dimension_options))
+        offered.append((family, dialog.dimension_options, dialog.scope_options))
 
     # Every non-legacy family is reachable; propagation_step belongs only to the legacy route.
-    assert {family for family, _options in offered} == set(_FACT_MODELS)
-    assert all(options == _expected_options(family) for family, options in offered)
+    assert {family for family, _options, _scopes in offered} == set(_FACT_MODELS)
+    assert all(options == _expected_options(family) for family, options, _scopes in offered)
+    assert all(scopes == _expected_scope_options(family) for family, _options, scopes in offered)
+    # The scope widget is reached at all, so the assertions above are not vacuously true.
+    assert any(scopes for _family, _options, scopes in offered)
+
+
+def test_a_scope_dimension_offers_its_values_and_an_explicit_unrestricted_entry(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """Selecting every value must stay a different action from selecting unrestricted.
+
+    They project differently wherever the reviewed and consumer domains coincide, so a widget that
+    only offered the values would leave the unrestricted reading unauthorable, and one that treated
+    "all selected" as unrestricted would record a reading the reviewer did not state.
+    """
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+    dialog.nodes_list.item(0).setSelected(True)
+    _fill_hf_dimensions(dialog)
+
+    widget = dialog.dimension_scope("dvc_gate")
+    assert [widget.item(row).text() for row in range(widget.count())] == [
+        "(unrestricted)",
+        "dvc_as",
+        "dvc_b",
+    ]
+
+    dialog.choose_scope("dvc_gate", "dvc_as", "dvc_b")
+    dialog.author_selected()
+
+    # Authoring reloads the route, which puts every dimension back to unchosen.
+    dialog.nodes_list.item(0).setSelected(True)
+    _fill_hf_dimensions(dialog)
+    dialog.choose_scope("dvc_gate", unrestricted=True)
+    dialog.author_selected()
+
+    every_value, unrestricted = (item.fact.dvc_gate for item in model.draft.clause_fact_reviews)
+    assert (every_value.mode, every_value.values) == ("exact_set", ("dvc_as", "dvc_b"))
+    assert (unrestricted.mode, unrestricted.values) == ("unrestricted", ())
+
+
+def test_one_statement_naming_both_designations_is_authored_once(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """The reviewer's side of the duplicate-expansion fix: one reading, one Author, one statement."""
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+    dialog.nodes_list.item(0).setSelected(True)
+    _fill_hf_dimensions(dialog)
+    dialog.choose_scope("dvc_gate", "dvc_b", "dvc_as")
+
+    dialog.author_selected()
+
+    (review,) = model.draft.clause_fact_reviews
+    assert review.fact.dvc_gate == DimensionScope.of("dvc_as", "dvc_b")
+    # The reading a reviewer reads back off the row, not a model repr.
+    assert "dvc_as|dvc_b" in dialog.facts_list.item(0).text()
 
 
 def test_an_importer_refusal_lands_in_the_status_line(qtbot, draft_with_supply_fragments) -> None:
@@ -681,16 +765,15 @@ def test_duplicate_loads_the_selected_statement_under_the_next_free_index(
     dialog.duplicate_selected()
 
     assert dialog.statement_index.value() == 1
-    assert dialog.dimension_combo("dvc_gate").currentText() == "dvc_as"
+    assert _selected_scope(dialog, "dvc_gate") == ["dvc_as"]
     assert [item.text() for item in dialog.nodes_list.selectedItems()]
 
-    dialog.dimension_combo("dvc_gate").setCurrentText("dvc_b")
+    dialog.choose_scope("dvc_gate", "dvc_b")
     dialog.author_selected()
 
     facts = model.facts(HF_ROUTE)
     assert [row.statement_index for row in facts] == [0, 1]
-    assert facts[0].fact.dvc_gate == "dvc_as"
-    assert facts[1].fact.dvc_gate == "dvc_b"
+    assert [scope_wire(row.fact.dvc_gate) for row in facts] == ["dvc_as", "dvc_b"]
 
 
 def test_duplicate_with_nothing_selected_reports_status_rather_than_raising(
@@ -814,6 +897,7 @@ def test_selecting_a_draft_cites_its_own_node_and_leaves_unsettled_dimensions_un
     assert all(
         dialog.dimension_combo(field).currentText() == "" for field in dialog.dimension_options
     )
+    assert all(not _selected_scope(dialog, field) for field in dialog.scope_options)
     assert dialog.author_button.isEnabled() is False
 
     _fill_hf_dimensions(dialog)
@@ -1159,7 +1243,7 @@ def test_authoring_every_fully_proposed_statement_records_each_one_individually(
 
     reviews = [item for item in model.draft.clause_fact_reviews if item.rule_route == HF_ROUTE]
     assert [item.statement_index for item in reviews] == [0, 1]
-    assert {item.fact.dvc_gate for item in reviews} == {"dvc_as", "dvc_b"}
+    assert {scope_wire(item.fact.dvc_gate) for item in reviews} == {"dvc_as", "dvc_b"}
     assert all(item.actor == "maintainer" for item in reviews)
     assert all("grammar-proposed" in item.notes for item in reviews)
     assert dialog.table.item(position, _STATUS_COLUMN).text() == "needs_completion"
@@ -1184,7 +1268,7 @@ def test_the_statement_the_grammar_could_not_settle_is_left_for_the_reviewer(
     # keeping its prefill and its blank fields.
     assert dialog.facts_list.count() == 2 + len(remaining)
     dialog.facts_list.setCurrentRow(2)
-    assert dialog.dimension_combo("dvc_gate").currentText() == ""
+    assert _selected_scope(dialog, "dvc_gate") == []
     assert dialog.author_button.isEnabled() is False
 
 

@@ -21,6 +21,7 @@ from insulation_coordination.rules.importer.clause_facts import (
     BarrierTransferFact,
     CitedNode,
     ConfirmedFacts,
+    DimensionScope,
     HfAttenuationFact,
     SpdMonitoringFact,
     SpdReductionFact,
@@ -408,7 +409,7 @@ def _hf_attenuation_fact(
     fragment: RawClauseFragment,
     *,
     index: int = 0,
-    dvc_gate: str = "dvc_b",
+    dvc_gate: DimensionScope[str] | None = None,
     evidence_kind: str,
 ) -> HfAttenuationFact:
     """Invented values only: a synthetic reviewed statement, never real clause content."""
@@ -417,7 +418,7 @@ def _hf_attenuation_fact(
         statement_index=index,
         node_references=(_cited_node(fragment),),
         obligation="requirement",
-        dvc_gate=dvc_gate,  # type: ignore[arg-type]
+        dvc_gate=dvc_gate if dvc_gate is not None else DimensionScope.of("dvc_b"),  # type: ignore[arg-type]
         evidence_kind=evidence_kind,  # type: ignore[arg-type]
         threshold_reference=ids.SUPPLY_HF_TRANSFORMER_ATTENUATION,
         comparison_required=True,
@@ -427,7 +428,7 @@ def _hf_attenuation_fact(
 def _confirmed_hf_facts(
     *,
     evidence_kinds: tuple[str, ...],
-    dvc_gate: str = "dvc_b",
+    dvc_gate: DimensionScope[str] | None = None,
     fragment: RawClauseFragment,
 ) -> ConfirmedFacts:
     facts = tuple(
@@ -1758,9 +1759,68 @@ def test_a_dvc_gate_no_fact_states_is_not_covered() -> None:
     """
 
     fragment = _hf_fragment(("42", "kHz"))
-    facts = _confirmed_hf_facts(evidence_kinds=("test",), dvc_gate="dvc_b", fragment=fragment)
+    facts = _confirmed_hf_facts(
+        evidence_kinds=("test",), dvc_gate=DimensionScope.of("dvc_b"), fragment=fragment
+    )
     rule = _project_hf_transformer(fragment, facts)
     assert _lookup(rule, **_hf_inputs(circuit_dvc="dvc_as")) is None
+
+
+def test_one_statement_naming_both_gates_is_one_statement_and_one_row() -> None:
+    """A reading naming several designations is one statement, and projects one row over them.
+
+    Authored as a scalar it had to be authored twice: two reviews, two rows and two drafts for one
+    reading, with the fact-set digest happily covering the duplicate. One row over both is what a
+    single reviewed statement is.
+    """
+
+    fragment = _hf_fragment(("42", "kHz"))
+    facts = _confirmed_hf_facts(
+        evidence_kinds=("test",),
+        dvc_gate=DimensionScope.of("dvc_b", "dvc_as"),
+        fragment=fragment,
+    )
+    rule = _project_hf_transformer(fragment, facts)
+
+    shown = [
+        row
+        for row in rule.rows
+        if any(
+            matcher.input == "attenuation_evidence_kind" and matcher.values == ("test",)
+            for matcher in row.matchers
+        )
+    ]
+    assert len(shown) == 1
+    gate = next(matcher for matcher in shown[0].matchers if matcher.input == "circuit_dvc")
+    assert (gate.op, gate.values) == ("in", ("dvc_as", "dvc_b"))
+    for designation in ("dvc_as", "dvc_b"):
+        row = _lookup(rule, **_hf_inputs(circuit_dvc=designation))
+        assert row is not None, designation
+        assert _value(row, "working_voltage_basis_permitted") is True
+
+
+def test_an_unrestricted_gate_reading_stops_at_the_reviewed_designations() -> None:
+    """A2-C, on this route: unrestricted is unrestricted within the *reviewed* domain.
+
+    The rule declares a third designation the reviewed vocabulary deliberately cannot name, so a
+    wildcard would answer for a designation no reviewed statement mentions -- and would answer that
+    the working-voltage basis is permitted for it.
+    """
+
+    fragment = _hf_fragment(("42", "kHz"))
+    facts = _confirmed_hf_facts(
+        evidence_kinds=("test",),
+        dvc_gate=DimensionScope[str].unrestricted(),
+        fragment=fragment,
+    )
+    rule = _project_hf_transformer(fragment, facts)
+
+    for designation in ("dvc_as", "dvc_b"):
+        assert _lookup(rule, **_hf_inputs(circuit_dvc=designation)) is not None, designation
+    assert _lookup(rule, **_hf_inputs(circuit_dvc="dvc_c")) is None
+    assert (
+        _lookup(rule, **_hf_inputs(circuit_dvc="dvc_c", attenuation_evidence_kind="none")) is None
+    )
 
 
 def test_hf_attenuation_refuses_to_project_without_facts() -> None:

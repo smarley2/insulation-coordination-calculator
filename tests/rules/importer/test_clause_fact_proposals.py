@@ -20,7 +20,10 @@ from insulation_coordination.rules.importer.clause_fact_proposals import (
     keyword_proposer,
     propose_clause_facts,
     proposed_fact,
+    scope_from_wire,
+    scope_wire,
 )
+from insulation_coordination.rules.importer.clause_facts import DimensionScope
 from insulation_coordination.rules.importer.clauses import ClauseNode, RawClauseFragment
 from insulation_coordination.rules.importer.extract import canonical_model_sha256
 
@@ -201,16 +204,28 @@ def test_sentences_are_numbered_across_the_whole_fragment() -> None:
 # --- expansion ------------------------------------------------------------------------
 
 
-def test_a_sentence_restricting_one_dimension_to_several_values_yields_a_draft_per_value() -> None:
-    """An unrestricted token would answer for the values the sentence leaves out."""
+def test_a_sentence_restricting_a_scope_dimension_to_several_values_yields_one_draft() -> None:
+    """The duplicate-draft defect, fixed at its cause: one statement is one draft.
+
+    A scope dimension carries the set the sentence names, so a sentence naming two designations
+    proposes one reading over both. Expanding it into one draft per value showed a reviewer two
+    drafts for one statement and, once authored, recorded one reading twice.
+    """
 
     proposals = _propose(("Synthetic gate naming DVC As and DVC B, which shall be shown.",))
 
-    assert [item.chosen["dvc_gate"] for item in proposals] == ["dvc_as", "dvc_b"]
+    assert [item.chosen["dvc_gate"] for item in proposals] == ["dvc_as|dvc_b"]
     assert {item.sentence_index for item in proposals} == {0}
 
 
-def test_two_multiplied_dimensions_expand_as_a_cartesian_product() -> None:
+def test_a_scalar_dimension_naming_several_values_still_yields_a_draft_per_value() -> None:
+    """The other half: a scalar field cannot carry a set, so its values still multiply.
+
+    The scope dimension unions in the same sentence, so this also pins that the two behaviours
+    coexist rather than one replacing the other -- the families whose remaining scalar dimensions
+    state disjunctions gain their own scopes in the later slices.
+    """
+
     grammar = _GRAMMAR.model_copy(
         update={
             "keyword_rules": (
@@ -232,10 +247,8 @@ def test_two_multiplied_dimensions_expand_as_a_cartesian_product() -> None:
     )
 
     assert {(item.chosen["dvc_gate"], item.chosen["evidence_kind"]) for item in proposals} == {
-        ("dvc_as", "any_evidence"),
-        ("dvc_as", "test"),
-        ("dvc_b", "any_evidence"),
-        ("dvc_b", "test"),
+        ("dvc_as|dvc_b", "any_evidence"),
+        ("dvc_as|dvc_b", "test"),
     }
 
 
@@ -467,6 +480,39 @@ def test_a_fully_proposed_draft_builds_its_typed_statement() -> None:
     # The boolean dimension arrives as text and is converted exactly once.
     assert fact.comparison_required is True
     assert fact.node_references == proposal.node_references
+    # The scope dimension arrives as its wire form and is decoded exactly once.
+    assert fact.dvc_gate == DimensionScope.of("dvc_as")
+
+
+def test_a_scope_dimension_is_offered_as_a_scope_over_its_own_vocabulary() -> None:
+    """The editor's widget kind comes from the model, so a new scope cannot be missed.
+
+    Without this the shared machinery refused every scope field outright -- a dimension the editor
+    cannot offer is a fact no reviewer can author -- and the route would block approval with
+    nothing saying why.
+    """
+
+    kinds = {name: (kind, options) for name, kind, options in fact_dimensions("hf_attenuation")}
+
+    assert kinds["dvc_gate"] == ("scope", ("dvc_as", "dvc_b"))
+    assert kinds["evidence_kind"][0] == "choice"
+
+
+@pytest.mark.parametrize(
+    ("scope", "wire"),
+    (
+        (DimensionScope[str].unrestricted(), "*"),
+        (DimensionScope[str].of("dvc_as"), "dvc_as"),
+        (DimensionScope[str].of("dvc_b", "dvc_as"), "dvc_as|dvc_b"),
+    ),
+)
+def test_a_scope_survives_its_wire_form_in_both_directions(
+    scope: DimensionScope[str], wire: str
+) -> None:
+    """One encode point and one decode point, so the two authoring paths cannot disagree."""
+
+    assert scope_wire(scope) == wire
+    assert scope_from_wire(wire) == scope.model_dump()
 
 
 def test_an_unchosen_dimension_cannot_be_turned_into_a_statement() -> None:
