@@ -2095,8 +2095,21 @@ for the remaining #53B work:
 
 ### Remaining slices, in order
 
-- [ ] `DimensionScope` + the wildcard over-match fix
-- [ ] Per-family `statement_kind` variants, with per-family regressions
+- [x] `DimensionScope` + the wildcard over-match fix — `dfa84a3`
+- [ ] Per-family `statement_kind` variants, **one commit per family, smallest first**, each green on
+      the full public suite and on the private suite where it moves the licensed path or the
+      placeholders:
+  - [ ] **1. hf_attenuation** — the gate becomes a scope. This is the commit that teaches the shared
+        machinery; see "Handoff: what family 1 must touch" below.
+  - [ ] **2. system_voltage** — measure | applicability. Introduces `statement_kind` and the
+        carried-not-projected variant.
+  - [ ] **3. spd_monitoring** — requirement | exemption | compliance.
+  - [ ] **4. spd_reduction** — permission | floor | monitoring. Introduces the ordered
+        source-to-target pair collection; two independent value sets are forbidden.
+  - [ ] **5. barrier_transfer** — rating_resolution | combined_requirement |
+        downstream_inheritance. Its route-declared isolation scope and the invalid placeholder
+        belong to the placeholder slice; pull that forward into this commit only if the variant work
+        would otherwise leave the placeholder unauthorable, and say so.
 - [ ] Grammar relocation, context-node handling, set/pair collections
 - [ ] Variant editor: value-set widgets, repeating pair rows, `statement_kind` switching
 - [ ] Removal of multi-statement authoring; per-statement suggestion action
@@ -2104,3 +2117,61 @@ for the remaining #53B work:
 - [ ] Private placeholder replacement, including the invalid positive-isolation placeholder
 - [ ] **Separate, separately reviewed, mandatory before #53B completes:** clause-region widening,
       with the private normative-paragraph inventory and the version inspection A6 requires
+
+### Handoff: what family 1 (hf_attenuation) must touch
+
+Written from the analysis already done, so a successor does not repeat it. Nothing below is
+implemented; `dfa84a3` is the last code commit and the tree is green there.
+
+`HfAttenuationFact.dvc_gate` is the smallest scope conversion and the one whose reviewed domain is
+already narrower than its consumer input, so it exercises the `in`-not-wildcard path immediately.
+
+**1. The fact model.** `dvc_gate` becomes `DimensionScope[DvcGate]` with
+`DvcGate = Literal["dvc_as", "dvc_b"]`. Nothing else on the family changes; the gate's own union
+reading needs no extra token, which is why the combined-designation token was dropped in A2.
+
+**2. `fact_dimensions` must learn the scope kind — this is the blocker that forces the machinery
+into this commit.** It currently raises `RulePackageError` for any annotation that is not a
+`Literal`, `bool` or `str`, so putting a scope on a fact field without teaching it breaks the editor
+and its vocabulary tests. Add `"scope"` to `DimensionKind`; detect it with
+`get_origin(annotation) is DimensionScope`, and read the vocabulary out of the type argument:
+`get_args(get_args(annotation)[0])`. Annotations resolve to real type objects despite
+`from __future__ import annotations`, so `get_origin`/`get_args` work as written.
+
+**3. The proposal payload needs a wire form for a set.** `ClauseFactProposal.chosen` is
+`dict[str, str]`. Proposed shape: `"*"` for unrestricted, otherwise the sorted tokens joined by
+`"|"`; absent key still means unchosen. One encode point in the proposer and one decode point in
+`proposed_fact`. Deliberately cheap because the grammar relocates to the private side in the next
+slice and this payload will be revisited there — do not build a typed payload model for it now.
+
+**4. `keyword_proposer` must union, not multiply, for a scope dimension.** Today two rules matching
+one dimension produce two drafts; for a scope they must produce **one** draft whose scope carries
+both values. That is the A7 duplicate-expansion fix arriving for this family, and it is why the HF
+sentence stops yielding two rows. The proposer learns which dimensions are scopes from
+`fact_dimensions`.
+
+**5. The projector.** The `shown` rows take `_scope_matcher("circuit_dvc", fact.dvc_gate,
+reviewed_domain, _DVC_DESIGNATIONS)`. The `outstanding` rows are one per distinct concrete
+designation across every fact's scope values, not one per fact. The projection-time expansion of a
+union token discussed before A2 is **not** needed — `in` handles it, and `_require_distinct_branches`
+already compares `in` matchers by value-set intersection.
+
+**6. Call sites that will fail to construct until updated:** the HF fact builders in
+`tests/rules/importer/test_clause_fact_review_api.py` (`_hf_fact`), the UI helper
+`_fill_hf_dimensions` and the vocabulary expectation `_expected_options` in
+`tests/ui/test_clause_fact_review.py`, and the HF placeholder in
+`tests/private/test_iec62477_supply_clause_facts.py`. The private suite is mandatory for this commit
+because that placeholder moves.
+
+**7. The editor widget.** A scope needs a multi-select over its vocabulary plus an explicit
+unrestricted entry. Do not conflate "every value selected" with unrestricted: they project
+differently wherever the reviewed and consumer domains coincide. A multi-select list with a leading
+`(unrestricted)` row is the smallest control that keeps all three modes reachable, and it is the same
+widget the later editor slice needs for ordinary categorical sets, so it is not throwaway.
+
+**8. Regressions this commit owns.** One reviewed statement naming both designations authors as a
+single fact and projects a single row; the unreviewed third designation reaches no row; the sentence
+that previously yielded two drafts now yields one.
+
+For the completion guard slice, the A5 statement anchor should be **route + cited-node identity +
+evidence hash**, never the sentence index, because the region-widening slice renumbers sentences.
