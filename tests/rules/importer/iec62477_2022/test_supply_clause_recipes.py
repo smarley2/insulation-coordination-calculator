@@ -68,6 +68,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply impor
     project_verified_barrier_transfer,
 )
 from tests.rules.importer.iec62477_2022.test_procedure_recipes import _draft as _empty_draft
+from tests.rules.importer.test_clause_fact_proposals import fragment_with_sentences
 
 SOURCE = SourceReference(
     document_id="synthetic-supply",
@@ -684,6 +685,29 @@ def test_a_grammar_map_missing_a_route_is_refused(
     )
     with pytest.raises(RulePackageError, match="nobody could author"):
         supply_fact_proposal_grammars()
+
+
+def test_a_loaded_grammar_unions_a_scope_rather_than_multiplying_it(
+    synthetic_private_grammars: Path,
+) -> None:
+    """Amendment A7, asserted across the load path the grammar now arrives through.
+
+    Two rules settling one *scope* dimension are one reading naming both values, never one draft
+    per value -- and the engine's own tests prove that of a grammar built in memory. This proves it
+    of one that came out of the private file, because a relocation is exactly the kind of change
+    that silently drops a behaviour nothing asserts end to end.
+    """
+
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        propose_supply_facts,
+    )
+
+    route = ids.SUPPLY_HF_TRANSFORMER_ATTENUATION
+    fragment = fragment_with_sentences(route, ("Synthetic reading: synthgateone synthgatetwo.",))
+
+    (proposal,) = propose_supply_facts(fragment, route)
+
+    assert proposal.chosen["dvc_gate"] == "dvc_as|dvc_b"
 
 
 def test_a_route_with_no_declared_grammar_proposes_nothing(

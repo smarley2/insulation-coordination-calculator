@@ -119,17 +119,32 @@ _NO_STATEMENT_SENTENCES = (
 
 
 def _completion_blocked_text(uncovered: tuple[str, ...]) -> str:
-    """Why completion is unavailable, and the one action that makes it available.
+    """Why completion is unavailable, and the action that honestly makes it available.
 
     Named statements and a next step, never a bare grey button: the reviewer has to be able to see
     which statements the clause still carries unauthored, and that authoring them -- or re-authoring
     one statement so it cites the nodes they rest on -- is what clears this.
+
+    What this must **not** say is "select each draft below and author a statement for it", which is
+    what it did say. A grammar declares exactly one ``statement_kind``, so on a clause stating
+    several kinds of reading the only draft offered for a node stating a *different* kind is of the
+    wrong kind -- and authoring it would satisfy this guard, because coverage is deliberately
+    variant-agnostic so that a corrected fact still covers the statement it corrects. Following the
+    instruction literally therefore recorded a wrong-kind reading and cleared the block with it.
+
+    So the instruction is to author from the *node*: choose the kind of reading that node states,
+    and use a draft only where its kind is that kind. The residual gap -- that nothing offers a
+    draft of the other kinds at all -- is recorded in the plan; closing it needs declarations that
+    do not exist rather than a mechanism.
     """
 
     return (
         "Completion is blocked while this clause carries a statement no authored fact covers: "
-        f"{'; '.join(uncovered)}. Select each draft below, author a statement for it -- or "
-        "re-author one statement citing every node it rests on -- and Record completion becomes "
+        f"{'; '.join(uncovered)}. Author one statement per item listed, reading that item's own "
+        "nodes: choose the kind of reading the node states, then its dimensions. A draft below is a "
+        "prefill of one kind of reading only -- where a node states a different kind, choose that "
+        "kind and fill it in yourself rather than authoring the draft. Re-authoring one statement "
+        "so it cites every node it rests on clears an item too, and Record completion becomes "
         "available."
     )
 

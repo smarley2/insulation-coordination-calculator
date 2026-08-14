@@ -2112,7 +2112,10 @@ for the remaining #53B work:
         downstream_inheritance. The route-declared isolation scope and the invalid positive-isolation
         placeholder were pulled forward into this commit: the isolation field leaves the model, so
         the placeholder could not have been left as it was.
-- [ ] Grammar relocation, context-node handling — the set/pair collections landed with family 4
+- [x] Grammar relocation, context-node handling — the set/pair collections landed with family 4.
+      The grammar loads from `ICC_PRIVATE_STANDARDS_DIR` as one recipe-named JSON file, validated on
+      the way in by the public grammar models themselves; a context node yields no draft, and the
+      completion guard's own stem filter is gone with the drafts it used to skip.
 - [ ] Variant editor: value-set widgets, repeating pair rows, `statement_kind` switching
 - [x] Removal of multi-statement authoring; per-statement suggestion action — `0a7141d`
 - [x] Completion guard — coverage anchored on route + cited-node identity + evidence hash
@@ -2370,3 +2373,64 @@ Three ways out were put to the maintainer, who chose the fourth shape of the fir
 **Version.** No further importer bump: the stack already carries `iec-pdf-8`, whose recorded reason
 under A6-C covers changed projected rule semantics, and that version is unreleased and branch-only, so
 no package approved under it can exist outside this branch.
+
+### Handoff: the grammar is private, and the one gap that stayed open
+
+Written after the relocation slice. Amendments A1, A4 and A7 are implemented; the residual gap below
+is deliberate and named, not overlooked.
+
+**Where the grammar lives, and why there.** `ICC_PRIVATE_STANDARDS_DIR` -- the existing variable
+naming the folder the licensed documents themselves are found through -- plus one recipe-named JSON
+file inside it, read by `clause_fact_proposals.load_private_grammars`. Chosen over the alternatives
+because it invents no mechanism: the variable is already documented and already set for licensed
+work, the folder is already gitignored, and the grammar models are already the schema, so
+`ClauseFactGrammar`'s validation of declared dimensions and declared values keeps running in public
+code on the way in -- which is precisely the half A1 leaves public. Data rather than importable code,
+so nothing executes out of the maintainer's folder. **Deliberately no default path**: nothing else in
+`src` guesses a repository root, and a default would have the app silently read a folder nobody
+named. The absence of the file is a reported state; a present-but-wrong file raises.
+
+**Honest degradation.** Without the file every route proposes nothing, and the review dialog ends the
+draft list with an unselectable row naming which of three reasons applies -- no grammar installed, no
+grammar declared for this route, or no sentence that states a branch. Only the third is a claim about
+the clause, which is exactly why a bare empty list was not acceptable.
+
+**What stayed public, and the line it was kept on.** The engine's own tests still declare a small
+grammar over invented sentences. Every keyword in it either spells a token the public typed
+vocabulary already declares or is the ISO/IEC drafting convention for modality. What moved is every
+term the typed vocabulary does *not* spell -- and the exclusion lists, which is where a reading of one
+clause's actual wording lived. If a reviewer wants that line drawn tighter, the change is a rename
+inside one test file.
+
+**The residual gap, and why a mechanism would not close it.** Every grammar declares exactly one
+`statement_kind`, so on a multi-node clause a node stating a *different* kind of reading is offered
+only a wrong-kind draft. The blocked-completion remedy used to read "Select each draft below, author
+a statement for it", and following that literally authored a wrong-kind reading -- which *satisfied*
+the guard, because coverage is variant-agnostic on purpose so a corrected fact still covers the
+statement it corrects. **The text is fixed**: it now sends the reviewer to the node, tells them to
+choose the kind of reading that node states, and says explicitly that a draft is a prefill of one
+kind only. `test_a_blocked_completion_names_the_uncovered_statements_and_the_way_out` asserts both
+the new wording and the absence of the old instruction.
+
+Letting a grammar propose several kinds per route was considered and **not** taken. It is a small
+change -- the route-to-grammar map becomes route-to-grammars and `propose_supply_facts` concatenates
+-- but it would ship an empty mechanism and leave the misleading text standing anyway, because the
+declarations that would fill it do not exist: the maintainer's own note on each variant-bearing
+grammar records that no declared term distinguishes the other kinds from the one it proposes. Take
+the mechanism when a private declaration needs it, which is also when per-variant guard obligations
+become derivable -- the guard cannot know about a variant nothing suggests.
+
+**A4's enforcement point is the proposer, and only the proposer.** `propose_clause_facts` skips a
+sentence that is some other sentence's stem, through `context_sentences`. The completion guard's own
+stem filter was deleted rather than kept as a second copy: the guard derives its obligations from
+proposals, so keeping both would let `test_a_context_only_node_is_not_an_outstanding_obligation` pass
+on the guard while the proposer regressed.
+
+**A7 survived the move, and is asserted on both sides of it.** The union of a scope dimension and the
+one-reading-per-pair-collection rule live in `keyword_proposer`, which did not move;
+`test_a_sentence_restricting_a_scope_dimension_to_several_values_yields_one_draft`,
+`test_a_scalar_dimension_naming_several_values_still_yields_a_draft_per_value` and
+`test_a_sequence_rule_states_every_pair_it_finds_as_one_reading` cover it on a grammar built in
+memory, `test_a_loaded_grammar_unions_a_scope_rather_than_multiplying_it` covers it on one loaded from
+the private file, and the private `test_a_floor_sentence_proposes_no_insulation_class` covers it on
+the real declarations.

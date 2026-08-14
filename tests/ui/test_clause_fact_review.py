@@ -1333,6 +1333,12 @@ def test_a_blocked_completion_names_the_uncovered_statements_and_the_way_out(
     so the route row states the reason and the button itself carries the remedy. Once every known
     statement is authored, completion becomes available -- and it still has to be pressed, because
     consuming the drafts is a lower bound on review and never the assertion itself.
+
+    The remedy must not tell the reviewer to author whichever draft is offered. A grammar proposes
+    one statement kind, coverage is variant-agnostic on purpose, and following that instruction on a
+    node stating a different kind records a wrong-kind reading *and* clears the block with it. So
+    the text is asserted to send the reviewer to the node and its kind, and never to the draft
+    alone.
     """
 
     model = ClauseFactReviewModel(draft_with_a_multi_node_fragment)
@@ -1346,6 +1352,10 @@ def test_a_blocked_completion_names_the_uncovered_statements_and_the_way_out(
     for node_order in range(_SEEDED_NODE_COUNT):
         assert f"node(s) {node_order}" in tooltip
     assert "Record completion becomes available" in tooltip
+    # The honest remedy: the node and the kind of reading it states, never "author the draft".
+    assert "choose the kind of reading the node states" in tooltip
+    assert "where a node states a different kind" in tooltip
+    assert "author a statement for it" not in tooltip
 
     # One statement per node, each from that node's own draft: the authored ones come first in the
     # list, and these drafts settle no dimension so none of them ever leaves it.
