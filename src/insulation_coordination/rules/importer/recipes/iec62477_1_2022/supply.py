@@ -36,6 +36,7 @@ from insulation_coordination.rules.importer.clause_facts import (
     BarrierTransferFact,
     ConfirmedFacts,
     HfAttenuationFact,
+    PropagationStepFact,
     SpdMonitoringFact,
     SpdReductionFact,
     SupplyFact,
@@ -246,6 +247,67 @@ def _require_declared_fact_families(
 
 
 _require_declared_fact_families(SUPPLY_CLAUSES, SUPPLY_FACT_FAMILY_BY_ROUTE)
+
+#: The one fact model each declared family builds, so the check below can ask a family's own
+#: model whether it carries a ``supply_kind`` field rather than naming families by string.
+_FACT_MODEL_BY_FAMILY: dict[
+    str,
+    type[
+        SystemVoltageFact
+        | PropagationStepFact
+        | BarrierTransferFact
+        | SpdReductionFact
+        | SpdMonitoringFact
+        | HfAttenuationFact
+    ],
+] = {
+    "system_voltage": SystemVoltageFact,
+    "propagation_step": PropagationStepFact,
+    "barrier_transfer": BarrierTransferFact,
+    "spd_reduction": SpdReductionFact,
+    "spd_monitoring": SpdMonitoringFact,
+    "hf_attenuation": HfAttenuationFact,
+}
+
+#: The concrete supply kind each route's own clause states, for every route whose fact family
+#: carries a ``supply_kind`` field: system voltage's mains and non-mains subclauses, and each SPD
+#: reduction subclause. The route determines this dimension structurally -- it is not a reviewed
+#: choice -- so a fact naming the other concrete kind cannot state that route at all; see
+#: ``clause_fact_defect``. ``any_supply_kind`` is not a concrete kind and never contradicts either
+#: route, the same way ``any_purpose`` never narrows a rule's calculation purpose.
+SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE: dict[str, str] = {
+    ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: "mains",
+    SUPPLY_SYSTEM_VOLTAGE_NON_MAINS: "non_mains",
+    f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains": "mains",
+    f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains": "non_mains",
+}
+
+
+def _require_declared_supply_kinds(
+    families: dict[str, str], expected_supply_kinds: dict[str, str]
+) -> None:
+    """Refuse, at import, a route whose fact family carries ``supply_kind`` but declares no
+    expected value here, or an expectation declared for a route whose family carries none.
+
+    Without this a route added to a ``supply_kind``-carrying family and forgotten here would
+    accept a fact naming either supply kind, the exact hole ``clause_fact_defect`` exists to
+    close -- caught here rather than only at authoring time, the same way
+    ``_require_declared_fact_families`` catches a forgotten family before a route can deadlock.
+    """
+
+    needs_expectation = {
+        route
+        for route, family in families.items()
+        if "supply_kind" in _FACT_MODEL_BY_FAMILY[family].model_fields
+    }
+    disagreement = needs_expectation.symmetric_difference(expected_supply_kinds)
+    if disagreement:
+        raise ValueError(
+            f"supply fact families and supply-kind expectations disagree on: {sorted(disagreement)}"
+        )
+
+
+_require_declared_supply_kinds(SUPPLY_FACT_FAMILY_BY_ROUTE, SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE)
 
 #: A ported projector's default when its call site supplies nothing: still refuses to
 #: project, through the same "no facts for this route" check as a caller-supplied empty
@@ -1205,6 +1267,7 @@ __all__ = [
     "LEGACY_BRANCH_AUTHORITY_RULE_IDS",
     "SUPPLY_CLAUSES",
     "SUPPLY_FACT_FAMILY_BY_ROUTE",
+    "SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE",
     "SUPPLY_SYSTEM_VOLTAGE_NON_MAINS",
     "project_hf_transformer_attenuation",
     "project_multiple_source_propagation",
