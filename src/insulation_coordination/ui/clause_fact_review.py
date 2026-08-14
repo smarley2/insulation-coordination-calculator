@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Literal, get_args
 
 from pydantic import ValidationError
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListView,
     QListWidget,
     QPushButton,
     QSpinBox,
@@ -50,6 +52,7 @@ from insulation_coordination.rules.importer.extract import (
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
     LEGACY_BRANCH_AUTHORITY_RULE_IDS,
     SUPPLY_FACT_FAMILY_BY_ROUTE,
+    SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE,
 )
 from insulation_coordination.rules.importer.review import (
     author_clause_fact,
@@ -260,6 +263,18 @@ class ClauseFactReviewModel:
             for review in reviews
         )
 
+    def next_statement_index(self, rule_route: str) -> int:
+        """The first index this route's authored statements have not already used.
+
+        One past the highest authored index, never a reused gap: a statement index a reviewer
+        retracted stays retired rather than being silently handed to an unrelated later
+        statement. Typing a specific index is still how a reviewer replaces one, through the
+        same ``author_clause_fact`` -- this is only the editor's starting offer.
+        """
+
+        used = tuple(row.statement_index for row in self.facts(rule_route))
+        return max(used, default=-1) + 1
+
     def author(
         self,
         rule_route: str,
@@ -312,9 +327,10 @@ class ClauseFactReviewDialog(QDialog):
     """One table of routes, a node reader, the route's authored facts, and a typed editor.
 
     No wizard: the reviewer sees every route at once, reads the selected route's fragment
-    nodes, and authors, replaces, retracts or completes. The editor's fields come from the
-    fact models themselves and its family is fixed by the route's declaration, so a statement
-    can only be authored as the kind its clause states.
+    nodes, and authors, replaces, duplicates, retracts or completes. The editor's fields come
+    from the fact models themselves and its family is fixed by the route's declaration, so a
+    statement can only be authored as the kind its clause states; a dimension the route itself
+    determines, such as ``supply_kind``, is shown rather than chosen for the same reason.
     """
 
     def __init__(self, model: ClauseFactReviewModel, parent: object | None = None) -> None:
@@ -342,6 +358,13 @@ class ClauseFactReviewDialog(QDialog):
         self.nodes_list = QListWidget(nodes_box)
         self.nodes_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.nodes_list.itemSelectionChanged.connect(self._refresh_author_enabled)
+        # A reviewer must read the node they are about to cite. Wrapped and un-elided, so a long
+        # node grows taller rather than losing its tail; ``Adjust`` re-wraps on resize instead of
+        # keeping the layout measured for whatever width existed at construction.
+        self.nodes_list.setWordWrap(True)
+        self.nodes_list.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.nodes_list.setResizeMode(QListView.ResizeMode.Adjust)
+        self.nodes_list.setMinimumHeight(220)
         nodes_layout.addWidget(self.nodes_list)
 
         facts_box = QGroupBox("Authored statements for the selected route", self)
@@ -354,9 +377,14 @@ class ClauseFactReviewDialog(QDialog):
         self.retract_button.setEnabled(False)
         self.retract_button.clicked.connect(self.retract_selected)
         facts_layout.addWidget(self.retract_button)
+        self.duplicate_button = QPushButton("Duplicate as new statement", facts_box)
+        self.duplicate_button.setEnabled(False)
+        self.duplicate_button.clicked.connect(self.duplicate_selected)
+        facts_layout.addWidget(self.duplicate_button)
 
+        # The node pane's job is reading a clause, not fitting one: it gets the larger share.
         panes = QHBoxLayout()
-        panes.addWidget(nodes_box, 1)
+        panes.addWidget(nodes_box, 2)
         panes.addWidget(facts_box, 1)
 
         self._editor_box = QGroupBox("Statement for the selected route", self)
@@ -560,6 +588,7 @@ class ClauseFactReviewDialog(QDialog):
             self.author_button.setEnabled(False)
             self.complete_button.setEnabled(False)
             self.retract_button.setEnabled(False)
+            self.duplicate_button.setEnabled(False)
             return
         self._node_rows = self._model.nodes(row.fragment_id)
         self.nodes_list.clear()
@@ -576,24 +605,34 @@ class ClauseFactReviewDialog(QDialog):
         if self._editor_kind != family:
             self._build_editor(family)
         # A statement starts unchosen: authoring is writing down what was read, never
-        # accepting what a widget happened to hold.
-        self.statement_index.setValue(0)
+        # accepting what a widget happened to hold. The index is the one exception: it defaults
+        # to the next free slot for this route rather than starting blank, because appending a
+        # statement is the normal case and typing an index is only for the sanctioned replace path.
+        self.statement_index.setValue(self._model.next_statement_index(row.rule_route))
         for combo in self._combos.values():
             combo.setCurrentIndex(0)
         for edit in self._edits.values():
             edit.clear()
+        # ``supply_kind`` is not a reviewed choice on a route the recipe already determines it
+        # for: import-time validation guarantees every such route has a declared expectation, so
+        # this can look it up unconditionally rather than falling back to an editable combo.
+        if "supply_kind" in self._combos:
+            supply_kind_combo = self._combos["supply_kind"]
+            supply_kind_combo.setCurrentText(SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE[row.rule_route])
+            supply_kind_combo.setEnabled(False)
         self.complete_button.setEnabled(True)
         self.retract_button.setEnabled(False)
+        self.duplicate_button.setEnabled(False)
         self._refresh_author_enabled()
 
-    def _load_fact(self) -> None:
-        """Pre-fill the editor with the selected statement, so authoring replaces it."""
+    def _fill_editor_from_fact(self, fact: SupplyFact) -> None:
+        """Load one statement's field values and cited nodes into the editor.
 
-        fact_row = self._current_fact_row()
-        self.retract_button.setEnabled(fact_row is not None)
-        if fact_row is None:
-            return
-        fact = fact_row.fact
+        Shared by the replace path, which keeps the statement's own index, and duplicate, which
+        calls this and then overwrites the index with the next free one: both editor fills go
+        through the same code so they cannot drift on which fields they copy.
+        """
+
         self.statement_index.setValue(fact.statement_index)
         for field, combo in self._combos.items():
             value = getattr(fact, field)
@@ -608,6 +647,31 @@ class ClauseFactReviewDialog(QDialog):
             item = self.nodes_list.item(position)
             item.setSelected((node.fragment_id, node.node_order) in cited)
         self._refresh_author_enabled()
+
+    def _load_fact(self) -> None:
+        """Pre-fill the editor with the selected statement, so authoring replaces it."""
+
+        fact_row = self._current_fact_row()
+        self.retract_button.setEnabled(fact_row is not None)
+        self.duplicate_button.setEnabled(fact_row is not None)
+        if fact_row is None:
+            return
+        self._fill_editor_from_fact(fact_row.fact)
+
+    def duplicate_selected(self) -> None:
+        """Load the selected statement under the next free index, for authoring a sibling.
+
+        Statements within a clause usually differ in only one dimension, so this is a prefill of
+        the editor, not a new mutation path: the reviewer changes the one field that differs and
+        presses Author, which still goes through ``author_clause_fact`` like everything else.
+        """
+
+        fact_row = self._current_fact_row()
+        if fact_row is None:
+            self._status.setText("Select an authored statement to duplicate first.")
+            return
+        self._fill_editor_from_fact(fact_row.fact)
+        self.statement_index.setValue(self._model.next_statement_index(fact_row.rule_route))
 
     def _build_editor(self, fact_kind: str) -> None:
         while self._editor_form.rowCount():

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Literal, get_args
 
 import pytest
+from PySide6.QtCore import Qt
 
 from insulation_coordination.domain.rules import RulePackageError
 from insulation_coordination.rules.importer.clause_facts import (
@@ -20,6 +21,7 @@ from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
     LEGACY_BRANCH_AUTHORITY_RULE_IDS,
     SUPPLY_FACT_FAMILY_BY_ROUTE,
+    SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE,
 )
 from insulation_coordination.ui import clause_fact_review
 from insulation_coordination.ui.clause_fact_review import (
@@ -29,6 +31,7 @@ from insulation_coordination.ui.clause_fact_review import (
 from tests.rules.importer.test_clause_fact_review_api import _hf_fact
 
 HF_ROUTE = ids.SUPPLY_HF_TRANSFORMER_ATTENUATION
+MAINS_ROUTE = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains"
 _STATUS_COLUMN = 2
 
 # Stated here independently of the UI's own mapping, so these tests prove the editor offers the
@@ -549,6 +552,111 @@ def test_an_importer_refusal_lands_in_the_status_line(qtbot, draft_with_supply_f
     assert "refused" in dialog.status_text
     assert not model.draft.clause_fact_completions
     assert dialog.table.item(position, _STATUS_COLUMN).text() == "needs_facts"
+
+
+# --- authoring ergonomics -------------------------------------------------------------
+
+
+def test_supply_kind_is_prefilled_and_locked_to_the_routes_own_reading(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """The route determines this dimension; the editor shows it rather than asking for it."""
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+
+    dialog.table.selectRow(_route_position(model, MAINS_ROUTE))
+
+    combo = dialog.dimension_combo("supply_kind")
+    assert combo.currentText() == SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE[MAINS_ROUTE]
+    assert combo.isEnabled() is False
+
+
+def test_statement_index_default_updates_when_the_route_changes(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """Typing an index is still possible, but the offered default tracks the selected route."""
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    _author_hf_through_dialog(model, dialog)
+
+    assert dialog.statement_index.value() == 1
+
+    dialog.table.selectRow(_route_position(model, MAINS_ROUTE))
+    assert dialog.statement_index.value() == 0
+
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+    assert dialog.statement_index.value() == 1
+
+
+def test_duplicate_button_enabled_only_with_a_selected_statement(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    _author_hf_through_dialog(model, dialog)
+
+    assert dialog.duplicate_button.isEnabled() is False
+
+    dialog.facts_list.setCurrentRow(0)
+
+    assert dialog.duplicate_button.isEnabled() is True
+
+
+def test_duplicate_loads_the_selected_statement_under_the_next_free_index(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """The single biggest saving: a sibling statement is one field change plus Author."""
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    _author_hf_through_dialog(model, dialog)
+
+    dialog.facts_list.setCurrentRow(0)
+    dialog.duplicate_selected()
+
+    assert dialog.statement_index.value() == 1
+    assert dialog.dimension_combo("dvc_gate").currentText() == "dvc_as"
+    assert [item.text() for item in dialog.nodes_list.selectedItems()]
+
+    dialog.dimension_combo("dvc_gate").setCurrentText("dvc_b")
+    dialog.author_selected()
+
+    facts = model.facts(HF_ROUTE)
+    assert [row.statement_index for row in facts] == [0, 1]
+    assert facts[0].fact.dvc_gate == "dvc_as"
+    assert facts[1].fact.dvc_gate == "dvc_b"
+
+
+def test_duplicate_with_nothing_selected_reports_status_rather_than_raising(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+
+    dialog.duplicate_selected()
+
+    assert "Select an authored statement" in dialog.status_text
+
+
+def test_the_node_reader_wraps_full_text_without_eliding(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """A reviewer must be able to read the full node they are about to cite."""
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+
+    assert dialog.nodes_list.wordWrap() is True
+    assert dialog.nodes_list.textElideMode() == Qt.TextElideMode.ElideNone
 
 
 def test_the_button_is_enabled_by_clause_fragments(qtbot, draft_with_supply_fragments) -> None:
