@@ -13,7 +13,9 @@ from PySide6.QtWidgets import QHeaderView, QPushButton
 from insulation_coordination.domain.rules import RulePackageError
 from insulation_coordination.rules.importer import clause_fact_proposals
 from insulation_coordination.rules.importer.clause_fact_proposals import (
+    ClauseFactProposal,
     fact_variants,
+    pair_wire,
     scope_wire,
 )
 from insulation_coordination.rules.importer.clause_facts import (
@@ -128,8 +130,9 @@ def _expected_options(
     Scope dimensions are excluded and checked through ``_expected_scope_options`` instead: a scope
     is a multi-selection over its vocabulary plus an explicit unrestricted entry, not a combo, and
     conflating the two would let a scope regress into a single-value widget unnoticed. A pair
-    collection is excluded for the same reason: it is offered as its wire form in a line edit, and a
-    combo could only hold one of its members.
+    collection is excluded for the same reason and checked through ``_expected_pair_options``: it is
+    offered as repeating source-and-target rows, and a single combo could only hold one member of one
+    pair.
     """
 
     options: dict[str, tuple[str, ...]] = {}
@@ -156,6 +159,18 @@ def _expected_scope_options(
         name: scoped
         for name, field in _variant_model(fact_kind, statement_kind).model_fields.items()
         if (scoped := scope_vocabulary(field.annotation))
+    }
+
+
+def _expected_pair_options(
+    fact_kind: str, statement_kind: str | None = None
+) -> dict[str, tuple[str, ...]]:
+    """Every pair-collection dimension's vocabulary, read from the model that declares it."""
+
+    return {
+        name: paired
+        for name, field in _variant_model(fact_kind, statement_kind).model_fields.items()
+        if (paired := pair_vocabulary(field.annotation))
     }
 
 
@@ -680,31 +695,48 @@ def test_each_combo_offers_exactly_its_fields_vocabulary(
         assert dialog.family_text == family
         variants = fact_variants(family)
         if not variants:
-            offered.append((family, None, dialog.dimension_options, dialog.scope_options))
+            offered.append(
+                (family, None, dialog.dimension_options, dialog.scope_options, dialog.pair_options)
+            )
             continue
         # A variant family offers no dimension at all until a kind is chosen.
         assert dialog.dimension_options == {} and dialog.scope_options == {}
+        assert dialog.pair_options == {}
         for variant in variants:
             dialog.choose_statement_kind(variant)
-            offered.append((family, variant, dialog.dimension_options, dialog.scope_options))
+            offered.append(
+                (
+                    family,
+                    variant,
+                    dialog.dimension_options,
+                    dialog.scope_options,
+                    dialog.pair_options,
+                )
+            )
 
     # Every non-legacy family is reachable with every kind of statement it declares;
     # propagation_step belongs only to the legacy route.
-    assert {(family, variant) for family, variant, _options, _scopes in offered} == {
+    assert {(family, variant) for family, variant, _options, _scopes, _pairs in offered} == {
         (family, variant)
         for family, models in _FACT_MODELS.items()
         for variant in _declared_variants(models)
     }
     assert all(
         options == _expected_options(family, variant)
-        for family, variant, options, _scopes in offered
+        for family, variant, options, _scopes, _pairs in offered
     )
     assert all(
         scopes == _expected_scope_options(family, variant)
-        for family, variant, _options, scopes in offered
+        for family, variant, _options, scopes, _pairs in offered
     )
-    # The scope widget is reached at all, so the assertions above are not vacuously true.
-    assert any(scopes for _family, _variant, _options, scopes in offered)
+    assert all(
+        pairs == _expected_pair_options(family, variant)
+        for family, variant, _options, _scopes, pairs in offered
+    )
+    # The scope and the pair widgets are reached at all, so the assertions above are not
+    # vacuously true.
+    assert any(scopes for _family, _variant, _options, scopes, _pairs in offered)
+    assert any(pairs for _family, _variant, _options, _scopes, pairs in offered)
 
 
 def test_a_variant_family_authors_the_kind_the_reviewer_chose(
@@ -807,6 +839,274 @@ def test_one_statement_naming_both_designations_is_authored_once(
     assert review.fact.dvc_gate == DimensionScope.of("dvc_as", "dvc_b")
     # The reading a reviewer reads back off the row, not a model repr.
     assert "dvc_as|dvc_b" in dialog.facts_list.item(0).text()
+
+
+# --- pair-collection dimensions: one row per stated pair ------------------------------
+
+#: Two transitions of the declared overvoltage scale, in that scale's own order. Neutral typed
+#: vocabulary chosen for these tests: they say nothing about what any clause permits, only that a
+#: statement naming two transitions is one statement carrying two rows.
+_STATED_STEPS = (("ovc_ii", "ovc_i"), ("ovc_iii", "ovc_ii"))
+_PAIR_FIELD = "permitted_steps"
+
+
+def _select_reduction_route(model: ClauseFactReviewModel, dialog: ClauseFactReviewDialog) -> None:
+    """Select the reduction route and cite its first node, ready for either statement kind."""
+
+    dialog.table.selectRow(_route_position(model, MAINS_ROUTE))
+    dialog.nodes_list.item(0).setSelected(True)
+
+
+def _fill_permission_dimensions(dialog: ClauseFactReviewDialog, *pairs: tuple[str, str]) -> None:
+    """Choose every dimension of the reduction permission variant, stating the given pairs.
+
+    ``supply_kind`` is not chosen here: the route determines it, so the editor prefills and locks it.
+    """
+
+    dialog.choose_statement_kind("permission")
+    dialog.dimension_combo("obligation").setCurrentText("permission")
+    dialog.choose_scope("insulation_classes", "basic")
+    dialog.choose_pairs(_PAIR_FIELD, *pairs)
+
+
+def _stated_pairs(fact: SpdReductionPermissionFact) -> list[tuple[str, str]]:
+    """One authored collection read back as pairs, in the order the statement carries them."""
+
+    return [(step.source_ovc, step.target_ovc) for step in fact.permitted_steps]
+
+
+def test_a_pair_dimension_offers_one_row_per_stated_pair(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """Two stated transitions are two rows and one statement -- never four crossings of them.
+
+    Two independent multi-selections over the same vocabulary would fabricate a cartesian product of
+    the endpoints, which is the defect the pair member model exists to refuse. Each row is one stated
+    pair, and the collection keeps the reviewer's order.
+    """
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    _select_reduction_route(model, dialog)
+
+    _fill_permission_dimensions(dialog, *_STATED_STEPS)
+
+    editor = dialog.dimension_pairs(_PAIR_FIELD)
+    # Both members of every row draw from the one vocabulary the model declares; it is not a scope
+    # and not a combo, either of which could hold only one member of one pair.
+    assert dialog.pair_options == _expected_pair_options("spd_reduction", "permission")
+    assert _PAIR_FIELD not in dialog.scope_options
+    assert _PAIR_FIELD not in dialog.dimension_options
+    assert editor.pairs() == _STATED_STEPS
+
+    dialog.author_selected()
+
+    (review,) = model.draft.clause_fact_reviews
+    assert _stated_pairs(review.fact) == list(_STATED_STEPS)
+    # One statement with two transitions, not two statements and not four fabricated ones.
+    assert len(model.facts(MAINS_ROUTE)) == 1
+    assert pair_wire(_STATED_STEPS) in dialog.facts_list.item(0).text()
+
+
+def test_an_empty_or_half_stated_pair_collection_is_not_a_choice(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """A dimension starts unchosen, and half a pair is no more a reading than no pair is."""
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    _select_reduction_route(model, dialog)
+    _fill_permission_dimensions(dialog)
+
+    editor = dialog.dimension_pairs(_PAIR_FIELD)
+    # No row at all: the collection is unchosen, exactly as an empty scope selection is.
+    assert editor.pairs() == ()
+    assert dialog.author_button.isEnabled() is False
+
+    editor.add_pair()
+    assert editor.pairs() == (("", ""),)
+    assert dialog.author_button.isEnabled() is False
+
+    dialog.choose_pairs(_PAIR_FIELD, ("ovc_iii", ""))
+    assert dialog.author_button.isEnabled() is False
+
+    dialog.choose_pairs(_PAIR_FIELD, ("ovc_iii", "ovc_ii"))
+    assert dialog.author_button.isEnabled() is True
+
+    # Removing the only row puts the dimension back to unchosen rather than leaving a stale reading.
+    editor.remove_pair(0)
+    assert editor.pairs() == ()
+    assert dialog.author_button.isEnabled() is False
+
+
+def test_a_collection_the_model_would_refuse_says_so_beside_the_rows(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """The reviewer must not build a refused collection blind, and the rows must not be reordered.
+
+    The model rejects an out-of-order or duplicated collection rather than sorting it, so that a
+    duplicate the reviewer meant to notice stays visible. The editor therefore quotes that refusal
+    where the rows are instead of quietly rearranging them -- and the refusal itself stays the
+    model's, asked of the fact model rather than restated here.
+    """
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    _select_reduction_route(model, dialog)
+    _fill_permission_dimensions(dialog, *reversed(_STATED_STEPS))
+    editor = dialog.dimension_pairs(_PAIR_FIELD)
+
+    # The rows stay in the order the reviewer arranged them; only the refusal is added.
+    assert editor.pairs() == tuple(reversed(_STATED_STEPS))
+    assert "declared vocabulary order" in editor.refusal_text
+
+    dialog.author_selected()
+
+    assert "refused" in dialog.status_text
+    assert not model.draft.clause_fact_reviews
+
+    dialog.choose_pairs(_PAIR_FIELD, _STATED_STEPS[0], _STATED_STEPS[0])
+    assert "names each transition once" in editor.refusal_text
+
+    dialog.choose_pairs(_PAIR_FIELD, ("ovc_ii", "ovc_ii"))
+    assert "different category" in editor.refusal_text
+
+    dialog.choose_pairs(_PAIR_FIELD, *_STATED_STEPS)
+    assert editor.refusal_text == ""
+
+    dialog.author_selected()
+
+    (review,) = model.draft.clause_fact_reviews
+    assert _stated_pairs(review.fact) == list(_STATED_STEPS)
+
+
+def test_a_stated_collection_does_not_survive_a_switch_of_statement_kind(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """A kind that states no such dimension must not carry the rows of the kind that does.
+
+    Choosing a statement kind rebuilds the dimension rows, so the collection has to go with them:
+    a surviving one would either be authored onto a variant that declares no such field, or reappear
+    as a prefilled reading when the reviewer came back to the kind that does.
+    """
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    _select_reduction_route(model, dialog)
+    _fill_permission_dimensions(dialog, *_STATED_STEPS)
+
+    dialog.choose_statement_kind("floor")
+
+    assert dialog.pair_options == {}
+    with pytest.raises(KeyError):
+        dialog.dimension_pairs(_PAIR_FIELD)
+
+    # The floor variant is authorable, which a surviving collection would break: the fact models
+    # forbid undeclared fields.
+    dialog.dimension_combo("obligation").setCurrentText("requirement")
+    dialog.dimension_combo("unreduced_basis").setCurrentText(
+        "basic_insulation_without_the_reducing_means"
+    )
+    dialog.dimension_combo("relation").setCurrentText("must_not_fall_below")
+    dialog.choose_scope("insulation_classes", "basic")
+    dialog.author_selected()
+
+    (review,) = model.draft.clause_fact_reviews
+    assert review.fact.statement_kind == "floor"
+    assert not hasattr(review.fact, _PAIR_FIELD)
+
+    # And back to the kind that does state one: unchosen again, so Author stays disabled until the
+    # reviewer states the collection afresh.
+    _select_reduction_route(model, dialog)
+    _fill_permission_dimensions(dialog)
+
+    assert dialog.dimension_pairs(_PAIR_FIELD).pairs() == ()
+    assert dialog.author_button.isEnabled() is False
+
+
+def test_a_stated_collection_is_loaded_back_into_the_rows_for_a_sibling_statement(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """Duplicate is the cheapest path to a sibling statement, collections included."""
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    _select_reduction_route(model, dialog)
+    _fill_permission_dimensions(dialog, *_STATED_STEPS)
+    dialog.author_selected()
+
+    dialog.facts_list.setCurrentRow(0)
+    dialog.duplicate_selected()
+
+    assert dialog.dimension_pairs(_PAIR_FIELD).pairs() == _STATED_STEPS
+    assert dialog.statement_index.value() == 1
+
+    dialog.choose_pairs(_PAIR_FIELD, _STATED_STEPS[0])
+    dialog.author_selected()
+
+    facts = model.facts(MAINS_ROUTE)
+    assert [_stated_pairs(row.fact) for row in facts] == [
+        list(_STATED_STEPS),
+        [_STATED_STEPS[0]],
+    ]
+
+
+class _ModelWithOneProposal(ClauseFactReviewModel):
+    """The review model with one synthetic draft for the reduction route and none elsewhere.
+
+    A grammar mapping source phrasing to a pair collection is licensed-derived and loads only from
+    beside the licensed material, so a public checkout proposes nothing for this route at all. What
+    this stands in for is only the prefill: a draft whose wire value names two stated pairs.
+    """
+
+    def __init__(self, draft: ImportedRuleDraft, proposal: ClauseFactProposal) -> None:
+        super().__init__(draft)
+        self._proposal = proposal
+
+    def proposals(self, rule_route: str) -> tuple[ClauseFactProposal, ...]:
+        return (self._proposal,) if rule_route == self._proposal.rule_route else ()
+
+
+def test_a_draft_prefills_the_rows_from_the_collection_it_proposes(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """A suggested collection reaches the rows through the same wire form, in the proposed order."""
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    node = model.nodes(f"raw-{MAINS_ROUTE}")[0]
+    proposal = ClauseFactProposal(
+        rule_route=MAINS_ROUTE,
+        fact_kind="spd_reduction",
+        statement_kind="permission",
+        sentence_index=0,
+        sentence_text="Synthetic sentence standing in for one stating two transitions.",
+        node_references=(
+            CitedNode(
+                fragment_id=node.fragment_id,
+                node_order=node.node_order,
+                node_sha256=node.node_sha256,
+            ),
+        ),
+        chosen={_PAIR_FIELD: pair_wire(_STATED_STEPS)},
+        unchosen=("obligation", "supply_kind", "insulation_classes"),
+    )
+    proposing = _ModelWithOneProposal(draft_with_supply_fragments, proposal)
+    dialog = ClauseFactReviewDialog(proposing)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(proposing, MAINS_ROUTE))
+
+    dialog.facts_list.setCurrentRow(0)
+    dialog.use_suggested_button.click()
+
+    assert dialog.dimension_pairs(_PAIR_FIELD).pairs() == _STATED_STEPS
+    # A prefill and nothing else: the dimensions the draft did not settle stay unchosen.
+    assert dialog.author_button.isEnabled() is False
+    assert not proposing.draft.clause_fact_reviews
 
 
 def test_an_importer_refusal_lands_in_the_status_line(qtbot, draft_with_supply_fragments) -> None:

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from pydantic import ValidationError
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from insulation_coordination.domain.project import FrozenModel
@@ -48,6 +49,8 @@ from insulation_coordination.rules.importer.clause_fact_proposals import (
     fact_dimensions,
     fact_model,
     fact_variants,
+    pair_tokens,
+    pair_wire,
     proposed_fact,
     scope_tokens,
     scope_wire,
@@ -502,6 +505,121 @@ class ClauseFactReviewModel:
         return self._draft
 
 
+class PairSequenceEditor(QWidget):
+    """One row per stated pair of a pair-collection dimension, in the order the reviewer states them.
+
+    Repeating rows rather than two multi-selections over the vocabulary. Two independent value sets
+    would fabricate a cartesian product nobody stated -- a statement permitting one transition and
+    another would read as permitting every crossing of their endpoints -- which is exactly what the
+    pair member model exists to refuse. Each row is one stated pair, and the row order is the
+    collection's order: nothing here sorts, deduplicates or drops a row, so the value authored is the
+    one on screen.
+
+    A row starts with both members unchosen, like every other dimension, and a row still missing a
+    member leaves the whole dimension unchosen: half a pair is not a reading. An empty list is not a
+    choice either, so Author stays disabled until the reviewer has stated at least one whole pair.
+
+    ponytail: add and remove, with no reordering affordance. A statement names a handful of pairs, and
+    remove-and-re-add reorders one; add row moves if a clause ever states enough of them to matter.
+    """
+
+    #: Any change to the rows or their members, for the dialog's own enable/refusal refresh. One
+    #: signal for the whole collection rather than per row: what the dialog reads is the collection.
+    changed = Signal()
+
+    def __init__(self, options: tuple[str, ...], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._options = options
+        self._rows: list[tuple[QWidget, QComboBox, QComboBox]] = []
+        self._row_layout = QVBoxLayout()
+        self._row_layout.setContentsMargins(0, 0, 0, 0)
+        self.add_button = QPushButton("Add pair", self)
+        self.add_button.clicked.connect(self._add_button_pressed)
+        # The model's own refusal of the rows as they stand, shown where the rows are rather than
+        # left for the reviewer to discover by pressing Author.
+        self._refusal = QLabel("", self)
+        self._refusal.setWordWrap(True)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(self._row_layout)
+        layout.addWidget(self.add_button)
+        layout.addWidget(self._refusal)
+
+    @property
+    def options(self) -> tuple[str, ...]:
+        """The vocabulary both members of every row draw from."""
+
+        return self._options
+
+    @property
+    def refusal_text(self) -> str:
+        return self._refusal.text()
+
+    def show_refusal(self, text: str) -> None:
+        self._refusal.setText(text)
+
+    def pairs(self) -> tuple[tuple[str, str], ...]:
+        """Every row's two members, in the reviewer's order, including any still unchosen."""
+
+        return tuple(
+            (source.currentText(), target.currentText()) for _row, source, target in self._rows
+        )
+
+    def add_pair(self, source: str = "", target: str = "") -> None:
+        """Append one row, unchosen unless this is a prefill of a stated pair."""
+
+        row = QWidget(self)
+        line = QHBoxLayout(row)
+        line.setContentsMargins(0, 0, 0, 0)
+        combos: list[QComboBox] = []
+        for value in (source, target):
+            combo = QComboBox(row)
+            # Blank first, as every dimension combo is: a member the reviewer has not picked must
+            # never read as the first value of the vocabulary.
+            combo.addItem("")
+            combo.addItems(self._options)
+            combo.setCurrentText(value)
+            combo.currentIndexChanged.connect(self._member_chosen)
+            line.addWidget(combo)
+            combos.append(combo)
+        remove = QPushButton("Remove", row)
+        remove.clicked.connect(lambda: self.remove_pair(self._row_index(row)))
+        line.addWidget(remove)
+        self._row_layout.addWidget(row)
+        self._rows.append((row, combos[0], combos[1]))
+        self.changed.emit()
+
+    def remove_pair(self, index: int) -> None:
+        """Drop one row, leaving the rest in the order the reviewer arranged them."""
+
+        row, _source, _target = self._rows.pop(index)
+        self._row_layout.removeWidget(row)
+        row.hide()
+        row.deleteLater()
+        self.changed.emit()
+
+    def set_pairs(self, pairs: Sequence[Sequence[str]]) -> None:
+        """Show exactly these pairs in this order, replacing whatever rows are there.
+
+        The one loading path: an authored statement, a proposed draft and the reset to unchosen all
+        arrive here, so none of them can drift on how a stated collection becomes rows.
+        """
+
+        while self._rows:
+            self.remove_pair(0)
+        for members in pairs:
+            self.add_pair(*tuple(members)[:2])
+
+    def _row_index(self, row: QWidget) -> int:
+        return next(index for index, item in enumerate(self._rows) if item[0] is row)
+
+    def _add_button_pressed(self) -> None:
+        self.add_pair()
+
+    def _member_chosen(self) -> None:
+        self.changed.emit()
+
+
 class ClauseFactReviewDialog(QDialog):
     """One table of routes, a node reader, the route's authored facts, and a typed editor.
 
@@ -534,6 +652,7 @@ class ClauseFactReviewDialog(QDialog):
         self._combos: dict[str, QComboBox] = {}
         self._edits: dict[str, QLineEdit] = {}
         self._scope_lists: dict[str, QListWidget] = {}
+        self._pair_editors: dict[str, PairSequenceEditor] = {}
         self._kinds: dict[str, DimensionKind] = {}
         self._editor_kind: str | None = None
         self._variant_combo: QComboBox | None = None
@@ -710,6 +829,12 @@ class ClauseFactReviewDialog(QDialog):
             for field, widget in self._scope_lists.items()
         }
 
+    @property
+    def pair_options(self) -> dict[str, tuple[str, ...]]:
+        """The visible editor's vocabulary per pair-collection dimension, as its rows offer it."""
+
+        return {field: editor.options for field, editor in self._pair_editors.items()}
+
     def dimension_combo(self, field: str) -> QComboBox:
         return self._combos[field]
 
@@ -718,6 +843,19 @@ class ClauseFactReviewDialog(QDialog):
 
     def dimension_scope(self, field: str) -> QListWidget:
         return self._scope_lists[field]
+
+    def dimension_pairs(self, field: str) -> PairSequenceEditor:
+        return self._pair_editors[field]
+
+    def choose_pairs(self, field: str, *pairs: Sequence[str]) -> None:
+        """State one pair-collection dimension's reading as the rows the reviewer would build.
+
+        Order is the reading, not a presentation of it, so this states the rows in the order given
+        and sorts nothing: the model refuses a collection out of its declared order, and quietly
+        reordering here would author a collection the reviewer never arranged.
+        """
+
+        self._pair_editors[field].set_pairs(pairs)
 
     def choose_scope(self, field: str, *values: str, unrestricted: bool = False) -> None:
         """Select one scope dimension's reading: named values, or the unrestricted entry.
@@ -977,6 +1115,11 @@ class ClauseFactReviewDialog(QDialog):
             edit.clear()
         for scope_list in self._scope_lists.values():
             scope_list.clearSelection()
+        # No row at all, which is unchosen exactly as an empty scope selection is: a pair collection
+        # the reviewer has not stated must never start with a row inviting the first value of the
+        # vocabulary.
+        for pair_editor in self._pair_editors.values():
+            pair_editor.set_pairs(())
         # ``supply_kind`` is not a reviewed choice on a route the recipe already determines it
         # for: import-time validation guarantees every such route has a declared expectation, so
         # this can look it up unconditionally rather than falling back to an editable combo.
@@ -1042,6 +1185,10 @@ class ClauseFactReviewDialog(QDialog):
         for field in self._scope_lists:
             scope: DimensionScope[str] = getattr(fact, field)
             self.choose_scope(field, *scope.values, unrestricted=scope.mode == "unrestricted")
+        for field in self._pair_editors:
+            # Through the same wire form the row summary and a proposal use, so a stored collection
+            # becomes rows one way only.
+            self.choose_pairs(field, *pair_tokens(authored_pair_wire(getattr(fact, field))))
         cited = {(item.fragment_id, item.node_order) for item in fact.node_references}
         for position, node in enumerate(self._node_rows):
             item = self.nodes_list.item(position)
@@ -1092,6 +1239,8 @@ class ClauseFactReviewDialog(QDialog):
                 self.choose_scope(
                     field, *scope_tokens(value), unrestricted=value == SCOPE_UNRESTRICTED
                 )
+            elif field in self._pair_editors:
+                self.choose_pairs(field, *pair_tokens(value))
         cited = {(item.fragment_id, item.node_order) for item in proposal.node_references}
         for position, node in enumerate(self._node_rows):
             self.nodes_list.item(position).setSelected((node.fragment_id, node.node_order) in cited)
@@ -1186,6 +1335,7 @@ class ClauseFactReviewDialog(QDialog):
         self._combos = {}
         self._edits = {}
         self._scope_lists = {}
+        self._pair_editors = {}
         self._kinds = {}
         fact_kind = self._editor_kind
         if fact_kind is None or self._variant_unchosen():
@@ -1193,11 +1343,16 @@ class ClauseFactReviewDialog(QDialog):
         declared = fact_dimensions(fact_kind, self._editor_variant())
         self._kinds = {name: kind for name, kind, _options in declared}
         for field, kind, options in declared:
-            # ponytail: a pair collection is offered as its wire form in a line edit, the widget
-            # that already exists. The repeating pair rows belong to the variant editor slice; the
-            # model validates every token and the ordering, so a typo is refused rather than
-            # authored.
-            if kind in ("identifier", "pair_sequence"):
+            if kind == "pair_sequence":
+                # One row per stated pair, never two independent multi-selections: see
+                # ``PairSequenceEditor``. Rebuilt with the rest of the rows, so a collection stated
+                # under one statement kind cannot survive into a kind that states no such dimension.
+                pair_editor = PairSequenceEditor(options, self._editor_box)
+                pair_editor.changed.connect(self._refresh_author_enabled)
+                self._editor_form.addRow(field.replace("_", " "), pair_editor)
+                self._pair_editors[field] = pair_editor
+                continue
+            if kind == "identifier":
                 edit = QLineEdit(self._editor_box)
                 edit.textChanged.connect(self._refresh_author_enabled)
                 self._editor_form.addRow(field.replace("_", " "), edit)
@@ -1252,16 +1407,69 @@ class ClauseFactReviewDialog(QDialog):
             return SCOPE_UNRESTRICTED
         return scope_wire(DimensionScope[str].of(*selected)) if selected else ""
 
+    def _pair_text(self, field: str) -> str:
+        """One pair collection's wire value, blank while the reviewer has stated no whole pair.
+
+        The same single encode point a proposal and a row summary use, over the rows in the order
+        they are shown. Blank for no row -- an empty collection is not a choice -- and blank while
+        any row is still missing a member, because half a pair is not a stated pair either.
+        """
+
+        pairs = self._pair_editors[field].pairs()
+        if not pairs or not all(all(members) for members in pairs):
+            return ""
+        return pair_wire(pairs)
+
+    def _pair_refusal(self, field: str) -> str:
+        """The model's own refusal of one pair collection as the rows stand, or ``""``.
+
+        Asked of the fact model rather than re-checked here. The refusals -- a collection out of the
+        declared scale's order, one transition named twice, a pair pointing a category at itself --
+        are the model's, and a second copy of them in Qt is the drift this dialog avoids everywhere
+        else; this slice adds no rule of its own. Only this dimension's errors are read, so the other
+        dimensions being unchosen is never reported as a problem with these rows.
+
+        Surfaced rather than prevented, and the button is not disabled for it. The model *rejects* an
+        out-of-order or duplicated collection instead of quietly sorting it, precisely so a duplicate
+        the reviewer meant to notice stays visible -- so a widget that reordered or filtered rows to
+        keep them acceptable would hide the very thing the refusal exists to show, and would also
+        stop the rows being the collection in the order the reviewer arranged them.
+        """
+
+        text = self._pair_text(field)
+        if not text or self._editor_kind is None:
+            return ""
+        try:
+            fact_model(self._editor_kind, self._editor_variant()).model_validate(
+                {field: authored_dimension(self._kinds[field], text)}
+            )
+        except ValidationError as error:
+            refusals = [
+                str(item["msg"]).removeprefix("Value error, ")
+                for item in error.errors()
+                if item["loc"][:1] == (field,)
+            ]
+            return refusals[0] if refusals else ""
+        return ""
+
+    def _refresh_pair_refusals(self) -> None:
+        """Show beside each pair dimension's rows what the model would refuse them for."""
+
+        for field, editor in self._pair_editors.items():
+            refusal = self._pair_refusal(field)
+            editor.show_refusal(f"Refused as it stands: {refusal}." if refusal else "")
+
     def _chosen_text(self) -> dict[str, str]:
         """Every editor dimension's current text, blank where the reviewer chose nothing.
 
-        One reader for all three widget kinds, so the enable check and the authoring path cannot
+        One reader for every widget kind, so the enable check and the authoring path cannot
         disagree about which dimensions are still unchosen.
         """
 
         values = {field: combo.currentText() for field, combo in self._combos.items()}
         values.update({field: edit.text().strip() for field, edit in self._edits.items()})
         values.update({field: self._scope_text(field) for field in self._scope_lists})
+        values.update({field: self._pair_text(field) for field in self._pair_editors})
         return values
 
     def _unchosen_dimensions(self) -> tuple[str, ...]:
@@ -1272,6 +1480,7 @@ class ClauseFactReviewDialog(QDialog):
 
     def _refresh_author_enabled(self) -> None:
         unchosen = self._unchosen_dimensions()
+        self._refresh_pair_refusals()
         cited = bool(self.nodes_list.selectedItems())
         self._set_enabled(
             self.author_button,
@@ -1309,4 +1518,5 @@ __all__ = [
     "ClauseFactReviewModel",
     "ClauseFactRouteRow",
     "ClauseFactStatementRow",
+    "PairSequenceEditor",
 ]
