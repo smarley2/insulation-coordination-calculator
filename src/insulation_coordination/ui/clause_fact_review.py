@@ -9,7 +9,7 @@ a reviewer must read the licensed clause to author a statement; it is never writ
 
 from __future__ import annotations
 
-from typing import Literal, get_args
+from typing import Literal
 
 from pydantic import ValidationError
 from PySide6.QtCore import Qt
@@ -34,16 +34,15 @@ from PySide6.QtWidgets import (
 )
 
 from insulation_coordination.domain.project import FrozenModel
-from insulation_coordination.domain.rules import RulePackageError
+from insulation_coordination.rules.importer.clause_fact_proposals import (
+    FACT_MODEL_BY_KIND,
+    ClauseFactProposal,
+    fact_dimensions,
+    proposed_fact,
+)
 from insulation_coordination.rules.importer.clause_facts import (
-    BarrierTransferFact,
     CitedNode,
-    HfAttenuationFact,
-    PropagationStepFact,
-    SpdMonitoringFact,
-    SpdReductionFact,
     SupplyFact,
-    SystemVoltageFact,
 )
 from insulation_coordination.rules.importer.extract import (
     ImportedRuleDraft,
@@ -53,6 +52,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply impor
     LEGACY_BRANCH_AUTHORITY_RULE_IDS,
     SUPPLY_FACT_FAMILY_BY_ROUTE,
     SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE,
+    propose_supply_facts,
 )
 from insulation_coordination.rules.importer.review import (
     author_clause_fact,
@@ -64,67 +64,15 @@ from insulation_coordination.rules.importer.review import (
 
 _HEADINGS = ("route", "authored", "status", "fragment")
 
-_FACT_MODELS: dict[
-    str,
-    type[
-        SystemVoltageFact
-        | PropagationStepFact
-        | BarrierTransferFact
-        | SpdReductionFact
-        | SpdMonitoringFact
-        | HfAttenuationFact
-    ],
-] = {
-    "system_voltage": SystemVoltageFact,
-    "propagation_step": PropagationStepFact,
-    "barrier_transfer": BarrierTransferFact,
-    "spd_reduction": SpdReductionFact,
-    "spd_monitoring": SpdMonitoringFact,
-    "hf_attenuation": HfAttenuationFact,
-}
-
-#: ``fact_kind`` is the family itself, fixed per route; ``statement_index`` has its own spinner;
-#: ``node_references`` come from the node reader, never typed by hand.
-_UNDIMENSIONED_FIELDS = frozenset({"fact_kind", "statement_index", "node_references"})
-
-DimensionKind = Literal["choice", "boolean", "identifier"]
-
-
-def _dimensions(fact_kind: str) -> tuple[tuple[str, DimensionKind, tuple[str, ...]], ...]:
-    """Each authored dimension of one fact family with its widget kind and vocabulary.
-
-    Read from the model's own annotations, so the UI never carries a hand-written copy of a
-    vocabulary that could drift from the model it has to build. A boolean is a two-value
-    choice starting unchosen -- a reviewer must never record a reading they did not pick, and
-    a checkbox has no unchosen state. An ``Identifier`` field has no vocabulary and gets a
-    line edit. Anything else is refused here rather than degrading silently: a dimension the
-    editor cannot offer is a fact no reviewer can author, and approval would block on the
-    route with nothing to explain why.
-    """
-
-    dimensions: list[tuple[str, DimensionKind, tuple[str, ...]]] = []
-    for name, field in _FACT_MODELS[fact_kind].model_fields.items():
-        if name in _UNDIMENSIONED_FIELDS:
-            continue
-        if field.annotation is bool:
-            dimensions.append((name, "boolean", ("true", "false")))
-            continue
-        options = get_args(field.annotation)
-        if options:
-            if not all(isinstance(option, str) for option in options):
-                raise RulePackageError(
-                    f"{fact_kind}.{name} declares no vocabulary of strings the review "
-                    "dialog could offer"
-                )
-            dimensions.append((name, "choice", options))
-            continue
-        if field.annotation is str:
-            dimensions.append((name, "identifier", ()))
-            continue
-        raise RulePackageError(
-            f"{fact_kind}.{name} declares no vocabulary of strings the review dialog could offer"
-        )
-    return tuple(dimensions)
+#: What each authoring path writes into a fact's notes, so the audit distinguishes a confirmed
+#: proposal from a reading a maintainer typed from scratch. Both name the dialog; only the
+#: proposed ones name the grammar, and the batch note also records that nothing was edited
+#: between the proposal and the confirmation.
+_HAND_AUTHORED_NOTES = "authored in the clause fact review dialog"
+_FROM_PROPOSAL_NOTES = "authored from a grammar proposal in the clause fact review dialog"
+_CONFIRMED_PROPOSAL_NOTES = (
+    "confirmed a fully grammar-proposed statement in the clause fact review dialog"
+)
 
 
 class ClauseFactRouteRow(FrozenModel):
@@ -263,6 +211,20 @@ class ClauseFactReviewModel:
             for review in reviews
         )
 
+    def proposals(self, rule_route: str) -> tuple[ClauseFactProposal, ...]:
+        """The route's sentence-level drafts, derived from the fragment and the recipe.
+
+        Computed here on demand rather than stored on the draft: a review binds its evidence and
+        its fact's own hash, never a proposal, so a re-extracted fragment simply re-proposes and
+        re-opens nothing. A route this draft never extracted has nothing to propose from.
+        """
+
+        fragment = next(
+            (item for item in self._draft.raw_clause_fragments if item.id == f"raw-{rule_route}"),
+            None,
+        )
+        return () if fragment is None else propose_supply_facts(fragment, rule_route)
+
     def next_statement_index(self, rule_route: str) -> int:
         """The first index this route's authored statements have not already used.
 
@@ -287,6 +249,30 @@ class ClauseFactReviewModel:
             self._draft, rule_route=rule_route, fact=fact, actor=actor, notes=notes
         )
         return self._draft
+
+    def author_proposed(self, rule_route: str, *, actor: str, notes: str) -> int:
+        """Record every fully proposed draft of one route, and return how many were recorded.
+
+        One ``author_clause_fact`` per statement, never a bulk write: each fact keeps its own
+        actor, notes and audited correction, so the audit shows a human took each action rather
+        than one action standing for several. A draft with any unchosen dimension is skipped --
+        confirming a reading nobody has read is exactly what the unchosen state exists to
+        prevent -- and the index is re-read each time so the batch appends without reusing one.
+        """
+
+        recorded = 0
+        for proposal in self.proposals(rule_route):
+            if not proposal.fully_proposed:
+                continue
+            self._draft = author_clause_fact(
+                self._draft,
+                rule_route=rule_route,
+                fact=proposed_fact(proposal, statement_index=self.next_statement_index(rule_route)),
+                actor=actor,
+                notes=notes,
+            )
+            recorded += 1
+        return recorded
 
     def retract(
         self,
@@ -327,9 +313,9 @@ class ClauseFactReviewDialog(QDialog):
     """One table of routes, a node reader, the route's authored facts, and a typed editor.
 
     No wizard: the reviewer sees every route at once, reads the selected route's fragment
-    nodes, and authors, replaces, duplicates, retracts or completes. A route with nothing
-    authored yet offers one blank draft per node to start from, described in ``_seed_drafts``.
-    The editor's fields come
+    nodes, and authors, replaces, duplicates, retracts or completes. Below the route's authored
+    statements sit its proposed drafts, one per reading the recipe's grammar reads out of one
+    clause sentence, described in ``_list_proposals``. The editor's fields come
     from the fact models themselves and its family is fixed by the route's declaration, so a
     statement can only be authored as the kind its clause states; a dimension the route itself
     determines, such as ``supply_kind``, is shown rather than chosen for the same reason.
@@ -345,6 +331,7 @@ class ClauseFactReviewDialog(QDialog):
         self._editor_kind: str | None = None
         self._node_rows: tuple[ClauseFactNodeRow, ...] = ()
         self._fact_rows: tuple[ClauseFactStatementRow, ...] = ()
+        self._proposal_rows: tuple[ClauseFactProposal, ...] = ()
 
         self.table = QTableWidget(0, len(_HEADINGS), self)
         self.table.setHorizontalHeaderLabels([heading for heading in _HEADINGS])
@@ -378,6 +365,11 @@ class ClauseFactReviewDialog(QDialog):
         self.facts_list = QListWidget(facts_box)
         self.facts_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.facts_list.itemSelectionChanged.connect(self._load_fact)
+        # A proposed draft carries the sentence it was read from, so the reviewer confirms a
+        # reading against its own wording rather than against a row of tokens.
+        self.facts_list.setWordWrap(True)
+        self.facts_list.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.facts_list.setResizeMode(QListView.ResizeMode.Adjust)
         facts_layout.addWidget(self.facts_list)
         self.retract_button = QPushButton("Retract fact", facts_box)
         self.retract_button.setEnabled(False)
@@ -409,6 +401,9 @@ class ClauseFactReviewDialog(QDialog):
         # ``_load_route`` would never run to disable these.
         self.author_button.setEnabled(False)
         self.author_button.clicked.connect(self.author_selected)
+        self.author_proposed_button = QPushButton("Author all fully proposed statements", self)
+        self.author_proposed_button.setEnabled(False)
+        self.author_proposed_button.clicked.connect(self.author_proposed_selected)
         self.complete_button = QPushButton("Record completion", self)
         self.complete_button.setEnabled(False)
         self.complete_button.clicked.connect(self.complete_selected)
@@ -416,6 +411,7 @@ class ClauseFactReviewDialog(QDialog):
         buttons.rejected.connect(self.reject)
         actions = QHBoxLayout()
         actions.addWidget(self.author_button)
+        actions.addWidget(self.author_proposed_button)
         actions.addWidget(self.complete_button)
         actions.addWidget(buttons)
 
@@ -503,12 +499,18 @@ class ClauseFactReviewDialog(QDialog):
             },
         }
         family = SUPPLY_FACT_FAMILY_BY_ROUTE[row.rule_route]
+        # A statement whose editor was filled from a draft is marked as such however much the
+        # reviewer then changed: the reading started as a grammar proposal either way, and the
+        # audit's job is to say so rather than to guess how much of it survived.
+        notes = (
+            _FROM_PROPOSAL_NOTES if self._current_proposal() is not None else _HAND_AUTHORED_NOTES
+        )
         try:
             self._model.author(
                 row.rule_route,
-                _FACT_MODELS[family].model_validate(values),
+                FACT_MODEL_BY_KIND[family].model_validate(values),
                 actor="maintainer",
-                notes="authored in the clause fact review dialog",
+                notes=notes,
             )
         except (ValidationError, ValueError) as error:
             self._status.setText(f"Fact refused: {error}")
@@ -517,6 +519,37 @@ class ClauseFactReviewDialog(QDialog):
         self.table.selectRow(position)
         self._load_route()
         self._status.setText("Statement recorded for this route.")
+
+    def author_proposed_selected(self) -> None:
+        """Record every fully proposed draft of the selected route. The model owns the mutation.
+
+        Per-statement Author stays the unit of confirmation: this is the same call, run once per
+        draft, so every fact still carries an actor and notes and the audit shows a human took
+        each action. What it removes is the clicking, not the gate -- which is why the drafts sit
+        beside the sentences they were read from, and why a draft with any unchosen dimension is
+        left for the reviewer.
+        """
+
+        position = self.table.currentRow()
+        row = self._current_route_row()
+        if row is None:
+            self._status.setText("Select a rule route first.")
+            return
+        try:
+            recorded = self._model.author_proposed(
+                row.rule_route, actor="maintainer", notes=_CONFIRMED_PROPOSAL_NOTES
+            )
+        except (ValidationError, ValueError) as error:
+            self._status.setText(f"Fact refused: {error}")
+            return
+        self.refresh()
+        self.table.selectRow(position)
+        self._load_route()
+        self._status.setText(
+            f"Recorded {recorded} confirmed proposal(s) for this route."
+            if recorded
+            else "No draft for this route has every dimension proposed."
+        )
 
     def retract_selected(self) -> None:
         """Remove the selected authored statement. The model owns the mutation."""
@@ -577,6 +610,21 @@ class ClauseFactReviewDialog(QDialog):
             self._fact_rows[position] if selected and 0 <= position < len(self._fact_rows) else None
         )
 
+    def _current_proposal(self) -> ClauseFactProposal | None:
+        """The selected proposed draft, or ``None`` when an authored statement is selected.
+
+        The list holds the route's authored statements and then its drafts, so a position past
+        the authored ones indexes into the drafts.
+        """
+
+        position = self.facts_list.currentRow() - len(self._fact_rows)
+        selected = bool(self.facts_list.selectedItems())
+        return (
+            self._proposal_rows[position]
+            if selected and 0 <= position < len(self._proposal_rows)
+            else None
+        )
+
     def _selected_nodes(self) -> tuple[ClauseFactNodeRow, ...]:
         return tuple(
             self._node_rows[self.nodes_list.row(item)] for item in self.nodes_list.selectedItems()
@@ -592,7 +640,9 @@ class ClauseFactReviewDialog(QDialog):
             self.seed_hint.clear()
             self._node_rows = ()
             self._fact_rows = ()
+            self._proposal_rows = ()
             self.author_button.setEnabled(False)
+            self.author_proposed_button.setEnabled(False)
             self.complete_button.setEnabled(False)
             self.retract_button.setEnabled(False)
             self.duplicate_button.setEnabled(False)
@@ -608,7 +658,8 @@ class ClauseFactReviewDialog(QDialog):
                 f"statement {fact_row.statement_index} · {fact_row.fact.fact_kind}"
                 f" · evidence {fact_row.evidence}"
             )
-        self._seed_drafts()
+        self._proposal_rows = self._model.proposals(row.rule_route)
+        self._list_proposals()
         family = SUPPLY_FACT_FAMILY_BY_ROUTE[row.rule_route]
         if self._editor_kind != family:
             self._build_editor(family)
@@ -619,6 +670,9 @@ class ClauseFactReviewDialog(QDialog):
         self.statement_index.setValue(self._model.next_statement_index(row.rule_route))
         self._reset_dimensions(row.rule_route)
         self.complete_button.setEnabled(True)
+        self.author_proposed_button.setEnabled(
+            any(proposal.fully_proposed for proposal in self._proposal_rows)
+        )
         self.retract_button.setEnabled(False)
         self.duplicate_button.setEnabled(False)
         self._refresh_author_enabled()
@@ -638,31 +692,42 @@ class ClauseFactReviewDialog(QDialog):
             supply_kind_combo.setCurrentText(SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE[rule_route])
             supply_kind_combo.setEnabled(False)
 
-    def _seed_drafts(self) -> None:
-        """Offer one blank draft per fragment node while the route has nothing authored yet.
+    def _list_proposals(self) -> None:
+        """Offer one draft per proposed reading of one clause sentence, below the authored ones.
 
-        Authoring the first statement of a route used to be every dimension blank *and* a
-        decision about how many statements to write and which node each rests on. These drafts
-        remove the second half: each carries one node's citation and its own index, and the
-        reviewer fills in the dimensions.
+        Authoring a statement used to be every dimension blank *and* a decision about how many
+        statements to write and which node each rests on. These drafts remove the second half and
+        most of the first: each carries one sentence's citation, the sentence itself to read, and
+        whatever dimensions the recipe's grammar settles from that sentence.
 
-        They are drafts to edit, never a reading of the source. A node is not a statement, so
-        their count says nothing about how many statements the fragment makes, and a reviewer is
-        free to author fewer, more, or differently cited ones -- a statement resting on two nodes
-        is still selected by hand. Seeding is a prefill of this editor and nothing else: no draft
-        collection, no importer call, nothing recorded until Author is pressed.
+        A sentence is the unit rather than a node because one node can carry several distinct
+        normative statements, and because a node's trailing notes are not statements at all. They
+        are still drafts to edit, never a reading of the source: their count says nothing about
+        how many statements the clause makes, a reviewer is free to author fewer, more, or
+        differently cited ones -- a statement resting on two nodes is still selected by hand --
+        and nothing is recorded until an Author button is pressed.
         """
 
-        if self._fact_rows or not self._node_rows:
+        if not self._proposal_rows:
             self.seed_hint.clear()
             return
         self.seed_hint.setText(
-            "No statement authored yet. Below is one blank draft per clause node, each citing "
-            "its own node, as somewhere to start. Node count is not statement count -- author "
-            "fewer, more, or differently cited statements as you read them."
+            "Drafts below are proposed one per clause sentence, each citing its own node and "
+            "carrying whatever the keyword grammar reads out of that sentence. Sentence count "
+            "is not statement count -- author fewer, more, or differently cited statements as "
+            "you read them, and check every proposed reading against the sentence beside it."
         )
-        for node in self._node_rows:
-            self.facts_list.addItem(f"draft · cites node {node.node_order} · no dimension chosen")
+        for proposal in self._proposal_rows:
+            reading = (
+                "every dimension proposed"
+                if proposal.fully_proposed
+                else f"unchosen: {', '.join(proposal.unchosen)}"
+            )
+            self.facts_list.addItem(
+                f"draft · sentence {proposal.sentence_index} · cites node "
+                f"{proposal.node_references[0].node_order} · {reading} · "
+                f"{proposal.sentence_text}"
+            )
 
     def _fill_editor_from_fact(self, fact: SupplyFact) -> None:
         """Load one statement's field values and cited nodes into the editor.
@@ -690,35 +755,42 @@ class ClauseFactReviewDialog(QDialog):
     def _load_fact(self) -> None:
         """Pre-fill the editor from the selected entry of the list.
 
-        An authored statement fills every field, so authoring replaces it. A seeded draft fills
-        only what it stands for -- its own node and index -- and there is nothing to retract or
-        duplicate, because nothing has been authored.
+        An authored statement fills every field, so authoring replaces it. A proposed draft fills
+        its own node, the next free index and whatever the grammar settled, and there is nothing
+        to retract or duplicate, because nothing has been authored.
         """
 
         fact_row = self._current_fact_row()
         self.retract_button.setEnabled(fact_row is not None)
         self.duplicate_button.setEnabled(fact_row is not None)
         if fact_row is None:
-            self._load_seeded_draft()
+            self._load_proposal()
             return
         self._fill_editor_from_fact(fact_row.fact)
 
-    def _load_seeded_draft(self) -> None:
-        """Load the selected seeded draft: its own node cited, its index, nothing else chosen."""
+    def _load_proposal(self) -> None:
+        """Load the selected draft: its own node cited, the next free index, its proposed reading.
+
+        A dimension the grammar did not settle stays unchosen, so Author stays disabled until the
+        reviewer reads it out of the sentence themselves. Never a default and never an ``any_*``
+        fallback: "this sentence does not restrict that dimension" is a reading, and "we could not
+        tell" is not.
+        """
 
         row = self._current_route_row()
-        position = self.facts_list.currentRow()
-        if (
-            row is None
-            or self._fact_rows
-            or not self.facts_list.selectedItems()
-            or not 0 <= position < len(self._node_rows)
-        ):
+        proposal = self._current_proposal()
+        if row is None or proposal is None:
             return
         self._reset_dimensions(row.rule_route)
-        self.statement_index.setValue(position)
-        for index in range(self.nodes_list.count()):
-            self.nodes_list.item(index).setSelected(index == position)
+        self.statement_index.setValue(self._model.next_statement_index(row.rule_route))
+        for field, value in proposal.chosen.items():
+            if field in self._combos:
+                self._combos[field].setCurrentText(value)
+            elif field in self._edits:
+                self._edits[field].setText(value)
+        cited = {(item.fragment_id, item.node_order) for item in proposal.node_references}
+        for position, node in enumerate(self._node_rows):
+            self.nodes_list.item(position).setSelected((node.fragment_id, node.node_order) in cited)
         self._refresh_author_enabled()
 
     def duplicate_selected(self) -> None:
@@ -749,7 +821,7 @@ class ClauseFactReviewDialog(QDialog):
         self.statement_index = QSpinBox(self._editor_box)
         self.statement_index.setRange(0, 9999)
         self._editor_form.addRow("statement index", self.statement_index)
-        for field, kind, options in _dimensions(fact_kind):
+        for field, kind, options in fact_dimensions(fact_kind):
             if kind == "identifier":
                 edit = QLineEdit(self._editor_box)
                 edit.textChanged.connect(self._refresh_author_enabled)

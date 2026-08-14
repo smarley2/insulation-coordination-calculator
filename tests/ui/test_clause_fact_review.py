@@ -8,6 +8,7 @@ import pytest
 from PySide6.QtCore import Qt
 
 from insulation_coordination.domain.rules import RulePackageError
+from insulation_coordination.rules.importer import clause_fact_proposals
 from insulation_coordination.rules.importer.clause_facts import (
     BarrierTransferFact,
     CitedNode,
@@ -27,7 +28,6 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply impor
     SUPPLY_FACT_FAMILY_BY_ROUTE,
     SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE,
 )
-from insulation_coordination.ui import clause_fact_review
 from insulation_coordination.ui.clause_fact_review import (
     ClauseFactReviewDialog,
     ClauseFactReviewModel,
@@ -35,6 +35,7 @@ from insulation_coordination.ui.clause_fact_review import (
 from tests.conftest import _logged
 from tests.rules.importer.iec62477_2022.test_procedure_recipes import _draft
 from tests.rules.importer.iec62477_2022.test_supply_clause_recipes import _fragment
+from tests.rules.importer.test_clause_fact_proposals import fragment_with_sentences
 from tests.rules.importer.test_clause_fact_review_api import _hf_fact
 
 HF_ROUTE = ids.SUPPLY_HF_TRANSFORMER_ATTENUATION
@@ -109,10 +110,10 @@ def test_a_dimension_without_a_string_vocabulary_is_refused(
 ) -> None:
     """Silent degradation here is an unauthorable route and an approval blocked with no message."""
 
-    monkeypatch.setitem(clause_fact_review._FACT_MODELS, "hf_attenuation", _DriftedFact)
+    monkeypatch.setitem(clause_fact_proposals.FACT_MODEL_BY_KIND, "hf_attenuation", _DriftedFact)
 
     with pytest.raises(RulePackageError, match="dvc_gate"):
-        clause_fact_review._dimensions("hf_attenuation")
+        clause_fact_proposals.fact_dimensions("hf_attenuation")
 
 
 def test_the_model_lists_each_route_with_its_completion_state(draft_with_supply_fragments) -> None:
@@ -672,21 +673,22 @@ def test_the_node_reader_wraps_full_text_without_eliding(
     assert dialog.nodes_list.textElideMode() == Qt.TextElideMode.ElideNone
 
 
-# --- seeded drafts on a route with nothing authored yet -------------------------------
+# --- proposed drafts, one per clause sentence -----------------------------------------
 
-#: Invented node count for the fragment below. It says nothing about any real clause: the point
-#: of these tests is that the dialog offers one draft per node whatever that number is.
+#: Invented node count for the fragment below, and invented node text carrying no term any
+#: declared grammar looks for. Both say nothing about any real clause: what these tests show is
+#: that the dialog offers one draft per sentence and leaves every unsettled dimension unchosen.
 _SEEDED_NODE_COUNT = 3
 
 
 @pytest.fixture
 def draft_with_a_multi_node_fragment() -> ImportedRuleDraft:
-    """Every supply fragment, one of them carrying several nodes.
+    """Every supply fragment, one of them carrying several single-sentence nodes.
 
     The shared fixture gives each fragment a single node, which cannot show a surface that
-    offers one draft per node. Node text stays invented here exactly as it is there. Rebuilt
-    rather than copied from that fixture, because the extraction audit record every correction
-    verifies is a digest of the fragments themselves.
+    offers a draft per sentence across nodes. Node text stays invented here exactly as it is
+    there. Rebuilt rather than copied from that fixture, because the extraction audit record
+    every correction verifies is a digest of the fragments themselves.
     """
 
     fragments = tuple(
@@ -699,7 +701,7 @@ def draft_with_a_multi_node_fragment() -> ImportedRuleDraft:
     return _logged(_draft(fragments=fragments))
 
 
-def test_a_route_with_nothing_authored_offers_one_draft_per_node(
+def test_a_route_offers_one_draft_per_clause_sentence(
     qtbot, draft_with_a_multi_node_fragment
 ) -> None:
     """The first statement of a route is the expensive one: there is nothing to duplicate from."""
@@ -710,16 +712,18 @@ def test_a_route_with_nothing_authored_offers_one_draft_per_node(
 
     dialog.table.selectRow(_route_position(model, HF_ROUTE))
 
+    assert dialog.facts_list.count() == len(model.proposals(HF_ROUTE))
+    # These nodes carry one sentence each, so a draft per sentence is a draft per node here.
     assert dialog.facts_list.count() == _SEEDED_NODE_COUNT
-    # A seeded draft is not an authored statement, so there is nothing to retract or duplicate.
+    # A proposed draft is not an authored statement, so there is nothing to retract or duplicate.
     assert dialog.retract_button.isEnabled() is False
     assert dialog.duplicate_button.isEnabled() is False
 
 
-def test_the_seeded_drafts_are_not_offered_as_a_statement_count(
+def test_the_proposed_drafts_are_not_offered_as_a_statement_count(
     qtbot, draft_with_a_multi_node_fragment
 ) -> None:
-    """A node is not a statement, and nothing on this surface may imply that it is.
+    """A sentence is not a statement, and nothing on this surface may imply that it is.
 
     The reviewer decides how many statements a clause makes; a wording that reads as a count
     would make this prefill look like a reading of the source, which it is not.
@@ -731,17 +735,21 @@ def test_the_seeded_drafts_are_not_offered_as_a_statement_count(
 
     dialog.table.selectRow(_route_position(model, HF_ROUTE))
 
-    assert "Node count is not statement count" in dialog.seed_hint.text()
+    assert "Sentence count is not statement count" in dialog.seed_hint.text()
     assert all(
         "statement" not in dialog.facts_list.item(index).text()
         for index in range(dialog.facts_list.count())
     )
 
 
-def test_selecting_a_seeded_draft_cites_its_own_node_and_chooses_no_dimension(
+def test_selecting_a_draft_cites_its_own_node_and_leaves_unsettled_dimensions_unchosen(
     qtbot, draft_with_a_multi_node_fragment
 ) -> None:
-    """The saving: the reviewer fills dimensions instead of also picking an index and a node."""
+    """The saving: the reviewer fills dimensions instead of also picking an index and a node.
+
+    The invented node text settles no dimension, so this also pins the honest half: a dimension
+    no rule reached stays blank and Author stays disabled, rather than defaulting to anything.
+    """
 
     model = ClauseFactReviewModel(draft_with_a_multi_node_fragment)
     dialog = ClauseFactReviewDialog(model)
@@ -751,7 +759,9 @@ def test_selecting_a_seeded_draft_cites_its_own_node_and_chooses_no_dimension(
 
     dialog.facts_list.setCurrentRow(1)
 
-    assert dialog.statement_index.value() == 1
+    # The next free index for the route, not the draft's own position: authoring the fifth draft
+    # first must not claim index five.
+    assert dialog.statement_index.value() == 0
     assert [item.text() for item in dialog.nodes_list.selectedItems()] == [
         dialog.nodes_list.item(1).text()
     ]
@@ -764,13 +774,16 @@ def test_selecting_a_seeded_draft_cites_its_own_node_and_chooses_no_dimension(
     dialog.author_selected()
 
     (review,) = model.draft.clause_fact_reviews
-    assert review.statement_index == 1
     (citation,) = review.fact.node_references
     assert citation.node_order == nodes[1].node_order
+    # Marked in the notes, so the audit distinguishes a confirmed proposal from a typed reading.
+    assert "proposal" in review.notes
 
 
-def test_walking_the_seeded_drafts_records_nothing(qtbot, draft_with_a_multi_node_fragment) -> None:
-    """Seeding is a prefill of the editor: a reviewer who authors nothing has changed nothing."""
+def test_walking_the_proposed_drafts_records_nothing(
+    qtbot, draft_with_a_multi_node_fragment
+) -> None:
+    """A proposal is a prefill of the editor: a reviewer who authors nothing has changed nothing."""
 
     model = ClauseFactReviewModel(draft_with_a_multi_node_fragment)
     dialog = ClauseFactReviewDialog(model)
@@ -783,10 +796,10 @@ def test_walking_the_seeded_drafts_records_nothing(qtbot, draft_with_a_multi_nod
     assert model.draft == draft_with_a_multi_node_fragment
 
 
-def test_a_seeded_draft_can_be_authored_citing_more_than_its_own_node(
+def test_a_proposed_draft_can_be_authored_citing_more_than_its_own_node(
     qtbot, draft_with_a_multi_node_fragment
 ) -> None:
-    """Seeding must not narrow what a statement may rest on: further nodes are added by hand."""
+    """A proposal must not narrow what a statement may rest on: further nodes are added by hand."""
 
     model = ClauseFactReviewModel(draft_with_a_multi_node_fragment)
     dialog = ClauseFactReviewDialog(model)
@@ -800,9 +813,102 @@ def test_a_seeded_draft_can_be_authored_citing_more_than_its_own_node(
 
     (review,) = model.draft.clause_fact_reviews
     assert {item.node_order for item in review.fact.node_references} == {0, 2}
-    # Once the route carries a statement the offer is gone, and duplicate takes over.
-    assert dialog.facts_list.count() == 1
-    assert dialog.seed_hint.text() == ""
+    # The authored statement joins the list; the remaining drafts stay reachable, so the
+    # statements a proposal could not settle keep their prefill.
+    assert dialog.facts_list.count() == 1 + _SEEDED_NODE_COUNT
+    assert dialog.seed_hint.text() != ""
+
+
+def test_the_batch_action_stays_disabled_while_no_draft_is_fully_proposed(
+    qtbot, draft_with_a_multi_node_fragment
+) -> None:
+    """The gate the batch action must not dissolve: it can only confirm complete readings."""
+
+    model = ClauseFactReviewModel(draft_with_a_multi_node_fragment)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+
+    assert dialog.author_proposed_button.isEnabled() is False
+
+    dialog.author_proposed_selected()
+
+    assert not model.draft.clause_fact_reviews
+    assert "No draft" in dialog.status_text
+
+
+# --- authoring every fully proposed statement of a route ------------------------------
+
+#: Invented sentences carrying, between them, every term the attenuation route's declared rules
+#: name -- two that settle every dimension and one that settles none. They are written for this
+#: file out of the public keyword list and state nothing any clause states.
+_FULLY_PROPOSED_SENTENCES = (
+    "Synthetic DVC As gate shall be shown by test, simulation or calculation.",
+    "Synthetic DVC B gate shall be shown by test, simulation or calculation.",
+    "Synthetic reading naming nothing the grammar looks for.",
+)
+
+
+@pytest.fixture
+def draft_with_fully_proposed_sentences() -> ImportedRuleDraft:
+    """Every supply fragment, with the attenuation route's nodes carrying the sentences above."""
+
+    fragments = tuple(
+        fragment_with_sentences(spec.semantic_id, _FULLY_PROPOSED_SENTENCES)
+        if spec.semantic_id == HF_ROUTE
+        else _fragment(spec.semantic_id)
+        for spec in SUPPLY_CLAUSES
+    )
+    return _logged(_draft(fragments=fragments))
+
+
+def test_authoring_every_fully_proposed_statement_records_each_one_individually(
+    qtbot, draft_with_fully_proposed_sentences
+) -> None:
+    """Speed without dissolving the gate: one ``author_clause_fact`` per statement, marked.
+
+    The action is a shortcut through the clicking, never through the recording: each statement
+    keeps its own actor, notes and audited correction, and the partly proposed draft is left for
+    the reviewer rather than completed with a guess.
+    """
+
+    model = ClauseFactReviewModel(draft_with_fully_proposed_sentences)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    position = _route_position(model, HF_ROUTE)
+    dialog.table.selectRow(position)
+    assert dialog.author_proposed_button.isEnabled() is True
+
+    dialog.author_proposed_selected()
+
+    reviews = [item for item in model.draft.clause_fact_reviews if item.rule_route == HF_ROUTE]
+    assert [item.statement_index for item in reviews] == [0, 1]
+    assert {item.fact.dvc_gate for item in reviews} == {"dvc_as", "dvc_b"}
+    assert all(item.actor == "maintainer" for item in reviews)
+    assert all("grammar-proposed" in item.notes for item in reviews)
+    assert dialog.table.item(position, _STATUS_COLUMN).text() == "needs_completion"
+    assert "Recorded 2" in dialog.status_text
+
+
+def test_the_statement_the_grammar_could_not_settle_is_left_for_the_reviewer(
+    qtbot, draft_with_fully_proposed_sentences
+) -> None:
+    """A partly proposed draft survives the batch and keeps its prefill and its blank fields."""
+
+    model = ClauseFactReviewModel(draft_with_fully_proposed_sentences)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+
+    dialog.author_proposed_selected()
+
+    remaining = [item for item in model.proposals(HF_ROUTE) if not item.fully_proposed]
+    assert len(remaining) == 1
+    # Two authored statements and every draft still listed: the unsettled one stays reachable.
+    assert dialog.facts_list.count() == 2 + len(_FULLY_PROPOSED_SENTENCES)
+    dialog.facts_list.setCurrentRow(2 + 2)
+    assert dialog.dimension_combo("dvc_gate").currentText() == ""
+    assert dialog.author_button.isEnabled() is False
 
 
 def test_the_button_is_enabled_by_clause_fragments(qtbot, draft_with_supply_fragments) -> None:
