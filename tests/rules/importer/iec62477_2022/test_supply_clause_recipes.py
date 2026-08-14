@@ -113,9 +113,17 @@ def _fragment(
     return _mixed_fragment(semantic_id, (kind,) * count, tokens)
 
 
-#: The reviewed shape of the mains system voltage subclause: five bullets across two regions
-#: and one paragraph region after them.
-_SYSTEM_VOLTAGE_KINDS = ("bullet", "bullet", "bullet", "bullet", "bullet", "paragraph")
+#: The reviewed shape of the mains system voltage subclause: the bullet list's lead-in, five
+#: bullets across two regions, and one paragraph region after them.
+_SYSTEM_VOLTAGE_KINDS = (
+    "paragraph",
+    "bullet",
+    "bullet",
+    "bullet",
+    "bullet",
+    "bullet",
+    "paragraph",
+)
 
 
 def _bullet_fragment() -> RawClauseFragment:
@@ -568,6 +576,51 @@ def test_a_floor_sentence_proposes_no_insulation_class() -> None:
     assert {item.chosen["insulation_class"] for item in permission} == {"basic", "supplementary"}
     assert floor
     assert all("insulation_class" in item.unchosen for item in floor)
+
+
+@pytest.mark.parametrize(
+    ("sentence", "expected"),
+    (
+        # The two explicit modal verbs.
+        ("Synthetic reading which shall hold.", "requirement"),
+        ("Synthetic reading which may hold.", "permission"),
+        # Unmodalized present indicative, in three forms, binds.
+        ("Synthetic reading is the stated one.", "requirement"),
+        ("Synthetic readings are the stated ones.", "requirement"),
+        ("Synthetic reading applies here.", "requirement"),
+        # A permission that also carries a present-indicative verb must never read as binding:
+        # this is the pair the whole exclusion list exists for.
+        ("Synthetic readings are provided and may be designed for.", "permission"),
+        ("Synthetic readings are supplied and may be determined.", "permission"),
+        # Non-binding and capability modality settle nothing rather than binding.
+        ("Synthetic reading should be the stated one.", None),
+        ("Synthetic reading can be the stated one.", None),
+        ("Synthetic reading might be the stated one.", None),
+        # A negated present states an exemption; the grammar declines to read its obligation.
+        ("Synthetic reading is not the stated one.", None),
+        # No verb at all, and no stem to inherit from.
+        ("synthetic fragment of a reading", None),
+    ),
+)
+def test_the_obligation_rules_read_exactly_the_modality_the_sentence_states(
+    sentence: str, expected: str | None
+) -> None:
+    """Every firing set was checked by hand against the document; these pin the shapes.
+
+    A wrong obligation is the one proposal a maintainer is least likely to catch, because it
+    reads plausibly either way. ``None`` means the sentence settles the dimension nowhere and it
+    must stay unchosen -- never defaulted to the binding reading.
+    """
+
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        propose_supply_facts,
+    )
+
+    route = ids.SUPPLY_VERIFIED_BARRIER_TRANSFER
+    (proposal,) = propose_supply_facts(fragment_with_sentences(route, (sentence,)), route)
+
+    assert proposal.chosen.get("obligation") == expected
+    assert ("obligation" in proposal.unchosen) is (expected is None)
 
 
 def test_a_route_with_no_declared_grammar_proposes_nothing() -> None:

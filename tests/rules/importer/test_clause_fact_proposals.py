@@ -267,6 +267,141 @@ def test_a_sequence_rules_trailing_unpaired_token_settles_nothing() -> None:
     assert (proposal.chosen["source_ovc"], proposal.chosen["target_ovc"]) == ("ovc_iv", "ovc_iii")
 
 
+# --- a bullet inherits from the stem it completes -------------------------------------
+
+
+def _bullet_fragment(texts: tuple[tuple[str, str], ...]) -> RawClauseFragment:
+    """A fragment whose nodes carry the given (kind, text) pairs, in order."""
+
+    nodes = tuple(
+        ClauseNode(
+            order=order,
+            kind=kind,  # type: ignore[arg-type]
+            raw_text=text,
+            source=SOURCE.model_copy(update={"row": f"node {order}"}),
+        )
+        for order, (kind, text) in enumerate(texts)
+    )
+    fragment = RawClauseFragment(
+        id=f"raw-{ROUTE}", raw_sha256="0" * 64, nodes=nodes, tokens=(), source=SOURCE
+    )
+    return fragment.model_copy(update={"raw_sha256": canonical_model_sha256(fragment)})
+
+
+_INHERITING_GRAMMAR = _GRAMMAR.model_copy(update={"inherited_dimensions": ("obligation",)})
+
+
+def _propose_nodes(texts: tuple[tuple[str, str], ...]):
+    return propose_clause_facts(
+        _bullet_fragment(texts),
+        rule_route=ROUTE,
+        fact_kind="hf_attenuation",
+        propose=keyword_proposer(_INHERITING_GRAMMAR),
+    )
+
+
+def test_a_bullet_carries_the_colon_stem_it_completes() -> None:
+    """A list item has no finite verb of its own; its stem is where the modality lives."""
+
+    sentences = clause_sentences(
+        _bullet_fragment(
+            (
+                ("paragraph", "Synthetic stem which the items complete:"),
+                ("bullet", "synthetic first item;"),
+                ("bullet", "synthetic second item."),
+            )
+        )
+    )
+
+    assert [item.stem_text for item in sentences] == [
+        "",
+        "Synthetic stem which the items complete:",
+        "Synthetic stem which the items complete:",
+    ]
+
+
+def test_a_paragraph_not_ending_in_a_colon_is_not_a_stem() -> None:
+    """A colon is what marks a sentence as completed by what follows it."""
+
+    sentences = clause_sentences(
+        _bullet_fragment(
+            (("paragraph", "Synthetic standalone reading."), ("bullet", "synthetic item;"))
+        )
+    )
+
+    assert [item.stem_text for item in sentences] == ["", ""]
+
+
+def test_an_inherited_dimension_is_read_from_the_stem() -> None:
+    proposals = _propose_nodes(
+        (
+            ("paragraph", "Synthetic stem which shall be completed by the items:"),
+            ("bullet", "synthetic item naming DVC As;"),
+        )
+    )
+
+    bullet = next(item for item in proposals if item.node_references[0].node_order == 1)
+    assert bullet.chosen["obligation"] == "requirement"
+    assert bullet.chosen["dvc_gate"] == "dvc_as"
+
+
+def test_a_bullet_stating_its_own_value_does_not_also_inherit_one() -> None:
+    """A fallback, not an addition: inheriting alongside would yield two contradictory drafts."""
+
+    proposals = _propose_nodes(
+        (
+            ("paragraph", "Synthetic stem which shall be completed by the items:"),
+            ("bullet", "synthetic item which may apply, naming DVC As;"),
+        )
+    )
+
+    bullets = [item for item in proposals if item.node_references[0].node_order == 1]
+    assert [item.chosen["obligation"] for item in bullets] == ["permission"]
+
+
+def test_a_dimension_not_declared_inheritable_is_never_read_from_the_stem() -> None:
+    """Inheritance is declared per dimension, so a stem cannot leak its whole reading."""
+
+    proposals = propose_clause_facts(
+        _bullet_fragment(
+            (
+                ("paragraph", "Synthetic stem naming DVC As, which shall be completed:"),
+                ("bullet", "synthetic item stating no gate;"),
+            )
+        ),
+        rule_route=ROUTE,
+        fact_kind="hf_attenuation",
+        propose=keyword_proposer(_INHERITING_GRAMMAR),
+    )
+
+    bullet = next(item for item in proposals if item.node_references[0].node_order == 1)
+    assert bullet.chosen["obligation"] == "requirement"
+    assert "dvc_gate" in bullet.unchosen
+
+
+def test_a_stem_carries_across_node_boundaries() -> None:
+    """A list routinely opens at the foot of one region and continues in the next."""
+
+    proposals = _propose_nodes(
+        (
+            ("paragraph", "Synthetic stem which shall be completed by the items:"),
+            ("bullet", "synthetic first item;"),
+            ("bullet", "synthetic later item on another node."),
+        )
+    )
+
+    assert [
+        item.chosen.get("obligation")
+        for item in proposals
+        if item.node_references[0].node_order in (1, 2)
+    ] == ["requirement", "requirement"]
+
+
+def test_a_grammar_declaring_an_unknown_inherited_dimension_is_refused() -> None:
+    with pytest.raises(ValidationError, match="no dimension"):
+        ClauseFactGrammar(fact_kind="hf_attenuation", inherited_dimensions=("device_placement",))
+
+
 # --- what stays unchosen --------------------------------------------------------------
 
 

@@ -221,6 +221,12 @@ class ClauseFactGrammar(FrozenModel):
     #: Dimensions every sentence of the route shares, such as the identifier of another route
     #: this one defers to. Applied first, so a keyword rule still wins where both speak.
     constants: dict[str, str] = Field(default_factory=dict)
+    #: Dimensions a bullet may read from the sentence it completes when its own text settles
+    #: them nowhere. Declared per grammar rather than per rule, and only for dimensions a
+    #: bullet genuinely cannot carry alone: a list item's modality lives in its stem's verb.
+    #: A fallback, never an addition -- a bullet stating its own value keeps it, and never gets
+    #: a second draft from the stem.
+    inherited_dimensions: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _dimensions_and_values_are_the_families_own(self) -> ClauseFactGrammar:
@@ -236,6 +242,9 @@ class ClauseFactGrammar(FrozenModel):
             options = vocabularies[dimension]
             if options and value not in options:
                 raise ValueError(f"{self.fact_kind}.{dimension} declares no value {value}")
+        unknown_inherited = sorted(set(self.inherited_dimensions) - set(vocabularies))
+        if unknown_inherited:
+            raise ValueError(f"{self.fact_kind} declares no dimension {unknown_inherited[0]}")
         for rule in self.sequence_rules:
             for dimension in rule.dimensions:
                 if dimension not in vocabularies:
@@ -253,16 +262,22 @@ class ClauseFactGrammar(FrozenModel):
 class ClauseSentence(FrozenModel):
     """One normative sentence of one fragment node.
 
-    ``text`` is licensed clause text read from the private draft. It exists to be shown beside a
-    proposal so a maintainer confirms a reading against its own wording, and must never be
-    written to a committed file.
+    ``text`` and ``stem_text`` are licensed clause text read from the private draft. They exist
+    to be shown beside a proposal so a maintainer confirms a reading against its own wording,
+    and must never be written to a committed file.
     """
 
     fragment_id: Identifier
     node_order: int = Field(ge=0)
+    node_kind: str
     node_sha256: str = Field(pattern=r"[0-9a-f]{64}")
     index: int = Field(ge=0)
     text: str = Field(min_length=1, max_length=4_000)
+    #: The sentence this one completes, for a bullet that completes one: the nearest preceding
+    #: paragraph sentence of the same fragment ending in a colon. Empty for anything else. A
+    #: bullet of a list has no finite verb of its own, so a dimension carried by the verb can
+    #: only be read from the stem -- see ``ClauseFactGrammar.inherited_dimensions``.
+    stem_text: str = Field(default="", max_length=4_000)
 
 
 class ClauseFactProposal(FrozenModel):
@@ -316,9 +331,15 @@ def clause_sentences(fragment: RawClauseFragment) -> tuple[ClauseSentence, ...]:
     Sentence boundaries are structure, not content: one node can carry several distinct
     normative statements, and a node's own trailing notes are not statements at all. Each
     sentence keeps the node it came from so a draft built from it cites exactly that node.
+
+    A bullet also keeps the stem it completes: the most recent paragraph sentence of this
+    fragment ending in a colon. Tracked across the whole fragment rather than within a node or
+    a segment, because a list's lead-in and its items are routinely split across both -- a
+    subclause can open its list at the foot of one page and continue it on the next.
     """
 
     sentences: list[ClauseSentence] = []
+    stem = ""
     for node in fragment.nodes:
         digest = canonical_model_sha256(node)
         for text in _sentences(node.raw_text):
@@ -326,11 +347,15 @@ def clause_sentences(fragment: RawClauseFragment) -> tuple[ClauseSentence, ...]:
                 ClauseSentence(
                     fragment_id=fragment.id,
                     node_order=node.order,
+                    node_kind=node.kind,
                     node_sha256=digest,
                     index=len(sentences),
                     text=text,
+                    stem_text=stem if node.kind == "bullet" else "",
                 )
             )
+            if node.kind == "paragraph" and text.endswith(":"):
+                stem = text
     return tuple(sentences)
 
 
@@ -341,6 +366,10 @@ def keyword_proposer(grammar: ClauseFactGrammar) -> SentenceProposer:
     sentence multiplying several dimensions yields their cartesian product: a consumer always
     asks with one concrete value, so a row per concrete value is what a projector needs, and an
     ``any_*`` token would wrongly answer for the values the sentence leaves out.
+
+    A declared inherited dimension its own text settles nowhere is then read from the sentence's
+    stem. Second, and only into an empty dimension, so inheritance can neither override a
+    bullet's own reading nor multiply it into two drafts.
     """
 
     def propose(sentence: ClauseSentence) -> tuple[Mapping[str, str], ...]:
@@ -350,6 +379,14 @@ def keyword_proposer(grammar: ClauseFactGrammar) -> SentenceProposer:
                 values = by_dimension.setdefault(rule.dimension, [])
                 if rule.value not in values:
                     values.append(rule.value)
+        if sentence.stem_text:
+            for rule in grammar.keyword_rules:
+                if (
+                    rule.dimension in grammar.inherited_dimensions
+                    and rule.dimension not in by_dimension
+                    and rule.matches(sentence.stem_text)
+                ):
+                    by_dimension.setdefault(rule.dimension, []).append(rule.value)
         axes: list[list[dict[str, str]]] = [
             [{dimension: value} for value in values] for dimension, values in by_dimension.items()
         ]

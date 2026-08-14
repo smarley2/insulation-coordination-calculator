@@ -89,9 +89,14 @@ SUPPLY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
         #: rectangle reached the middle region only, so the statements before and after it were
         #: never extracted and could not be cited by any reviewed fact.
         segments=(
+            #: The top edge sits between the subclause heading's last line and the list's
+            #: lead-in line, measured with pdfplumber against the licensed document, so the
+            #: region reaches the sentence the bullets complete and no heading. Before it did,
+            #: a bullet had no finite verb anywhere in the fragment: its modality was
+            #: unproposable and a reviewer had to read wording this fragment never showed.
             ClauseSegmentSpec(
                 page_number=63,
-                expected_bbox=(65.0, 725.0, 535.0, 792.0),
+                expected_bbox=(65.0, 705.0, 535.0, 792.0),
                 expected_root_kind="bullets",
             ),
             ClauseSegmentSpec(
@@ -328,17 +333,27 @@ def _keyword(
     )
 
 
-#: The normative verbs. Generic to every standard rather than to any clause, and the one pair of
-#: terms that reaches the obligation dimension every fact family carries.
+#: Words that state a sentence's modality explicitly, or negate it. A normative-present rule
+#: fires only in the absence of all of them: the two binding and permitting verbs have their own
+#: rules below, `should`/`can`/`might` are non-binding or state a capability, and a negated
+#: present states an exemption rather than an obligation -- a reading this grammar declines to
+#: make rather than guess at, so such a sentence leaves the dimension unchosen.
+_MODALITY_MARKERS = ("shall", "may", "should", "can", "might", "not")
+
+#: How the obligation dimension every fact family carries is read. Generic to any drafted
+#: standard rather than to any clause: the two modal verbs, and an unmodalized present
+#: indicative, which per the ISO/IEC drafting rules binds in a requirements clause because the
+#: modality words are exclusive.
 #:
-#: Declared only by the grammars whose own regions carry a normative verb at all. Two of them do
-#: not: their obligation dimension is simply unreachable from the text the recipe extracts, and a
-#: rule that reaches nothing is worse than no rule -- it claims a coverage the maintainer would
-#: only discover was missing by finding the field blank. The private grammar test refuses a rule
-#: that reaches nothing, so this omission is enforced rather than remembered.
+#: Three verb rules rather than one alternation, since a rule requires *all* its keywords; they
+#: name one value, so a sentence carrying two of them still yields one draft.
 _OBLIGATION_RULES = (
     _keyword("obligation", "requirement", "shall"),
     _keyword("obligation", "permission", "may"),
+    *(
+        _keyword("obligation", "requirement", verb, without=_MODALITY_MARKERS)
+        for verb in ("is", "are", "applies")
+    ),
 )
 
 #: Overvoltage category designations as the scale a reduction step is read over. Designations,
@@ -352,10 +367,16 @@ _OVERVOLTAGE_STEP_TOKENS = (
 
 _SYSTEM_VOLTAGE_GRAMMAR = ClauseFactGrammar(
     fact_kind="system_voltage",
-    # No obligation rule: see ``_OBLIGATION_RULES``. Shared by the mains and non-mains subclauses,
-    # which state one rule between them and so read from one grammar; a dimension only one of them
-    # reaches is still reached, and the other's statements keep it unchosen.
+    # Shared by the mains and non-mains subclauses, which state one rule between them and so read
+    # from one grammar; a dimension only one of them reaches is still reached, and the other's
+    # statements keep it unchosen.
+    #
+    # This is the one grammar whose statements are mostly list items, so it is the one that needs
+    # the stem: a bullet carries no verb, and its obligation is only readable from the lead-in it
+    # completes -- which is why the region was widened to extract that lead-in at all.
+    inherited_dimensions=("obligation",),
     keyword_rules=(
+        *_OBLIGATION_RULES,
         _keyword("phase_system", "three_phase_star", "star"),
         _keyword("phase_system", "three_phase_delta", "delta"),
         _keyword("phase_system", "three_phase_delta", "corner"),
@@ -404,8 +425,8 @@ _SYSTEM_VOLTAGE_GRAMMAR = ClauseFactGrammar(
 
 _BARRIER_TRANSFER_GRAMMAR = ClauseFactGrammar(
     fact_kind="barrier_transfer",
-    # No obligation rule: see ``_OBLIGATION_RULES``.
     keyword_rules=(
+        *_OBLIGATION_RULES,
         _keyword("isolation_present", "false", "not", "providing", "galvanic", "isolation"),
         _keyword("combined_circuit_rule", "more_severe_of_both_sides", "higher", "two"),
         _keyword("downstream_connection_kind", "no_isolation", "without", "galvanic", "isolation"),
@@ -547,7 +568,18 @@ _NO_CONFIRMED_FACTS = ConfirmedFacts()
 #: several regions need not read as one kind throughout -- the system voltage clause is five
 #: bullets and then one paragraph -- and "any kind" is the one weakening that would let a
 #: reflowed clause project silently.
-_SYSTEM_VOLTAGE_SHAPE = ("bullet", "bullet", "bullet", "bullet", "bullet", "paragraph")
+#: The leading paragraph is the bullet list's lead-in, extracted since the region was widened to
+#: reach it. It is part of the reviewed contract, not incidental: without it the bullets carry no
+#: finite verb and the fragment does not show what they complete.
+_SYSTEM_VOLTAGE_SHAPE = (
+    "paragraph",
+    "bullet",
+    "bullet",
+    "bullet",
+    "bullet",
+    "bullet",
+    "paragraph",
+)
 _SYSTEM_VOLTAGE_NON_MAINS_SHAPE = ("paragraph",)
 _PROPAGATION_SHAPE = ("bullet", "bullet", "bullet", "bullet")
 _BARRIER_SHAPE = ("paragraph",)

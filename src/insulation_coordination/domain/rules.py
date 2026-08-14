@@ -14,7 +14,10 @@ from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.quantities import DecimalValue
 
 RULE_SCHEMA_VERSION = 4
-IEC_IMPORTER_VERSION = "iec-pdf-6"
+#: Bumped whenever reviewed evidence changes shape, so a package built by an older importer is
+#: no longer trusted. ``iec-pdf-7`` widened one clause region to reach the sentence its bullet
+#: list completes, which changes that fragment's nodes and its digest.
+IEC_IMPORTER_VERSION = "iec-pdf-7"
 MAX_IDENTIFIER_LENGTH = 160
 MAX_REFERENCE_TEXT_LENGTH = 500
 MAX_NOTES_LENGTH = 2_000
