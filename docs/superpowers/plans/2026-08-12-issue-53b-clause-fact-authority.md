@@ -2099,11 +2099,12 @@ for the remaining #53B work:
 - [ ] Per-family `statement_kind` variants, **one commit per family, smallest first**, each green on
       the full public suite and on the private suite where it moves the licensed path or the
       placeholders:
-  - [ ] **1. hf_attenuation** — the gate becomes a scope. This is the commit that teaches the shared
+  - [x] **1. hf_attenuation** — the gate becomes a scope. This is the commit that teaches the shared
         machinery; see "Handoff: what family 1 must touch" below.
-  - [ ] **2. system_voltage** — measure | applicability. Introduces `statement_kind` and the
+  - [x] **2. system_voltage** — measure | applicability. Introduces `statement_kind` and the
         carried-not-projected variant.
-  - [ ] **3. spd_monitoring** — requirement | exemption | compliance.
+  - [ ] **3. spd_monitoring** — requirement | exemption | compliance. See "Handoff: what families 3
+        to 5 inherit" below.
   - [ ] **4. spd_reduction** — permission | floor | monitoring. Introduces the ordered
         source-to-target pair collection; two independent value sets are forbidden.
   - [ ] **5. barrier_transfer** — rating_resolution | combined_requirement |
@@ -2175,3 +2176,54 @@ that previously yielded two drafts now yields one.
 
 For the completion guard slice, the A5 statement anchor should be **route + cited-node identity +
 evidence hash**, never the sentence index, because the region-widening slice renumbers sentences.
+
+### Handoff: what families 3 to 5 inherit
+
+Written after families 1 and 2 landed. The shared machinery is in place; each remaining family is a
+model change plus its projector, and the two corrections below are things the family 1 handoff got
+wrong or could not know.
+
+**1. Scope detection is not `get_origin`.** The family 1 handoff said to detect a scope field with
+`get_origin(annotation) is DimensionScope`. It does not work: pydantic builds `DimensionScope[X]` as
+a concrete model *class*, so `get_origin`/`get_args` return nothing and the type argument lives in
+`__pydantic_generic_metadata__`. `clause_facts.scope_vocabulary` is the one reader for it; call that
+rather than re-deriving it.
+
+**2. The family-to-model map is now family-to-variants.** `FACT_MODELS_BY_KIND` maps a family to its
+declared variants in order, and `fact_model(fact_kind, statement_kind)` / `fact_variants(fact_kind)`
+are how every caller resolves one. `statement_kind` is required exactly when the family declares
+variants and refused when it does not, so a family gaining variants makes its own callers fail loudly
+rather than silently authoring whichever variant is declared first. What a variant family must also
+update:
+
+- its `ClauseFactGrammar` declares `statement_kind` (the grammar's rules are validated against that
+  one variant's model);
+- `propose_clause_facts` and `ClauseFactProposal` carry the kind, and `proposed_fact` reads it;
+- nothing in the editor — it already asks for the statement kind before offering any dimension, and
+  rebuilds the dimension rows when the kind changes.
+
+**3. A carried-not-projected variant costs nothing extra now.** Resolution, the fact-set digest and
+the approval gate need no change for one: they are per route, not per variant. The projector filters
+to the variants it can answer with and refuses when none of them is present, rather than emitting a
+zero-row rule. `spd_monitoring`'s **compliance** variant is the next one of these — this route's
+declared `verification_reference` output carries none of `compliance_evidence`'s tokens, and widening
+it is #53C item 5.
+
+**4. spd_monitoring specifically.** `_spd_monitoring_row` reads `fact.monitoring_required` and
+`fact.participates_in_reduction` as branch values today. With **requirement | exemption**, the
+obligation is what the variant *is*, so the boolean field goes and the row's `monitoring_required`
+comes from the variant — check `_require_distinct_branches` still separates the two, since a
+requirement and an exemption over one placement must not both answer.
+
+**5. Still outstanding, and not part of the variant commits.** The five `any_*` tokens on
+`SystemVoltageStatement`/`SystemVoltageMeasureFact`, plus `any_placement` and `any_evidence`, remain
+scalar-plus-token. Their projection is already correct through `_dimension_matcher` and
+`_placement_matcher`, which both build a `DimensionScope` from the token, so this is a modelling
+tidy-up rather than a behaviour fix — and it is what deletes those two shims. Do it per family or as
+one commit after family 5; say which in your report.
+
+**6. The private placeholders are one statement per route.** `_placeholder_facts` returns a
+`dict[str, SupplyFact]`, so the licensed path exercises one variant per route -- the measure one for
+system voltage. The carried variant is proven in the public suite only. Widening that dict to several
+statements per route belongs to the private placeholder slice, which has to replace the invalid
+positive-isolation placeholder anyway.
