@@ -1390,12 +1390,19 @@ def test_the_monitoring_route_follows_its_own_reviewed_facts() -> None:
     assert _value(excused_row, "monitoring_required") is False
 
 
-def test_one_exemption_statement_covers_every_placement_it_is_stated_for() -> None:
-    """A reading placement does not restrict is authored once, not once per placement.
+def test_one_exemption_statement_covers_every_reviewed_placement_and_no_other() -> None:
+    """An unrestricted reading covers every placement a reviewed reading can name -- and stops there.
 
-    A required single placement matched with ``equals`` could not express that: authoring such a
-    reading left whichever placement the maintainer did not pick reaching no row, so the same
-    query answered for one placement and fell through for the other.
+    Two halves. A reading placement does not restrict is authored once, not once per placement: a
+    required single placement matched with ``equals`` left whichever one the maintainer did not pick
+    reaching no row.
+
+    And the half that was a real defect: this rule declares a placement the reviewed vocabulary
+    deliberately cannot name, because what the source states about it is nothing. The unrestricted
+    reading used to project a wildcard, which answered for that placement too -- contradicting the
+    note beside the declared placements, which says a consumer asking about it must reach no match.
+    An unrestricted scope now projects an ``in`` over the reviewed placements, so the unreviewed one
+    reaches **no row at all**.
     """
 
     fragment = _spd_fragment("monitoring")
@@ -1407,13 +1414,96 @@ def test_one_exemption_statement_covers_every_placement_it_is_stated_for() -> No
     )
     rule = _project_spd(fragment, facts)
 
-    for placement in ("internal_to_pecs", "external_to_pecs", "bundled_external_to_pecs"):
+    for placement in ("internal_to_pecs", "bundled_external_to_pecs"):
         row = _lookup(
             rule,
             **_spd_inputs(device_placement=placement, part_of_category_reduction=False),
         )
         assert row is not None, placement
         assert _value(row, "monitoring_required") is False
+
+    # The placement no reviewed statement can name reaches no row, rather than borrowing the
+    # unrestricted statement's answer.
+    assert (
+        _lookup(
+            rule,
+            **_spd_inputs(device_placement="external_to_pecs", part_of_category_reduction=False),
+        )
+        is None
+    )
+
+
+#: The phase systems a reviewed statement can name. Stated here independently of the recipe, so
+#: these tests prove the reviewed domain rather than agreeing with whatever it computed. The rule's
+#: own input declares two further states that no reviewed reading can name.
+_REVIEWED_PHASE_SYSTEMS = frozenset(
+    {"three_phase_star", "three_phase_delta", "three_phase_it", "single_phase_it"}
+)
+
+
+def _unrestricted_phase_system_rule() -> DecisionRule:
+    """One statement restricting no phase system, projected. Invented values only."""
+
+    fragment = _bullet_fragment()
+    # Unrestricted on every other dimension, so only the phase system decides whether a query
+    # matches and these tests cannot pass or fail for an unrelated reason.
+    fact = _system_voltage_fact(
+        fragment,
+        phase_system="any_phase_system",
+        earthing="any_earthing",
+        input_topology="any_input_topology",
+        purpose="any_purpose",
+        measure="phase_to_earth_rms",
+    )
+    facts = ConfirmedFacts(by_route={ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: (fact,)})
+    rules, _proposals = project_system_voltage_resolution(fragment, IDENTITY, None, facts)
+    return _decision(rules, ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION)
+
+
+def test_an_unrestricted_reading_never_widens_to_a_consumer_only_phase_system() -> None:
+    """The system-voltage half of the wildcard defect, asserted as a no-match.
+
+    This rule's phase-system input declares two states no reviewed statement can name. An
+    unrestricted reading used to project a wildcard, so it answered for both -- granting a reading
+    the source never made to a question it never addressed. It now projects an ``in`` over the
+    reviewed phase systems, and the consumer-only states reach no row at all.
+    """
+
+    rule = _unrestricted_phase_system_rule()
+
+    for reviewed in _REVIEWED_PHASE_SYSTEMS:
+        assert _lookup(rule, **_system_voltage_inputs(phase_system=reviewed)) is not None, reviewed
+
+    for consumer_only in ("single_phase", "unspecified"):
+        assert _lookup(rule, **_system_voltage_inputs(phase_system=consumer_only)) is None, (
+            consumer_only
+        )
+
+
+def test_an_unrestricted_reading_projects_the_declared_domain_not_the_authored_one() -> None:
+    """``reviewed_domain`` is the model's declared domain, never the values authored so far.
+
+    Derived from the authored set instead, an unrestricted matcher would shrink as a side effect of
+    how far review had progressed: a reviewer mid-authoring would get a narrower rule than the one
+    they read, and it would silently widen again as they authored more. The one authored statement
+    here names **no** concrete phase system at all, yet its row still covers every declared reviewed
+    phase system -- which is only possible if the domain came from the model.
+    """
+
+    rule = _unrestricted_phase_system_rule()
+    projected = {
+        value
+        for row in rule.rows
+        for matcher in row.matchers
+        if matcher.input == "phase_system"
+        for value in matcher.values
+    }
+
+    # The one authored statement names no concrete phase system, yet the row enumerates the whole
+    # declared reviewed domain -- which is only possible if the domain came from the model.
+    assert projected == set(_REVIEWED_PHASE_SYSTEMS)
+    for value in _REVIEWED_PHASE_SYSTEMS:
+        assert _lookup(rule, **_system_voltage_inputs(phase_system=value)) is not None, value
 
 
 def test_an_any_placement_statement_overlapping_a_specific_one_is_refused() -> None:
@@ -1905,9 +1995,11 @@ def test_both_evidence_scopes_reach_the_one_projected_rule() -> None:
         ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,
         f"{ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION}.guidance",
     ]
+    # A reviewed phase system, not the consumer-only one: an unrestricted reading covers the
+    # reviewed domain and deliberately stops there -- see the dedicated regression below.
     non_mains = _lookup(
         rule,
-        **_system_voltage_inputs(supply_kind="non_mains", phase_system="single_phase"),
+        **_system_voltage_inputs(supply_kind="non_mains", phase_system="single_phase_it"),
     )
     mains = _lookup(
         rule,

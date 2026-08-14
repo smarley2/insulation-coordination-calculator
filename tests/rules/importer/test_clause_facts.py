@@ -13,6 +13,7 @@ from insulation_coordination.rules.importer.clause_facts import (
     ClauseFactCompletion,
     ClauseFactReview,
     ConfirmedFacts,
+    DimensionScope,
     SpdMonitoringFact,
     SpdReductionFact,
     SystemVoltageFact,
@@ -219,3 +220,56 @@ def test_confirmed_facts_reads_back_by_route() -> None:
 
     assert facts.for_route("iec62477_2022.supply.spd_reduction_requirements.mains") == (fact,)
     assert facts.for_route("iec62477_2022.supply.hf_transformer_attenuation") == ()
+
+
+# --- DimensionScope: the three readings, and the canonical form the digest needs ---------
+
+
+def test_the_three_scope_modes_carry_the_value_counts_they_name() -> None:
+    assert DimensionScope[str](mode="unrestricted").values == ()
+    assert DimensionScope[str](mode="exact_one", values=("alpha",)).values == ("alpha",)
+    assert DimensionScope[str](mode="exact_set", values=("alpha", "beta")).values == (
+        "alpha",
+        "beta",
+    )
+
+
+@pytest.mark.parametrize(
+    ("mode", "values"),
+    (
+        # An unrestricted reading restricts nothing, so naming a value contradicts itself.
+        ("unrestricted", ("alpha",)),
+        ("exact_one", ()),
+        ("exact_one", ("alpha", "beta")),
+        # One value is exact_one; calling it a set would give two spellings of one reading.
+        ("exact_set", ("alpha",)),
+        ("exact_set", ()),
+    ),
+)
+def test_a_scope_whose_values_contradict_its_mode_is_refused(mode: str, values: tuple) -> None:
+    with pytest.raises(ValidationError):
+        DimensionScope[str](mode=mode, values=values)
+
+
+def test_a_scope_naming_one_value_twice_is_refused() -> None:
+    with pytest.raises(ValidationError, match="each value once"):
+        DimensionScope[str](mode="exact_set", values=("alpha", "alpha"))
+
+
+def test_a_scope_out_of_canonical_order_is_refused() -> None:
+    """Two statements naming one set must hash identically, or the duplicate refusal is defeated."""
+
+    with pytest.raises(ValidationError, match="canonical order"):
+        DimensionScope[str](mode="exact_set", values=("beta", "alpha"))
+
+
+def test_the_constructor_canonicalises_whatever_order_it_is_given() -> None:
+    """Order a source happens to state values in must not reach the digest."""
+
+    first = DimensionScope[str].of("beta", "alpha")
+    second = DimensionScope[str].of("alpha", "beta")
+
+    assert first == second
+    assert first.mode == "exact_set"
+    assert DimensionScope[str].of("alpha").mode == "exact_one"
+    assert DimensionScope[str].unrestricted().mode == "unrestricted"

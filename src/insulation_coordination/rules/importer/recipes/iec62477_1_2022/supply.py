@@ -19,8 +19,9 @@ from the maintained curve recipes.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import NoReturn
+from typing import NoReturn, get_args
 
+from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import (
     DecisionInput,
     DecisionOutput,
@@ -44,6 +45,7 @@ from insulation_coordination.rules.importer.clause_fact_proposals import (
 from insulation_coordination.rules.importer.clause_facts import (
     BarrierTransferFact,
     ConfirmedFacts,
+    DimensionScope,
     HfAttenuationFact,
     SpdMonitoringFact,
     SpdReductionFact,
@@ -836,19 +838,73 @@ def _statement_source(
     return fragments[0].nodes[0].source
 
 
-def _dimension_matcher(input_name: str, value: str, unrestricted: str) -> Matcher:
-    """Match one authored dimension value, or every value where the statement states none.
+def _scope_matcher(
+    input_name: str,
+    scope: DimensionScope[str],
+    reviewed_domain: tuple[str, ...],
+    consumer_domain: tuple[str, ...],
+) -> Matcher:
+    """Project one reviewed dimension scope onto one declared consumer input.
 
-    A statement its source leaves unrestricted on a dimension is one statement covering every
-    value, not one per value, so it projects ``op="any"`` rather than being authored repeatedly.
-    Unlike the attenuation clause's evidence kinds, none of these vocabularies carries a value
-    the statement must be kept away from -- there is no "no supply kind yet" to accidentally
-    answer for -- so the whole declared vocabulary is what an unrestricted statement covers.
+    ``exact_one`` equals, ``exact_set`` is in -- one reviewed statement, one row, never one row per
+    value.
+
+    ``unrestricted`` is the one that needs both domains. It means unrestricted *within the reviewed
+    semantic domain*, which is not the same as the consumer's declared domain: a consumer input
+    routinely declares states no reviewed reading can name, and a bare ``op="any"`` answers for them
+    because the evaluator returns true for it without inspecting the value. So the wildcard is used
+    only where the two domains coincide, and otherwise an explicit ``in`` over the reviewed domain.
+    The attenuation route's evidence handling was already the one correct case of this; this is that
+    behaviour generalized.
+
+    ``reviewed_domain`` is the dimension's **declared** domain -- every value its model permits --
+    and never the values some authored fact set happens to contain. Deriving it from the authored
+    set would shrink an unrestricted matcher as a side effect of how far review had progressed, so a
+    reviewer mid-authoring would get a narrower rule than the one they read. See
+    ``_reviewed_domain``, which reads the model.
     """
 
-    if value == unrestricted:
-        return Matcher(input=input_name, op="any")
-    return _matcher(input_name, (value,))
+    if scope.mode == "unrestricted":
+        if set(reviewed_domain) == set(consumer_domain):
+            return Matcher(input=input_name, op="any")
+        return _matcher(input_name, reviewed_domain)
+    return _matcher(input_name, scope.values)
+
+
+def _reviewed_domain(
+    model: type[FrozenModel],
+    field: str,
+    unrestricted_token: str | None = None,
+) -> tuple[str, ...]:
+    """A dimension's declared domain, read from the fact model that declares it.
+
+    Read from the model rather than written down beside the consumer vocabulary, so the two cannot
+    drift: adding a value to a fact field widens this automatically, and no second list has to be
+    remembered. ``unrestricted_token`` drops a legacy ``any_*`` member, which is a scope and not a
+    value of the domain.
+    """
+
+    values = tuple(
+        value for value in get_args(model.model_fields[field].annotation) if isinstance(value, str)
+    )
+    return tuple(value for value in values if value != unrestricted_token)
+
+
+def _dimension_matcher(input_name: str, field: str, value: str, unrestricted: str) -> Matcher:
+    """One authored dimension value, or its unrestricted reading, through ``_scope_matcher``.
+
+    A shim while the fact fields are still scalar-plus-``any_*``: it turns that pair into a
+    ``DimensionScope`` so the wildcard over-match is gone before the fields themselves become
+    scopes. The ``any_*`` tokens and this shim go together in the variant slice.
+    """
+
+    reviewed, consumer = _REVIEWED_AND_CONSUMER_DOMAINS[field]
+    scope: DimensionScope[str] = (
+        DimensionScope(mode="unrestricted")
+        if value == unrestricted
+        else DimensionScope(mode="exact_one", values=(value,))
+    )
+    return _scope_matcher(input_name, scope, reviewed, consumer)
 
 
 def project_system_voltage_resolution(
@@ -894,7 +950,7 @@ def project_system_voltage_resolution(
     rows = tuple(
         DecisionRow(
             matchers=tuple(
-                _dimension_matcher(input_name, getattr(fact, field), unrestricted)
+                _dimension_matcher(input_name, field, getattr(fact, field), unrestricted)
                 for input_name, field, unrestricted in _SYSTEM_VOLTAGE_DIMENSIONS
             ),
             values=(DecisionValue(name="system_voltage_measure", categorical=fact.measure),),
@@ -1168,6 +1224,55 @@ def project_verified_barrier_transfer(
 #: manufacturer bundles with their product: a consumer asking about any other external device gets
 #: no match, which is what the source states about it -- nothing.
 _DEVICE_PLACEMENTS = ("internal_to_pecs", "external_to_pecs", "bundled_external_to_pecs")
+
+#: Per reviewed dimension: the fact field's declared domain, and the consumer input it projects
+#: into. Keyed by fact field name, since two of the inputs are named differently from the field
+#: that feeds them. Where the two domains coincide an unrestricted reading is a wildcard; where the
+#: reviewed domain is narrower it is an explicit ``in``, because the difference is exactly the set
+#: of consumer states no reviewed reading can name.
+_REVIEWED_AND_CONSUMER_DOMAINS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "supply_kind": (
+        _reviewed_domain(SystemVoltageFact, "supply_kind", "any_supply_kind"),
+        _SUPPLY_KINDS,
+    ),
+    "phase_system": (
+        _reviewed_domain(SystemVoltageFact, "phase_system", "any_phase_system"),
+        _PHASE_SYSTEMS,
+    ),
+    "earthing": (
+        _reviewed_domain(SystemVoltageFact, "earthing", "any_earthing"),
+        _EARTHING_ARRANGEMENTS,
+    ),
+    "input_topology": (
+        _reviewed_domain(SystemVoltageFact, "input_topology", "any_input_topology"),
+        _INPUT_TOPOLOGIES,
+    ),
+    "purpose": (
+        _reviewed_domain(SystemVoltageFact, "purpose", "any_purpose"),
+        _CALCULATION_PURPOSES,
+    ),
+    "device_placement": (
+        _reviewed_domain(SpdMonitoringFact, "device_placement", "any_placement"),
+        _DEVICE_PLACEMENTS,
+    ),
+}
+
+
+def _require_reviewed_domains_within_consumer_domains() -> None:
+    """Refuse, at import, a reviewed domain carrying a value its consumer input never declares.
+
+    The reverse of the over-match: a reviewed value outside the consumer's ``allowed_values`` makes
+    ``DecisionRule`` refuse the whole row at construction, which is a build failure whose message is
+    about matchers rather than about authoring.
+    """
+
+    for dimension, (reviewed, consumer) in _REVIEWED_AND_CONSUMER_DOMAINS.items():
+        outside = sorted(set(reviewed) - set(consumer))
+        if outside:
+            raise ValueError(f"{dimension} reviewed domain declares {outside} outside its input")
+
+
+_require_reviewed_domains_within_consumer_domains()
 _INSULATION_CLASSES = ("functional", "basic", "supplementary", "double", "reinforced")
 _VERIFICATION_REFERENCES = ("inspection_and_dielectric_verification", "not_required")
 
@@ -1217,16 +1322,23 @@ def _spd_reduction_row(fact: SpdReductionFact, fragment: RawClauseFragment) -> D
 
 
 def _placement_matcher(placement: str) -> Matcher:
-    """Match one authored placement, or every placement this rule declares.
+    """Match one authored placement, or every placement a reviewed reading can name.
 
-    ``any_placement`` records a reading placement does not restrict, the way ``any_purpose`` does
-    for a calculation purpose. Without it such a reading cannot be authored at all: a single
-    required placement leaves whichever one the maintainer did not pick reaching no row.
+    ``any_placement`` records a reading placement does not restrict. It is now an ``in`` over the
+    reviewed placements rather than a wildcard, and that is a behaviour fix rather than a tidy-up:
+    this rule's own declared placements include one the reviewed vocabulary deliberately cannot name,
+    because what the source states about that placement is nothing. The wildcard granted it a row
+    anyway -- contradicting the note beside ``_DEVICE_PLACEMENTS``, which says a consumer asking
+    about it must reach no match at all.
     """
 
-    if placement == "any_placement":
-        return Matcher(input="device_placement", op="any")
-    return _matcher("device_placement", (placement,))
+    reviewed, consumer = _REVIEWED_AND_CONSUMER_DOMAINS["device_placement"]
+    scope: DimensionScope[str] = (
+        DimensionScope(mode="unrestricted")
+        if placement == "any_placement"
+        else DimensionScope(mode="exact_one", values=(placement,))
+    )
+    return _scope_matcher("device_placement", scope, reviewed, consumer)
 
 
 def _spd_monitoring_row(fact: SpdMonitoringFact, fragment: RawClauseFragment) -> DecisionRow:

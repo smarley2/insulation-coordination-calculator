@@ -11,12 +11,61 @@ import hashlib
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import Identifier, NotesText
 
 Obligation = Literal["requirement", "permission"]
+
+ScopeMode = Literal["unrestricted", "exact_one", "exact_set"]
+
+
+class DimensionScope[T: str](FrozenModel):
+    """How far one reviewed statement restricts one categorical dimension.
+
+    Three readings a source can make of a dimension, and the three it cannot be forced into a
+    single value without inventing content. ``exact_set`` is the one the old scalar-plus-wildcard
+    shape could not express at all: a statement naming several values is one statement, not one per
+    value, and not a statement restricting nothing.
+
+    Projection is the caller's, because it needs the consumer input's own domain -- see
+    ``_scope_matcher``. What this model owns is that the values are canonical: sorted and unique, so
+    two statements naming one set hash identically. Without that the fact digest is
+    order-dependent and ``same_clause_fact_reading`` would let a reordered copy through as a
+    distinct reading.
+
+    ponytail: sorted lexicographically rather than by each vocabulary's declared order. Canonical
+    is all the digest needs, and a per-vocabulary order would mean handing every scope its
+    vocabulary. If a display ever wants source order, sort at the display.
+    """
+
+    mode: ScopeMode
+    values: tuple[T, ...] = ()
+
+    @model_validator(mode="after")
+    def _values_match_mode(self) -> DimensionScope[T]:
+        if len(set(self.values)) != len(self.values):
+            raise ValueError("a dimension scope names each value once")
+        if tuple(sorted(self.values)) != self.values:
+            raise ValueError("a dimension scope's values must be in canonical order")
+        expected = {"unrestricted": 0, "exact_one": 1}.get(self.mode)
+        if expected is not None and len(self.values) != expected:
+            raise ValueError(f"{self.mode} names exactly {expected} value(s)")
+        if self.mode == "exact_set" and len(self.values) < 2:
+            raise ValueError("exact_set names two or more values; one value is exact_one")
+        return self
+
+    @classmethod
+    def unrestricted(cls) -> DimensionScope[T]:
+        return cls(mode="unrestricted")
+
+    @classmethod
+    def of(cls, *values: T) -> DimensionScope[T]:
+        """One scope from the values a statement names, whatever order it names them in."""
+
+        ordered = tuple(sorted(set(values)))
+        return cls(mode="exact_one" if len(ordered) == 1 else "exact_set", values=ordered)
 
 
 class CitedNode(FrozenModel):
@@ -293,9 +342,11 @@ __all__ = [
     "ClauseFactCompletion",
     "ClauseFactReview",
     "ConfirmedFacts",
+    "DimensionScope",
     "HfAttenuationFact",
     "Obligation",
     "PropagationStepFact",
+    "ScopeMode",
     "SpdMonitoringFact",
     "SpdReductionFact",
     "SupplyFact",
