@@ -47,37 +47,37 @@ SYNTHETIC_SOURCE = SourceReference(
 
 def test_compound_parser_preserves_order_values_and_source() -> None:
     parsed = parse_compound_data_cell(
-        text="11 ac / 17 dc",
-        spec=CompoundQuantitySpec(component_ids=("ac", "dc")),
+        text="11 rms / 17 peak",
+        spec=CompoundQuantitySpec(component_ids=("rms", "peak")),
         source=SYNTHETIC_SOURCE,
     )
 
     assert [(part.component_id, part.value) for part in parsed.components] == [
-        ("ac", Decimal(11)),
-        ("dc", Decimal(17)),
+        ("rms", Decimal(11)),
+        ("peak", Decimal(17)),
     ]
     assert all(part.source == SYNTHETIC_SOURCE for part in parsed.components)
-    assert [part.raw_text for part in parsed.components] == ["11 ac", "17 dc"]
+    assert [part.raw_text for part in parsed.components] == ["11 rms", "17 peak"]
 
 
 def test_reversed_compound_labels_keep_their_semantic_association() -> None:
     parsed = parse_compound_data_cell(
-        text="17 dc / 11 ac",
-        spec=CompoundQuantitySpec(component_ids=("ac", "dc")),
+        text="17 peak / 11 rms",
+        spec=CompoundQuantitySpec(component_ids=("rms", "peak")),
         source=SYNTHETIC_SOURCE,
     )
 
     assert [(part.component_id, part.value) for part in parsed.components] == [
-        ("dc", Decimal(17)),
-        ("ac", Decimal(11)),
+        ("peak", Decimal(17)),
+        ("rms", Decimal(11)),
     ]
 
 
 def test_raw_grid_cell_retains_the_complete_compound_source_text() -> None:
-    raw_text = "11 ac / 17 dc"
+    raw_text = "11 rms / 17 peak"
     parsed = parse_compound_data_cell(
         text=raw_text,
-        spec=CompoundQuantitySpec(component_ids=("ac", "dc")),
+        spec=CompoundQuantitySpec(component_ids=("rms", "peak")),
         source=SYNTHETIC_SOURCE,
     )
 
@@ -101,14 +101,14 @@ def test_raw_grid_cell_retains_the_complete_compound_source_text() -> None:
 
 def test_missing_compound_label_is_blocking_and_never_assigned_by_position() -> None:
     parsed = parse_compound_data_cell(
-        text="11 / 17 dc",
-        spec=CompoundQuantitySpec(component_ids=("ac", "dc")),
+        text="11 / 17 peak",
+        spec=CompoundQuantitySpec(component_ids=("rms", "peak")),
         source=SYNTHETIC_SOURCE,
     )
 
     assert [(part.component_id, part.value) for part in parsed.components] == [
         (None, Decimal(11)),
-        ("dc", Decimal(17)),
+        ("peak", Decimal(17)),
     ]
     assert parsed.parse_status == "ambiguous_compound"
     assert parsed.review_codes == ("AMBIGUOUS_COMPOUND_CELL",)
@@ -116,8 +116,8 @@ def test_missing_compound_label_is_blocking_and_never_assigned_by_position() -> 
 
 def test_duplicated_compound_label_is_blocking() -> None:
     parsed = parse_compound_data_cell(
-        text="11 ac / 17 ac",
-        spec=CompoundQuantitySpec(component_ids=("ac", "dc")),
+        text="11 rms / 17 rms",
+        spec=CompoundQuantitySpec(component_ids=("rms", "peak")),
         source=SYNTHETIC_SOURCE,
     )
 
@@ -127,13 +127,13 @@ def test_duplicated_compound_label_is_blocking() -> None:
 
 def test_unknown_compound_label_is_blocking() -> None:
     parsed = parse_compound_data_cell(
-        text="11 ac / 17 unrelated",
-        spec=CompoundQuantitySpec(component_ids=("ac", "dc")),
+        text="11 rms / 17 unrelated",
+        spec=CompoundQuantitySpec(component_ids=("rms", "peak")),
         source=SYNTHETIC_SOURCE,
     )
 
     assert [(part.component_id, part.value) for part in parsed.components] == [
-        ("ac", Decimal(11)),
+        ("rms", Decimal(11)),
         (None, Decimal(17)),
     ]
     assert parsed.review_codes == ("AMBIGUOUS_COMPOUND_CELL",)
@@ -141,11 +141,11 @@ def test_unknown_compound_label_is_blocking() -> None:
 
 def test_zero_formula_candidates_is_blocking() -> None:
     parsed = parse_compound_data_cell(
-        text="11 ac / 17 dc",
+        text="11 rms / 17 peak",
         spec=CompoundQuantitySpec(
-            component_ids=("ac", "dc"),
-            formula_candidates=(("ac", None),),
-            allowed_formula_ids=(("ac", "synthetic-route-formula"),),
+            component_ids=("rms", "peak"),
+            formula_candidates=(("rms", None),),
+            allowed_formula_ids=(("rms", "synthetic-route-formula"),),
         ),
         source=SYNTHETIC_SOURCE,
     )
@@ -155,14 +155,14 @@ def test_zero_formula_candidates_is_blocking() -> None:
 
 def test_duplicate_association_can_be_relabelled_by_source_occurrence() -> None:
     parsed = parse_compound_data_cell(
-        text="11 ac / 17 ac",
-        spec=CompoundQuantitySpec(component_ids=("ac", "dc")),
+        text="11 rms / 17 rms",
+        spec=CompoundQuantitySpec(component_ids=("rms", "peak")),
         source=SYNTHETIC_SOURCE,
     )
     cell = RawGridCell(
         row=0,
         column=0,
-        raw_text="11 ac / 17 ac",
+        raw_text="11 rms / 17 rms",
         role="data",
         logical_row=0,
         logical_column="compound",
@@ -181,17 +181,17 @@ def test_duplicate_association_can_be_relabelled_by_source_occurrence() -> None:
         row=0,
         column=0,
         source_index=1,
-        component_id="dc",
+        component_id="peak",
         actor="Synthetic Reviewer",
         notes="Associated the second source occurrence.",
     )
 
     parts = corrected.raw_grids[0].cells[0].components
     assert [(part.source_index, part.component_id, part.value) for part in parts] == [
-        (0, "ac", Decimal(11)),
-        (1, "dc", Decimal(17)),
+        (0, "rms", Decimal(11)),
+        (1, "peak", Decimal(17)),
     ]
-    assert corrected.raw_grids[0].cells[0].raw_text == "11 ac / 17 ac"
+    assert corrected.raw_grids[0].cells[0].raw_text == "11 rms / 17 rms"
     assert all(part.source == SYNTHETIC_SOURCE for part in parts)
     assert len(corrected.review_resolutions) == len(review_items)
     assert proposal_for(corrected, draft.tables[0].id).state == "proposed"
@@ -199,18 +199,18 @@ def test_duplicate_association_can_be_relabelled_by_source_occurrence() -> None:
 
 def test_missing_association_can_be_supplied_by_source_occurrence() -> None:
     parsed = parse_compound_data_cell(
-        text="11 / 17 dc",
-        spec=CompoundQuantitySpec(component_ids=("ac", "dc")),
+        text="11 / 17 peak",
+        spec=CompoundQuantitySpec(component_ids=("rms", "peak")),
         source=SYNTHETIC_SOURCE,
     )
     assert [(part.source_index, part.component_id) for part in parsed.components] == [
         (0, None),
-        (1, "dc"),
+        (1, "peak"),
     ]
     cell = RawGridCell(
         row=0,
         column=0,
-        raw_text="11 / 17 dc",
+        raw_text="11 / 17 peak",
         role="data",
         logical_row=0,
         logical_column="compound",
@@ -228,27 +228,27 @@ def test_missing_association_can_be_supplied_by_source_occurrence() -> None:
         row=0,
         column=0,
         source_index=0,
-        component_id="ac",
+        component_id="rms",
         actor="Synthetic Reviewer",
         notes="Associated the unlabeled source occurrence.",
     )
 
     assert [part.component_id for part in corrected.raw_grids[0].cells[0].components] == [
-        "ac",
-        "dc",
+        "rms",
+        "peak",
     ]
     assert len(corrected.review_resolutions) == len(review_items)
 
 
 def _duplicate_formula_route_draft() -> ImportedRuleDraft:
     parsed = parse_compound_data_cell(
-        text="11 ac / 17 ac",
+        text="11 rms / 17 rms",
         spec=CompoundQuantitySpec(
-            component_ids=("ac", "dc"),
-            formula_candidates=(("ac", "synthetic-ac-formula"),),
+            component_ids=("rms", "peak"),
+            formula_candidates=(("rms", "synthetic-rms-formula"),),
             allowed_formula_ids=(
-                ("ac", "synthetic-ac-formula"),
-                ("dc", "synthetic-dc-formula"),
+                ("rms", "synthetic-rms-formula"),
+                ("peak", "synthetic-peak-formula"),
             ),
         ),
         source=SYNTHETIC_SOURCE,
@@ -256,7 +256,7 @@ def _duplicate_formula_route_draft() -> ImportedRuleDraft:
     cell = RawGridCell(
         row=0,
         column=0,
-        raw_text="11 ac / 17 ac",
+        raw_text="11 rms / 17 rms",
         role="data",
         logical_row=0,
         logical_column="compound",
@@ -285,7 +285,7 @@ def test_association_change_with_formula_route_requires_atomic_selection() -> No
             row=0,
             column=0,
             source_index=1,
-            component_id="dc",
+            component_id="peak",
             actor="Synthetic Reviewer",
             notes="Missing the required formula selection.",
         )
@@ -297,8 +297,8 @@ def test_association_change_with_formula_route_requires_atomic_selection() -> No
             row=0,
             column=0,
             source_index=1,
-            component_id="dc",
-            formula_id="synthetic-ac-formula",
+            component_id="peak",
+            formula_id="synthetic-rms-formula",
             actor="Synthetic Reviewer",
             notes="Reject a formula from the old route.",
         )
@@ -309,17 +309,17 @@ def test_association_change_with_formula_route_requires_atomic_selection() -> No
         row=0,
         column=0,
         source_index=1,
-        component_id="dc",
-        formula_id="synthetic-dc-formula",
+        component_id="peak",
+        formula_id="synthetic-peak-formula",
         actor="Synthetic Reviewer",
         notes="Associated the occurrence with its exact formula.",
     )
 
     cell = corrected.raw_grids[0].cells[0]
-    assert [part.component_id for part in cell.components] == ["ac", "dc"]
+    assert [part.component_id for part in cell.components] == ["rms", "peak"]
     assert [
         candidate.formula_id for candidate in cell.formula_candidates if candidate.source_index == 1
-    ] == ["synthetic-dc-formula"]
+    ] == ["synthetic-peak-formula"]
     assert unresolved_raw_review_items(corrected) == ()
     assert proposal_for(corrected, draft.tables[0].id).state == "proposed"
 
@@ -333,7 +333,7 @@ def test_batch_association_requires_formula_for_the_same_occurrence() -> None:
             draft,
             grid_id=draft.raw_grids[0].id,
             corrections={},
-            component_associations={key: "dc"},
+            component_associations={key: "peak"},
             actor="Synthetic Reviewer",
             notes="Missing atomic formula selection.",
         )
@@ -342,8 +342,8 @@ def test_batch_association_requires_formula_for_the_same_occurrence() -> None:
         draft,
         grid_id=draft.raw_grids[0].id,
         corrections={},
-        component_associations={key: "dc"},
-        formula_selections={key: "synthetic-dc-formula"},
+        component_associations={key: "peak"},
+        formula_selections={key: "synthetic-peak-formula"},
         actor="Synthetic Reviewer",
         notes="Applied the exact association and formula pair.",
     )
@@ -357,7 +357,7 @@ def test_approval_rejects_corrected_formula_route_without_formula() -> None:
     grid = draft.raw_grids[0]
     cell = grid.cells[0]
     components = tuple(
-        component.model_copy(update={"component_id": "dc"})
+        component.model_copy(update={"component_id": "peak"})
         if component.source_index == 1
         else component
         for component in cell.components
@@ -367,7 +367,7 @@ def test_approval_rejects_corrected_formula_route_without_formula() -> None:
     ) + (
         ComponentFormulaCandidate(
             source_index=1,
-            component_id="dc",
+            component_id="peak",
             formula_id=None,
             source=SYNTHETIC_SOURCE,
         ),
@@ -477,14 +477,14 @@ def _compound_cell(
     formula_candidates: tuple[ComponentFormulaCandidate, ...] = (),
 ) -> RawGridCell:
     parsed = parse_compound_data_cell(
-        text="11 ac / 17 dc",
-        spec=CompoundQuantitySpec(component_ids=("ac", "dc")),
+        text="11 rms / 17 peak",
+        spec=CompoundQuantitySpec(component_ids=("rms", "peak")),
         source=SYNTHETIC_SOURCE,
     )
     return RawGridCell(
         row=0,
         column=0,
-        raw_text="11 ac / 17 dc",
+        raw_text="11 rms / 17 peak",
         role="data",
         logical_row=0,
         logical_column="compound",
@@ -516,7 +516,7 @@ def test_component_correction_changes_only_the_selected_part_and_records_provena
         grid_id=draft.raw_grids[0].id,
         row=0,
         column=0,
-        component_id="dc",
+        component_id="peak",
         value=Decimal(19),
         actor="Synthetic Reviewer",
         notes="Retyped the selected component.",
@@ -524,8 +524,8 @@ def test_component_correction_changes_only_the_selected_part_and_records_provena
 
     parts = corrected.raw_grids[0].cells[0].components
     assert [(part.component_id, part.value) for part in parts] == [
-        ("ac", Decimal(11)),
-        ("dc", Decimal(19)),
+        ("rms", Decimal(11)),
+        ("peak", Decimal(19)),
     ]
     assert parts[0].source == SYNTHETIC_SOURCE
     assert parts[1].source == SYNTHETIC_SOURCE
@@ -536,10 +536,10 @@ def test_component_correction_changes_only_the_selected_part_and_records_provena
 def test_ambiguous_formula_requires_an_exact_reviewed_candidate() -> None:
     candidates = (
         ComponentFormulaCandidate(
-            component_id="ac", formula_id="formula-a", source=SYNTHETIC_SOURCE
+            component_id="rms", formula_id="formula-a", source=SYNTHETIC_SOURCE
         ),
         ComponentFormulaCandidate(
-            component_id="ac", formula_id="formula-b", source=SYNTHETIC_SOURCE
+            component_id="rms", formula_id="formula-b", source=SYNTHETIC_SOURCE
         ),
     )
     cell = _compound_cell(formula_candidates=candidates)
@@ -569,7 +569,7 @@ def test_ambiguous_formula_requires_an_exact_reviewed_candidate() -> None:
         grid_id=draft.raw_grids[0].id,
         row=0,
         column=0,
-        component_id="ac",
+        component_id="rms",
         formula_id="formula-b",
         actor="Synthetic Reviewer",
         notes="Selected the exact extracted candidate.",
@@ -594,9 +594,9 @@ def _cell_with_formula_contract(
     allowed: tuple[tuple[str, str], ...],
 ) -> RawGridCell:
     parsed = parse_compound_data_cell(
-        text="11 ac / 17 dc",
+        text="11 rms / 17 peak",
         spec=CompoundQuantitySpec(
-            component_ids=("ac", "dc"),
+            component_ids=("rms", "peak"),
             formula_candidates=candidates,
             allowed_formula_ids=allowed,
         ),
@@ -605,7 +605,7 @@ def _cell_with_formula_contract(
     return RawGridCell(
         row=0,
         column=0,
-        raw_text="11 ac / 17 dc",
+        raw_text="11 rms / 17 peak",
         role="data",
         logical_row=0,
         logical_column="compound",
@@ -620,8 +620,8 @@ def _cell_with_formula_contract(
 
 def test_formula_selection_is_restricted_to_the_exact_component_route() -> None:
     cell = _cell_with_formula_contract(
-        candidates=(("ac", None),),
-        allowed=(("ac", "synthetic-tov-ac-formula"),),
+        candidates=(("rms", None),),
+        allowed=(("rms", "synthetic-tov-rms-formula"),),
     )
     draft = _draft_with_compound_cell(
         cell,
@@ -635,7 +635,7 @@ def test_formula_selection_is_restricted_to_the_exact_component_route() -> None:
             row=0,
             column=0,
             source_index=0,
-            component_id="ac",
+            component_id="rms",
             formula_id="synthetic-impulse-formula",
             actor="Synthetic Reviewer",
             notes="Must reject a formula from another route.",
@@ -647,25 +647,25 @@ def test_formula_selection_is_restricted_to_the_exact_component_route() -> None:
         row=0,
         column=0,
         source_index=0,
-        component_id="ac",
-        formula_id="synthetic-tov-ac-formula",
+        component_id="rms",
+        formula_id="synthetic-tov-rms-formula",
         actor="Synthetic Reviewer",
         notes="Selected the route-local candidate.",
     )
 
     selected = corrected.raw_grids[0].cells[0].formula_candidates
     assert [(item.source_index, item.component_id, item.formula_id) for item in selected] == [
-        (0, "ac", "synthetic-tov-ac-formula")
+        (0, "rms", "synthetic-tov-rms-formula")
     ]
     assert proposal_for(corrected, draft.tables[0].id).state == "proposed"
 
 
 def test_two_formula_blockers_are_unique_and_independently_resolvable() -> None:
     cell = _cell_with_formula_contract(
-        candidates=(("ac", None), ("dc", None)),
+        candidates=(("rms", None), ("peak", None)),
         allowed=(
-            ("ac", "synthetic-tov-ac-formula"),
-            ("dc", "synthetic-tov-dc-formula"),
+            ("rms", "synthetic-tov-rms-formula"),
+            ("peak", "synthetic-tov-peak-formula"),
         ),
     )
     review_items = compound_review_items(_grid_for_cell(cell))
@@ -676,33 +676,33 @@ def test_two_formula_blockers_are_unique_and_independently_resolvable() -> None:
     assert len({item.semantic_id for item in review_items}) == 2
     draft = _draft_with_compound_cell(cell, review_items)
 
-    ac_selected = select_component_formula(
+    rms_selected = select_component_formula(
         draft,
         grid_id=draft.raw_grids[0].id,
         row=0,
         column=0,
         source_index=0,
-        component_id="ac",
-        formula_id="synthetic-tov-ac-formula",
+        component_id="rms",
+        formula_id="synthetic-tov-rms-formula",
         actor="Synthetic Reviewer",
-        notes="Selected AC formula.",
+        notes="Selected the rms formula.",
     )
-    assert len(unresolved_raw_review_items(ac_selected)) == 1
+    assert len(unresolved_raw_review_items(rms_selected)) == 1
 
-    dc_selected = select_component_formula(
-        ac_selected,
+    peak_selected = select_component_formula(
+        rms_selected,
         grid_id=draft.raw_grids[0].id,
         row=0,
         column=0,
         source_index=1,
-        component_id="dc",
-        formula_id="synthetic-tov-dc-formula",
+        component_id="peak",
+        formula_id="synthetic-tov-peak-formula",
         actor="Synthetic Reviewer",
-        notes="Selected DC formula.",
+        notes="Selected the peak formula.",
     )
-    assert unresolved_raw_review_items(dc_selected) == ()
+    assert unresolved_raw_review_items(peak_selected) == ()
     reviewed = mark_proposal_reviewed(
-        dc_selected,
+        peak_selected,
         draft.tables[0].id,
         actor="Synthetic Reviewer",
         notes="Reviewed both exact formula associations.",

@@ -345,20 +345,20 @@ def test_dialog_applies_association_and_formula_atomically(
     grid = draft.raw_grids[0]
     original = next(cell for cell in grid.cells if (cell.row, cell.column) == (2, 1))
     parsed = parse_compound_data_cell(
-        text="11 ac / 17 ac",
+        text="11 rms / 17 rms",
         spec=CompoundQuantitySpec(
-            component_ids=("ac", "dc"),
-            formula_candidates=(("ac", "synthetic-ac-formula"),),
+            component_ids=("rms", "peak"),
+            formula_candidates=(("rms", "synthetic-rms-formula"),),
             allowed_formula_ids=(
-                ("ac", "synthetic-ac-formula"),
-                ("dc", "synthetic-dc-formula"),
+                ("rms", "synthetic-rms-formula"),
+                ("peak", "synthetic-peak-formula"),
             ),
         ),
         source=original.source,
     )
     compound = original.model_copy(
         update={
-            "raw_text": "11 ac / 17 ac",
+            "raw_text": "11 rms / 17 rms",
             "value": None,
             "components": parsed.components,
             "compound_component_ids": parsed.compound_component_ids,
@@ -381,13 +381,13 @@ def test_dialog_applies_association_and_formula_atomically(
     dialog._table.setCurrentCell(2, 1)
 
     assert dialog._components_table.rowCount() == 2
-    assert dialog._components_table.item(0, 0).text() == "ac"
-    assert dialog._components_table.item(1, 0).text() == "ac"
+    assert dialog._components_table.item(0, 0).text() == "rms"
+    assert dialog._components_table.item(1, 0).text() == "rms"
     assert dialog._components_table.item(0, 2).text() == "11"
     assert dialog._components_table.item(1, 2).text() == "17"
 
     dialog._components_table.setCurrentCell(1, 0)
-    dialog._association_selector.setCurrentIndex(dialog._association_selector.findData("dc"))
+    dialog._association_selector.setCurrentIndex(dialog._association_selector.findData("peak"))
     qtbot.mouseClick(dialog._apply_association_button, Qt.MouseButton.LeftButton)
 
     assert warnings == ["Select an exact formula for the reviewed component route."]
@@ -395,12 +395,12 @@ def test_dialog_applies_association_and_formula_atomically(
     assert dialog.pending_formula_corrections == {}
 
     dialog._formula_selector.setCurrentIndex(
-        dialog._formula_selector.findData("synthetic-dc-formula")
+        dialog._formula_selector.findData("synthetic-peak-formula")
     )
     qtbot.mouseClick(dialog._apply_association_button, Qt.MouseButton.LeftButton)
 
-    assert dialog.pending_association_corrections == {(2, 1, 1): "dc"}
-    assert dialog.pending_formula_corrections == {(2, 1, 1): "synthetic-dc-formula"}
+    assert dialog.pending_association_corrections == {(2, 1, 1): "peak"}
+    assert dialog.pending_formula_corrections == {(2, 1, 1): "synthetic-peak-formula"}
 
 
 @pytest.mark.parametrize("value", ("", "not-a-number", "NaN"))
