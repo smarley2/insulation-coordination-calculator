@@ -23,6 +23,7 @@ from insulation_coordination.rules.importer.clause_fact_proposals import (
     pair_tokens,
     scope_tokens,
 )
+from insulation_coordination.rules.importer.clause_facts import OvercategoryStep
 from insulation_coordination.rules.importer.extract import ImportedRuleDraft
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
@@ -92,6 +93,55 @@ def test_every_declared_dimension_is_reached_on_the_real_fragments(
     unreached = sorted(_declared_dimensions(routes[0]) - reached)
 
     assert unreached == [], family
+
+
+def test_a_gated_pair_collection_is_still_proposed_on_every_route_declaring_one(
+    extracted_draft: ImportedRuleDraft,
+) -> None:
+    """A sequence rule's gate is the one declared term whose failure costs a whole collection.
+
+    ``ClauseSequenceRule`` reads its tokens as pairs only where the sentence also mentions the
+    terms the relation itself is spelled with. That gate is load-bearing: ungated, a sentence
+    merely naming positions of a scale proposed a step, and one running the wrong way up it. The
+    price of the gate is that a term which stops matching -- a reprint reflows the region, an
+    extraction bbox moves, the phrasing is revised -- removes every pair-collection draft in
+    silence. A prefill is optional and an unreached dimension simply stays unchosen, so nothing
+    fails and the maintainer only notices that a field they used to find filled is now empty.
+
+    Per route, which is what ``test_every_declared_dimension_is_reached_on_the_real_fragments``
+    cannot be: that one unions the routes sharing a grammar, rightly, because one subclause may
+    legitimately not state a dimension its sibling does. For a gated pair collection the routes
+    share the gate itself, so neither is entitled to lose it -- and the union lets one route hold
+    the grammar's reachability up while the other quietly goes dark.
+
+    Every expectation is derived at runtime: which routes declare a sequence rule, which dimension
+    it fills, how many members a pair has and which values they may take all come from the
+    declarations. "At least one" and "every member is authorable" are the whole claim, so no
+    statement inventory, no per-clause distribution and no proposed value is recorded here.
+    """
+
+    grammars = supply_fact_proposal_grammars()
+    gated = tuple(
+        (route, rule.dimension) for route in ROUTES for rule in grammars[route].sequence_rules
+    )
+
+    assert gated
+    for route, dimension in gated:
+        collections = [
+            pair_tokens(proposal.chosen[dimension])
+            for proposal in propose_supply_facts(_fragment(extracted_draft, route), route)
+            if proposal.chosen.get(dimension)
+        ]
+
+        # The assertion that fails when the gate stops matching, and the reason this test exists.
+        assert collections, (route, dimension)
+        for pair in (pair for collection in collections for pair in collection):
+            assert len(pair) == len(OvercategoryStep.model_fields), (route, dimension)
+            # Built through the member model, whose own field vocabularies *are* the declared
+            # ones: a member outside them is refused without any value being named here.
+            OvercategoryStep.model_validate(
+                dict(zip(OvercategoryStep.model_fields, pair, strict=True))
+            )
 
 
 @pytest.mark.parametrize("route", ROUTES)
