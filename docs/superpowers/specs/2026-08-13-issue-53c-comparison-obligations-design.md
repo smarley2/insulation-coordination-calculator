@@ -335,3 +335,62 @@ unchanged:  evaluate_decision, DecisionValue, RulePackage archive schema
 
 Archive **schema** unchanged; package **compatibility identity** changed — a package built
 before this slice must be rebuilt and re-reviewed, never served as current.
+
+---
+
+# Amendment ledger (2026-08-14) — carried in from the #53B five-family review
+
+Ledger notes only. **No item is implemented by #53B**; each is a correction or addition to this
+spec's own scope, recorded so the #53C work starts from the reviewed shapes rather than from the
+shapes this document assumed. Decisions and structures only; no source wording, no inventory.
+
+## L1 — Missing acceptance criterion: the unisolated combined circuit
+
+Item 3 defines the more-severe comparison bundle for the **isolated** propagation route, and states
+that the unisolated case answers no match because it belongs to barrier transfer's route. **No item
+of this spec then upgrades that route.** Barrier transfer keeps a semantic token naming the
+selection instead of performing it — the exact shape item 3 exists to eliminate.
+
+Added criterion: after #53C, the unisolated combined circuit must **select the higher of the two
+resolved side ratings** through a real comparison, and must not remain a semantic token. It shares
+item 3's comparison bundle rather than introducing a second mechanism.
+
+The reviewed shape #53B is landing already fits: barrier transfer's `combined_requirement` variant
+carries the candidate roles and the selection, which mirrors item 3's own pairing of candidate roles
+with a comparison.
+
+## L2 — Correction: the monitoring reference moves off the permission statement
+
+This spec's reduction outputs describe the monitoring-requirement reference as consumed from the
+**permission** statement. After #53B's family split (design amendment A3) that reference belongs to
+the reduction family's **monitoring** variant.
+
+The reason is substantive, not cosmetic: the source states a separate normative monitoring
+statement, so the runtime chain must compose from separately reviewed authorities rather than
+reading a reference the permission statement never makes.
+
+## L3 — New item needed: the system-voltage applicability output
+
+#53B's system-voltage family gains an **applicability** variant for a statement that establishes
+which voltages count as system voltages for impulse determination and selects no measure. #53B
+carries such a statement without projecting it: resolution accepts it, the fact-set digest covers
+it so completion and the approval gate know it was reviewed, and it contributes no row and no
+output. The executable output contract is unchanged.
+
+This spec needs an item that **consumes** it — an applicability output alongside the measure
+selection. Until then the gap is explicit rather than papered over, and no projector manufactures a
+measure to fit.
+
+## L4 — Confirmed unaffected: the floor route stays the sole floor authority
+
+This spec's plan for a dedicated floor route, projected from the reduction clause spec and becoming
+the sole floor authority, survives the family split and is helped by it: #53B's reviewed **floor**
+variant is what that route will consume, so the reviewed shape now lands ahead of the runtime route
+rather than after it.
+
+## L5 — Versioning numbers are no longer reserved
+
+This spec assumed a reserved importer-version increment. The #53B branch has consumed one increment
+for a clause-region correction, and a further region-widening slice may consume another after
+inspecting whether any trusted package exists under the affected versions. **This spec's version
+number is decided when it is implemented**, not reserved here.

@@ -7,7 +7,9 @@ constants and into typed facts a maintainer authors from the licensed clause fra
 
 **Architecture:** The importer proposes a clause's node inventory and nothing more. The maintainer
 authors typed `SupplyFact` statements, each citing the nodes it rests on, plus one completion
-record per `(clause, rule route)`. A fact's review binds a digest of exactly the evidence it cites,
+record per `(clause, rule route)`. A private-side grammar may *prefill* a statement's dimensions as
+a suggestion the maintainer reviews and then explicitly authors; the suggestion carries no
+authority and never reaches a projector except through an authored fact (Amendment A1). A fact's review binds a digest of exactly the evidence it cites,
 so changing a cited node re-opens exactly the dependent facts. A resolver turns current reviews
 into `ConfirmedFacts`, and each ported projector builds its rule from those alone. One projector —
 multiple-source propagation — keeps legacy constants, recorded in an assertable set, because
@@ -25,8 +27,13 @@ mypy strict, ruff, uv.
   bounding boxes, and typed model shapes. They may **not** carry statement text, clause or heading
   wording, numeric source content, per-clause normative statement counts, or the mapping from a
   physical node to a statement.
-- Nobody proposes a statement. The importer proposes the node inventory; the maintainer authors
-  every fact. No public grammar may read clause prose to infer a branch.
+- Nobody proposes a statement from public code. The importer proposes the node inventory; the
+  maintainer authors every fact. **No public grammar may read clause prose to infer a branch** — any
+  mapping from source phrasing to typed normative meaning is licensed-derived material and loads
+  only from where the licensed material lives. The public tree carries the generic proposal engine
+  and the generic typed proposal shape, never a rule that names source phrasing. See Amendment A1.
+- One explicit authoring action records exactly one statement. No action may certify several
+  machine-derived facts at once.
 - Completion is asserted per `(clause, rule route)`, never per fragment: a fragment may carry
   statements belonging to rules outside the route.
 - `LEGACY_BRANCH_AUTHORITY_RULE_IDS` contains exactly one member, the multiple-source-propagation
@@ -2066,3 +2073,34 @@ and quoting four bodies I have not read line by line would be worse than naming 
 `LEGACY_BRANCH_AUTHORITY_RULE_IDS` are spelled identically in every task. The clause projector
 signature is `(fragment, identity, draft, confirmed_facts)` in Tasks 4 through 7. Every rule id,
 input name and output name in Tasks 5 and 6 matches the "Contracts the ports must preserve" section.
+
+---
+
+## Amendments (2026-08-14) — approved after live maintainer review of five clause families
+
+The binding decisions live in the design spec as **Amendments A1-A7**
+(`docs/superpowers/specs/2026-08-12-issue-53b-clause-fact-authority-design.md`). The Global
+Constraints above are edited in place where an original line became false. Summary of what changed
+for the remaining #53B work:
+
+| Amendment | Effect on this plan |
+| --- | --- |
+| **A1** | Any grammar mapping source phrasing to typed meaning relocates beside the licensed material. Public keeps the generic engine. The route-level multi-statement authoring action is removed; one explicit action records one fact. |
+| **A2** | `DimensionScope` (`unrestricted`/`exact_one`/`exact_set` -> `any`/`equals`/`in`) replaces per-dimension `any_*` tokens and fixes the wildcard over-match into consumer-only states. The combined-designation token for the DVC gate is dropped in favour of `exact_set`. |
+| **A3** | Five families gain `statement_kind` variants. Structured pairs are one ordered collection, never two sets. Collections need canonical ordering, or the fact hash is order-dependent and the duplicate refusal is defeated. |
+| **A4** | Barrier isolation state becomes route-declared structural scope. Context nodes yield no proposal; a statement completing an opener cites both nodes. |
+| **A5** | Completion is prohibited while a known proposal is uncovered, and still requires the maintainer's assertion — it is a lower bound, not a redefinition. |
+| **A6** | This slice needs **no importer version change**: no fragment moves and reviewed facts are draft-only. The region-widening slice decides its own version after inspecting whether any trusted package exists under the affected versions. |
+| **A7** | Duplicate draft rows disappear through A2/A3, never through presentation-layer deduplication. |
+
+### Remaining slices, in order
+
+- [ ] `DimensionScope` + the wildcard over-match fix
+- [ ] Per-family `statement_kind` variants, with per-family regressions
+- [ ] Grammar relocation, context-node handling, set/pair collections
+- [ ] Variant editor: value-set widgets, repeating pair rows, `statement_kind` switching
+- [ ] Removal of multi-statement authoring; per-statement suggestion action
+- [ ] Completion guard
+- [ ] Private placeholder replacement, including the invalid positive-isolation placeholder
+- [ ] **Separate, separately reviewed, mandatory before #53B completes:** clause-region widening,
+      with the private normative-paragraph inventory and the version inspection A6 requires
