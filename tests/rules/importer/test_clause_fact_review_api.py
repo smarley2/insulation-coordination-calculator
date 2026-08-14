@@ -28,7 +28,10 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply impor
     LEGACY_BRANCH_AUTHORITY_RULE_IDS,
     SUPPLY_CLAUSES,
     SUPPLY_FACT_FAMILY_BY_ROUTE,
+    SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE,
+    SUPPLY_SYSTEM_VOLTAGE_NON_MAINS,
     _require_declared_fact_families,
+    _require_declared_supply_kinds,
 )
 from insulation_coordination.rules.importer.review import (
     author_clause_fact,
@@ -530,3 +533,67 @@ def test_a_completion_must_name_its_own_route_fragment(
             actor="tester",
             notes="complete against the wrong clause",
         )
+
+
+# --- route-determined supply kind ----------------------------------------------------
+
+
+def test_a_fact_whose_supply_kind_contradicts_its_route_is_refused(
+    draft_with_supply_fragments,
+) -> None:
+    """The mains route states mains; a non-mains reading cannot certify it.
+
+    ``_reduction_fact`` always authors ``supply_kind="non_mains"``, and it cites the mains
+    route's own fragment, so supply kind is the only thing wrong with it.
+    """
+
+    contradicting = _reduction_fact(draft_with_supply_fragments, fragment_id=f"raw-{MAINS_ROUTE}")
+
+    with pytest.raises(ValueError, match="supply_kind"):
+        author_clause_fact(
+            draft_with_supply_fragments,
+            rule_route=MAINS_ROUTE,
+            fact=contradicting,
+            actor="tester",
+            notes="wrong supply kind for this route",
+        )
+
+
+def test_a_hand_built_contradicting_supply_kind_review_still_blocks_the_route(
+    draft_with_supply_fragments,
+) -> None:
+    """The gate cannot trust the authoring API to have been the only writer."""
+
+    contradicting = _reduction_fact(draft_with_supply_fragments, fragment_id=f"raw-{MAINS_ROUTE}")
+
+    draft = _hand_built(draft_with_supply_fragments, rule_route=MAINS_ROUTE, fact=contradicting)
+
+    assert MAINS_ROUTE in _blocked(draft)
+
+
+def test_supply_kind_expectations_cover_exactly_the_routes_whose_family_states_one() -> None:
+    """System voltage's two subclauses and each SPD reduction subclause, and no others."""
+
+    assert set(SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE) == {
+        ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,
+        SUPPLY_SYSTEM_VOLTAGE_NON_MAINS,
+        MAINS_ROUTE,
+        NON_MAINS_ROUTE,
+    }
+
+
+def test_a_route_whose_family_carries_supply_kind_needs_a_declared_expectation() -> None:
+    """Otherwise a forgotten entry leaves a route open to either supply kind, silently.
+
+    The same deadlock shape ``_require_declared_fact_families`` guards for a forgotten family:
+    caught at import over the real declarations, so it cannot ship unnoticed.
+    """
+
+    missing = {
+        route: value
+        for route, value in SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE.items()
+        if route != MAINS_ROUTE
+    }
+
+    with pytest.raises(ValueError, match="disagree"):
+        _require_declared_supply_kinds(SUPPLY_FACT_FAMILY_BY_ROUTE, missing)

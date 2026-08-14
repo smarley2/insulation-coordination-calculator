@@ -2151,18 +2151,24 @@ def clause_fact_defect(rule_route: str, fact: SupplyFact) -> str | None:
 
     Identity rather than evidence, the half ``axis_review_is_current`` keeps for an axis position
     and the digests alone cannot: the route must be one the recipe declares, the fact must belong
-    to the family that route's clause states, and it must cite that route's own fragment. Without
-    all three a fact that cannot express a route's branches -- or one resting entirely on another
-    clause -- certifies the route as reviewed, and reprinting the cited clause blocks a route whose
-    rule it never stated.
+    to the family that route's clause states, it must cite that route's own fragment, and where
+    the route determines a concrete ``supply_kind`` the fact must not name the other one. Without
+    all four a fact that cannot express a route's branches -- or one resting entirely on another
+    clause, or one that states the wrong supply for its route -- certifies the route as reviewed,
+    and reprinting the cited clause blocks a route whose rule it never stated.
 
     Citing the route's own fragment is required *as well as*, never instead of: a statement that
-    genuinely rests on a second fragment may cite it too. Authoring raises on a defect and the
-    approval gate blocks on one, so a hand-built draft cannot bypass what authoring enforces.
+    genuinely rests on a second fragment may cite it too. The ``supply_kind`` check reads
+    ``SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE``, the recipe's own declaration of which concrete kind each
+    such route states, and lets ``any_supply_kind`` through on either route: it restricts nothing,
+    so it never contradicts a route the way a concrete, wrong kind does. Authoring raises on a
+    defect and the approval gate blocks on one, so a hand-built draft cannot bypass what authoring
+    enforces.
     """
 
     from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
         SUPPLY_FACT_FAMILY_BY_ROUTE,
+        SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE,
     )
 
     family = SUPPLY_FACT_FAMILY_BY_ROUTE.get(rule_route)
@@ -2172,6 +2178,14 @@ def clause_fact_defect(rule_route: str, fact: SupplyFact) -> str | None:
         return f"is a {fact.fact_kind} fact where {rule_route} states {family}"
     if not any(cited.fragment_id == f"raw-{rule_route}" for cited in fact.node_references):
         return f"cites no node of its own clause fragment raw-{rule_route}"
+    expected_supply_kind = SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE.get(rule_route)
+    fact_supply_kind = getattr(fact, "supply_kind", None)
+    if (
+        expected_supply_kind is not None
+        and fact_supply_kind in ("mains", "non_mains")
+        and fact_supply_kind != expected_supply_kind
+    ):
+        return f"states supply_kind {fact_supply_kind} where {rule_route} is {expected_supply_kind}"
     return None
 
 
