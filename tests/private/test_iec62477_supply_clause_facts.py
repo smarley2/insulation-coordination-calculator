@@ -31,6 +31,7 @@ from insulation_coordination.rules.importer.clause_facts import (
     HfAttenuationFact,
     OvercategoryStep,
     SpdMonitoringRequirementFact,
+    SpdReductionFloorFact,
     SpdReductionMonitoringFact,
     SpdReductionPermissionFact,
     SupplyFact,
@@ -47,6 +48,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply impor
     SUPPLY_CLAUSES,
     SUPPLY_FACT_FAMILY_BY_ROUTE,
     SUPPLY_SYSTEM_VOLTAGE_NON_MAINS,
+    propose_supply_facts,
 )
 from insulation_coordination.rules.importer.review import (
     ClauseFactResolutionError,
@@ -154,6 +156,80 @@ def _system_voltage_placeholders(
     return (measure, *carried)
 
 
+def _spd_reduction_placeholders(
+    draft: ImportedRuleDraft,
+    route: str,
+    supply_kind: str,
+    steps: tuple[tuple[str, str], ...],
+    monitoring: bool,
+) -> tuple[SupplyFact, ...]:
+    """Placeholder statements for one reduction subclause: its two projected kinds, then floors.
+
+    A reduction route projects two rules, so it needs a permission statement and a monitoring
+    statement or the second rule does not exist. Both are authored on the fragment's first node,
+    exactly as ``_system_voltage_placeholders`` authors its projected measure there: which node of a
+    licensed clause states which reading is the clause's own content, and this module records none
+    of it.
+
+    Every node the route's *own proposals* rest on then gets a **floor** statement -- the family's
+    carried variant, which contributes no row -- so the completion guard's lower bound is met
+    without a placeholder inventing a projected branch for a node whose real reading nobody has
+    authored. Walked from the proposals rather than from a number written here, for the same reason
+    ``_system_voltage_placeholders`` is driven off the node count: a subclause re-declared over
+    different regions changes what this fixture authors instead of breaking it, and neither the
+    count nor its distribution is recorded anywhere.
+
+    The floors are one repeated reading on distinct nodes, which is not a duplicate: two statements
+    resting on different nodes are two readings even where every dimension agrees -- see
+    ``same_clause_fact_reading``.
+    """
+
+    fragment = next(item for item in draft.raw_clause_fragments if item.id == f"raw-{route}")
+    stated = sorted(
+        {
+            cited.node_order
+            for proposal in propose_supply_facts(fragment, route)
+            for cited in proposal.node_references
+        }
+    )
+    projected: tuple[SupplyFact, ...] = (
+        SpdReductionPermissionFact(
+            statement_index=0,
+            node_references=_first_cited_node(draft, route),
+            obligation="permission",
+            supply_kind=supply_kind,  # type: ignore[arg-type]
+            permitted_steps=tuple(
+                OvercategoryStep(source_ovc=source, target_ovc=target)  # type: ignore[arg-type]
+                for source, target in steps
+            ),
+            insulation_classes=DimensionScope.of("basic"),
+        ),
+        SpdReductionMonitoringFact(
+            statement_index=1,
+            node_references=_first_cited_node(draft, route),
+            obligation="requirement",
+            supply_kind=supply_kind,  # type: ignore[arg-type]
+            device_degradable=monitoring,
+            monitoring_obligation="required" if monitoring else "not_required",
+            status_indication="required" if monitoring else "not_required",
+            monitoring_reference=SPD_MONITORING_ROUTE,
+        ),
+    )
+    floors = tuple(
+        SpdReductionFloorFact(
+            statement_index=index,
+            node_references=_cited_node(draft, route, order),
+            obligation="requirement",
+            supply_kind=supply_kind,  # type: ignore[arg-type]
+            insulation_classes=DimensionScope.of("double", "reinforced"),
+            unreduced_basis="basic_insulation_without_the_reducing_means",
+            relation="must_not_fall_below",
+        )
+        for index, order in enumerate(stated, start=len(projected))
+    )
+    return (*projected, *floors)
+
+
 def _placeholder_facts(draft: ImportedRuleDraft) -> dict[str, tuple[SupplyFact, ...]]:
     """Local placeholder statements per non-legacy route: valid tokens, invented readings.
 
@@ -195,48 +271,15 @@ def _placeholder_facts(draft: ImportedRuleDraft) -> dict[str, tuple[SupplyFact, 
                 combined_circuit_rule="side_specific_from_transfer",
             ),
         ),
-        # Two statements per reduction route, because the clause projects two rules and the second
-        # exists only if a statement was reviewed for it. A transition authored the wrong way up
-        # the scale, so no placeholder here reads as a plausible reviewed permission.
-        SPD_MAINS_ROUTE: (
-            SpdReductionPermissionFact(
-                statement_index=0,
-                node_references=_first_cited_node(draft, SPD_MAINS_ROUTE),
-                obligation="permission",
-                supply_kind="mains",
-                permitted_steps=(OvercategoryStep(source_ovc="ovc_i", target_ovc="ovc_iv"),),
-                insulation_classes=DimensionScope.of("basic"),
-            ),
-            SpdReductionMonitoringFact(
-                statement_index=1,
-                node_references=_first_cited_node(draft, SPD_MAINS_ROUTE),
-                obligation="requirement",
-                supply_kind="mains",
-                device_degradable=True,
-                monitoring_obligation="required",
-                status_indication="required",
-                monitoring_reference=SPD_MONITORING_ROUTE,
-            ),
+        # A permission and a monitoring statement per reduction route, because the clause projects
+        # two rules and the second exists only if a statement was reviewed for it, and then a
+        # carried floor per node the route's proposals rest on. A transition authored the wrong way
+        # up the scale, so no placeholder here reads as a plausible reviewed permission.
+        SPD_MAINS_ROUTE: _spd_reduction_placeholders(
+            draft, SPD_MAINS_ROUTE, "mains", (("ovc_i", "ovc_iv"),), monitoring=True
         ),
-        SPD_NON_MAINS_ROUTE: (
-            SpdReductionPermissionFact(
-                statement_index=0,
-                node_references=_first_cited_node(draft, SPD_NON_MAINS_ROUTE),
-                obligation="permission",
-                supply_kind="non_mains",
-                permitted_steps=(OvercategoryStep(source_ovc="ovc_ii", target_ovc="ovc_i"),),
-                insulation_classes=DimensionScope.of("double"),
-            ),
-            SpdReductionMonitoringFact(
-                statement_index=1,
-                node_references=_first_cited_node(draft, SPD_NON_MAINS_ROUTE),
-                obligation="requirement",
-                supply_kind="non_mains",
-                device_degradable=False,
-                monitoring_obligation="not_required",
-                status_indication="not_required",
-                monitoring_reference=SPD_MONITORING_ROUTE,
-            ),
+        SPD_NON_MAINS_ROUTE: _spd_reduction_placeholders(
+            draft, SPD_NON_MAINS_ROUTE, "non_mains", (("ovc_i", "ovc_iii"),), monitoring=False
         ),
         SPD_MONITORING_ROUTE: (
             SpdMonitoringRequirementFact(

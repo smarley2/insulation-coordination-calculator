@@ -364,8 +364,38 @@ def _confirmed_barrier_facts(*facts: BarrierTransferFact) -> ConfirmedFacts:
     return ConfirmedFacts(by_route={ids.SUPPLY_VERIFIED_BARRIER_TRANSFER: facts})
 
 
+#: The reviewed shape of the non-mains reduction subclause: three lists, each opened by its own
+#: lead-in prose, and then running prose. Its regions span two pages, which the mains and
+#: monitoring subclauses' single paragraph does not.
+_SPD_NON_MAINS_KINDS = (
+    "paragraph",
+    "bullet",
+    "bullet",
+    "bullet",
+    "paragraph",
+    "bullet",
+    "bullet",
+    "paragraph",
+    "bullet",
+    "bullet",
+    "bullet",
+    "paragraph",
+    "paragraph",
+)
+
+
 def _spd_fragment(route: str) -> RawClauseFragment:
-    return _paragraph_fragment(f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.{route}")
+    """One SPD route's fragment in that route's own reviewed shape.
+
+    Per route rather than one paragraph for all three: the non-mains subclause reads as lists and
+    prose over two pages, so a single-paragraph stand-in for it would satisfy no projection this
+    file exercises.
+    """
+
+    semantic_id = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.{route}"
+    if route == "non_mains":
+        return _mixed_fragment(semantic_id, _SPD_NON_MAINS_KINDS)
+    return _paragraph_fragment(semantic_id)
 
 
 def _spd_permission_fact(
@@ -2296,7 +2326,10 @@ def test_the_reduction_rule_is_read_from_the_clauses_that_state_it() -> None:
     monitoring = by_id[_SPD_MONITORING_ID]
 
     assert (mains.clause, mains.segments[0].page_number) == ("4.4.7.2.3", 65)
-    assert (non_mains.clause, non_mains.segments[0].page_number) == ("4.4.7.2.4", 66)
+    # The non-mains subclause opens on the page before the one its declared region used to reach:
+    # a spec starting on that later page could not read the part of the clause stated before it.
+    assert (non_mains.clause, non_mains.segments[0].page_number) == ("4.4.7.2.4", 65)
+    assert {segment.page_number for segment in non_mains.segments} == {65, 66}
     assert (monitoring.clause, monitoring.segments[0].page_number) == ("4.4.7.2.2", 65)
 
 

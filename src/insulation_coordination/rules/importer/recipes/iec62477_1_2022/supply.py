@@ -219,10 +219,53 @@ SUPPLY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ClauseAuditSpec(
         semantic_id=f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains",
         clause="4.4.7.2.4",
+        #: Eight contiguous regions over two pages, alternating prose and lists in reading order.
+        #: The subclause opens on the earlier page and continues on the next; the one region
+        #: declared before reached a part of its later page only, so everything it states on the
+        #: earlier page and most of what it states on the later one was extracted by nothing and
+        #: reachable from no route. Each list is its own region because a region's declared root
+        #: kind states what its list reads as, and each list's lead-in is prose above it; the last
+        #: region ends above the next heading, so the subclause's own trailing NOTE comes with it as
+        #: the sibling subclauses' do. Measured with pdfplumber against the licensed document.
         segments=(
             ClauseSegmentSpec(
+                page_number=65,
+                expected_bbox=(65.0, 608.0, 535.0, 640.0),
+                expected_root_kind="paragraph",
+            ),
+            ClauseSegmentSpec(
+                page_number=65,
+                expected_bbox=(65.0, 640.0, 535.0, 700.0),
+                expected_root_kind="bullets",
+            ),
+            ClauseSegmentSpec(
+                page_number=65,
+                expected_bbox=(65.0, 700.0, 535.0, 792.0),
+                expected_root_kind="paragraph",
+            ),
+            ClauseSegmentSpec(
                 page_number=66,
-                expected_bbox=(65.0, 385.0, 535.0, 512.0),
+                expected_bbox=(65.0, 80.0, 535.0, 130.0),
+                expected_root_kind="bullets",
+            ),
+            ClauseSegmentSpec(
+                page_number=66,
+                expected_bbox=(65.0, 130.0, 535.0, 165.0),
+                expected_root_kind="paragraph",
+            ),
+            ClauseSegmentSpec(
+                page_number=66,
+                expected_bbox=(65.0, 165.0, 535.0, 222.0),
+                expected_root_kind="bullets",
+            ),
+            ClauseSegmentSpec(
+                page_number=66,
+                expected_bbox=(65.0, 222.0, 535.0, 384.0),
+                expected_root_kind="paragraph",
+            ),
+            ClauseSegmentSpec(
+                page_number=66,
+                expected_bbox=(65.0, 384.0, 535.0, 555.0),
                 expected_root_kind="paragraph",
             ),
         ),
@@ -526,9 +569,29 @@ _HF_TRANSFORMER_SHAPE = ("paragraph",)
 #: licensed document from the fragment the recipe's own bbox extracts, so a reprint that
 #: reflows any of these three clauses across a different number of nodes stops the build
 #: instead of projecting a rule from a region nobody reviewed.
+#: The non-mains reduction subclause reads as three lists, each opened by its own lead-in prose,
+#: and then running prose -- the mains subclause's one paragraph is the exception among the three
+#: rather than the rule. Its regions span two pages, so this is also the shape that would move
+#: first if a reprint repaginated the subclause.
+_SPD_NON_MAINS_SHAPE = (
+    "paragraph",
+    "bullet",
+    "bullet",
+    "bullet",
+    "paragraph",
+    "bullet",
+    "bullet",
+    "paragraph",
+    "bullet",
+    "bullet",
+    "bullet",
+    "paragraph",
+    "paragraph",
+)
+
 _SPD_SHAPE_BY_ROUTE: dict[str, tuple[str, ...]] = {
     f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains": _SPD_SHAPE,
-    f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains": _SPD_SHAPE,
+    f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains": _SPD_NON_MAINS_SHAPE,
     f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring": _SPD_SHAPE,
 }
 
@@ -749,14 +812,16 @@ def _system_voltage_evidence_fragment(
 
 
 def _statement_source(
-    fact: SystemVoltageMeasureFact,
+    fact: SupplyFact,
     fragments: tuple[RawClauseFragment, ...],
 ) -> SourceReference:
     """Where one statement was read: the first node it cites, in whichever fragment holds it.
 
-    Two subclauses on two pages feed this one rule, and a node keeps the page it came from, so a
-    row citing the rule's own fragment's first node unconditionally would name a page its
-    statement is not on.
+    Two subclauses on two pages feed the system voltage rule, and one subclause's own regions span
+    two pages for the non-mains reduction rule. A node keeps the page it came from either way, so a
+    row citing its fragment's first node unconditionally would name a page its statement is not on
+    -- which is why this is asked of every route whose fragments reach more than one page, and not
+    only of the rule that reads two of them.
     """
 
     by_id = {item.id: item for item in fragments}
@@ -1320,7 +1385,7 @@ def _spd_permission_row(
             DecisionValue(name="reduction_permitted", boolean=True),
             DecisionValue(name="reduced_category", categorical=step.target_ovc),
         ),
-        source=fragment.nodes[0].source,
+        source=_statement_source(fact, (fragment,)),
     )
 
 
@@ -1352,7 +1417,7 @@ def _spd_device_monitoring_row(
             ),
             DecisionValue(name="monitoring_reference", reference=fact.monitoring_reference),
         ),
-        source=fragment.nodes[0].source,
+        source=_statement_source(fact, (fragment,)),
     )
 
 
