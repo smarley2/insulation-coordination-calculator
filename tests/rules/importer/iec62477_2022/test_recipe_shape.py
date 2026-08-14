@@ -67,6 +67,51 @@ def test_impulse_and_tov_specs_read_disjoint_data_columns() -> None:
     assert impulse_data.isdisjoint(tov_data)
 
 
+def test_tov_specs_project_the_two_measures_of_one_compound_cell() -> None:
+    """Issue #60: a temporary-overvoltage cell carries two measures, not two supplies.
+
+    Each of the two system-voltage routes must reach both measures, so each declares one
+    data column per component over the one shared source column, and the column axis --
+    not the route's supply form -- is what selects between them.
+    """
+    for suffix in ("ac", "dc"):
+        spec = _table_seven_spec(suffix, ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE)
+        data = tuple(column for column in spec.columns if column.role == "data")
+        assert {column.projected_component_id for column in data} == {"rms", "peak"}
+        assert len({column.source_column for column in data}) == 1
+        for column in data:
+            assert column.compound_quantity is not None
+            assert set(column.compound_quantity.component_ids) == {"rms", "peak"}
+        assert spec.column_axis_id == "tov_basis"
+        axis = next(column for column in spec.columns if column.role == "axis")
+        assert axis.semantic_id == f"system_voltage_{suffix}_v"
+
+
+def test_no_compound_component_of_table_seven_is_named_for_a_supply_form() -> None:
+    """AC and DC are the row axis. A component named for one conflates two dimensions."""
+    compound_columns = tuple(
+        column
+        for spec in RECIPE.tables
+        for column in spec.columns
+        if column.compound_quantity is not None
+    )
+
+    assert compound_columns
+    for column in compound_columns:
+        assert not {"ac", "dc"} & set(column.compound_quantity.component_ids)
+        assert column.projected_component_id not in {"ac", "dc"}
+
+
+def test_tov_lookups_take_an_explicit_basis_alongside_the_system_voltage() -> None:
+    for suffix in ("ac", "dc"):
+        formula = next(
+            formula
+            for formula in RECIPE.formulas
+            if formula.semantic_id == f"{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.{suffix}.lookup"
+        )
+        assert formula.variables == (f"system_voltage_{suffix}_v", "tov_basis")
+
+
 def test_ac_specs_declare_fewer_data_rows_than_dc_specs() -> None:
     for base_id in (ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC, ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE):
         ac_spec = _table_seven_spec("ac", base_id)

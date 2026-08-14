@@ -199,8 +199,23 @@ _IMPULSE_DATA_COLUMNS: tuple[tuple[str, str, int, ColumnRole, str], ...] = (
     ("impulse_ovc_3_v", "overvoltage category 3", 4, "data", "V"),
     ("impulse_ovc_4_v", "overvoltage category 4", 5, "data", "V"),
 )
+#: The temporary-overvoltage column states its requirement as two measures of one
+#: quantity inside a single physical cell, so it is read into two logical columns over
+#: the same source column: one per measure. The measures are what the compound
+#: components are; AC and DC are the row axis (see the grid note above), and a component
+#: named for a supply form would answer "which supply" where the consumer asked "which
+#: measure" -- and would leave one of the two measures unreachable from its own table.
 _TOV_DATA_COLUMNS: tuple[tuple[str, str, int, ColumnRole, str], ...] = (
-    ("temporary_overvoltage_v", "temporary overvoltage requirement", 6, "data", "V"),
+    ("temporary_overvoltage_rms_v", "temporary overvoltage on the rms basis", 6, "data", "V"),
+    ("temporary_overvoltage_peak_v", "temporary overvoltage on the peak basis", 6, "data", "V"),
+)
+#: Which measure each of those logical columns projects out of the shared physical cell.
+#: The occurrence-to-measure association inside a cell is not declared here: extraction
+#: reads it from the cell's own labels where they exist and otherwise refers it to the
+#: reviewer, so this is an unordered inventory of two components.
+_TOV_COMPOUND_COMPONENTS: tuple[tuple[str, str], ...] = (
+    ("temporary_overvoltage_rms_v", "rms"),
+    ("temporary_overvoltage_peak_v", "peak"),
 )
 
 
@@ -227,7 +242,7 @@ def _table_7_ac_dc_pair(
     data_items: tuple[tuple[str, str, int, ColumnRole, str], ...],
     expected_data_columns: int,
     interpolation: Literal["none", "linear"],
-    compound_component_ids: tuple[str, ...] = (),
+    compound_components: tuple[tuple[str, str], ...] = (),
 ) -> tuple[TableAuditSpec, TableAuditSpec]:
     """One AC spec and one DC spec reading Table 7's two parallel row axes.
 
@@ -235,6 +250,11 @@ def _table_7_ac_dc_pair(
     data rows differ, per the AC/DC split. System voltage interpolation is not
     permitted for the impulse lookup but is permitted for the TOV lookup (4.4.7.1.7);
     the matching ``FormulaAuditSpec`` row mode is declared by the caller.
+
+    ``compound_components`` pairs each data column with the component it projects out of
+    a shared compound cell. Every data column then carries the same component inventory
+    and its own projection, which is what lets one physical cell serve a column axis
+    position per component instead of collapsing to whichever one the spec was named for.
     """
     specs = []
     for supply, axis_source_column, data_rows, allowed_suffixes, expected_data_rows in (
@@ -253,22 +273,20 @@ def _table_7_ac_dc_pair(
             ),
             *data_items,
         )
-        if compound_component_ids:
-            compound = CompoundQuantitySpec(
-                component_ids=compound_component_ids,
-                formula_candidates=tuple(
-                    (
-                        component_id,
-                        f"{impulse_or_tov_id}.{component_id}.lookup",
-                    )
-                    for component_id in compound_component_ids
-                ),
-            )
+        if compound_components:
+            projected = dict(compound_components)
+            # No per-component formula route is declared. The component a lookup returns is
+            # chosen by this table's own column axis, and the one lookup formula per supply
+            # consumes the whole table, so there is nothing for a route to disambiguate. A
+            # route named per supply could not be attached either: the AC and DC specs
+            # re-extract the same physical cell, and approval requires every copy of a
+            # source cell to agree on its components and their routes.
+            compound = CompoundQuantitySpec(component_ids=tuple(projected.values()))
             columns = tuple(
                 column.model_copy(
                     update={
                         "compound_quantity": compound,
-                        "projected_component_id": supply,
+                        "projected_component_id": projected[column.semantic_id],
                     }
                 )
                 if column.role == "data"
@@ -330,12 +348,12 @@ _IMPULSE_AC, _IMPULSE_DC = _table_7_ac_dc_pair(
 )
 _TOV_AC, _TOV_DC = _table_7_ac_dc_pair(
     impulse_or_tov_id=ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE,
-    axis_column_axis_id="tov_branch",
+    axis_column_axis_id="tov_basis",
     axis_column_axis_unit="1",
     data_items=_TOV_DATA_COLUMNS,
-    expected_data_columns=2,
+    expected_data_columns=3,
     interpolation="linear",
-    compound_component_ids=("ac", "dc"),
+    compound_components=_TOV_COMPOUND_COMPONENTS,
 )
 
 #: Table E.2's four altitude-band data columns are physically ordered descending by
@@ -607,7 +625,7 @@ FORMULAS: tuple[FormulaAuditSpec, ...] = (
     FormulaAuditSpec(
         semantic_id=f"{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.ac.lookup",
         unit="V",
-        variables=("system_voltage_ac_v", "tov_branch"),
+        variables=("system_voltage_ac_v", "tov_basis"),
         expression_shape=f"table_select:{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.ac(linear,exact)",
         page_number=_TABLE_7_PAGE,
         clause=_TABLE_7_CLAUSE,
@@ -616,7 +634,7 @@ FORMULAS: tuple[FormulaAuditSpec, ...] = (
     FormulaAuditSpec(
         semantic_id=f"{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.dc.lookup",
         unit="V",
-        variables=("system_voltage_dc_v", "tov_branch"),
+        variables=("system_voltage_dc_v", "tov_basis"),
         expression_shape=f"table_select:{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.dc(linear,exact)",
         page_number=_TABLE_7_PAGE,
         clause=_TABLE_7_CLAUSE,
