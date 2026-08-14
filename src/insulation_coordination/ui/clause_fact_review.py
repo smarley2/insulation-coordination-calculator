@@ -418,11 +418,13 @@ class ClauseFactReviewDialog(QDialog):
 
         facts_box = QGroupBox("Statements for the selected route", self)
         facts_layout = QVBoxLayout(facts_box)
-        # Empty except while the list holds seeded drafts, so it collapses out of the way.
-        self.seed_hint = QLabel("", facts_box)
-        self.seed_hint.setWordWrap(True)
-        facts_layout.addWidget(self.seed_hint)
         self.facts_list = QListWidget(facts_box)
+        # On hover rather than as a label, so the caution never costs the drafts their space.
+        self.facts_list.setToolTip(
+            "Drafts are proposed one per clause sentence. Sentence count is not statement "
+            "count -- author fewer, more, or differently cited statements as you read them, "
+            "and check every proposed reading against the sentence beside it."
+        )
         self.facts_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.facts_list.itemSelectionChanged.connect(self._load_fact)
         # A proposed draft carries the sentence it was read from, so the reviewer confirms a
@@ -723,7 +725,6 @@ class ClauseFactReviewDialog(QDialog):
         if row is None:
             self.nodes_list.clear()
             self.facts_list.clear()
-            self.seed_hint.clear()
             self.source_preview.render_regions(None, (), unavailable=_NO_SOURCE_REGION)
             self._node_rows = ()
             self._fact_rows = ()
@@ -803,15 +804,6 @@ class ClauseFactReviewDialog(QDialog):
         and nothing is recorded until an Author button is pressed.
         """
 
-        if not self._proposal_rows:
-            self.seed_hint.clear()
-            return
-        self.seed_hint.setText(
-            "Drafts below are proposed one per clause sentence, each citing its own node and "
-            "carrying whatever the keyword grammar reads out of that sentence. Sentence count "
-            "is not statement count -- author fewer, more, or differently cited statements as "
-            "you read them, and check every proposed reading against the sentence beside it."
-        )
         for proposal in self._proposal_rows:
             reading = (
                 "every dimension proposed"

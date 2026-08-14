@@ -777,7 +777,7 @@ def test_the_proposed_drafts_are_not_offered_as_a_statement_count(
 
     dialog.table.selectRow(_route_position(model, HF_ROUTE))
 
-    assert "Sentence count is not statement count" in dialog.seed_hint.text()
+    assert "Sentence count is not statement count" in dialog.facts_list.toolTip()
     assert all(
         "statement" not in dialog.facts_list.item(index).text()
         for index in range(dialog.facts_list.count())
@@ -858,7 +858,6 @@ def test_a_proposed_draft_can_be_authored_citing_more_than_its_own_node(
     # The authored statement joins the list; the remaining drafts stay reachable, so the
     # statements a proposal could not settle keep their prefill.
     assert dialog.facts_list.count() == 1 + _SEEDED_NODE_COUNT
-    assert dialog.seed_hint.text() != ""
 
 
 def test_the_batch_action_stays_disabled_while_no_draft_is_fully_proposed(
