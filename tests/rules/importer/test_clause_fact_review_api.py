@@ -16,7 +16,8 @@ from insulation_coordination.rules.importer.clause_facts import (
     ClauseFactReview,
     DimensionScope,
     HfAttenuationFact,
-    SpdReductionFact,
+    OvercategoryStep,
+    SpdReductionPermissionFact,
     SupplyFact,
     evidence_sha256,
 )
@@ -84,20 +85,16 @@ def _hf_fact(
     )
 
 
-def _reduction_fact(draft: ImportedRuleDraft, *, fragment_id: str) -> SpdReductionFact:
+def _reduction_fact(draft: ImportedRuleDraft, *, fragment_id: str) -> SpdReductionPermissionFact:
     """One reduction statement, citing whichever fragment the caller names."""
 
-    return SpdReductionFact(
+    return SpdReductionPermissionFact(
         statement_index=0,
         node_references=(_cited(draft, fragment_id),),
         obligation="permission",
         supply_kind="non_mains",
-        source_ovc="ovc_iii",
-        target_ovc="ovc_ii",
-        insulation_class="basic",
-        degradable=True,
-        monitoring_obligation="required",
-        monitoring_reference=f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring",
+        permitted_steps=(OvercategoryStep(source_ovc="ovc_iii", target_ovc="ovc_ii"),),
+        insulation_classes=DimensionScope.of("basic"),
     )
 
 

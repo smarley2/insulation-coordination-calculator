@@ -14,10 +14,13 @@ from insulation_coordination.rules.importer.clause_facts import (
     ClauseFactReview,
     ConfirmedFacts,
     DimensionScope,
+    OvercategoryStep,
     SpdMonitoringComplianceFact,
     SpdMonitoringExemptionFact,
     SpdMonitoringRequirementFact,
-    SpdReductionFact,
+    SpdReductionFloorFact,
+    SpdReductionMonitoringFact,
+    SpdReductionPermissionFact,
     SystemVoltageApplicabilityFact,
     SystemVoltageMeasureFact,
     evidence_sha256,
@@ -31,17 +34,29 @@ from insulation_coordination.rules.importer.extract import (
 # draft_with_axis_proposals is a shared fixture; see tests/conftest.py.
 
 
-def _spd_fact() -> SpdReductionFact:
-    return SpdReductionFact(
+def _spd_fact() -> SpdReductionPermissionFact:
+    return SpdReductionPermissionFact(
         statement_index=0,
         node_references=(CitedNode(fragment_id="raw-a", node_order=0, node_sha256="a" * 64),),
         obligation="permission",
         supply_kind="mains",
-        source_ovc="ovc_iv",
-        target_ovc="ovc_iii",
-        insulation_class="basic",
-        degradable=True,
+        permitted_steps=(
+            OvercategoryStep(source_ovc="ovc_iii", target_ovc="ovc_ii"),
+            OvercategoryStep(source_ovc="ovc_iv", target_ovc="ovc_iii"),
+        ),
+        insulation_classes=DimensionScope.of("basic", "supplementary"),
+    )
+
+
+def _spd_monitoring_statement() -> SpdReductionMonitoringFact:
+    return SpdReductionMonitoringFact(
+        statement_index=1,
+        node_references=(CitedNode(fragment_id="raw-a", node_order=1, node_sha256="b" * 64),),
+        obligation="requirement",
+        supply_kind="mains",
+        device_degradable=True,
         monitoring_obligation="required",
+        status_indication="required",
         monitoring_reference="iec62477_2022.supply.spd_reduction_requirements.monitoring",
     )
 
@@ -160,9 +175,14 @@ def test_monitoring_is_its_own_family_and_reduction_carries_no_placement() -> No
     )
 
     assert monitoring.fact_kind == "spd_monitoring"
-    assert "device_placement" not in SpdReductionFact.model_fields
-    assert "participates_in_reduction" not in SpdReductionFact.model_fields
-    assert _spd_fact().monitoring_reference.endswith(".monitoring")
+    for model in (
+        SpdReductionPermissionFact,
+        SpdReductionFloorFact,
+        SpdReductionMonitoringFact,
+    ):
+        assert "device_placement" not in model.model_fields
+        assert "participates_in_reduction" not in model.model_fields
+    assert _spd_monitoring_statement().monitoring_reference.endswith(".monitoring")
 
 
 def test_the_monitoring_obligation_is_the_variant_rather_than_a_field() -> None:
@@ -229,18 +249,117 @@ def test_a_fact_must_cite_at_least_one_node() -> None:
     """A statement with no evidence could not go stale, which defeats the whole mechanism."""
 
     with pytest.raises(ValidationError):
-        SpdReductionFact(
-            statement_index=0,
-            node_references=(),
-            obligation="permission",
-            supply_kind="mains",
-            source_ovc="ovc_iv",
-            target_ovc="ovc_iii",
-            insulation_class="basic",
-            degradable=True,
-            monitoring_obligation="required",
-            monitoring_reference="iec62477_2022.supply.spd_reduction_requirements.monitoring",
+        SpdReductionPermissionFact.model_validate(
+            {**_spd_fact().model_dump(), "node_references": ()}
         )
+
+
+# --- the reduction family's three readings, and its collections --------------------------
+
+
+def test_each_reduction_variant_carries_only_its_own_dimensions() -> None:
+    """Merged into one shape, one statement had to name four readings at once.
+
+    A permission states no degradability, no monitoring obligation and no monitoring reference; a
+    floor states no transition; a monitoring statement states no transition and no insulation class.
+    """
+
+    permission = set(SpdReductionPermissionFact.model_fields)
+    floor = set(SpdReductionFloorFact.model_fields)
+    monitoring = set(SpdReductionMonitoringFact.model_fields)
+
+    assert permission.isdisjoint(
+        {"device_degradable", "monitoring_obligation", "status_indication", "monitoring_reference"}
+    )
+    assert floor.isdisjoint({"permitted_steps", "device_degradable", "monitoring_reference"})
+    assert monitoring.isdisjoint({"permitted_steps", "insulation_classes"})
+    # The reference lives on the statement that actually defers, so the runtime chain composes
+    # from separately reviewed authorities rather than from a copy on the permission.
+    assert "monitoring_reference" in monitoring
+    # What all three state stays shared rather than repeated per variant.
+    assert {"supply_kind", "obligation"} <= permission & floor & monitoring
+
+
+def test_a_permission_carries_its_transitions_as_pairs_not_two_value_sets() -> None:
+    """Two sets would fabricate a cartesian product of the endpoints the reviewer never stated."""
+
+    steps = _spd_fact().permitted_steps
+
+    assert [(step.source_ovc, step.target_ovc) for step in steps] == [
+        ("ovc_iii", "ovc_ii"),
+        ("ovc_iv", "ovc_iii"),
+    ]
+    assert "source_ovc" not in SpdReductionPermissionFact.model_fields
+    assert "target_ovc" not in SpdReductionPermissionFact.model_fields
+
+
+def test_a_step_that_does_not_move_is_refused() -> None:
+    """A transition to its own category is how the merged shape used to spell the floor."""
+
+    with pytest.raises(ValidationError, match="different category"):
+        OvercategoryStep(source_ovc="ovc_iii", target_ovc="ovc_iii")
+
+
+def test_a_step_collection_out_of_declared_order_is_refused() -> None:
+    """Order-dependent digests are how a reordered copy defeats the duplicate refusal.
+
+    Sorted by the declared scale order rather than lexicographically, because a step's endpoints
+    mean positions on that scale.
+    """
+
+    with pytest.raises(ValidationError, match="declared vocabulary order"):
+        SpdReductionPermissionFact.model_validate(
+            {
+                **_spd_fact().model_dump(),
+                "permitted_steps": (
+                    {"source_ovc": "ovc_iv", "target_ovc": "ovc_iii"},
+                    {"source_ovc": "ovc_iii", "target_ovc": "ovc_ii"},
+                ),
+            }
+        )
+
+
+def test_a_step_collection_naming_one_transition_twice_is_refused() -> None:
+    with pytest.raises(ValidationError, match="each transition once"):
+        SpdReductionPermissionFact.model_validate(
+            {
+                **_spd_fact().model_dump(),
+                "permitted_steps": (
+                    {"source_ovc": "ovc_iii", "target_ovc": "ovc_ii"},
+                    {"source_ovc": "ovc_iii", "target_ovc": "ovc_ii"},
+                ),
+            }
+        )
+
+
+def test_a_permission_naming_one_step_collection_in_two_orders_is_one_reading() -> None:
+    """The point of the ordering rule: one reading hashes once, however it was typed.
+
+    Both properties together are what keep ``same_clause_fact_reading`` able to see a second copy:
+    without canonical order the reordered copy hashes differently and reads as a distinct reading,
+    and without the duplicate refusal the same transition counts twice inside one statement.
+    """
+
+    ordered = [
+        {"source_ovc": "ovc_iii", "target_ovc": "ovc_ii"},
+        {"source_ovc": "ovc_iv", "target_ovc": "ovc_iii"},
+    ]
+    first = SpdReductionPermissionFact.model_validate(
+        {**_spd_fact().model_dump(), "permitted_steps": ordered}
+    )
+
+    assert canonical_model_sha256(first) == canonical_model_sha256(_spd_fact())
+    assert same_clause_fact_reading(first, _spd_fact()) is True
+
+
+def test_a_class_set_is_canonical_and_names_each_class_once() -> None:
+    """The permission's insulation classes are a scope, which owns both properties already."""
+
+    assert DimensionScope[str].of("supplementary", "basic") == DimensionScope[str].of(
+        "basic", "supplementary"
+    )
+    with pytest.raises(ValidationError, match="each value once"):
+        DimensionScope[str](mode="exact_set", values=("basic", "basic"))
 
 
 def test_the_evidence_digest_covers_every_cited_node_and_ignores_order_of_citation() -> None:
@@ -297,7 +416,7 @@ def test_completion_is_scoped_to_a_route_and_binds_both_hashes() -> None:
     assert completion.rule_route.endswith(".mains")
 
 
-def _review_of(fact: SpdReductionFact) -> ClauseFactReview:
+def _review_of(fact: SpdReductionPermissionFact) -> ClauseFactReview:
     return ClauseFactReview(
         rule_route="iec62477_2022.supply.spd_reduction_requirements.mains",
         statement_index=fact.statement_index,

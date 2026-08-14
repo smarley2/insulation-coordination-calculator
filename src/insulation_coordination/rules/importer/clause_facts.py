@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
-from typing import Annotated, Literal, get_args
+from typing import Annotated, Literal, get_args, get_origin
 
-from pydantic import Field, model_validator
+from pydantic import AfterValidator, Field, model_validator
 
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import Identifier, NotesText
@@ -84,6 +84,36 @@ def scope_vocabulary(annotation: object) -> tuple[str, ...] | None:
     if not parameters:
         return ()
     return tuple(value for value in get_args(parameters[0]) if isinstance(value, str))
+
+
+def pair_vocabulary(annotation: object) -> tuple[str, ...] | None:
+    """The vocabulary both members of one ordered-pair collection draw from, or ``None``.
+
+    The collection counterpart of ``scope_vocabulary``, and the one reader for it, so the editor and
+    the proposer do not each carry their own introspection. ``None`` for any other annotation,
+    including a collection whose members do not all draw from one vocabulary: a pair whose halves
+    were different scales would need two vocabularies to offer, and guessing which is which is worse
+    than refusing in ``fact_dimensions``.
+
+    A pair collection is not a scope and does not project like one. A scope is one condition over
+    several values with one answer, so it is one row. A pair is a *mapping*: each member carries its
+    own answer, so a statement enumerating several of them projects one row per pair -- which is why
+    the collection needs the consumer input that separates them.
+    """
+
+    if get_origin(annotation) is not tuple:
+        return None
+    args = get_args(annotation)
+    member = args[0] if args else None
+    if not (isinstance(member, type) and issubclass(member, FrozenModel)):
+        return None
+    vocabularies = {
+        tuple(value for value in get_args(field.annotation) if isinstance(value, str))
+        for field in member.model_fields.values()
+    }
+    if len(vocabularies) != 1:
+        return None
+    return vocabularies.pop()
 
 
 class CitedNode(FrozenModel):
@@ -310,30 +340,157 @@ BarrierTransferFact = Annotated[
 ]
 
 
-class SpdReductionFact(_Fact):
-    """One reduction statement: which category step this supply kind permits, and its floor.
+#: Overvoltage category designations, in the order the scale declares them, increasing in severity.
+#: Designations only; no source value. Its own alias because a step collection's canonical order is
+#: read from it and because a reviewed scope's vocabulary is read out of the annotation.
+OvercategoryDesignation = Literal["ovc_i", "ovc_ii", "ovc_iii", "ovc_iv"]
 
-    Carries no device placement. Reduction and monitoring are reviewed from separate clauses, and
-    a reduction statement refers to the monitoring route rather than restating it -- which is what
-    ``monitoring_reference`` names. Placement belongs to ``SpdMonitoringFact``, whose own clause
-    is where that dimension is read.
+#: Insulation classes, in declared order.
+InsulationClass = Literal["functional", "basic", "supplementary", "double", "reinforced"]
+
+_OVERCATEGORY_ORDER: tuple[str, ...] = get_args(OvercategoryDesignation)
+
+
+class OvercategoryStep(FrozenModel):
+    """One permitted category transition: the category reduced from, and the one reduced to.
+
+    A pair rather than two independent value sets. Two sets would fabricate a cartesian product the
+    reviewer never stated -- a statement permitting one transition and another would read as
+    permitting every crossing of their endpoints -- and each pair carries its own answer, so the
+    pairing is the reading rather than a presentation of it.
+    """
+
+    source_ovc: OvercategoryDesignation
+    target_ovc: OvercategoryDesignation
+
+    @model_validator(mode="after")
+    def _a_step_moves(self) -> OvercategoryStep:
+        if self.source_ovc == self.target_ovc:
+            raise ValueError("a permitted step reduces to a different category")
+        return self
+
+
+def _canonical_steps(steps: tuple[OvercategoryStep, ...]) -> tuple[OvercategoryStep, ...]:
+    """Refuse a step collection that is out of declared order or names one transition twice.
+
+    Without this the fact digest is order-dependent, so one reading authored in two orders hashes
+    twice and ``same_clause_fact_reading`` lets the reordered copy through as a distinct reading --
+    which defeats the duplicate-reading refusal exactly. Sorted by the *declared* scale order rather
+    than lexicographically, because a step's endpoints mean positions on that scale.
+
+    Rejecting rather than silently sorting, unlike ``DimensionScope.of``: a collection arrives from
+    an authored wire value whose order the reviewer typed, and quietly reordering it would hide a
+    duplicate they meant to notice. ``DimensionScope.of`` canonicalises because it is a constructor
+    the projector and the proposer call; this is a field validator on what a reviewer wrote.
+    """
+
+    keys = [
+        (_OVERCATEGORY_ORDER.index(step.source_ovc), _OVERCATEGORY_ORDER.index(step.target_ovc))
+        for step in steps
+    ]
+    if len(set(keys)) != len(keys):
+        raise ValueError("a reviewed step collection names each transition once")
+    if keys != sorted(keys):
+        raise ValueError("a reviewed step collection must be in declared vocabulary order")
+    return steps
+
+
+#: One statement's permitted transitions: at least one, each named once, in declared scale order.
+OvercategoryStepSequence = Annotated[
+    tuple[OvercategoryStep, ...],
+    Field(min_length=1),
+    AfterValidator(_canonical_steps),
+]
+
+
+class SpdReductionStatement(_Fact):
+    """What every SPD reduction statement shares, whichever kind of reading it is.
+
+    The family states three normatively different readings from one clause -- which transitions are
+    permitted and for which insulation, the floor the permission may not cross, and the monitoring a
+    degradable reducing device owes -- so it discriminates on ``statement_kind`` inside one
+    ``fact_kind``. Merged into one shape, as it was, a single statement had to name a transition, an
+    insulation class, a degradability and a monitoring obligation at once: four readings recorded as
+    one, and the projector then had to fill six outputs from it.
+
+    ``supply_kind`` sits here rather than on a variant because the route determines it structurally
+    for every statement it carries -- see ``SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE`` and
+    ``clause_fact_defect``.
+
+    No variant carries a device placement. Reduction and monitoring are reviewed from separate
+    clauses, and placement is read only from the monitoring clause -- see ``DevicePlacement``.
     """
 
     fact_kind: Literal["spd_reduction"] = "spd_reduction"
     supply_kind: Literal["mains", "non_mains"]
-    source_ovc: Literal["ovc_i", "ovc_ii", "ovc_iii", "ovc_iv"]
-    target_ovc: Literal["ovc_i", "ovc_ii", "ovc_iii", "ovc_iv"]
-    insulation_class: Literal["functional", "basic", "supplementary", "double", "reinforced"]
-    degradable: bool
+
+
+class SpdReductionPermissionFact(SpdReductionStatement):
+    """One statement of the transitions a supply kind permits, and the insulation they apply to.
+
+    The transitions are **one ordered collection of pairs**, so a statement naming several is one
+    statement; the insulation classes are **one scope**, because the statement names them jointly and
+    a class it does not name reaches no row.
+
+    It states no degradability, no monitoring obligation and no monitoring reference. The monitoring
+    a degradable reducing device owes is a separate normative statement of the same clause, and the
+    reference to the route it defers to belongs on that statement -- so the runtime chain composes
+    from separately reviewed authorities rather than from one merged fact.
+    """
+
+    statement_kind: Literal["permission"] = "permission"
+    permitted_steps: OvercategoryStepSequence
+    insulation_classes: DimensionScope[InsulationClass]
+
+
+class SpdReductionFloorFact(SpdReductionStatement):
+    """One statement of the floor a reduced requirement may not fall below.
+
+    A carried-not-projected variant, and reviewed representation only: it states a *comparison*
+    against a basis, and both the executable comparison and a route that evaluates it are #53C's.
+    It is resolved and covered by the route's fact-set digest, so completion and the approval gate
+    know the reviewer read it, and it reaches no row.
+
+    Not a transition permission: it names the insulation classes it protects and no source or target
+    category at all. Forcing it into the permission's shape is what made the merged fact record a
+    floor as a transition to its own category.
+    """
+
+    statement_kind: Literal["floor"] = "floor"
+    insulation_classes: DimensionScope[InsulationClass]
+    #: The requirement the floor is measured against: the basic-insulation impulse withstand
+    #: resolved as if the reducing means were not present. A typed token rather than prose, and its
+    #: own vocabulary so a second basis can join it without reshaping the statement.
+    unreduced_basis: Literal["basic_insulation_without_the_reducing_means"]
+    #: How the reduced requirement must stand to that basis. Reviewed, never evaluated here.
+    relation: Literal["must_not_fall_below"]
+
+
+class SpdReductionMonitoringFact(SpdReductionStatement):
+    """One statement of the monitoring a degradable reducing device owes.
+
+    It states the condition -- a device whose ability to reduce impulses can degrade -- the
+    obligation, the status indication that accompanies it, and the route the obligation is specified
+    by. It states no category transition and no insulation class, because a statement of this kind
+    states neither.
+
+    ``monitoring_reference`` lives here rather than on the permission: the source states this as its
+    own normative statement, so a consumer resolves the obligation by following the reference to a
+    separately reviewed authority instead of reading a flattened copy off the permission.
+    """
+
+    statement_kind: Literal["monitoring"] = "monitoring"
+    device_degradable: bool
     monitoring_obligation: Literal["required", "not_required"]
-    #: The route whose statements the monitoring obligation defers to, never restated here.
-    #:
-    #: Known gap, disclosed rather than dropped: no projector reads this yet. Following the
-    #: reference is what would let a consumer resolve the deferred obligation instead of reading
-    #: the flattened ``monitoring_required`` this route emits, and that is part of the full
-    #: reduction context #53C item 5 builds -- the same slice that right-sizes these three routes'
-    #: shared output tuple.
+    status_indication: Literal["required", "not_required"]
     monitoring_reference: Identifier
+
+
+#: The family's three variants under one ``fact_kind``, discriminated by ``statement_kind``.
+SpdReductionFact = Annotated[
+    SpdReductionPermissionFact | SpdReductionFloorFact | SpdReductionMonitoringFact,
+    Field(discriminator="statement_kind"),
+]
 
 
 #: The device placements a monitoring statement may name. Its own alias because the scope's
@@ -578,8 +735,12 @@ __all__ = [
     "DownstreamConnection",
     "DvcGate",
     "HfAttenuationFact",
+    "InsulationClass",
     "MonitoringComplianceEvidence",
     "Obligation",
+    "OvercategoryDesignation",
+    "OvercategoryStep",
+    "OvercategoryStepSequence",
     "PropagationStepFact",
     "ScopeMode",
     "SpdMonitoringComplianceFact",
@@ -588,6 +749,10 @@ __all__ = [
     "SpdMonitoringRequirementFact",
     "SpdMonitoringStatement",
     "SpdReductionFact",
+    "SpdReductionFloorFact",
+    "SpdReductionMonitoringFact",
+    "SpdReductionPermissionFact",
+    "SpdReductionStatement",
     "SupplyFact",
     "SupplySide",
     "SystemVoltageApplicabilityFact",
@@ -595,6 +760,7 @@ __all__ = [
     "SystemVoltageMeasureFact",
     "SystemVoltageStatement",
     "evidence_sha256",
+    "pair_vocabulary",
     "same_clause_fact_reading",
     "scope_vocabulary",
 ]

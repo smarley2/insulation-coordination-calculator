@@ -16,7 +16,7 @@ vocabulary each dimension draws from and the short generic terms a sentence is s
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from types import MappingProxyType
 from typing import Any, Literal, get_args
 
@@ -31,14 +31,18 @@ from insulation_coordination.rules.importer.clause_facts import (
     CitedNode,
     DimensionScope,
     HfAttenuationFact,
+    OvercategoryStep,
     PropagationStepFact,
     SpdMonitoringComplianceFact,
     SpdMonitoringExemptionFact,
     SpdMonitoringRequirementFact,
-    SpdReductionFact,
+    SpdReductionFloorFact,
+    SpdReductionMonitoringFact,
+    SpdReductionPermissionFact,
     SupplyFact,
     SystemVoltageApplicabilityFact,
     SystemVoltageMeasureFact,
+    pair_vocabulary,
     scope_vocabulary,
 )
 from insulation_coordination.rules.importer.clauses import RawClauseFragment
@@ -51,7 +55,9 @@ FactModel = type[
     | BarrierRatingResolutionFact
     | BarrierCombinedRequirementFact
     | BarrierDownstreamInheritanceFact
-    | SpdReductionFact
+    | SpdReductionPermissionFact
+    | SpdReductionFloorFact
+    | SpdReductionMonitoringFact
     | SpdMonitoringRequirementFact
     | SpdMonitoringExemptionFact
     | SpdMonitoringComplianceFact
@@ -73,7 +79,11 @@ FACT_MODELS_BY_KIND: dict[str, tuple[FactModel, ...]] = {
         BarrierCombinedRequirementFact,
         BarrierDownstreamInheritanceFact,
     ),
-    "spd_reduction": (SpdReductionFact,),
+    "spd_reduction": (
+        SpdReductionPermissionFact,
+        SpdReductionFloorFact,
+        SpdReductionMonitoringFact,
+    ),
     "spd_monitoring": (
         SpdMonitoringRequirementFact,
         SpdMonitoringExemptionFact,
@@ -89,7 +99,7 @@ _UNDIMENSIONED_FIELDS = frozenset(
     {"fact_kind", "statement_kind", "statement_index", "node_references"}
 )
 
-DimensionKind = Literal["choice", "boolean", "identifier", "scope"]
+DimensionKind = Literal["choice", "boolean", "identifier", "scope", "pair_sequence"]
 
 #: A boolean dimension's two authored values. Spelled as text because that is what an editor
 #: offers and what a declared rule states; converted once, in ``proposed_fact``.
@@ -106,6 +116,18 @@ _BOOLEAN_VALUES = ("true", "false")
 #: needs to propose anything a string cannot carry.
 SCOPE_UNRESTRICTED = "*"
 _SCOPE_SEPARATOR = "|"
+
+#: A pair collection's wire value: each pair's two members joined by this arrow, the pairs
+#: themselves separated like a scope's values. One reading carries every pair it names, never one
+#: draft per pair -- the same duplicate-expansion fix ``exact_set`` made for a scope.
+_PAIR_ARROW = ">"
+
+#: The member names a decoded pair fills, read from the one pair model this repository declares.
+#:
+#: ponytail: one shared member order rather than threading the field name through every decode site.
+#: Read from the model so it cannot drift from it; give ``authored_dimension`` the field name when a
+#: second pair collection with different members arrives.
+_PAIR_MEMBER_FIELDS: tuple[str, ...] = tuple(OvercategoryStep.model_fields)
 
 #: The longest a declared keyword may be. Keywords are short generic engineering terms; this cap
 #: is what stops a whole clause sentence from being pasted into a public file as a "keyword".
@@ -158,7 +180,8 @@ def fact_dimensions(
     is a two-value choice starting unchosen -- a reviewer must never record a reading they did
     not pick, and a checkbox has no unchosen state. A ``DimensionScope`` field is a ``"scope"``
     over the same kind of vocabulary, offered as a multi-selection plus an explicit unrestricted
-    entry rather than as one value. An ``Identifier`` field has no vocabulary and gets a line edit.
+    entry rather than as one value. An ordered collection of pairs is a ``"pair_sequence"`` over the
+    vocabulary both halves draw from. An ``Identifier`` field has no vocabulary and gets a line edit.
     Anything else is refused here rather than degrading silently: a dimension the editor cannot
     offer is a fact no reviewer can author, and approval would block on the route with nothing to
     explain why.
@@ -174,6 +197,10 @@ def fact_dimensions(
         scoped = scope_vocabulary(field.annotation)
         if scoped:
             dimensions.append((name, "scope", scoped))
+            continue
+        paired = pair_vocabulary(field.annotation)
+        if paired:
+            dimensions.append((name, "pair_sequence", paired))
             continue
         options = get_args(field.annotation)
         if options:
@@ -227,17 +254,61 @@ def scope_from_wire(value: str) -> dict[str, object]:
     return scope.model_dump()
 
 
+def pair_wire(pairs: Sequence[Sequence[str]]) -> str:
+    """One ordered pair collection as a wire value, and as a compact display of the reading.
+
+    Neither sorted nor deduplicated here: the fact model's own validator refuses a collection out of
+    declared order or naming one pair twice, and quietly fixing it up on the way in would hide the
+    duplicate a reviewer meant to notice.
+    """
+
+    return _SCOPE_SEPARATOR.join(_PAIR_ARROW.join(members) for members in pairs)
+
+
+def authored_pair_wire(members: Sequence[object]) -> str:
+    """One authored pair collection's wire value, read off the member models themselves.
+
+    The inverse of ``pair_from_wire``, and the one place a stored collection is spelled the way an
+    editor and a proposal spell it, so a row summary and the editor cannot drift.
+    """
+
+    return pair_wire(
+        [[str(getattr(member, name)) for name in _PAIR_MEMBER_FIELDS] for member in members]
+    )
+
+
+def pair_tokens(value: str) -> tuple[tuple[str, ...], ...]:
+    """The member pairs one wire value names, each split at the arrow."""
+
+    return tuple(tuple(part.split(_PAIR_ARROW)) for part in value.split(_SCOPE_SEPARATOR) if part)
+
+
+def pair_from_wire(value: str, fields: tuple[str, ...]) -> list[dict[str, str]]:
+    """One pair collection's authored value, decoded from its wire form.
+
+    Dumped as plain mappings rather than built as models, exactly as ``scope_from_wire`` is: the wire
+    form carries no vocabulary, so the reading is validated against the fact field's own member model
+    when the statement is built, which is what refuses a token that family never declared and a pair
+    with the wrong number of members.
+    """
+
+    return [dict(zip(fields, members, strict=False)) for members in pair_tokens(value)]
+
+
 def authored_dimension(kind: DimensionKind, value: str) -> object:
     """One dimension's authored value, from the text a proposal or an editor widget carries.
 
-    The one conversion point both authoring paths share, so a boolean or a scope cannot be decoded
-    one way from a proposal and another way from the dialog that builds the same fact.
+    The one conversion point both authoring paths share, so a boolean, a scope or a pair collection
+    cannot be decoded one way from a proposal and another way from the dialog that builds the same
+    fact.
     """
 
     if kind == "boolean":
         return value == "true"
     if kind == "scope":
         return scope_from_wire(value)
+    if kind == "pair_sequence":
+        return pair_from_wire(value, _PAIR_MEMBER_FIELDS)
     return value
 
 
@@ -301,23 +372,28 @@ class ClauseKeywordRule(FrozenModel):
 
 
 class ClauseSequenceRule(FrozenModel):
-    """Two dimensions read as ordered pairs of one declared token scale.
+    """One pair-collection dimension read as ordered pairs of a declared token scale.
 
     Some dimensions are not settled by which term occurs but by the order two of them occur in:
     a step over a scale names its start and its end, and the same token can be either. Tokens are
     found in the order the sentence states them and paired two at a time, so a sentence stating
-    several steps yields one reading per step. A trailing unpaired token settles nothing.
+    several steps yields **one** reading naming all of them. A trailing unpaired token settles
+    nothing.
+
+    One dimension rather than two: a sentence stating several steps states one collection of pairs,
+    and filling two independent scalar dimensions produced one draft per step -- which authored as
+    several statements, and read as a cartesian product of the endpoints once more than one step was
+    named.
     """
 
     #: Declared token to vocabulary value, longest token first at match time so a shorter token
     #: that prefixes a longer one cannot claim it.
     tokens: tuple[tuple[str, str], ...] = Field(min_length=1)
-    dimensions: tuple[str, str]
+    #: The pair-collection dimension these pairs fill.
+    dimension: str = Field(min_length=1)
 
     @model_validator(mode="after")
-    def _tokens_and_dimensions_are_distinct(self) -> ClauseSequenceRule:
-        if self.dimensions[0] == self.dimensions[1]:
-            raise ValueError("a clause sequence rule fills two different dimensions")
+    def _tokens_are_distinct_short_terms(self) -> ClauseSequenceRule:
         if len({token for token, _value in self.tokens}) != len(self.tokens):
             raise ValueError("a clause sequence rule declares each token once")
         for token, _value in self.tokens:
@@ -390,17 +466,22 @@ class ClauseFactGrammar(FrozenModel):
         unknown_inherited = sorted(set(self.inherited_dimensions) - set(vocabularies))
         if unknown_inherited:
             raise ValueError(f"{self.fact_kind} declares no dimension {unknown_inherited[0]}")
+        pairs = {name for name, kind, _options in declared if kind == "pair_sequence"}
         for rule in self.sequence_rules:
-            for dimension in rule.dimensions:
-                if dimension not in vocabularies:
-                    raise ValueError(f"{self.fact_kind} declares no dimension {dimension}")
-                unknown = {
-                    value for _token, value in rule.tokens if value not in vocabularies[dimension]
-                }
-                if unknown:
-                    raise ValueError(
-                        f"{self.fact_kind}.{dimension} declares no value {min(unknown)}"
-                    )
+            if rule.dimension not in vocabularies:
+                raise ValueError(f"{self.fact_kind} declares no dimension {rule.dimension}")
+            # A sequence rule's reading *is* a collection of pairs, so a scalar dimension could not
+            # hold it: caught where it is declared rather than as a validation error at the moment a
+            # reviewer presses Author.
+            if rule.dimension not in pairs:
+                raise ValueError(f"{self.fact_kind}.{rule.dimension} holds no pairs")
+            unknown = {
+                value for _token, value in rule.tokens if value not in vocabularies[rule.dimension]
+            }
+            if unknown:
+                raise ValueError(
+                    f"{self.fact_kind}.{rule.dimension} declares no value {min(unknown)}"
+                )
         return self
 
 
@@ -556,7 +637,9 @@ def keyword_proposer(grammar: ClauseFactGrammar) -> SentenceProposer:
         for sequence in grammar.sequence_rules:
             pairs = sequence.pairs(sentence.text)
             if pairs:
-                axes.append([dict(zip(sequence.dimensions, pair, strict=True)) for pair in pairs])
+                # One reading naming every pair, never one per pair: the same union a scope gets,
+                # for the same reason -- a sentence stating several steps states one collection.
+                axes.append([{sequence.dimension: pair_wire(pairs)}])
         readings: list[dict[str, str]] = [dict(grammar.constants)]
         for axis in axes:
             readings = [{**base, **choice} for base in readings for choice in axis]
@@ -649,6 +732,9 @@ __all__ = [
     "fact_model",
     "fact_variants",
     "keyword_proposer",
+    "pair_from_wire",
+    "pair_tokens",
+    "pair_wire",
     "propose_clause_facts",
     "proposed_fact",
     "scope_from_wire",

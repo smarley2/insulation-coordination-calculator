@@ -19,6 +19,7 @@ import pytest
 from insulation_coordination.rules.importer.clause_fact_proposals import (
     clause_sentences,
     fact_dimensions,
+    pair_tokens,
     scope_tokens,
 )
 from insulation_coordination.rules.importer.extract import ImportedRuleDraft
@@ -52,7 +53,7 @@ def _declared_dimensions(route: str) -> set[str]:
     grammar = SUPPLY_FACT_PROPOSAL_GRAMMARS[route]
     return (
         {rule.dimension for rule in grammar.keyword_rules}
-        | {name for rule in grammar.sequence_rules for name in rule.dimensions}
+        | {rule.dimension for rule in grammar.sequence_rules}
         | set(grammar.constants)
     )
 
@@ -101,9 +102,15 @@ def test_a_reached_dimension_is_never_reached_with_a_value_outside_its_vocabular
         assert set(proposal.chosen) | set(proposal.unchosen) == set(declared), route
         for name, value in proposal.chosen.items():
             kind, options = declared[name]
-            # A scope dimension carries a set on the wire, so its proposal is checked token by
-            # token: every token has to be authorable, and the unrestricted reading names none.
-            proposed = scope_tokens(value) if kind == "scope" else (value,)
+            # A scope dimension carries a set on the wire and a pair collection carries pairs, so
+            # both are checked token by token: every token has to be authorable, and the
+            # unrestricted reading names none.
+            if kind == "scope":
+                proposed: tuple[str, ...] = scope_tokens(value)
+            elif kind == "pair_sequence":
+                proposed = tuple(member for pair in pair_tokens(value) for member in pair)
+            else:
+                proposed = (value,)
             assert not options or set(proposed) <= set(options), (route, name)
 
 

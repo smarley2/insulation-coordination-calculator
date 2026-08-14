@@ -26,11 +26,15 @@ from insulation_coordination.rules.importer.clause_facts import (
     ConfirmedFacts,
     DimensionScope,
     HfAttenuationFact,
+    OvercategoryStep,
     SpdMonitoringComplianceFact,
     SpdMonitoringExemptionFact,
     SpdMonitoringFact,
     SpdMonitoringRequirementFact,
     SpdReductionFact,
+    SpdReductionFloorFact,
+    SpdReductionMonitoringFact,
+    SpdReductionPermissionFact,
     SystemVoltageApplicabilityFact,
     SystemVoltageMeasureFact,
 )
@@ -354,55 +358,90 @@ def _spd_fragment(route: str) -> RawClauseFragment:
     return _paragraph_fragment(f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.{route}")
 
 
-def _spd_reduction_fact(
+def _spd_permission_fact(
     fragment: RawClauseFragment,
     *,
     index: int = 0,
     supply_kind: str,
-    source_ovc: str,
-    target_ovc: str,
-    insulation_class: str = "basic",
-    degradable: bool = False,
-    monitoring_obligation: str = "not_required",
-) -> SpdReductionFact:
+    steps: tuple[tuple[str, str], ...],
+    insulation_classes: tuple[str, ...] = ("basic",),
+) -> SpdReductionPermissionFact:
     """Invented values only: a synthetic reviewed statement, never real clause content."""
 
-    return SpdReductionFact(
+    return SpdReductionPermissionFact(
+        statement_index=index,
+        node_references=(_cited_node(fragment),),
+        obligation="permission",
+        supply_kind=supply_kind,  # type: ignore[arg-type]
+        permitted_steps=tuple(
+            OvercategoryStep(source_ovc=source, target_ovc=target)  # type: ignore[arg-type]
+            for source, target in steps
+        ),
+        insulation_classes=DimensionScope.of(*insulation_classes),  # type: ignore[arg-type]
+    )
+
+
+def _spd_floor_fact(
+    fragment: RawClauseFragment,
+    *,
+    index: int = 0,
+    supply_kind: str,
+    insulation_classes: tuple[str, ...] = ("double", "reinforced"),
+) -> SpdReductionFloorFact:
+    """Invented values only: the carried kind, which permits no transition at all."""
+
+    return SpdReductionFloorFact(
         statement_index=index,
         node_references=(_cited_node(fragment),),
         obligation="requirement",
         supply_kind=supply_kind,  # type: ignore[arg-type]
-        source_ovc=source_ovc,  # type: ignore[arg-type]
-        target_ovc=target_ovc,  # type: ignore[arg-type]
-        insulation_class=insulation_class,  # type: ignore[arg-type]
-        degradable=degradable,
+        insulation_classes=DimensionScope.of(*insulation_classes),  # type: ignore[arg-type]
+        unreduced_basis="basic_insulation_without_the_reducing_means",
+        relation="must_not_fall_below",
+    )
+
+
+def _spd_device_monitoring_fact(
+    fragment: RawClauseFragment,
+    *,
+    index: int = 0,
+    supply_kind: str,
+    device_degradable: bool = True,
+    monitoring_obligation: str = "required",
+    status_indication: str = "required",
+) -> SpdReductionMonitoringFact:
+    """Invented values only: the reducing device's own monitoring statement."""
+
+    return SpdReductionMonitoringFact(
+        statement_index=index,
+        node_references=(_cited_node(fragment),),
+        obligation="requirement",
+        supply_kind=supply_kind,  # type: ignore[arg-type]
+        device_degradable=device_degradable,
         monitoring_obligation=monitoring_obligation,  # type: ignore[arg-type]
+        status_indication=status_indication,  # type: ignore[arg-type]
         monitoring_reference=f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring",
     )
 
 
-def _confirmed_spd_facts(
+def _confirmed_spd_facts(route: str, *facts: SpdReductionFact) -> ConfirmedFacts:
+    return ConfirmedFacts(by_route={f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.{route}": facts})
+
+
+def _confirmed_permission(
     route: str,
     *,
-    source_ovc: str,
-    target_ovc: str,
-    insulation_class: str = "basic",
-    degradable: bool = False,
-    monitoring_obligation: str = "not_required",
+    steps: tuple[tuple[str, str], ...],
+    insulation_classes: tuple[str, ...] = ("basic",),
     fragment: RawClauseFragment | None = None,
 ) -> ConfirmedFacts:
     frag = fragment if fragment is not None else _spd_fragment(route)
-    fact = _spd_reduction_fact(
-        frag,
-        supply_kind=route,
-        source_ovc=source_ovc,
-        target_ovc=target_ovc,
-        insulation_class=insulation_class,
-        degradable=degradable,
-        monitoring_obligation=monitoring_obligation,
+    return _confirmed_spd_facts(
+        route,
+        _spd_permission_fact(
+            frag, supply_kind=route, steps=steps, insulation_classes=insulation_classes
+        ),
     )
-    route_id = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.{route}"
-    return ConfirmedFacts(by_route={route_id: (fact,)})
 
 
 def _spd_requirement_fact(
@@ -634,9 +673,10 @@ def test_a_floor_sentence_proposes_no_insulation_class() -> None:
     permission = [item for item in proposals if item.sentence_index == 0]
     floor = [item for item in proposals if item.sentence_index == 1]
 
-    assert {item.chosen["insulation_class"] for item in permission} == {"basic", "supplementary"}
+    # One draft naming both classes, not one per class: the dimension is a scope.
+    assert [item.chosen["insulation_classes"] for item in permission] == ["basic|supplementary"]
     assert floor
-    assert all("insulation_class" in item.unchosen for item in floor)
+    assert all("insulation_classes" in item.unchosen for item in floor)
 
 
 @pytest.mark.parametrize(
@@ -1333,6 +1373,20 @@ def test_a_narrower_statement_on_its_own_dimension_is_not_refused() -> None:
 
 
 def _spd_inputs(**overrides: str | bool) -> dict[str, str | bool]:
+    """The reduction permission rule's declared question: a category, a class, and the means."""
+
+    inputs: dict[str, str | bool] = {
+        "source_overvoltage_category": "ovc_iv",
+        "insulation_class": "basic",
+        "part_of_category_reduction": True,
+    }
+    inputs.update(overrides)
+    return inputs
+
+
+def _spd_monitoring_inputs(**overrides: str | bool) -> dict[str, str | bool]:
+    """The SPD placement monitoring route's own question, unchanged by the reduction right-sizing."""
+
     inputs: dict[str, str | bool] = {
         "device_placement": "internal_to_pecs",
         "insulation_class": "basic",
@@ -1403,42 +1457,148 @@ def _hf_inputs(**overrides: Decimal | str | bool) -> dict[str, Decimal | str | b
     return inputs
 
 
-def test_double_and_reinforced_insulation_keep_the_unreduced_floor() -> None:
-    """A reviewed statement whose target repeats its source is the unreduced floor."""
+def test_one_permission_statement_projects_one_row_per_permitted_transition() -> None:
+    """The contract change that unblocked this family, asserted where it bites.
+
+    A statement naming several transitions is one statement, and each pair carries its own reduced
+    category -- so the rows differ in the source category they match and in the answer they give.
+    Without the source category as a declared input the rows were indistinguishable, and either the
+    projector had to pick one reviewed pair arbitrarily or every row but the first was shadowed.
+    """
 
     fragment = _spd_fragment("mains")
-    facts = _confirmed_spd_facts(
+    facts = _confirmed_permission(
         "mains",
-        source_ovc="ovc_iii",
-        target_ovc="ovc_iii",
-        insulation_class="reinforced",
+        steps=(("ovc_iii", "ovc_ii"), ("ovc_iv", "ovc_iii")),
+        insulation_classes=("basic", "supplementary"),
         fragment=fragment,
     )
     rule = _project_spd(fragment, facts)
-    row = _lookup(rule, **_spd_inputs(insulation_class="reinforced"))
-    assert row is not None
-    assert _value(row, "reinforced_floor_applies") is True
-    assert _value(row, "reduction_permitted") is False
-    assert _value(row, "reduced_category") == "ovc_iii"
+
+    assert len(rule.rows) == 2
+    for source, target in (("ovc_iv", "ovc_iii"), ("ovc_iii", "ovc_ii")):
+        row = _lookup(rule, **_spd_inputs(source_overvoltage_category=source))
+        assert row is not None, source
+        assert _value(row, "reduction_permitted") is True
+        assert _value(row, "reduced_category") == target
+    # A source category the statement does not name reaches no row, rather than one of the
+    # reviewed answers.
+    assert _lookup(rule, **_spd_inputs(source_overvoltage_category="ovc_ii")) is None
+
+
+def test_a_permission_answers_only_for_the_insulation_it_names() -> None:
+    """The class scope is the reading: a class it does not name reaches no row."""
+
+    fragment = _spd_fragment("mains")
+    facts = _confirmed_permission(
+        "mains",
+        steps=(("ovc_iv", "ovc_iii"),),
+        insulation_classes=("basic", "supplementary"),
+        fragment=fragment,
+    )
+    rule = _project_spd(fragment, facts)
+
+    for insulation_class in ("basic", "supplementary"):
+        assert (
+            _lookup(
+                rule,
+                **_spd_inputs(
+                    source_overvoltage_category="ovc_iv", insulation_class=insulation_class
+                ),
+            )
+            is not None
+        ), insulation_class
+    for insulation_class in ("double", "reinforced", "functional"):
+        assert (
+            _lookup(
+                rule,
+                **_spd_inputs(
+                    source_overvoltage_category="ovc_iv", insulation_class=insulation_class
+                ),
+            )
+            is None
+        ), insulation_class
+
+
+def test_a_carried_floor_statement_changes_no_row_and_no_output() -> None:
+    """A floor is a comparison against a basis, and both the comparison and its route are #53C's.
+
+    A consumer asking about an insulation class only the floor names therefore reaches no row at
+    all, rather than an answer no reviewed permission supports.
+    """
+
+    fragment = _spd_fragment("mains")
+    permission = _spd_permission_fact(fragment, supply_kind="mains", steps=(("ovc_iv", "ovc_iii"),))
+    without = _project_spd(fragment, _confirmed_spd_facts("mains", permission))
+    with_floor = _project_spd(
+        fragment,
+        _confirmed_spd_facts(
+            "mains", permission, _spd_floor_fact(fragment, index=1, supply_kind="mains")
+        ),
+    )
+
+    assert with_floor == without
+    assert (
+        _lookup(
+            with_floor,
+            **_spd_inputs(source_overvoltage_category="ovc_iv", insulation_class="reinforced"),
+        )
+        is None
+    )
 
 
 def test_a_degradable_device_requires_monitoring_and_indication() -> None:
+    """The reading that used to overlap the permission, now its own rule.
+
+    Held in one rule the two statements had to match each other's dimensions with a wildcard, so
+    their rows overlapped on every degradable device inside a reduction and the projector refused
+    the pair. Each now has exactly the inputs it scopes and the outputs it states, and both project.
+    """
+
     fragment = _spd_fragment("mains")
     facts = _confirmed_spd_facts(
         "mains",
-        source_ovc="ovc_iii",
-        target_ovc="ovc_ii",
-        degradable=True,
-        monitoring_obligation="required",
-        fragment=fragment,
+        _spd_permission_fact(fragment, supply_kind="mains", steps=(("ovc_iv", "ovc_iii"),)),
+        _spd_device_monitoring_fact(fragment, index=1, supply_kind="mains"),
     )
-    rule = _project_spd(fragment, facts)
-    row = _lookup(rule, **_spd_inputs(device_degradable=True))
+    rules, _proposals = project_spd_reduction_requirements(
+        fragment, IDENTITY, confirmed_facts=facts
+    )
+    monitoring = _decision(rules, f"{_SPD_MAINS_ID}.device_monitoring")
+
+    row = _lookup(monitoring, device_degradable=True)
     assert row is not None
     assert _value(row, "monitoring_required") is True
     assert _value(row, "status_indication_required") is True
-    assert _value(row, "reduction_permitted") is True
-    assert _value(row, "reduced_category") == "ovc_ii"
+    # The obligation is specified by a separately reviewed route, and the row hands the consumer
+    # that route rather than a flattened copy of what it says.
+    assert _value(row, "monitoring_reference") == _SPD_MONITORING_ID
+    # The permission still answers, over its own dimensions, in its own rule.
+    permission = _decision(rules, _SPD_MAINS_ID)
+    assert _lookup(permission, **_spd_inputs(source_overvoltage_category="ovc_iv")) is not None
+
+
+def test_a_reduction_route_with_no_monitoring_statement_projects_only_its_permission() -> None:
+    """The second rule exists because a statement was reviewed for it, never as empty scaffolding."""
+
+    fragment = _spd_fragment("mains")
+    rules, _proposals = project_spd_reduction_requirements(
+        fragment,
+        IDENTITY,
+        confirmed_facts=_confirmed_permission(
+            "mains", steps=(("ovc_iv", "ovc_iii"),), fragment=fragment
+        ),
+    )
+
+    assert [rule.id for rule in rules] == [_SPD_MAINS_ID]
+
+
+def test_a_reviewed_reduction_set_permitting_nothing_refuses_to_project() -> None:
+    fragment = _spd_fragment("mains")
+    facts = _confirmed_spd_facts("mains", _spd_floor_fact(fragment, supply_kind="mains"))
+
+    with pytest.raises(ClauseStructureError, match="permit no category reduction"):
+        _project_spd(fragment, facts)
 
 
 def test_a_device_outside_a_category_reduction_is_not_covered() -> None:
@@ -1449,11 +1609,12 @@ def test_a_device_outside_a_category_reduction_is_not_covered() -> None:
     """
 
     fragment = _spd_fragment("mains")
-    facts = _confirmed_spd_facts(
-        "mains", source_ovc="ovc_iii", target_ovc="ovc_ii", degradable=True, fragment=fragment
-    )
+    facts = _confirmed_permission("mains", steps=(("ovc_iv", "ovc_iii"),), fragment=fragment)
     rule = _project_spd(fragment, facts)
-    row = _lookup(rule, **_spd_inputs(device_degradable=True, part_of_category_reduction=False))
+    row = _lookup(
+        rule,
+        **_spd_inputs(source_overvoltage_category="ovc_iv", part_of_category_reduction=False),
+    )
     assert row is None
 
 
@@ -1464,16 +1625,16 @@ def test_each_supply_kind_route_projects_its_own_rule() -> None:
     mains, _ = project_spd_reduction_requirements(
         mains_fragment,
         IDENTITY,
-        confirmed_facts=_confirmed_spd_facts(
-            "mains", source_ovc="ovc_iv", target_ovc="ovc_iii", fragment=mains_fragment
+        confirmed_facts=_confirmed_permission(
+            "mains", steps=(("ovc_iv", "ovc_iii"),), fragment=mains_fragment
         ),
     )
     non_mains_fragment = _spd_fragment("non_mains")
     non_mains, _ = project_spd_reduction_requirements(
         non_mains_fragment,
         IDENTITY,
-        confirmed_facts=_confirmed_spd_facts(
-            "non_mains", source_ovc="ovc_iii", target_ovc="ovc_ii", fragment=non_mains_fragment
+        confirmed_facts=_confirmed_permission(
+            "non_mains", steps=(("ovc_iii", "ovc_ii"),), fragment=non_mains_fragment
         ),
     )
 
@@ -1483,9 +1644,7 @@ def test_each_supply_kind_route_projects_its_own_rule() -> None:
 
 def test_the_reduced_category_comes_from_the_reviewed_fact() -> None:
     fragment = _spd_fragment("non_mains")
-    facts = _confirmed_spd_facts(
-        "non_mains", source_ovc="ovc_ii", target_ovc="ovc_i", fragment=fragment
-    )
+    facts = _confirmed_permission("non_mains", steps=(("ovc_ii", "ovc_i"),), fragment=fragment)
     rules, _ = project_spd_reduction_requirements(fragment, IDENTITY, confirmed_facts=facts)
 
     emitted = {
@@ -1503,13 +1662,13 @@ def test_the_monitoring_route_follows_its_own_reviewed_facts() -> None:
     fragment = _spd_fragment("monitoring")
     facts = _confirmed_spd_monitoring_facts(_spd_requirement_fact(fragment))
     rule = _project_spd(fragment, facts)
-    row = _lookup(rule, **_spd_inputs(part_of_category_reduction=True))
+    row = _lookup(rule, **_spd_monitoring_inputs(part_of_category_reduction=True))
     assert row is not None
     assert _value(row, "monitoring_required") is True
     assert _value(row, "status_indication_required") is True
 
     excused = _project_spd(fragment, _confirmed_spd_monitoring_facts(_spd_exemption_fact(fragment)))
-    excused_row = _lookup(excused, **_spd_inputs(part_of_category_reduction=False))
+    excused_row = _lookup(excused, **_spd_monitoring_inputs(part_of_category_reduction=False))
     assert excused_row is not None
     assert _value(excused_row, "monitoring_required") is False
     assert _value(excused_row, "status_indication_required") is False
@@ -1566,7 +1725,7 @@ def test_one_exemption_statement_covers_every_reviewed_placement_and_no_other() 
     for placement in ("internal_to_pecs", "bundled_external_to_pecs"):
         row = _lookup(
             rule,
-            **_spd_inputs(device_placement=placement, part_of_category_reduction=False),
+            **_spd_monitoring_inputs(device_placement=placement, part_of_category_reduction=False),
         )
         assert row is not None, placement
         assert _value(row, "monitoring_required") is False
@@ -1576,7 +1735,9 @@ def test_one_exemption_statement_covers_every_reviewed_placement_and_no_other() 
     assert (
         _lookup(
             rule,
-            **_spd_inputs(device_placement="external_to_pecs", part_of_category_reduction=False),
+            **_spd_monitoring_inputs(
+                device_placement="external_to_pecs", part_of_category_reduction=False
+            ),
         )
         is None
     )
@@ -1684,8 +1845,8 @@ def test_a_requirement_and_an_exemption_separated_by_participation_are_not_refus
     )
     rule = _project_spd(fragment, facts)
 
-    owed = _lookup(rule, **_spd_inputs(part_of_category_reduction=True))
-    excused = _lookup(rule, **_spd_inputs(part_of_category_reduction=False))
+    owed = _lookup(rule, **_spd_monitoring_inputs(part_of_category_reduction=True))
+    excused = _lookup(rule, **_spd_monitoring_inputs(part_of_category_reduction=False))
     assert owed is not None
     assert excused is not None
     assert _value(owed, "monitoring_required") is True
@@ -1707,52 +1868,100 @@ def test_the_external_monitoring_obligation_keeps_its_qualifier() -> None:
     )
     rule = _project_spd(fragment, facts)
 
-    qualified = _lookup(rule, **_spd_inputs(device_placement="bundled_external_to_pecs"))
+    qualified = _lookup(rule, **_spd_monitoring_inputs(device_placement="bundled_external_to_pecs"))
     assert qualified is not None
     assert _value(qualified, "monitoring_required") is True
-    assert _lookup(rule, **_spd_inputs(device_placement="external_to_pecs")) is None
+    assert _lookup(rule, **_spd_monitoring_inputs(device_placement="external_to_pecs")) is None
 
 
-def test_two_reduction_statements_stating_the_same_branch_are_refused() -> None:
+def test_two_permission_statements_stating_the_same_branch_are_refused() -> None:
     """The pair a fact-level comparison would miss: same dimensions, different answers.
 
-    ``target_ovc`` is an answer rather than a branch dimension, so these two facts are not equal
-    and only their projected matchers are. The refusal therefore has to be expressed over the
-    rows, which is why it lives in the projector rather than in resolution.
+    The reduced category is an answer rather than a branch dimension, so these two facts are not
+    equal and only their projected matchers are. The refusal therefore has to be expressed over the
+    rows, which is why it lives in the projector rather than in resolution -- and it still holds now
+    that one statement can project several rows, because the guard sees the rows.
     """
 
     fragment = _spd_fragment("mains")
-    facts = ConfirmedFacts(
-        by_route={
-            _SPD_MAINS_ID: (
-                _spd_reduction_fact(
-                    fragment,
-                    index=0,
-                    supply_kind="mains",
-                    source_ovc="ovc_iv",
-                    target_ovc="ovc_iii",
-                ),
-                _spd_reduction_fact(
-                    fragment,
-                    index=1,
-                    supply_kind="mains",
-                    source_ovc="ovc_iv",
-                    target_ovc="ovc_ii",
-                ),
-            )
-        }
+    facts = _confirmed_spd_facts(
+        "mains",
+        _spd_permission_fact(
+            fragment, index=0, supply_kind="mains", steps=(("ovc_iv", "ovc_iii"),)
+        ),
+        _spd_permission_fact(fragment, index=1, supply_kind="mains", steps=(("ovc_iv", "ovc_ii"),)),
     )
 
     with pytest.raises(ClauseStructureError, match="not disjoint"):
         _project_spd(fragment, facts)
 
 
-def test_spd_keeps_its_declared_contract() -> None:
+def test_one_statements_two_steps_are_not_refused_as_a_collision() -> None:
+    """The wall this family hit, proved gone: two rows of one statement are distinct branches.
+
+    Before the source category was a declared input these two rows carried identical matchers, so
+    ``_require_distinct_branches`` refused them -- which is why a multi-step permission could not be
+    projected at all. They are separated by the category each matches now, and the refusal still
+    fires for two statements that really do collide (above).
+    """
+
+    fragment = _spd_fragment("mains")
+    facts = _confirmed_permission(
+        "mains", steps=(("ovc_iii", "ovc_ii"), ("ovc_iv", "ovc_iii")), fragment=fragment
+    )
+
+    rule = _project_spd(fragment, facts)
+
+    assert len({row.matchers for row in rule.rows}) == 2
+
+
+def test_spd_keeps_its_right_sized_contract() -> None:
+    """Each rule declares the inputs its own statements scope and the outputs they state.
+
+    The merged rule declared a placement and a degradability the permission never scoped and filled
+    monitoring and floor outputs from a statement that stated neither. Splitting the family made
+    that unprojectable, so the contract moved with it: two rules per reduction route, and the
+    placement monitoring clause keeps its own.
+    """
+
     fragment = _spd_fragment("mains")
     facts = _confirmed_spd_facts(
-        "mains", source_ovc="ovc_iii", target_ovc="ovc_ii", fragment=fragment
+        "mains",
+        _spd_permission_fact(fragment, supply_kind="mains", steps=(("ovc_iv", "ovc_iii"),)),
+        _spd_device_monitoring_fact(fragment, index=1, supply_kind="mains"),
     )
-    rule = _project_spd(fragment, facts)
+    rules, _proposals = project_spd_reduction_requirements(
+        fragment, IDENTITY, confirmed_facts=facts
+    )
+    permission = _decision(rules, _SPD_MAINS_ID)
+    monitoring = _decision(rules, f"{_SPD_MAINS_ID}.device_monitoring")
+
+    assert [item.name for item in permission.inputs] == [
+        "source_overvoltage_category",
+        "insulation_class",
+        "part_of_category_reduction",
+    ]
+    assert [item.name for item in permission.outputs] == [
+        "reduction_permitted",
+        "reduced_category",
+    ]
+    assert _declared_vocabularies(permission) == {
+        "source_overvoltage_category": ("ovc_i", "ovc_ii", "ovc_iii", "ovc_iv"),
+        "insulation_class": ("functional", "basic", "supplementary", "double", "reinforced"),
+    }
+    assert [item.name for item in monitoring.inputs] == ["device_degradable"]
+    assert [item.name for item in monitoring.outputs] == [
+        "monitoring_required",
+        "status_indication_required",
+        "monitoring_reference",
+    ]
+
+
+def test_the_placement_monitoring_route_keeps_its_declared_contract() -> None:
+    """Right-sizing this route's own outputs stays #53C item 5; nothing here moved."""
+
+    fragment = _spd_fragment("monitoring")
+    rule = _project_spd(fragment, _confirmed_spd_monitoring_facts(_spd_requirement_fact(fragment)))
 
     assert {item.name for item in rule.inputs} == {
         "device_placement",
@@ -1768,10 +1977,6 @@ def test_spd_keeps_its_declared_contract() -> None:
         "verification_reference",
         "reinforced_floor_applies",
     }
-    assert _declared_vocabularies(rule) == {
-        "device_placement": ("internal_to_pecs", "external_to_pecs", "bundled_external_to_pecs"),
-        "insulation_class": ("functional", "basic", "supplementary", "double", "reinforced"),
-    }
 
 
 def test_each_spd_route_is_projected_under_its_own_id() -> None:
@@ -1782,9 +1987,7 @@ def test_each_spd_route_is_projected_under_its_own_id() -> None:
 
     for route in ("mains", "non_mains"):
         fragment = _spd_fragment(route)
-        facts = _confirmed_spd_facts(
-            route, source_ovc="ovc_iii", target_ovc="ovc_ii", fragment=fragment
-        )
+        facts = _confirmed_permission(route, steps=(("ovc_iii", "ovc_ii"),), fragment=fragment)
         rule = _project_spd(fragment, facts)
         assert rule.id == f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.{route}"
 

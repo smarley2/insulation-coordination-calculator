@@ -13,12 +13,14 @@ from pydantic import ValidationError
 from insulation_coordination.domain.rules import RulePackageError, SourceReference
 from insulation_coordination.rules.importer.clause_fact_proposals import (
     ClauseFactGrammar,
+    ClauseFactProposal,
     ClauseKeywordRule,
     ClauseSequenceRule,
     clause_sentences,
     fact_dimensions,
     fact_variants,
     keyword_proposer,
+    pair_tokens,
     propose_clause_facts,
     proposed_fact,
     scope_from_wire,
@@ -273,49 +275,50 @@ def test_two_rules_naming_one_value_propose_it_once() -> None:
     assert [item.chosen["dvc_gate"] for item in proposals] == ["dvc_as"]
 
 
-def test_a_sequence_rule_pairs_its_tokens_in_the_order_the_sentence_states_them() -> None:
-    """Which value is the step's start and which its end is order, not wording."""
-
-    grammar = ClauseFactGrammar(
+def _step_grammar(*tokens: tuple[str, str]) -> ClauseFactGrammar:
+    return ClauseFactGrammar(
         fact_kind="spd_reduction",
-        sequence_rules=(
-            ClauseSequenceRule(
-                tokens=(("IV", "ovc_iv"), ("III", "ovc_iii"), ("II", "ovc_ii"), ("I", "ovc_i")),
-                dimensions=("source_ovc", "target_ovc"),
-            ),
-        ),
-    )
-    fragment = fragment_with_sentences(ROUTE, ("Synthetic step IV to III, then III to II.",))
-
-    proposals = propose_clause_facts(
-        fragment, rule_route=ROUTE, fact_kind="spd_reduction", propose=keyword_proposer(grammar)
+        statement_kind="permission",
+        sequence_rules=(ClauseSequenceRule(tokens=tokens, dimension="permitted_steps"),),
     )
 
-    assert [(item.chosen["source_ovc"], item.chosen["target_ovc"]) for item in proposals] == [
+
+def _propose_steps(grammar: ClauseFactGrammar, sentence: str) -> tuple[ClauseFactProposal, ...]:
+    return propose_clause_facts(
+        fragment_with_sentences(ROUTE, (sentence,)),
+        rule_route=ROUTE,
+        fact_kind="spd_reduction",
+        statement_kind="permission",
+        propose=keyword_proposer(grammar),
+    )
+
+
+def test_a_sequence_rule_states_every_pair_it_finds_as_one_reading() -> None:
+    """Which value is the step's start and which its end is order, not wording.
+
+    And a sentence naming several steps is **one** statement naming all of them, not one per step:
+    two independent value sets, or one draft per pair, would read as a cartesian product of the
+    endpoints and would author several statements where the reviewer read one.
+    """
+
+    grammar = _step_grammar(("IV", "ovc_iv"), ("III", "ovc_iii"), ("II", "ovc_ii"), ("I", "ovc_i"))
+
+    (proposal,) = _propose_steps(grammar, "Synthetic step IV to III, then III to II.")
+
+    assert pair_tokens(proposal.chosen["permitted_steps"]) == (
         ("ovc_iv", "ovc_iii"),
         ("ovc_iii", "ovc_ii"),
-    ]
+    )
 
 
 def test_a_sequence_rules_trailing_unpaired_token_settles_nothing() -> None:
     """Half a step is not a step, and guessing its other half would invent a reading."""
 
-    grammar = ClauseFactGrammar(
-        fact_kind="spd_reduction",
-        sequence_rules=(
-            ClauseSequenceRule(
-                tokens=(("IV", "ovc_iv"), ("III", "ovc_iii"), ("II", "ovc_ii")),
-                dimensions=("source_ovc", "target_ovc"),
-            ),
-        ),
-    )
-    fragment = fragment_with_sentences(ROUTE, ("Synthetic step IV to III, and also II.",))
+    grammar = _step_grammar(("IV", "ovc_iv"), ("III", "ovc_iii"), ("II", "ovc_ii"))
 
-    (proposal,) = propose_clause_facts(
-        fragment, rule_route=ROUTE, fact_kind="spd_reduction", propose=keyword_proposer(grammar)
-    )
+    (proposal,) = _propose_steps(grammar, "Synthetic step IV to III, and also II.")
 
-    assert (proposal.chosen["source_ovc"], proposal.chosen["target_ovc"]) == ("ovc_iv", "ovc_iii")
+    assert pair_tokens(proposal.chosen["permitted_steps"]) == (("ovc_iv", "ovc_iii"),)
 
 
 # --- a bullet inherits from the stem it completes -------------------------------------
@@ -615,6 +618,7 @@ def test_a_locked_dimension_is_never_overridden_by_a_reading() -> None:
 
     grammar = ClauseFactGrammar(
         fact_kind="spd_reduction",
+        statement_kind="permission",
         keyword_rules=(_keyword("supply_kind", "non_mains", "synthetic"),),
     )
     fragment = fragment_with_sentences(ROUTE, ("Synthetic reading.",))
@@ -623,6 +627,7 @@ def test_a_locked_dimension_is_never_overridden_by_a_reading() -> None:
         fragment,
         rule_route=ROUTE,
         fact_kind="spd_reduction",
+        statement_kind="permission",
         propose=keyword_proposer(grammar),
         locked={"supply_kind": "mains"},
     )
@@ -704,18 +709,26 @@ def test_a_sequence_rule_naming_a_value_outside_the_vocabulary_is_refused() -> N
     with pytest.raises(ValidationError, match="no value"):
         ClauseFactGrammar(
             fact_kind="spd_reduction",
+            statement_kind="permission",
             sequence_rules=(
                 ClauseSequenceRule(
-                    tokens=(("IV", "ovc_iv"), ("X", "ovc_x")),
-                    dimensions=("source_ovc", "target_ovc"),
+                    tokens=(("IV", "ovc_iv"), ("X", "ovc_x")), dimension="permitted_steps"
                 ),
             ),
         )
 
 
-def test_a_sequence_rule_filling_one_dimension_twice_is_refused() -> None:
-    with pytest.raises(ValidationError, match="two different dimensions"):
-        ClauseSequenceRule(tokens=(("IV", "ovc_iv"),), dimensions=("source_ovc", "source_ovc"))
+def test_a_sequence_rule_filling_a_dimension_that_holds_no_pairs_is_refused() -> None:
+    """Its reading is a collection of pairs, so a scalar dimension could not hold it."""
+
+    with pytest.raises(ValidationError, match="no pairs"):
+        ClauseFactGrammar(
+            fact_kind="spd_reduction",
+            statement_kind="permission",
+            sequence_rules=(
+                ClauseSequenceRule(tokens=(("IV", "ovc_iv"),), dimension="supply_kind"),
+            ),
+        )
 
 
 def test_an_unknown_fact_family_is_refused() -> None:

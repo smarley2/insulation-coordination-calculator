@@ -48,10 +48,13 @@ from insulation_coordination.rules.importer.clause_facts import (
     ConfirmedFacts,
     DimensionScope,
     HfAttenuationFact,
+    OvercategoryStep,
     SpdMonitoringExemptionFact,
     SpdMonitoringRequirementFact,
     SpdMonitoringStatement,
-    SpdReductionFact,
+    SpdReductionMonitoringFact,
+    SpdReductionPermissionFact,
+    SpdReductionStatement,
     SupplyFact,
     SystemVoltageMeasureFact,
     SystemVoltageStatement,
@@ -83,6 +86,17 @@ SUPPLY_SYSTEM_VOLTAGE_NON_MAINS = f"{ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION}.non_m
 #: because the reduction routes' declared grammar refers to it as the route their monitoring
 #: obligation defers to.
 _SPD_MONITORING_ROUTE = f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring"
+
+#: The second rule each reduction route projects: the monitoring a degradable reducing device owes.
+#: Its own rule rather than more outputs on the permission's, because the two statements scope
+#: different dimensions and neither scopes the other's -- so as one row shape the permission's row
+#: and the monitoring statement's row overlapped on every device that is both inside a reduction and
+#: degradable, and the projector refused the pair. Two rules, each with exactly the inputs its own
+#: statements scope and exactly the outputs they state, is what removes the collision.
+#:
+#: Distinct from ``_SPD_MONITORING_ROUTE``, which is the *SPD placement* monitoring clause's own
+#: route: this one is about the device providing the reduction, and it defers to that route.
+_SPD_DEVICE_MONITORING_SUFFIX = "device_monitoring"
 
 #: Measured with pdfplumber against the licensed document; the x range excludes the
 #: licence watermark columns at either margin.
@@ -180,7 +194,10 @@ SUPPLY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
             ),
         ),
         output_kind="decision",
-        projected_rule_ids=(f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains",),
+        projected_rule_ids=(
+            f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains",
+            f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains.{_SPD_DEVICE_MONITORING_SUFFIX}",
+        ),
     ),
     ClauseAuditSpec(
         semantic_id=f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains",
@@ -193,7 +210,10 @@ SUPPLY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
             ),
         ),
         output_kind="decision",
-        projected_rule_ids=(f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains",),
+        projected_rule_ids=(
+            f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains",
+            f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains.{_SPD_DEVICE_MONITORING_SUFFIX}",
+        ),
     ),
     # Retained as cited evidence, not as the source of the reduction rule: the monitoring
     # obligation each reduction route defers to is stated here.
@@ -491,6 +511,12 @@ _BARRIER_TRANSFER_GRAMMAR = ClauseFactGrammar(
 
 _SPD_REDUCTION_GRAMMAR = ClauseFactGrammar(
     fact_kind="spd_reduction",
+    # Permission statements only. The floor statement's basis and relation and the monitoring
+    # statement's obligation are dimensions of their own kinds of reading, so proposing them here
+    # would offer a reading of the wrong kind; they are authored by hand until the private grammar
+    # reaches them. The monitoring reference that used to be a constant here moved to the monitoring
+    # variant, which is the statement that actually defers to that route.
+    statement_kind="permission",
     keyword_rules=(
         *_OBLIGATION_RULES,
         # Excluded on the two classes that are not being permitted anything: a sentence naming
@@ -499,21 +525,17 @@ _SPD_REDUCTION_GRAMMAR = ClauseFactGrammar(
         # the maintainer has to notice and correct. A blank field cannot be confirmed by
         # accident; a wrong one can. Both excluded terms are this rule's own declared
         # vocabulary, and neither occurs in a sentence that does state a permission.
-        _keyword("insulation_class", "basic", "basic", without=("double", "reinforced")),
+        #
+        # The dimension is a scope now, so a sentence naming both classes proposes one reading
+        # naming both rather than one draft per class.
+        _keyword("insulation_classes", "basic", "basic", without=("double", "reinforced")),
         _keyword(
-            "insulation_class", "supplementary", "supplementary", without=("double", "reinforced")
+            "insulation_classes", "supplementary", "supplementary", without=("double", "reinforced")
         ),
-        _keyword("degradable", "true", "damaged", "overvoltages", "monitored"),
-        _keyword("monitoring_obligation", "required", "damaged", "overvoltages", "monitored"),
     ),
     sequence_rules=(
-        ClauseSequenceRule(
-            tokens=_OVERVOLTAGE_STEP_TOKENS, dimensions=("source_ovc", "target_ovc")
-        ),
+        ClauseSequenceRule(tokens=_OVERVOLTAGE_STEP_TOKENS, dimension="permitted_steps"),
     ),
-    # The route whose statements the obligation defers to. Not read from the sentence: it is
-    # which route this one references, which is the recipe's own declaration.
-    constants={"monitoring_reference": _SPD_MONITORING_ROUTE},
 )
 
 _SPD_MONITORING_GRAMMAR = ClauseFactGrammar(
@@ -1341,6 +1363,10 @@ _DEVICE_PLACEMENTS = ("internal_to_pecs", "external_to_pecs", "bundled_external_
 #: leaving it out of that table is the drift the table exists to refuse.
 _DVC_DESIGNATIONS = ("dvc_as", "dvc_b", "dvc_c")
 
+#: The consumer's question space for the insulation class. Declared above the reviewed-versus-consumer
+#: table below, because that table reads it.
+_INSULATION_CLASSES = ("functional", "basic", "supplementary", "double", "reinforced")
+
 #: Per reviewed dimension: the fact field's declared domain, and the consumer input it projects
 #: into. Keyed by fact field name, since two of the inputs are named differently from the field
 #: that feeds them. Where the two domains coincide an unrestricted reading is a wildcard; where the
@@ -1371,6 +1397,14 @@ _REVIEWED_AND_CONSUMER_DOMAINS: dict[str, tuple[tuple[str, ...], tuple[str, ...]
         _reviewed_domain(SpdMonitoringRequirementFact, "device_placement"),
         _DEVICE_PLACEMENTS,
     ),
+    #: The reviewed and consumer domains coincide here, so an unrestricted class reading is a
+    #: wildcard. It is in the table anyway: leaving a projected scope out of it is exactly the drift
+    #: the table exists to refuse, and a class the reviewed vocabulary later narrows would otherwise
+    #: keep over-matching silently.
+    "insulation_classes": (
+        _reviewed_domain(SpdReductionPermissionFact, "insulation_classes"),
+        _INSULATION_CLASSES,
+    ),
     "dvc_gate": (_reviewed_domain(HfAttenuationFact, "dvc_gate"), _DVC_DESIGNATIONS),
 }
 
@@ -1390,7 +1424,6 @@ def _require_reviewed_domains_within_consumer_domains() -> None:
 
 
 _require_reviewed_domains_within_consumer_domains()
-_INSULATION_CLASSES = ("functional", "basic", "supplementary", "double", "reinforced")
 _VERIFICATION_REFERENCES = ("inspection_and_dielectric_verification", "not_required")
 
 #: The monitoring route's own clause states no category step at all (``SpdMonitoringFact``
@@ -1399,40 +1432,71 @@ _VERIFICATION_REFERENCES = ("inspection_and_dielectric_verification", "not_requi
 _NOT_REDUCED = "not_reduced"
 
 
-def _spd_reduction_row(fact: SpdReductionFact, fragment: RawClauseFragment) -> DecisionRow:
-    """One row for one reviewed mains/non-mains reduction statement.
+def _spd_permission_row(
+    fact: SpdReductionPermissionFact,
+    step: OvercategoryStep,
+    fragment: RawClauseFragment,
+) -> DecisionRow:
+    """One row for one permitted transition of one reviewed permission statement.
 
-    ``reduction_permitted`` and ``reduced_category`` both come from comparing the fact's own
-    ``source_ovc`` and ``target_ovc``: a statement whose target differs from its source is a
-    permitted reduction to that category, one whose target repeats its source is the
-    unreduced floor -- not independently authored content, the same way a verified barrier
-    mirrors its own presence in ``project_verified_barrier_transfer``.
+    **One row per step, not per statement**, and that is the one place a collection legitimately
+    expands. A scope is one condition over several values with one answer, so it stays one row; a
+    step collection is a mapping, each pair carrying its own reduced category, so the rows differ in
+    both their matched source category and their answer. Projecting one row and picking a target
+    would be choosing one of the reviewed pairs arbitrarily, and projecting one row per step without
+    matching the source category would leave every row but the first shadowed.
+
+    ``reduction_permitted`` is not independently authored content: a permission statement is what
+    grants it, so it mirrors the statement's presence -- the same way a verified barrier's transfer
+    permission mirrors its own scope. Where no reviewed permission covers a query the rule is
+    non-exhaustive and the query reaches no row, rather than being told a reduction is not permitted
+    by a statement that never addressed it.
     """
 
-    reduced = fact.target_ovc != fact.source_ovc
-    monitoring_required = fact.monitoring_obligation == "required"
+    reviewed_classes, consumer_classes = _REVIEWED_AND_CONSUMER_DOMAINS["insulation_classes"]
     return DecisionRow(
         matchers=(
-            # The source requires monitoring for an internal and a qualifying external
-            # device alike, so placement is declared but does not discriminate.
-            Matcher(input="device_placement", op="any"),
-            _matcher("insulation_class", (fact.insulation_class,)),
-            Matcher(input="device_degradable", op="equals", boolean=fact.degradable),
+            _matcher("source_overvoltage_category", (step.source_ovc,)),
+            _scope_matcher(
+                "insulation_class", fact.insulation_classes, reviewed_classes, consumer_classes
+            ),
             Matcher(input="part_of_category_reduction", op="equals", boolean=True),
         ),
         values=(
-            DecisionValue(name="reduction_permitted", boolean=reduced),
-            DecisionValue(name="reduced_category", categorical=fact.target_ovc),
-            DecisionValue(name="monitoring_required", boolean=monitoring_required),
-            DecisionValue(name="status_indication_required", boolean=monitoring_required),
+            DecisionValue(name="reduction_permitted", boolean=True),
+            DecisionValue(name="reduced_category", categorical=step.target_ovc),
+        ),
+        source=fragment.nodes[0].source,
+    )
+
+
+def _spd_device_monitoring_row(
+    fact: SpdReductionMonitoringFact, fragment: RawClauseFragment
+) -> DecisionRow:
+    """One row for one reviewed statement of the monitoring a reducing device owes.
+
+    Its own rule's row rather than more values on the permission's: the statement scopes the device's
+    degradability and nothing the permission scopes, and the permission scopes the category and the
+    insulation class and nothing this one scopes. Sharing one row shape meant each had to match the
+    other's dimensions with a wildcard, which made the two rows overlap on every degradable device
+    inside a reduction -- so ``_require_distinct_branches`` refused the pair and neither reading could
+    be projected beside the other.
+
+    ``monitoring_reference`` is emitted as a reference rather than resolved: the obligation is
+    specified by a separately reviewed route, and following it is the consumer's step, not this
+    projection's.
+    """
+
+    return DecisionRow(
+        matchers=(Matcher(input="device_degradable", op="equals", boolean=fact.device_degradable),),
+        values=(
             DecisionValue(
-                name="verification_reference",
-                categorical="inspection_and_dielectric_verification",
+                name="monitoring_required", boolean=fact.monitoring_obligation == "required"
             ),
             DecisionValue(
-                name="reinforced_floor_applies",
-                boolean=fact.insulation_class in ("double", "reinforced"),
+                name="status_indication_required", boolean=fact.status_indication == "required"
             ),
+            DecisionValue(name="monitoring_reference", reference=fact.monitoring_reference),
         ),
         source=fragment.nodes[0].source,
     )
@@ -1507,14 +1571,27 @@ def project_spd_reduction_requirements(
     _draft: object = None,
     confirmed_facts: ConfirmedFacts = _NO_CONFIRMED_FACTS,
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
-    """Project the transient-limiter monitoring and reduction clause into a decision.
+    """Project the transient-limiter monitoring and reduction clauses into decisions.
 
-    Registered for all three SPD reduction routes (mains, non_mains, monitoring) under one
-    function body: the fragment passed to a given call is that route's own fragment, and its
-    id says which route this call produces. The mains and non-mains routes derive their rows
-    from their own reviewed ``SpdReductionFact``s; the monitoring route derives its rows from
-    its own reviewed ``SpdMonitoringFact``s. Every route refuses to project without its own
-    family's facts.
+    Registered for all three SPD routes (mains, non_mains, monitoring) under one function body: the
+    fragment passed to a given call is that route's own fragment, and its id says which route this
+    call produces. Every route refuses to project without its own family's facts.
+
+    The monitoring clause's route projects one rule from its own ``spd_monitoring`` statements. Each
+    reduction route projects **two**, because its clause states two normatively different executable
+    readings that scope different dimensions: the permission over a category transition and an
+    insulation class, and the monitoring a degradable reducing device owes. Held in one rule they had
+    to match each other's dimensions with a wildcard, so their rows overlapped on every degradable
+    device inside a reduction and ``_require_distinct_branches`` refused the pair -- the merged
+    ``SpdReductionFact`` hid that only by recording all of it as one statement. Two rules, each with
+    exactly the inputs its own statements scope and the outputs they state, is the contract that
+    lets all of the clause's readings project at once.
+
+    The reduction family's **floor** statements are carried, not projected. A floor is a comparison
+    against a basis, and both the comparison and a route that evaluates it are #53C's; the statement
+    is resolved and covered by the route's fact-set digest and reaches no row. A consumer asking
+    about an insulation class only a floor statement names therefore reaches no row at all, rather
+    than an answer no reviewed permission supports.
     """
 
     label = "supply SPD reduction requirements"
@@ -1529,37 +1606,47 @@ def project_spd_reduction_requirements(
     if not facts:
         raise ClauseStructureError(f"{label} needs reviewed clause facts for its route")
 
-    if rule_id == _SPD_MONITORING_ROUTE:
-        monitoring_facts = tuple(fact for fact in facts if isinstance(fact, SpdMonitoringStatement))
-        if len(monitoring_facts) != len(facts):
-            raise ValueError(f"{label} projection requires SPD monitoring facts")
-        # The family's **compliance** statements are carried, not projected: they state how a
-        # showing is accepted, which none of this rule's declared outputs can carry. A reviewed set
-        # of only those cannot answer the question this rule asks, so the projection refuses rather
-        # than emitting a rule with no rows -- a zero-row rule answers every consumer with silence
-        # and looks reviewed while doing it.
-        obligations = tuple(
-            fact
-            for fact in monitoring_facts
-            if isinstance(fact, SpdMonitoringRequirementFact | SpdMonitoringExemptionFact)
-        )
-        if not obligations:
-            raise ClauseStructureError(
-                f"{label} reviewed statements state no monitoring obligation, so they cannot "
-                "answer its question"
-            )
-        rows = tuple(_spd_monitoring_row(fact, fragment) for fact in obligations)
-        _require_distinct_branches(label, obligations, rows)
-        reduced_categories: tuple[str, ...] = (_NOT_REDUCED,)
-    else:
-        reduction_facts = tuple(fact for fact in facts if isinstance(fact, SpdReductionFact))
-        if len(reduction_facts) != len(facts):
-            raise ValueError(f"{label} projection requires SPD reduction facts")
-        rows = tuple(_spd_reduction_row(fact, fragment) for fact in reduction_facts)
-        _require_distinct_branches(label, reduction_facts, rows)
-        reduced_categories = tuple(dict.fromkeys(fact.target_ovc for fact in reduction_facts))
+    rules: tuple[DecisionRule, ...] = (
+        (_spd_monitoring_rule(label, rule_id, fragment, facts),)
+        if rule_id == _SPD_MONITORING_ROUTE
+        else _spd_reduction_rules(label, rule_id, fragment, facts)
+    )
+    return rules, tuple(_proposal(rule, "decision", fragment) for rule in rules)
 
-    rule = DecisionRule(
+
+def _spd_monitoring_rule(
+    label: str,
+    rule_id: str,
+    fragment: RawClauseFragment,
+    facts: tuple[SupplyFact, ...],
+) -> DecisionRule:
+    """The SPD placement monitoring clause's own decision, from its own reviewed statements.
+
+    Its declared shape is unchanged: right-sizing this route's own outputs, which still carry the
+    reduction routes' three and fill them with a fixed uninformative value, stays #53C item 5.
+    """
+
+    monitoring_facts = tuple(fact for fact in facts if isinstance(fact, SpdMonitoringStatement))
+    if len(monitoring_facts) != len(facts):
+        raise ValueError(f"{label} projection requires SPD monitoring facts")
+    # The family's **compliance** statements are carried, not projected: they state how a showing is
+    # accepted, which none of this rule's declared outputs can carry. A reviewed set of only those
+    # cannot answer the question this rule asks, so the projection refuses rather than emitting a
+    # rule with no rows -- a zero-row rule answers every consumer with silence and looks reviewed
+    # while doing it.
+    obligations = tuple(
+        fact
+        for fact in monitoring_facts
+        if isinstance(fact, SpdMonitoringRequirementFact | SpdMonitoringExemptionFact)
+    )
+    if not obligations:
+        raise ClauseStructureError(
+            f"{label} reviewed statements state no monitoring obligation, so they cannot "
+            "answer its question"
+        )
+    rows = tuple(_spd_monitoring_row(fact, fragment) for fact in obligations)
+    _require_distinct_branches(label, obligations, rows)
+    return DecisionRule(
         id=rule_id,
         inputs=(
             DecisionInput(
@@ -1578,7 +1665,7 @@ def project_spd_reduction_requirements(
             DecisionOutput(
                 name="reduced_category",
                 kind="categorical",
-                allowed_values=reduced_categories,
+                allowed_values=(_NOT_REDUCED,),
             ),
             DecisionOutput(name="monitoring_required", kind="boolean"),
             DecisionOutput(name="status_indication_required", kind="boolean"),
@@ -1593,7 +1680,80 @@ def project_spd_reduction_requirements(
         exhaustive=False,
         source=fragment.source,
     )
-    return (rule,), (_proposal(rule, "decision", fragment),)
+
+
+def _spd_reduction_rules(
+    label: str,
+    rule_id: str,
+    fragment: RawClauseFragment,
+    facts: tuple[SupplyFact, ...],
+) -> tuple[DecisionRule, ...]:
+    """One reduction route's two decisions: the permission, and the reducing device's monitoring."""
+
+    reduction_facts = tuple(fact for fact in facts if isinstance(fact, SpdReductionStatement))
+    if len(reduction_facts) != len(facts):
+        raise ValueError(f"{label} projection requires SPD reduction facts")
+    permissions = tuple(
+        fact for fact in reduction_facts if isinstance(fact, SpdReductionPermissionFact)
+    )
+    if not permissions:
+        raise ClauseStructureError(
+            f"{label} reviewed statements permit no category reduction, so they cannot "
+            "answer its question"
+        )
+    # One row per permitted transition, and the statement repeated alongside each so a collision
+    # names the statement it came from rather than a row index nobody authored.
+    stepped = tuple((fact, step) for fact in permissions for step in fact.permitted_steps)
+    permission_rows = tuple(_spd_permission_row(fact, step, fragment) for fact, step in stepped)
+    _require_distinct_branches(label, tuple(fact for fact, _step in stepped), permission_rows)
+    permission = DecisionRule(
+        id=rule_id,
+        inputs=(
+            DecisionInput(
+                name="source_overvoltage_category",
+                kind="categorical",
+                allowed_values=_OVERVOLTAGE_CATEGORIES,
+            ),
+            DecisionInput(
+                name="insulation_class",
+                kind="categorical",
+                allowed_values=_INSULATION_CLASSES,
+            ),
+            DecisionInput(name="part_of_category_reduction", kind="boolean"),
+        ),
+        outputs=(
+            DecisionOutput(name="reduction_permitted", kind="boolean"),
+            DecisionOutput(
+                name="reduced_category",
+                kind="categorical",
+                allowed_values=tuple(dict.fromkeys(step.target_ovc for _fact, step in stepped)),
+            ),
+        ),
+        rows=permission_rows,
+        exhaustive=False,
+        source=fragment.source,
+    )
+
+    monitoring_facts = tuple(
+        fact for fact in reduction_facts if isinstance(fact, SpdReductionMonitoringFact)
+    )
+    if not monitoring_facts:
+        return (permission,)
+    monitoring_rows = tuple(_spd_device_monitoring_row(fact, fragment) for fact in monitoring_facts)
+    _require_distinct_branches(label, monitoring_facts, monitoring_rows)
+    device_monitoring = DecisionRule(
+        id=f"{rule_id}.{_SPD_DEVICE_MONITORING_SUFFIX}",
+        inputs=(DecisionInput(name="device_degradable", kind="boolean"),),
+        outputs=(
+            DecisionOutput(name="monitoring_required", kind="boolean"),
+            DecisionOutput(name="status_indication_required", kind="boolean"),
+            DecisionOutput(name="monitoring_reference", kind="reference"),
+        ),
+        rows=monitoring_rows,
+        exhaustive=False,
+        source=fragment.source,
+    )
+    return (permission, device_monitoring)
 
 
 # --- high-frequency isolating transformer ------------------------------------------

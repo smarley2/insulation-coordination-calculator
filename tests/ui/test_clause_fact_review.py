@@ -25,9 +25,12 @@ from insulation_coordination.rules.importer.clause_facts import (
     SpdMonitoringComplianceFact,
     SpdMonitoringExemptionFact,
     SpdMonitoringRequirementFact,
-    SpdReductionFact,
+    SpdReductionFloorFact,
+    SpdReductionMonitoringFact,
+    SpdReductionPermissionFact,
     SystemVoltageApplicabilityFact,
     SystemVoltageMeasureFact,
+    pair_vocabulary,
     scope_vocabulary,
 )
 from insulation_coordination.rules.importer.clauses import ClauseNode, RawClauseFragment
@@ -80,7 +83,11 @@ _FACT_MODELS: dict[str, tuple[type[BaseModel], ...]] = {
         BarrierCombinedRequirementFact,
         BarrierDownstreamInheritanceFact,
     ),
-    "spd_reduction": (SpdReductionFact,),
+    "spd_reduction": (
+        SpdReductionPermissionFact,
+        SpdReductionFloorFact,
+        SpdReductionMonitoringFact,
+    ),
     "spd_monitoring": (
         SpdMonitoringRequirementFact,
         SpdMonitoringExemptionFact,
@@ -119,7 +126,9 @@ def _expected_options(
 
     Scope dimensions are excluded and checked through ``_expected_scope_options`` instead: a scope
     is a multi-selection over its vocabulary plus an explicit unrestricted entry, not a combo, and
-    conflating the two would let a scope regress into a single-value widget unnoticed.
+    conflating the two would let a scope regress into a single-value widget unnoticed. A pair
+    collection is excluded for the same reason: it is offered as its wire form in a line edit, and a
+    combo could only hold one of its members.
     """
 
     options: dict[str, tuple[str, ...]] = {}
@@ -127,6 +136,8 @@ def _expected_options(
         if name in _UNDIMENSIONED:
             continue
         if scope_vocabulary(field.annotation) is not None:
+            continue
+        if pair_vocabulary(field.annotation) is not None:
             continue
         if field.annotation is bool:
             options[name] = ("true", "false")
@@ -826,10 +837,14 @@ def test_supply_kind_is_prefilled_and_locked_to_the_routes_own_reading(
     qtbot.addWidget(dialog)
 
     dialog.table.selectRow(_route_position(model, MAINS_ROUTE))
+    # A variant family offers no dimension until a kind is chosen, and the route's own dimension is
+    # prefilled and locked whichever kind that is: it is structural for every statement it carries.
+    for variant in fact_variants(SUPPLY_FACT_FAMILY_BY_ROUTE[MAINS_ROUTE]):
+        dialog.choose_statement_kind(variant)
 
-    combo = dialog.dimension_combo("supply_kind")
-    assert combo.currentText() == SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE[MAINS_ROUTE]
-    assert combo.isEnabled() is False
+        combo = dialog.dimension_combo("supply_kind")
+        assert combo.currentText() == SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE[MAINS_ROUTE], variant
+        assert combo.isEnabled() is False, variant
 
 
 def test_statement_index_default_updates_when_the_route_changes(

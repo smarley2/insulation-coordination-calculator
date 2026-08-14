@@ -2105,16 +2105,14 @@ for the remaining #53B work:
         carried-not-projected variant.
   - [x] **3. spd_monitoring** — requirement | exemption | compliance. Also converted
         `any_placement` to a scope, deleting `_placement_matcher`.
-  - [ ] **4. spd_reduction** — permission | floor | monitoring. **Blocked on a contract decision,
-        not on effort — see "Handoff: why family 4 stopped" below.** The three variants cannot all
-        project into this route's declared row shape, and the one that must project cannot fill two
-        of the six declared outputs from what it states.
+  - [x] **4. spd_reduction** — permission | floor | monitoring. Shipped **with** #53C item 5's
+        contract change for these two routes, which is what unblocked it: option (d). Introduces the
+        ordered source-to-target pair collection and the `pair_sequence` dimension kind.
   - [x] **5. barrier_transfer** — rating_resolution | combined_requirement |
         downstream_inheritance. The route-declared isolation scope and the invalid positive-isolation
         placeholder were pulled forward into this commit: the isolation field leaves the model, so
         the placeholder could not have been left as it was.
-- [ ] Grammar relocation, context-node handling, set/pair collections — **family 4's pair collection
-      now lives here, or in whichever slice resolves the contract question below**
+- [ ] Grammar relocation, context-node handling — the set/pair collections landed with family 4
 - [ ] Variant editor: value-set widgets, repeating pair rows, `statement_kind` switching
 - [ ] Removal of multi-statement authoring; per-statement suggestion action
 - [ ] Completion guard
@@ -2231,12 +2229,14 @@ system voltage. The carried variant is proven in the public suite only. Widening
 statements per route belongs to the private placeholder slice, which has to replace the invalid
 positive-isolation placeholder anyway.
 
-### Handoff: families 3 and 5 landed, and why family 4 stopped
+### Handoff: families 3, 4 and 5 landed, and why family 4 changed a contract
 
-Written after families 3 and 5. Both are on the branch and green on the public and private suites.
-Family 4 is **not** an effort problem: its model reshape is straightforward, and the reshape makes
-the route's declared rule unprojectable. That needs a contract decision, so it was reported rather
-than guessed at.
+Written after all three. Every one is on the branch and green on the public and private suites.
+
+Family 4 was reported as blocked first, and the maintainer chose **option (d)**: pull #53C item 5's
+contract change for the two reduction routes into #53B, because the analysis below ruled out both
+alternatives. The analysis is kept: it is the justification for the contract change, and it is why
+these two routes' inputs and outputs look different from their siblings'.
 
 **What families 3 and 5 changed that a successor inherits.**
 
@@ -2253,11 +2253,43 @@ than guessed at.
   still spells that could contradict it. A third such dimension should follow the same three pieces.
 - `_placement_matcher` is gone; `_dimension_matcher` is the last shim, and item 5 above still stands
   for it.
-- `_placeholder_facts` is still `dict[str, SupplyFact]` and did not need widening: every route's
-  projected variant is a single statement. It will need widening only when a route's projection needs
-  two statements at once.
+- `_placeholder_facts` is now `dict[str, tuple[SupplyFact, ...]]`, widened by family 4: a reduction
+  route projects two rules and the second exists only if a statement was reviewed for it, so that
+  route needs two placeholders. Completion is recorded once per route *after* all of its statements,
+  because the record binds the route's whole fact-set digest.
 
-**Why family 4 stopped, so nobody re-derives it.** `supply.spd_reduction_requirements.{mains,
+**What family 4 changed, and the collections it introduced.**
+
+- `spd_reduction` states three readings: `permission` (an ordered `OvercategoryStep` collection plus
+  the insulation classes it applies to, as one `DimensionScope`), `floor` (its own classes, a typed
+  basis and a `must_not_fall_below` relation) and `monitoring` (the degradability, the obligation, the
+  status indication and the reference to the monitoring route). The reference lives on the monitoring
+  statement, never on the permission.
+- **`floor` is carried-not-projected**: it states a comparison against a basis, and both the
+  comparison and a route that evaluates it stay #53C's. A consumer asking about a class only the
+  floor names reaches no row, rather than an answer no permission supports.
+- **Collections and their canonical ordering.** `_canonical_steps` refuses a step collection out of
+  *declared scale* order or naming one transition twice; a step to its own category is refused too.
+  The insulation-class set reuses `DimensionScope`, which already owns canonical order and duplicate
+  rejection — note its canonical order is lexicographic by the deliberate choice recorded on the
+  model, not declared-vocabulary order. Both properties are pinned by tests, including one that a
+  reordered copy hashes identically.
+- **`pair_sequence` is a new `DimensionKind`**, detected by `clause_facts.pair_vocabulary` (the
+  collection counterpart of `scope_vocabulary`). `ClauseSequenceRule` now fills **one** collection
+  dimension rather than two scalars, and `keyword_proposer` emits one reading naming every pair — the
+  A7 duplicate-expansion fix arriving for pairs. The editor offers it as its wire form in a line edit;
+  the repeating pair rows stay the variant-editor slice's job.
+- The contract, right-sized for these two routes only: `<route>` keeps the permission with inputs
+  `source_overvoltage_category`, `insulation_class`, `part_of_category_reduction` and outputs
+  `reduction_permitted`, `reduced_category`; `<route>.device_monitoring` is a second projected rule
+  with input `device_degradable` and outputs `monitoring_required`, `status_indication_required`,
+  `monitoring_reference`. **The placement monitoring route's own contract is unchanged** — right-sizing
+  that one is still #53C item 5.
+- Both new rule ids are declared in the clause specs' `projected_rule_ids`, which is what makes the
+  inventory gate require them. That is why the private placeholders had to widen.
+
+**Why family 4 needed that contract change, so nobody re-derives it.**
+`supply.spd_reduction_requirements.{mains,
 non_mains}` declares four inputs -- device placement, insulation class, device degradability,
 participation in a category reduction -- and six outputs, and `DecisionRule` requires **every** row to
 set **exactly** the declared outputs (`_rows_agree_with_declarations`). Today one `SpdReductionFact`
@@ -2284,17 +2316,24 @@ The floor variant is the one part that is clean: it is carried by instruction, a
 about the double or reinforced classes reaches **no** row rather than a wrong one, because the
 permission's own class scope excludes them.
 
-Three ways out, for the maintainer to choose:
+Three ways out were put to the maintainer, who chose the fourth shape of the first:
 
-- **(c), and the one the amendments' own pointers keep naming.** Let #53C item 5's contract change
-  land first -- a source-category input, and the monitoring and floor outputs right-sized off these
-  routes -- and family 4 then projects all three variants with no loss. Every note in the recipe that
-  says "#53C item 5" is about exactly this output tuple.
-- **(a)** Ship the model reshape now, project the permission only, and accept a deferral token for
-  `reduced_category` plus a wrong monitoring answer for a degradable device. Needs a version decision
-  under A6-C, since it changes projected rule semantics.
+- **(a)** Ship the model reshape alone, project the permission only, and accept a deferral token for
+  `reduced_category` plus a wrong monitoring answer for a degradable device. **Rejected**: a wrong
+  answer is worse than an absent one.
 - **(b)** As (a), but let the projector narrow the permission's row to the non-degradable case so the
-  degradable branch is uncovered instead of wrongly answered. Cheaper than (c) and honest at runtime,
-  but it is the projector adding a matcher no statement states.
+  degradable branch is uncovered instead of wrongly answered. **Rejected**: it is the projector adding
+  a matcher no statement states, the defect A3 forbids from the other side.
+- **(c)** Wait for #53C item 5. **Superseded by (d)**, which is (c) pulled forward for these two
+  routes only, leaving the comparison runtime and the placement monitoring route's contract to #53C.
+- **(d), shipped.** A source-category input separates the permission's per-step rows; the monitoring
+  outputs move to the route's own second rule so each variant fills exactly the outputs its statement
+  states; the floor stays carried. All three readings project, with no runtime loss and no wrong
+  answer. `test_one_statements_two_steps_are_not_refused_as_a_collision` is the regression that would
+  have failed before the change, and
+  `test_two_permission_statements_stating_the_same_branch_are_refused` proves the refusal still fires
+  for statements that really do collide.
 
-Nothing about family 4 is implemented, so the tree carries no half-finished shape.
+**Version.** No further importer bump: the stack already carries `iec-pdf-8`, whose recorded reason
+under A6-C covers changed projected rule semantics, and that version is unreleased and branch-only, so
+no package approved under it can exist outside this branch.

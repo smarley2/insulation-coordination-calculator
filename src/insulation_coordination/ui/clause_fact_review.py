@@ -9,7 +9,7 @@ a reviewer must read the licensed clause to author a statement; it is never writ
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -42,6 +42,7 @@ from insulation_coordination.rules.importer.clause_fact_proposals import (
     ClauseFactProposal,
     DimensionKind,
     authored_dimension,
+    authored_pair_wire,
     fact_dimensions,
     fact_model,
     fact_variants,
@@ -113,6 +114,8 @@ def _dimension_text(kind: DimensionKind, value: object) -> str:
         return "true" if value else "false"
     if kind == "scope":
         return scope_wire(cast("DimensionScope[Any]", value))
+    if kind == "pair_sequence":
+        return authored_pair_wire(cast("Sequence[object]", value))
     return str(value)
 
 
@@ -978,7 +981,7 @@ class ClauseFactReviewDialog(QDialog):
         for field, combo in self._combos.items():
             combo.setCurrentText(_dimension_text(self._kinds[field], getattr(fact, field)))
         for field, edit in self._edits.items():
-            edit.setText(getattr(fact, field))
+            edit.setText(_dimension_text(self._kinds[field], getattr(fact, field)))
         for field in self._scope_lists:
             scope: DimensionScope[str] = getattr(fact, field)
             self.choose_scope(field, *scope.values, unrestricted=scope.mode == "unrestricted")
@@ -1130,7 +1133,11 @@ class ClauseFactReviewDialog(QDialog):
         declared = fact_dimensions(fact_kind, self._editor_variant())
         self._kinds = {name: kind for name, kind, _options in declared}
         for field, kind, options in declared:
-            if kind == "identifier":
+            # ponytail: a pair collection is offered as its wire form in a line edit, the widget
+            # that already exists. The repeating pair rows belong to the variant editor slice; the
+            # model validates every token and the ordering, so a typo is refused rather than
+            # authored.
+            if kind in ("identifier", "pair_sequence"):
                 edit = QLineEdit(self._editor_box)
                 edit.textChanged.connect(self._refresh_author_enabled)
                 self._editor_form.addRow(field.replace("_", " "), edit)
