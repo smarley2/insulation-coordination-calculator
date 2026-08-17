@@ -2,20 +2,32 @@
 
 Each test asserts a boundary property that already holds: the private suite
 skips cleanly when the licensed documents are absent, no private artifact type
-is tracked in the public tree, and the part 1 synthetic fixture package does
-not claim an IEC standard as its source identity. Boundary properties that are
-not yet true (rule-backed UI options, rule-backed reinforced policy) are
-inventoried in docs/licensed-content-audit.md instead of being asserted here.
+is tracked in the public tree, and a synthetic fixture package does not claim an
+IEC standard as its source identity. Boundary properties that are not yet true
+(rule-backed UI options, rule-backed reinforced policy) are inventoried in
+docs/licensed-content-audit.md instead of being asserted here.
+
+One fixture package is deliberately outside the identity property and so is not
+listed below: the DVC package has to carry the identity the guidance service
+gates on, because that gate is the behavior under test. Its numbers are invented
+and its document id and note say so.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+from insulation_coordination.domain.rules import RulePackage
 from scripts.scan_licensed_content import PRIVATE_NAMES, PRIVATE_SUFFIXES, iter_files
-from tests.fixtures.synthetic_rules import synthetic_part1_rule_package
+from tests.fixtures.synthetic_rules import (
+    claimed_standards,
+    synthetic_hf_rule_package,
+    synthetic_part1_rule_package,
+    synthetic_rule_package,
+)
 
 REPOSITORY = Path(__file__).parents[1]
 
@@ -45,12 +57,15 @@ def test_no_private_artifact_types_are_tracked() -> None:
     assert offending == []
 
 
-def test_part1_synthetic_fixtures_do_not_claim_iec_identity() -> None:
-    package = synthetic_part1_rule_package()
-    standards = {
-        item.source.standard
-        for group in (package.tables, package.formulas, package.mappings)
-        for item in group
-    }
+@pytest.mark.parametrize(
+    "factory",
+    (synthetic_rule_package, synthetic_part1_rule_package, synthetic_hf_rule_package),
+    ids=("base", "part1", "high-frequency"),
+)
+def test_synthetic_fixtures_do_not_claim_iec_identity(
+    factory: Callable[[], RulePackage],
+) -> None:
+    standards = claimed_standards(factory())
+
     assert standards
     assert not any(standard.upper().startswith("IEC") for standard in standards)
