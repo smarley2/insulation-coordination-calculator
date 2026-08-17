@@ -148,6 +148,33 @@ def synthetic_private_grammars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
                 dimension="comparison_required", value="true", keywords=("synthcompare",)
             ),
         ),
+        # The barrier family's variants share nothing but the obligation, which makes it the family
+        # where a draft can settle *only* a dimension that identifies no sentence. One rule reaching
+        # the proposed variant's own scope is what lets a test have both kinds of draft at once.
+        "barrier_transfer": (
+            ClauseKeywordRule(dimension="obligation", value="requirement", keywords=("synthbind",)),
+            ClauseKeywordRule(dimension="rated_side", value="mains", keywords=("synthmainsside",)),
+            ClauseKeywordRule(
+                dimension="rated_side", value="non_mains", keywords=("synthothersid",)
+            ),
+        ),
+        # The system voltage family's proposed kind is its measure variant, and these four rules
+        # settle only dimensions its *other* variant carries too. That is what a cross-kind draft
+        # close needs to be selective about: the reviewer overriding a mis-proposed kind is the
+        # ordinary workflow, so the shared dimensions have to be able to tell two sentences apart.
+        "system_voltage": (
+            ClauseKeywordRule(dimension="obligation", value="requirement", keywords=("synthbind",)),
+            ClauseKeywordRule(
+                dimension="input_topology", value="direct", keywords=("synthdirect",)
+            ),
+            ClauseKeywordRule(
+                dimension="input_topology", value="rectified_dc", keywords=("synthrectified",)
+            ),
+            ClauseKeywordRule(dimension="purpose", value="impulse", keywords=("synthimpulse",)),
+            ClauseKeywordRule(
+                dimension="purpose", value="temporary_overvoltage", keywords=("synthtov",)
+            ),
+        ),
         # The reduction family's proposed statement kind is its permission, which is the one
         # variant in the recipe declaring an ordered pair collection. Between these rules and the
         # sequence rule below, one marked sentence settles every dimension the variant declares --

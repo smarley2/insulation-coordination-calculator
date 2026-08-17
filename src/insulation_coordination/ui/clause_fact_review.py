@@ -199,6 +199,28 @@ def _reading_summary(fact: SupplyFact) -> str:
     return reading if variant is None else f"{variant} · {reading}"
 
 
+#: Dimensions whose agreement says nothing about *which* sentence a statement was authored from, so
+#: agreement confined to them never closes a draft -- see ``covered_by``.
+#:
+#: ``obligation`` is declared by the base every fact family shares. It is the modality every
+#: normative sentence carries and the one dimension every grammar reaches, so two unrelated
+#: sentences of one clause routinely agree on it. On a family whose variants share *nothing* else --
+#: barrier transfer is one -- it is the entire overlap a draft can have, which is how one authored
+#: statement silently closed a sibling sentence's draft whose grammar had reached nothing else.
+#:
+#: ``supply_kind`` is determined by the route (``SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE``), so every
+#: statement of that route agrees on it by construction and the proposer locks it into every draft.
+#:
+#: Both are still *compared*: a disagreement on either still refuses to close the draft. They just
+#: cannot be the whole of the agreement.
+#:
+#: ponytail: these two named rather than derived from the model hierarchy. The tempting derivation --
+#: the dimensions every variant of the family shares -- is wrong in both directions: it would exempt
+#: a system voltage draft's input topology and purpose, which do discriminate, and it would exempt
+#: every dimension of a one-variant family. Add a name here when a third dimension turns out to carry
+#: the same value on every statement of a route.
+_UNDISCRIMINATING_DIMENSIONS = frozenset({"supply_kind", "obligation"})
+
 #: What each authoring path writes into a fact's notes, so the audit distinguishes a statement
 #: whose editor was prefilled from a suggestion from one a maintainer typed from scratch. Both
 #: name the dialog; only the prefilled one names the grammar.
@@ -400,11 +422,34 @@ class ClauseFactReviewModel:
     def covered_by(self, rule_route: str, proposal: ClauseFactProposal) -> int | None:
         """The authored statement that has dealt with this draft, or ``None``.
 
-        A **subset** match, and that is the whole of it: an authored statement of the same kind
-        covers a draft when it cites every node the draft cites and agrees on every dimension the
-        draft actually settled. What the draft left unchosen is not compared, because the reviewer
-        supplying it *is* the workflow -- a grammar settles what a declared term reaches and the
-        maintainer reads the rest out of the clause.
+        A **subset** match, and that is the whole of it: an authored statement covers a draft when it
+        cites every node the draft cites and agrees on every dimension the draft settled *that the
+        authored statement's own kind carries*. What the draft left unchosen is not compared, because
+        the reviewer supplying it *is* the workflow -- a grammar settles what a declared term reaches
+        and the maintainer reads the rest out of the clause.
+
+        **A different statement kind still closes a draft**, and that is not sloppiness: a grammar
+        declares exactly one kind and no declared term distinguishes the family's others, so the
+        reviewer judging that a sentence states a different kind of reading and switching the combo
+        is the documented residual of gap 3a rather than a divergence. Requiring the kinds to match
+        made a draft unclosable on every route where that judgement is needed, which is four of the
+        seven. The dimensions the two kinds do not share cannot be compared at all -- an
+        applicability statement carries no measure -- so they drop out of the comparison.
+
+        **The overlap has to discriminate**, whichever kind was authored. Closing needs the compared
+        dimensions to include at least one outside ``_UNDISCRIMINATING_DIMENSIONS``: agreeing only on
+        the route's own supply kind and on the modality every sentence carries identifies no sentence
+        at all, so it is "agreeing on the empty set" one level up. Matching the kind is not a
+        substitute for it. On a family whose variants share nothing but the obligation, one authored
+        statement closed a sibling sentence's draft on the same node -- and *both* safety nets were
+        blind at once, because the guard's anchor is node-granular and so was already satisfied by
+        that statement for all of the node's sentences. Completion was reachable with statements
+        missing and nothing objected.
+
+        The cost is accepted deliberately: a draft whose grammar reached nothing but those dimensions
+        can never be closed, so it stays in the list for as long as the route is open. **Visible and
+        unclosable is safe; silently closed is not.** The remedy for a clause that leaves too many
+        such rows is a declaration that reaches a discriminating dimension, never a looser rule here.
 
         Matched on the whole reading before, which made every draft the grammar could not fully
         settle permanent: the authored statement was then strictly *more* settled than the draft, so
@@ -437,7 +482,12 @@ class ClauseFactReviewModel:
         }
         cited = {(item.fragment_id, item.node_order) for item in proposal.node_references}
         for row in self.facts(rule_route):
-            if _statement_kind(row.fact) != variant:
+            authored_variant = _statement_kind(row.fact)
+            comparable = set(settled) & {
+                name
+                for name, _kind, _options in fact_dimensions(row.fact.fact_kind, authored_variant)
+            }
+            if not (comparable - _UNDISCRIMINATING_DIMENSIONS):
                 continue
             authored_nodes = {
                 (item.fragment_id, item.node_order) for item in row.fact.node_references
@@ -445,8 +495,8 @@ class ClauseFactReviewModel:
             if not cited <= authored_nodes:
                 continue
             if all(
-                _dimension_text(kinds[name], getattr(row.fact, name)) == value
-                for name, value in settled.items()
+                _dimension_text(kinds[name], getattr(row.fact, name)) == settled[name]
+                for name in comparable
             ):
                 return row.statement_index
         return None

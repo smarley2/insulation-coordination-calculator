@@ -1613,6 +1613,223 @@ def test_an_authored_statement_disagreeing_with_a_settled_dimension_covers_nothi
     assert model.uncovered(HF_ROUTE) == ()
 
 
+#: One node carrying three invented sentences, and a second carrying one. The three settle the two
+#: dimensions both system-voltage kinds share and no two of them alike, which is the shape the real
+#: fragment has; the fourth settles only the modality, which every sentence carries. The markers are
+#: coined in ``synthetic_private_grammars`` and mean nothing outside these tests.
+_SHARED_NODE_SENTENCES = (
+    (
+        "Synthetic reading: synthbind synthdirect synthimpulse. "
+        "Synthetic reading: synthbind synthrectified synthimpulse. "
+        "Synthetic reading: synthbind synthdirect synthtov."
+    ),
+    "Synthetic reading: synthbind.",
+)
+
+
+@pytest.fixture
+def draft_with_sibling_sentences_on_one_node(
+    synthetic_private_grammars: Path,
+) -> ImportedRuleDraft:
+    """Every supply fragment, with the system voltage route's nodes carrying the sentences above."""
+
+    fragments = tuple(
+        fragment_with_sentences(spec.semantic_id, _SHARED_NODE_SENTENCES)
+        if spec.semantic_id == SV_ROUTE
+        else _fragment(spec.semantic_id)
+        for spec in SUPPLY_CLAUSES
+    )
+    return _logged(_draft(fragments=fragments))
+
+
+def _author_applicability(
+    dialog: ClauseFactReviewDialog, *, input_topology: str, purpose: str
+) -> None:
+    """Switch the loaded draft to the applicability kind, fill that kind, and author.
+
+    The maintainer's own sequence: Fill takes the draft's citation and its measure reading, the kind
+    combo is then moved because the sentence states no measure at all, and switching it rebuilds the
+    dimension rows unchosen while leaving the cited node selected.
+    """
+
+    dialog.choose_statement_kind("applicability")
+    dialog.dimension_combo("obligation").setCurrentText("requirement")
+    dialog.choose_scope("input_topology", input_topology)
+    dialog.choose_scope("purpose", purpose)
+    dialog.dimension_combo("counts_as_system_voltage").setCurrentText("true")
+    dialog.author_selected()
+
+
+def test_a_draft_is_closed_by_a_statement_of_the_kind_its_sentence_really_states(
+    qtbot, draft_with_sibling_sentences_on_one_node
+) -> None:
+    """The maintainer's case: the reviewer overrode a mis-proposed kind and the draft stayed.
+
+    A grammar declares exactly one statement kind and no declared term distinguishes the family's
+    others, so a sentence stating a different kind of reading gets a wrong-kind draft and the
+    reviewer switching the combo is the documented residual of gap 3a. Requiring the authored kind to
+    equal the draft's therefore made a draft unclosable on every route where that judgement is
+    needed.
+
+    The three drafts share one node, so this also pins the selectivity that makes cross-kind closing
+    safe: they settle the two shared dimensions differently, and only the one authored from closes.
+    """
+
+    model = ClauseFactReviewModel(draft_with_sibling_sentences_on_one_node)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, SV_ROUTE))
+    drafts = model.open_proposals(SV_ROUTE)
+
+    assert len(drafts) == 4
+    assert all(item.statement_kind == "measure" for item in drafts)
+    # Two anchors for the guard, because it counts cited nodes; four rows for the list, because it
+    # counts sentences. The two notions are different here before anything is authored.
+    assert len(model.uncovered(SV_ROUTE)) == 2
+
+    dialog.facts_list.setCurrentRow(0)
+    dialog.use_suggested_button.click()
+    _author_applicability(dialog, input_topology="direct", purpose="impulse")
+
+    (review,) = model.draft.clause_fact_reviews
+    assert review.fact.statement_kind == "applicability"
+    assert model.covered_by(SV_ROUTE, drafts[0]) == 0
+    # Its two siblings on the same node stay open: authoring one statement must not clear the
+    # sentences nobody has read yet.
+    assert model.open_proposals(SV_ROUTE) == drafts[1:]
+    # The guard is untouched by any of it: node-granular, so one statement clears one of its two.
+    assert len(model.uncovered(SV_ROUTE)) == 1
+
+
+def test_a_different_kind_disagreeing_on_a_shared_dimension_closes_nothing(
+    qtbot, draft_with_sibling_sentences_on_one_node
+) -> None:
+    """Cross-kind closing compares the shared dimensions; it does not skip them."""
+
+    model = ClauseFactReviewModel(draft_with_sibling_sentences_on_one_node)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, SV_ROUTE))
+    drafts = model.open_proposals(SV_ROUTE)
+
+    dialog.facts_list.setCurrentRow(0)
+    dialog.use_suggested_button.click()
+    # A topology none of the three sentences names, so every shared comparison disagrees.
+    _author_applicability(dialog, input_topology="isolated_secondary", purpose="impulse")
+
+    assert len(model.facts(SV_ROUTE)) == 1
+    assert model.open_proposals(SV_ROUTE) == drafts
+    assert all(model.covered_by(SV_ROUTE, item) is None for item in drafts)
+
+
+def test_a_draft_settling_only_family_wide_dimensions_is_never_closed_across_kinds(
+    qtbot, draft_with_sibling_sentences_on_one_node
+) -> None:
+    """ "Agreeing on the empty set is not agreement", one level up.
+
+    The fourth sentence settles only the modality, and its route settles the supply kind for every
+    statement it carries -- so agreeing on both identifies no sentence at all. A statement of another
+    kind citing that node would otherwise clear a row nobody has read, which is exactly what the
+    same rule refuses for a draft that settled nothing.
+    """
+
+    model = ClauseFactReviewModel(draft_with_sibling_sentences_on_one_node)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, SV_ROUTE))
+    alone = model.open_proposals(SV_ROUTE)[3]
+
+    assert set(alone.chosen) == {"obligation", "supply_kind"}
+    assert set(alone.chosen) <= clause_fact_review._UNDISCRIMINATING_DIMENSIONS
+
+    dialog.facts_list.setCurrentRow(3)
+    dialog.use_suggested_button.click()
+    _author_applicability(dialog, input_topology="direct", purpose="impulse")
+
+    (review,) = model.draft.clause_fact_reviews
+    assert {item.node_order for item in review.fact.node_references} == {1}
+    assert model.covered_by(SV_ROUTE, alone) is None
+    assert alone in model.open_proposals(SV_ROUTE)
+    # And matching the kind is no substitute for a discriminating dimension: the same draft, of the
+    # kind that was authored, is still not closed.
+    same_kind = alone.model_copy(update={"statement_kind": "applicability"})
+    assert model.covered_by(SV_ROUTE, same_kind) is None
+
+
+#: One node carrying three invented sentences of the barrier family, whose variants share nothing
+#: but the obligation. Two settle the proposed variant's own scope, differently; the third settles
+#: only the modality, which is the shape that used to be closed by a sibling's statement.
+_BARRIER_SIBLING_SENTENCES = (
+    (
+        "Synthetic reading: synthbind synthmainsside. "
+        "Synthetic reading: synthbind synthothersid. "
+        "Synthetic reading: synthbind and nothing further."
+    ),
+)
+
+
+@pytest.fixture
+def draft_with_barrier_siblings_on_one_node(
+    synthetic_private_grammars: Path,
+) -> ImportedRuleDraft:
+    """Every supply fragment, with the barrier route's one node carrying the sentences above."""
+
+    barrier_route = ids.SUPPLY_VERIFIED_BARRIER_TRANSFER
+    fragments = tuple(
+        fragment_with_sentences(spec.semantic_id, _BARRIER_SIBLING_SENTENCES)
+        if spec.semantic_id == barrier_route
+        else _fragment(spec.semantic_id)
+        for spec in SUPPLY_CLAUSES
+    )
+    return _logged(_draft(fragments=fragments))
+
+
+def test_agreement_on_the_obligation_alone_closes_no_sibling_draft(
+    qtbot, draft_with_barrier_siblings_on_one_node
+) -> None:
+    """The over-closing the maintainer hit, and the reason it is worse than a cosmetic slip.
+
+    This clause's three sentences rest on one node and this family's variants share nothing but the
+    obligation, so a draft whose grammar reached nothing else has an overlap of exactly that one
+    dimension -- which every sibling sentence agrees on too. Authoring one statement therefore closed
+    a draft whose own reading nobody had written.
+
+    Both safety nets were blind at once. The guard's anchor is node-granular, so the single statement
+    below already satisfies it for all three sentences -- asserted here, because that is the hole this
+    test documents rather than fixes. With the list dropping the row as well, completion was reachable
+    with two of three statements missing and nothing objected.
+
+    So the third draft stays visible and, unless a declaration reaches a discriminating dimension for
+    it, unclosable. That is the accepted cost: visible and unclosable is safe.
+    """
+
+    barrier_route = ids.SUPPLY_VERIFIED_BARRIER_TRANSFER
+    model = ClauseFactReviewModel(draft_with_barrier_siblings_on_one_node)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, barrier_route))
+    first, sibling, obligation_only = model.open_proposals(barrier_route)
+
+    assert set(obligation_only.chosen) == {"obligation"}
+    assert {item.node_references[0].node_order for item in (first, sibling, obligation_only)} == {0}
+
+    dialog.facts_list.setCurrentRow(0)
+    dialog.use_suggested_button.click()
+    dialog.dimension_edit("rating_reference").setText(ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC)
+    dialog.author_selected()
+
+    assert len(model.facts(barrier_route)) == 1
+    # Only the draft whose discriminating dimension the statement matches.
+    assert model.covered_by(barrier_route, first) == 0
+    assert model.covered_by(barrier_route, sibling) is None
+    assert model.covered_by(barrier_route, obligation_only) is None
+    assert model.open_proposals(barrier_route) == (sibling, obligation_only)
+    # The guard, untouched and already satisfied: one node, one anchor, one statement. Two of this
+    # clause's three statements are unauthored and it reports nothing -- a maintainer decision under
+    # A5/A5-C, quantified in the report rather than changed here.
+    assert model.uncovered(barrier_route) == ()
+
+
 def test_a_draft_that_settles_no_dimension_is_never_covered(
     qtbot, draft_with_supply_fragments, synthetic_private_grammars: Path
 ) -> None:
