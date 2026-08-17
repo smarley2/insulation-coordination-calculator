@@ -1290,6 +1290,83 @@ def synthetic_dvc_rule_package(*, edition: str = EDITION) -> RulePackage:
     )
 
 
+#: The data columns of the two synthetic Table 7 lookups, named the way the importer recipe
+#: names the real ones. The identifiers are the contract a consumer selects a column by; the
+#: cells behind them are this fixture's invention.
+SYNTHETIC_IMPULSE_COLUMNS = (
+    "impulse_ovc_1_v",
+    "impulse_ovc_2_v",
+    "impulse_ovc_3_v",
+    "impulse_ovc_4_v",
+)
+SYNTHETIC_TOV_COLUMNS = ("temporary_overvoltage_rms_v", "temporary_overvoltage_peak_v")
+
+#: The measure vocabulary the real resolution rule answers with. Reproduced because a
+#: consumer's behaviour depends on the token, not on the reading behind it.
+SYNTHETIC_SYSTEM_VOLTAGE_MEASURES = (
+    "phase_to_earth_rms",
+    "phase_to_artificial_neutral_rms",
+    "phase_to_phase_rms",
+    "between_supply_conductors_rms",
+    "pre_rectifier_ac_rms",
+    "highest_pre_rectifier_ac_rms_at_bridge",
+)
+
+
+def _measure(name: str) -> DecisionValue:
+    return DecisionValue(name="system_voltage_measure", categorical=name)
+
+
+def _is(name: str, *values: str) -> Matcher:
+    return Matcher(input=name, op="equals" if len(values) == 1 else "in", values=values)
+
+
+#: Which arrangement selects which measure. **Invented**, and deliberately not the source's own
+#: reading: what these rows exist to exercise is that a consumer asks the rule instead of
+#: deciding for itself, that one arrangement can answer the impulse and temporary-overvoltage
+#: questions differently, and that an arrangement no row covers blocks. Reading any normative
+#: meaning off this table would be reading the fixture's invention.
+_SYNTHETIC_SYSTEM_VOLTAGE_ROWS: tuple[tuple[tuple[Matcher, ...], DecisionValue], ...] = (
+    (
+        (_is("supply_kind", "mains"), _is("input_topology", "series_rectifier_bridges")),
+        _measure("highest_pre_rectifier_ac_rms_at_bridge"),
+    ),
+    (
+        (_is("supply_kind", "mains"), _is("input_topology", "rectified_dc")),
+        _measure("pre_rectifier_ac_rms"),
+    ),
+    (
+        (
+            _is("supply_kind", "mains"),
+            _is("phase_system", "three_phase_it"),
+            _is("calculation_purpose", "impulse"),
+        ),
+        _measure("phase_to_artificial_neutral_rms"),
+    ),
+    (
+        (
+            _is("supply_kind", "mains"),
+            _is("phase_system", "three_phase_it"),
+            _is("calculation_purpose", "temporary_overvoltage"),
+        ),
+        _measure("phase_to_phase_rms"),
+    ),
+    (
+        (_is("supply_kind", "mains"), _is("phase_system", "three_phase_delta")),
+        _measure("phase_to_phase_rms"),
+    ),
+    (
+        (_is("supply_kind", "mains"), _is("phase_system", "single_phase_it")),
+        _measure("between_supply_conductors_rms"),
+    ),
+    (
+        (_is("supply_kind", "mains"), _is("phase_system", "three_phase_star", "single_phase")),
+        _measure("phase_to_earth_rms"),
+    ),
+    ((_is("supply_kind", "non_mains"),), _measure("between_supply_conductors_rms")),
+)
+
+
 def synthetic_supply_rule_package(*, edition: str = EDITION) -> RulePackage:
     """A supply-only package in the semantic shape the real supply projections produce.
 
@@ -1302,6 +1379,11 @@ def synthetic_supply_rule_package(*, edition: str = EDITION) -> RulePackage:
     The two lookups differ exactly as the source's own treatment of them does: the impulse pair
     selects a band and declares no interpolation, the temporary-overvoltage pair interpolates.
     That is what lets a test prove the adapter refuses an impulse lookup that interpolates.
+
+    The measure each arrangement resolves to is invented as well - see
+    :data:`_SYNTHETIC_SYSTEM_VOLTAGE_ROWS`. What is faithful there is only that the rule answers
+    with a measure name, that one arrangement may answer the two purposes differently, and that
+    an arrangement nothing covers gets no answer.
 
     ``edition`` builds a package carrying the right identifiers under the wrong source edition,
     so the refusal of a wrong-edition package needs no second fixture.
@@ -1385,14 +1467,14 @@ def synthetic_supply_rule_package(*, edition: str = EDITION) -> RulePackage:
     impulse_tables, impulse_formulas = lookup_pair(
         ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC,
         "overvoltage_category",
-        ("ovc-1", "ovc-2", "ovc-3", "ovc-4"),
+        SYNTHETIC_IMPULSE_COLUMNS,
         interpolation="none",
         row_mode="ceiling",
     )
     tov_tables, tov_formulas = lookup_pair(
         ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE,
         "tov_basis",
-        ("tov-rms", "tov-peak"),
+        SYNTHETIC_TOV_COLUMNS,
         interpolation="linear",
         row_mode="linear",
     )
@@ -1404,28 +1486,34 @@ def synthetic_supply_rule_package(*, edition: str = EDITION) -> RulePackage:
         id=ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,
         inputs=(
             categorical("supply_kind", ("mains", "non_mains")),
-            categorical("phase_system", ("single_phase", "three_phase_star", "unspecified")),
+            categorical(
+                "phase_system",
+                (
+                    "three_phase_star",
+                    "three_phase_delta",
+                    "three_phase_it",
+                    "single_phase_it",
+                    "single_phase",
+                    "unspecified",
+                ),
+            ),
             categorical("earthing_arrangement", ("tn", "tt", "it", "unspecified")),
-            categorical("input_topology", ("direct", "rectified_dc", "series_rectifier_bridges")),
+            categorical(
+                "input_topology",
+                ("direct", "rectified_dc", "series_rectifier_bridges", "isolated_secondary"),
+            ),
             categorical("calculation_purpose", ("impulse", "temporary_overvoltage")),
         ),
         outputs=(
             DecisionOutput(
                 name="system_voltage_measure",
                 kind="categorical",
-                allowed_values=("synthetic_measure_a", "synthetic_measure_b"),
+                allowed_values=SYNTHETIC_SYSTEM_VOLTAGE_MEASURES,
             ),
         ),
         rows=tuple(
-            DecisionRow(
-                matchers=(Matcher(input="supply_kind", op="equals", values=(kind,)),),
-                values=(DecisionValue(name="system_voltage_measure", categorical=measure),),
-                source=reference,
-            )
-            for kind, measure in (
-                ("mains", "synthetic_measure_a"),
-                ("non_mains", "synthetic_measure_b"),
-            )
+            DecisionRow(matchers=matchers, values=(value,), source=reference)
+            for matchers, value in _SYNTHETIC_SYSTEM_VOLTAGE_ROWS
         ),
         exhaustive=False,
         source=reference,
