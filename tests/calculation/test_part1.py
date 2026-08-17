@@ -415,7 +415,7 @@ def test_annex_g_uses_f2_and_f8_with_semantic_source_cells(
     assert impulse.formula_id == "iec60664-1:f2-clearance"
     assert impulse.selection_mode == "ceiling/exact"
     assert impulse.branch_label == "case_a_pd2_mm"
-    assert impulse.steps[-1].source_cells == ("impulse_withstand_kv-1.0/case_a_pd2_mm",)
+    assert impulse.steps[-1].source_cells == ("impulse_withstand_kv-1.1/case_a_pd2_mm",)
     assert all(candidate.formula_id == "iec60664-1:f8-clearance" for candidate in candidates[1:])
 
 
@@ -753,7 +753,7 @@ def test_not_applicable_long_term_tracking_uses_only_clearance_floor(
 
 @pytest.mark.parametrize(
     ("pollution", "expected"),
-    ((1, "3.2"), (2, "5.0")),
+    ((1, "3.3"), (2, "6.6")),
 )
 def test_f5_selects_only_printed_wiring_pollution_branch(
     pollution: int,
@@ -765,7 +765,7 @@ def test_f5_selects_only_printed_wiring_pollution_branch(
         case_factory(
             construction_type=ConstructionType.PRINTED_WIRING,
             pollution_degree=pollution,
-            long_term_rms_v=PairVoltage.applicable(Decimal(1000)),
+            long_term_rms_v=PairVoltage.applicable(Decimal(1100)),
         ),
         semantic_annex_g_rules,
     )
@@ -782,25 +782,25 @@ def test_f5_interpolates_across_joined_page_boundary(
     candidate = select_f5_pcb_creepage(
         case_factory(
             construction_type=ConstructionType.PRINTED_WIRING,
-            long_term_rms_v=PairVoltage.applicable(Decimal(3600)),
+            long_term_rms_v=PairVoltage.applicable(Decimal(6600)),
         ),
         semantic_annex_g_rules,
     )
 
-    assert candidate.distance_mm == Decimal(18)
+    assert candidate.distance_mm == Decimal(22)
     assert candidate.steps[-1].source_cells == (
-        "3200/pcb_pollution_2",
-        "4000/pcb_pollution_2",
+        "3300/pcb_pollution_2",
+        "9900/pcb_pollution_2",
     )
 
 
 @pytest.mark.parametrize(
     ("kind", "expected"),
     (
-        (InsulationType.FUNCTIONAL, "5.0"),
-        (InsulationType.BASIC, "5.0"),
-        (InsulationType.SUPPLEMENTARY, "5.0"),
-        (InsulationType.REINFORCED, "10.0"),
+        (InsulationType.FUNCTIONAL, "6.6"),
+        (InsulationType.BASIC, "6.6"),
+        (InsulationType.SUPPLEMENTARY, "6.6"),
+        (InsulationType.REINFORCED, "13.2"),
     ),
 )
 def test_f5_reinforced_doubles_after_table_selection(
@@ -813,7 +813,7 @@ def test_f5_reinforced_doubles_after_table_selection(
         case_factory(
             kind=kind,
             construction_type=ConstructionType.PRINTED_WIRING,
-            long_term_rms_v=PairVoltage.applicable(Decimal(1000)),
+            long_term_rms_v=PairVoltage.applicable(Decimal(1100)),
         ),
         semantic_annex_g_rules,
     )
@@ -861,7 +861,7 @@ def test_unsupported_pcb_creepage_cases_block_explicitly(
         select_f5_pcb_creepage(case_factory(**updates), semantic_annex_g_rules)
 
 
-@pytest.mark.parametrize("voltage", ("9", "4001"))
+@pytest.mark.parametrize("voltage", ("9", "9901"))
 def test_f5_voltage_outside_joined_table_blocks(
     voltage: str,
     case_factory,

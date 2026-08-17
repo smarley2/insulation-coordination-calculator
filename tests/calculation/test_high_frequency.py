@@ -28,6 +28,7 @@ from insulation_coordination.domain.project import (
     PairVoltages,
 )
 from insulation_coordination.domain.rules import RulePackage
+from tests.fixtures.synthetic_rules import claimed_standards
 
 
 @pytest.fixture
@@ -100,6 +101,17 @@ def case_factory():
     return make
 
 
+def test_semantic_fixture_packages_do_not_claim_iec_identity(
+    semantic_part4_rules: RulePackage,
+) -> None:
+    # semantic_part4_rules carries the annex G and part 1 content too, so one
+    # assertion covers every package this suite calculates against.
+    standards = claimed_standards(semantic_part4_rules)
+
+    assert standards
+    assert not any(standard.upper().startswith("IEC") for standard in standards)
+
+
 def _periodic_base(case: EffectiveCase, rules: RulePackage):
     return max(
         (
@@ -128,18 +140,18 @@ def test_critical_frequency_uses_each_pairs_clearance(
     one_mm = calculate_critical_frequency(Decimal(1), semantic_part4_rules)
     two_mm = calculate_critical_frequency(Decimal(2), semantic_part4_rules)
 
-    assert (one_mm.value, one_mm.unit) == (Decimal(200000), "Hz")
-    assert (two_mm.value, two_mm.unit) == (Decimal(100000), "Hz")
+    assert (one_mm.value, one_mm.unit) == (Decimal(1100000), "Hz")
+    assert (two_mm.value, two_mm.unit) == (Decimal(550000), "Hz")
     assert one_mm.steps[-1].semantic_rule_id == "iec60664-4-equation-1-critical-frequency"
 
 
 @pytest.mark.parametrize(
     ("frequency_hz", "expected_percent", "expected_branch"),
     (
-        ("199999", "100", "below_critical"),
-        ("200000", "100", "critical_to_minimum"),
-        ("1600000", "112.5", "critical_to_minimum"),
-        ("3000000", "125", "at_or_above_minimum"),
+        ("1099999", "100", "below_critical"),
+        ("1100000", "100", "critical_to_minimum"),
+        ("5500000", "149.5", "critical_to_minimum"),
+        ("9900000", "125", "at_or_above_minimum"),
     ),
 )
 def test_frequency_factor_follows_iec_boundaries(
@@ -148,7 +160,9 @@ def test_frequency_factor_follows_iec_boundaries(
     expected_branch: str,
     semantic_part4_rules: RulePackage,
 ) -> None:
-    selected = select_frequency_factor(Decimal(frequency_hz), Decimal(200000), semantic_part4_rules)
+    selected = select_frequency_factor(
+        Decimal(frequency_hz), Decimal(1100000), semantic_part4_rules
+    )
 
     assert selected.percent == Decimal(expected_percent)
     assert selected.branch == expected_branch
@@ -213,8 +227,8 @@ def test_inhomogeneous_table_1_activates_only_at_pair_critical_frequency(
     case_factory,
     semantic_part4_rules: RulePackage,
 ) -> None:
-    below = case_factory(frequency_hz="60000")
-    above = case_factory(frequency_hz="100000")
+    below = case_factory(frequency_hz="220000")
+    above = case_factory(frequency_hz="660000")
     base = _periodic_base(below, semantic_part4_rules)
 
     below_result = calculate_high_frequency_candidates(below, base, semantic_part4_rules)
@@ -261,7 +275,7 @@ def test_radius_failure_routes_to_inhomogeneous_table_1(
     semantic_part4_rules: RulePackage,
 ) -> None:
     case = case_factory(
-        frequency_hz="100000",
+        frequency_hz="660000",
         field_condition=FieldCondition.APPROXIMATELY_HOMOGENEOUS,
         electrode_radius_mm="0.1",
     )
@@ -270,7 +284,7 @@ def test_radius_failure_routes_to_inhomogeneous_table_1(
     )
 
     assert result.iterations[-1].selected_route == "inhomogeneous_table_1"
-    assert result.iterations[-1].radius_ratio < Decimal("0.2")
+    assert result.iterations[-1].radius_ratio < Decimal("0.55")
 
 
 def test_homogeneous_clearance_stabilizes_on_source_rounded_second_pass(
@@ -278,7 +292,7 @@ def test_homogeneous_clearance_stabilizes_on_source_rounded_second_pass(
     semantic_part4_rules: RulePackage,
 ) -> None:
     case = case_factory(
-        frequency_hz="1600000",
+        frequency_hz="2200000",
         field_condition=FieldCondition.HOMOGENEOUS,
         electrode_radius_mm="10",
         temporary_overvoltage_peak_v=PairVoltage.applicable(Decimal(800)),
@@ -296,7 +310,7 @@ def test_second_pass_instability_blocks_engineering_guess(
     case_factory,
     semantic_part4_rules: RulePackage,
 ) -> None:
-    case = case_factory(frequency_hz="90000")
+    case = case_factory(frequency_hz="440000")
 
     with pytest.raises(HighFrequencyCalculationError) as caught:
         calculate_high_frequency_candidates(
@@ -314,7 +328,7 @@ def test_engine_trace_has_pair_decisions_and_no_fabricated_iteration_settings(
     result = calculate_pair(case_factory(frequency_hz="60000"), semantic_part4_rules)
     iteration = result.trace.hf_iterations[0]
 
-    assert iteration.critical_frequency_hz == Decimal(200000) / Decimal("3.1")
+    assert iteration.critical_frequency_hz == Decimal(1100000) / Decimal("3.1")
     assert iteration.actual_frequency_hz == Decimal(60000)
     assert iteration.factor_percent == Decimal(100)
     assert not hasattr(result.trace, "hf_iteration_tolerance_mm")
@@ -326,9 +340,9 @@ def test_engine_trace_has_pair_decisions_and_no_fabricated_iteration_settings(
     (
         ("0", "1", False),
         ("2000", "1", False),
-        ("2500", "1.05", True),
-        ("4000", "1.2", True),
-        ("5000", "1.3", True),
+        ("3800", "1.75", True),
+        ("6600", "4", True),
+        ("9900", "8", True),
     ),
 )
 def test_a2_altitude_applies_after_clearance_maximum(
@@ -353,8 +367,8 @@ def test_a2_altitude_applies_after_clearance_maximum(
         )
         assert step.source_cells == (
             "2000/clearance_factor",
-            "3000/clearance_factor",
-        ) or altitude_m in {"4000", "5000"}
+            "4400/clearance_factor",
+        ) or altitude_m in {"6600", "9900"}
     else:
         step = next(
             item
@@ -370,7 +384,7 @@ def test_a2_altitude_outside_reviewed_range_blocks(
 ) -> None:
     with pytest.raises(HighFrequencyCalculationError) as caught:
         calculate_pair(
-            case_factory(frequency_hz="30000", altitude_m="5000.1"),
+            case_factory(frequency_hz="30000", altitude_m="9900.1"),
             semantic_part4_rules,
         )
 
@@ -436,12 +450,12 @@ def test_table2_is_inactive_at_30_khz_and_clamps_first_frequency_band(
     assert select_part4_table2_creepage(boundary, semantic_part4_rules) is None
     candidate = select_part4_table2_creepage(active, semantic_part4_rules)
     assert candidate is not None
-    assert candidate.steps[-2].source_cells == ("0.8/30-100 kHz",)
+    assert candidate.steps[-2].source_cells == ("0.88/band-1",)
 
 
 @pytest.mark.parametrize(
     ("frequency_hz", "pollution", "expected"),
-    (("200000", 1, "6"), ("200000", 2, "7.2"), ("300000", 2, "9.0")),
+    (("220000", 1, "6"), ("220000", 2, "7.2"), ("330000", 2, "9.0")),
 )
 def test_table2_frequency_policy_and_pollution_multiplier(
     frequency_hz: str,
@@ -468,7 +482,7 @@ def test_table2_frequency_policy_and_pollution_multiplier(
 
 @pytest.mark.parametrize(
     ("frequency_hz", "peak_v"),
-    (("3000001", "500"), ("200000", "1001")),
+    (("3300001", "500"), ("220000", "1101")),
 )
 def test_table2_supported_range_blocks(
     frequency_hz: str,
@@ -494,7 +508,7 @@ def test_table2_can_govern_over_f5_and_clearance_floor(
 ) -> None:
     result = calculate_pair(
         case_factory(
-            frequency_hz="700000",
+            frequency_hz="770000",
             construction_type=ConstructionType.PRINTED_WIRING,
             long_term_rms_v=PairVoltage.applicable(Decimal(100)),
             temporary_overvoltage_peak_v=PairVoltage.applicable(Decimal(800)),

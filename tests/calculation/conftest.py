@@ -1,3 +1,14 @@
+"""Rule packages for the calculation suite, invented end to end.
+
+Every axis key, cell value and equation constant below is made up for the test
+suite: repeated-digit numbers that no source table could carry. The packages
+keep the *shape* the real ones have - the same table and formula identities,
+selection modes, branch vocabularies and range declarations - because that is
+what the engine routes on. The altitude table is the one place where the first
+row and its factor are not free: the A.2 rule validator in the engine dictates
+both, so they are shape here too, not data.
+"""
+
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -94,7 +105,7 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
     f2 = table(
         "iec60664-1-f2",
         "impulse_withstand_kv",
-        tuple(map(Decimal, ("0.5", "0.8", "1.0", "1.5", "2.5"))),
+        tuple(map(Decimal, ("0.11", "0.22", "1.1", "2.2", "9.9"))),
         "clearance_branch",
         (
             "case_a_pd1_mm",
@@ -108,13 +119,14 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
     f8 = table(
         "iec60664-1-f8",
         "peak_voltage_kv",
-        tuple(map(Decimal, ("0.3", "0.5", "0.8", "1.0", "1.6", "2.5", "3.0", "4.0"))),
+        tuple(map(Decimal, ("0.22", "0.44", "0.88", "1.1", "2.2", "4.4", "7.7", "9.9"))),
         "field_case",
         ("case_a_mm", "case_b_mm"),
     )
     a2_source = source.model_copy(update={"table": "A.2"})
-    a2_rows = tuple(map(Decimal, ("2000", "3000", "4000", "5000")))
-    a2_values = tuple(map(Decimal, ("1", "1.1", "1.2", "1.3")))
+    # First row and first factor: dictated by the engine's A.2 validator.
+    a2_rows = tuple(map(Decimal, ("2000", "4400", "6600", "9900")))
+    a2_values = tuple(map(Decimal, ("1", "2", "4", "8")))
     a2 = Table(
         id="iec60664-1-a2",
         unit="1",
@@ -159,8 +171,8 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
         row_axis=TableAxis(
             id="peak_voltage_kv",
             unit="kV",
-            values=tuple(map(Decimal, ("2.5", "3", "4"))),
-            labels=("2.5", "3", "4"),
+            values=tuple(map(Decimal, ("1.1", "3.3", "9.9"))),
+            labels=("1.1", "3.3", "9.9"),
         ),
         column_axis=TableAxis(
             id="partial_discharge_advice",
@@ -177,14 +189,14 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
                 source=f9_source.model_copy(update={"row": voltage, "column": "case_a_mm"}),
             )
             for index, (voltage, value) in enumerate(
-                zip(("2.5", "3", "4"), map(Decimal, ("2", "3.2", "11")), strict=True)
+                zip(("1.1", "3.3", "9.9"), map(Decimal, ("1.1", "2.2", "9.9")), strict=True)
             )
         ),
         supported_ranges=(
             SupportedRange(
                 variable="peak_voltage_kv",
-                minimum=Decimal("2.5"),
-                maximum=Decimal(4),
+                minimum=Decimal("1.1"),
+                maximum=Decimal("9.9"),
                 unit="kV",
                 source=f9_source,
             ),
@@ -193,13 +205,13 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
         source=f9_source,
     )
     f5_source = source.model_copy(update={"table": "F.5"})
-    f5_rows = tuple(map(Decimal, ("10", "100", "1000", "3200", "4000")))
+    f5_rows = tuple(map(Decimal, ("11", "110", "1100", "3300", "9900")))
     f5_values = (
-        ("0.025", "0.040"),
-        ("0.100", "0.160"),
-        ("3.2", "5.0"),
-        ("12.5", "16.0"),
-        ("16.0", "20.0"),
+        ("0.11", "0.22"),
+        ("1.1", "2.2"),
+        ("3.3", "6.6"),
+        ("5.5", "11"),
+        ("11", "33"),
     )
     f5 = Table(
         id="iec60664-1-f5",
@@ -354,8 +366,8 @@ def semantic_part4_rules(
         row_axis=TableAxis(
             id="peak_voltage_kv",
             unit="kV",
-            values=tuple(map(Decimal, ("0.5", "0.8", "1.0", "1.6"))),
-            labels=("0.5", "0.8", "1.0", "1.6"),
+            values=tuple(map(Decimal, ("0.22", "0.88", "1.1", "2.2"))),
+            labels=("0.22", "0.88", "1.1", "2.2"),
         ),
         column_axis=TableAxis(
             id="clearance_branch",
@@ -372,14 +384,18 @@ def semantic_part4_rules(
                 source=table_source.model_copy(update={"row": label, "column": "clearance"}),
             )
             for index, (label, value) in enumerate(
-                zip(("0.5", "0.8", "1.0", "1.6"), map(Decimal, ("1", "2", "3", "5")), strict=True)
+                zip(
+                    ("0.22", "0.88", "1.1", "2.2"),
+                    map(Decimal, ("1.1", "2.2", "3.3", "5.5")),
+                    strict=True,
+                )
             )
         ),
         supported_ranges=(
             SupportedRange(
                 variable="peak_voltage_kv",
-                minimum=Decimal("0.5"),
-                maximum=Decimal("1.6"),
+                minimum=Decimal("0.22"),
+                maximum=Decimal("2.2"),
                 unit="kV",
                 source=table_source,
             ),
@@ -388,9 +404,9 @@ def semantic_part4_rules(
         source=table_source,
     )
     table_2_source = source.model_copy(update={"table": "2", "figure": None})
-    table_2_rows = tuple(map(Decimal, ("0.1", "0.3", "0.5", "0.8", "1.0")))
+    table_2_rows = tuple(map(Decimal, ("0.11", "0.22", "0.55", "0.88", "1.1")))
     table_2_frequencies = tuple(
-        map(Decimal, ("100000", "200000", "400000", "700000", "1000000", "2000000", "3000000"))
+        map(Decimal, ("110000", "220000", "440000", "770000", "1100000", "2200000", "3300000"))
     )
     table_2 = Table(
         id="iec60664-4-table-2",
@@ -405,15 +421,7 @@ def semantic_part4_rules(
             id="frequency_hz",
             unit="Hz",
             values=table_2_frequencies,
-            labels=(
-                "30-100 kHz",
-                "200 kHz",
-                "400 kHz",
-                "700 kHz",
-                "1 MHz",
-                "2 MHz",
-                "3 MHz",
-            ),
+            labels=tuple(f"band-{index + 1}" for index in range(len(table_2_frequencies))),
         ),
         cells=tuple(
             TableCell(
@@ -473,7 +481,7 @@ def semantic_part4_rules(
 
     critical = scalar_formula(
         "iec60664-4-equation-1-critical-frequency",
-        Divide(numerator=Literal(value=Decimal("0.2")), denominator=Variable(name="clearance_mm")),
+        Divide(numerator=Literal(value=Decimal("1.1")), denominator=Variable(name="clearance_mm")),
         "MHz",
         ("clearance_mm",),
     )
@@ -508,7 +516,7 @@ def semantic_part4_rules(
                                 )
                             ),
                         ),
-                        Literal(value=Decimal(25)),
+                        Literal(value=Decimal(99)),
                     )
                 ),
             )
@@ -518,7 +526,7 @@ def semantic_part4_rules(
     )
     minimum = scalar_formula(
         "iec60664-4-minimum-frequency",
-        Literal(value=Decimal(3)),
+        Literal(value=Decimal("9.9")),
         "MHz",
         (),
     )
@@ -530,7 +538,7 @@ def semantic_part4_rules(
                 numerator=Variable(name="radius_mm"),
                 denominator=Variable(name="clearance_mm"),
             ),
-            right=Literal(value=Decimal("0.2")),
+            right=Literal(value=Decimal("0.55")),
         ),
         "bool",
         ("radius_mm", "clearance_mm"),
