@@ -4,6 +4,8 @@
 /rule-workspaces/
 /rule-audits/
 *.icrules
+*.icdraft
+*.icdraft.partial
 
 # Engineering project files and generated reports
 *.icproj

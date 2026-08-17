@@ -52,6 +52,23 @@ from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as
 from insulation_coordination.rules.importer.iec62477_2022.inventory import EDITION, STANDARD
 
 
+def claimed_standards(package: RulePackage) -> set[str]:
+    """Every standard identity a package attributes its content to."""
+    return {
+        item.source.standard
+        for group in (
+            package.tables,
+            package.formulas,
+            package.mappings,
+            package.decisions,
+            package.procedures,
+            package.guidance,
+            package.curves,
+        )
+        for item in group
+    } | {document.standard for document in package.manifest.source_documents}
+
+
 def synthetic_rule_package() -> RulePackage:
     reference = SourceReference(
         document_id="synthetic-source",

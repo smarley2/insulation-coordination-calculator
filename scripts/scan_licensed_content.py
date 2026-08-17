@@ -38,7 +38,7 @@ SKIP_DIRECTORIES = {
     "build",
     "standards",
 }
-PRIVATE_SUFFIXES = {".pdf", ".icrules", ".icproj", ".pyc"}
+PRIVATE_SUFFIXES = {".pdf", ".icrules", ".icdraft", ".icproj", ".pyc"}
 PRIVATE_NAMES = {"audit-inventory.json"}
 TEXT_SUFFIXES = {".md", ".tex", ".json", ".yaml", ".yml", ".txt"}
 

@@ -40,14 +40,14 @@ def _frequency_columns() -> tuple[TableColumnSpec, ...]:
     declared here.
     """
     columns = _columns(
-        ("peak_voltage_kv", "Peak voltage", 0, "axis", "kV"),
-        ("frequency_30_100_khz_mm", "creepage distance for frequency band 1", 1, "data", "mm"),
-        ("frequency_200_khz_mm", "creepage distance for frequency band 2", 2, "data", "mm"),
-        ("frequency_400_khz_mm", "creepage distance for frequency band 3", 3, "data", "mm"),
-        ("frequency_700_khz_mm", "creepage distance for frequency band 4", 4, "data", "mm"),
-        ("frequency_1_mhz_mm", "creepage distance for frequency band 5", 5, "data", "mm"),
-        ("frequency_2_mhz_mm", "creepage distance for frequency band 6", 6, "data", "mm"),
-        ("frequency_3_mhz_mm", "creepage distance for frequency band 7", 7, "data", "mm"),
+        ("peak_voltage_kv", "peak voltage entering this table", 0, "axis", "kV"),
+        ("frequency_30_100_khz_mm", "creepage for frequency band column 1", 1, "data", "mm"),
+        ("frequency_200_khz_mm", "creepage for frequency band column 2", 2, "data", "mm"),
+        ("frequency_400_khz_mm", "creepage for frequency band column 3", 3, "data", "mm"),
+        ("frequency_700_khz_mm", "creepage for frequency band column 4", 4, "data", "mm"),
+        ("frequency_1_mhz_mm", "creepage for frequency band column 5", 5, "data", "mm"),
+        ("frequency_2_mhz_mm", "creepage for frequency band column 6", 6, "data", "mm"),
+        ("frequency_3_mhz_mm", "creepage for frequency band column 7", 7, "data", "mm"),
     )
     return tuple(
         column
@@ -166,8 +166,8 @@ RECIPE = StandardRecipe(
                 ),
             ),
             columns=_columns(
-                ("peak_voltage_kv", "Peak voltage", 0, "axis", "kV"),
-                ("clearance_mm", "Clearance", 1, "data", "mm"),
+                ("peak_voltage_kv", "peak voltage entering this table", 0, "axis", "kV"),
+                ("clearance_mm", "clearance on the same row", 1, "data", "mm"),
             ),
         ),
         TableAuditSpec(

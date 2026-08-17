@@ -7,12 +7,17 @@ line references, detection classes, and neutral descriptions only. It never
 restates a licensed value, heading, note, or clause wording; classification
 of any entry against the licensed source happens in private sessions only.
 
-- Date: 2026-08-13
+- First audited: 2026-08-13. Reconciled: 2026-08-17, after Tasks 5, 6 and 7.
 - Command: `uv run python scripts/scan_licensed_content.py .`
-- Scanner totals: inline-factor=2, inline-threshold=7, numeric-series=41,
-  source-like-text=28, synthetic-iec-source=2, text-numeric-series=3,
-  value-near-table-id=26
-- Tracked private artifacts (`.pdf`, `.icrules`, `.icproj`,
+- Scanner totals when first audited: inline-factor=2, inline-threshold=7,
+  numeric-series=41, source-like-text=28, synthetic-iec-source=2,
+  text-numeric-series=3, value-near-table-id=26 (109 findings).
+- Scanner totals now: inline-factor=2, inline-threshold=7, numeric-series=43,
+  source-like-text=5, synthetic-iec-source=2, text-numeric-series=2
+  (61 findings). Every `value-near-table-id` finding is resolved; the
+  `numeric-series` count rose because the fixture rewrite in Task 5 split some
+  containers, not because new content was added.
+- Tracked private artifacts (`.pdf`, `.icrules`, `.icproj`, `.icdraft`,
   `audit-inventory.json`): none, in the current tree and in the full history.
 
 ## Assessment vocabulary
@@ -53,9 +58,11 @@ in-flight #53 workstream.
 
 | Location | Class | Description | Assessment |
 | --- | --- | --- | --- |
-| `src/insulation_coordination/rules/importer/recipes/iec60664_1_2020.py:145,150-155,207-216,255,297,300,342` | source-like-text | Sentence-case column headings instead of neutral lowercase descriptions | confirmed (finding F); wording match to the source must be checked privately |
+| `src/insulation_coordination/rules/importer/recipes/iec60664_1_2020.py:145,150-155,207-216,255,297,300,342` | source-like-text | Sentence-case column headings instead of neutral lowercase descriptions | resolved (Task 7; all 25 headings rewritten, private check confirmed every removed label occurred verbatim in the source and no replacement does) |
 | `src/insulation_coordination/rules/importer/recipes/iec60664_1_2020.py:104,347` | numeric-series | Page numbers, bounding boxes, row/column geometry, expected counts | allowed-structural |
-| `src/insulation_coordination/rules/importer/recipes/iec60664_4_2005.py:43,128,169,272` | source-like-text | Sentence-case column headings instead of neutral lowercase descriptions | confirmed (finding F) |
+| `src/insulation_coordination/rules/importer/recipes/iec60664_4_2005.py:43,169` | source-like-text | Sentence-case column headings instead of neutral lowercase descriptions | resolved (Task 7; all 10 headings rewritten) |
+| `src/insulation_coordination/rules/importer/recipes/iec60664_4_2005.py:128` | source-like-text | An `identity_anchors` entry, substring-matched against the document's own cover text at `identify.py:745` | allowed-structural (reclassified in Task 7: the document's identity string is permitted, and rewording it breaks identity verification — same class as the `Edition` prefix the scanner already exempts) |
+| `src/insulation_coordination/rules/importer/recipes/iec60664_4_2005.py:272` | source-like-text | A `figure=` locator, confirmed absent from the source and therefore author-invented | false-positive (reclassified in Task 7; left unchanged on purpose — `figure=` flows into `SourceReference` and the rule digest, so relabelling it would force a re-extraction for a cosmetic gain) |
 | `src/insulation_coordination/rules/importer/recipes/iec60664_4_2005.py:131,211` | numeric-series | Structural extraction geometry | allowed-structural |
 | `src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/clauses.py:30` | numeric-series | Structural extraction geometry | allowed-structural |
 | `src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/clauses.py:63,65` | source-like-text | Error-message strings, not source text | false-positive |
@@ -70,15 +77,13 @@ in-flight #53 workstream.
 
 | Location | Class | Description | Assessment |
 | --- | --- | --- | --- |
-| `tests/calculation/conftest.py:97,111,196,197,391,393` | numeric-series | Fixture axis series and cell values attached to real annex-table locators | confirmed (finding C); exact-match extent is a private check |
-| `tests/calculation/conftest.py:115-154` | manual | Altitude axis rows and factors attached to a real annex-table locator (below series threshold) | confirmed (finding C) |
-| `tests/calculation/conftest.py:155-194` | manual | Advisory-table axis and cells attached to a real annex-table locator | confirmed (finding C) |
-| `tests/calculation/conftest.py:474-537` | manual | Formula constants attached to IEC 60664-4 equation semantics | verify-private |
-| `tests/calculation/test_high_frequency.py:138,159,326,444` | numeric-series | Parametrized expectations bound to IEC 60664-4 semantic behavior | verify-private (moves with the conftest fixtures) |
-| `tests/calculation/test_part1.py:183` | numeric-series | Expected outputs derived from the synthetic cell scheme | synthetic-ok; re-check during Task 5 |
-| `tests/domain/test_display.py:67` | numeric-series | Display expectations that include formula constants near Part 4 semantics | verify-private |
+| `tests/calculation/conftest.py` (axis series, cells, altitude and advisory tables, equation constants) | numeric-series, manual | Fixture data formerly taken from real annex tables | resolved (Task 5; data invented, expectations re-derived from the algorithm rather than from output). Remaining `numeric-series` hits are `synthetic-ok`: the heuristic fires on any large numeric container in a file naming an IEC identifier, and these files must keep those identifiers because the engine looks rules up by exactly those strings |
+| `tests/calculation/conftest.py` (A.2 first row and first factor) | manual | Structure the engine's own A.2 validator enforces, not free fixture data | allowed-structural (Task 5; marked as structure in the fixture module and in a comment — inventing it would fail validation) |
+| `tests/calculation/test_high_frequency.py` | numeric-series | Parametrized expectations bound to the conftest fixtures | resolved (Task 5; moved with the fixtures, re-derived) |
+| `tests/calculation/test_part1.py:183` | numeric-series | Expected outputs derived from the synthetic cell scheme | synthetic-ok (re-checked in Task 5: reads the part 1 package's already-invented cells) |
+| `tests/domain/test_display.py:67` | numeric-series | Display expectations that included formula constants near Part 4 semantics | resolved (Task 5; the file no longer carries an IEC identifier and clears the scanner outright) |
 | `tests/fixtures/synthetic_rules.py:89,252,409,634,1082` | numeric-series | Project-invented axes, cells, and curve points | synthetic-ok |
-| `tests/fixtures/synthetic_rules.py:1029,1246` | synthetic-iec-source | Synthetic package claims a real IEC standard identity as its source reference | confirmed (scanner class 5); resolve with Task 5 fixture policy |
+| `tests/fixtures/synthetic_rules.py:1029,1246` | synthetic-iec-source | The DVC fixture package claims a real IEC standard identity as its source reference | open, deliberately not forced (Task 5). `DvcGuidanceService` refuses any package whose rules lack the expected standard **and** edition, so the fixture must carry that identity for the accept path to exist; dropping it would delete about twenty tests including the refusal case that proves the gate. The fixture references the production constant rather than a literal and marks itself synthetic. Needs either an audit policy decision (assess `synthetic-ok`, naming the gate) or an injectable identity in `src/`. The exception is written into `tests/test_content_boundaries.py`'s docstring so it cannot rot |
 | `tests/fixtures/topology_examples.py:69` | numeric-series | Synthetic project input triples | synthetic-ok |
 | `tests/rules/importer/iec62477_2022/test_annex_f_recipes.py:107-109` | numeric-series | Page numbers and expected grid shapes | allowed-structural |
 | `tests/rules/test_evaluator.py:616` | numeric-series | Synthetic trace-formatting expectations | synthetic-ok |
@@ -117,13 +122,19 @@ here instead of being asserted by `tests/test_content_boundaries.py`:
 - UI option lists supplied entirely by a rules package (Task 3; blocked on
   #34 slice D content).
 - Reinforced policy values supplied entirely by a rules package (Task 4).
-- Public fixtures free of real table axes/cells (Task 5).
-- Public docs/README free of normative statements (Task 6; the confirmed
-  Documents-section entries above are resolved, README restructuring stays
-  with issue #41).
-- Neutralized importer recipe labels (Task 7; collides with in-flight #53).
 - The scanner running with `--strict` in CI (Task 8 remainder/Task 11; only
   after the migrations above land).
+
+Done since the first audit:
+
+- Public fixtures free of real table axes/cells (Task 5), except the one
+  documented DVC identity exception above.
+- Public docs/README free of normative statements (Task 6; README
+  restructuring stays with issue #41).
+- Neutralized importer recipe labels (Task 7). Package identity is unchanged:
+  `TableColumnSpec.heading` has exactly one consumer, the review dialog, and
+  never reaches an extracted rule or a canonical hash — so no importer version
+  bump and no re-extraction were required.
 
 ## Input to the git-history decision (Task 10)
 
