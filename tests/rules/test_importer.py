@@ -177,6 +177,24 @@ def test_no_part4_column_hardcodes_a_licensed_axis_value() -> None:
     assert all(column.axis_value_source_row is not None for column in frequency_columns)
 
 
+@pytest.mark.parametrize("recipe", (PART1_RECIPE, PART4_RECIPE), ids=("part1", "part4"))
+def test_no_60664_column_heading_repeats_source_wording(recipe: StandardRecipe) -> None:
+    """Headings describe a column's role in the lookup; a digit may only index a column.
+
+    Asserted as a shape, never as expected text: pinning the wording here would make the
+    test a second place a heading lives, and the next rewrite would have to edit both.
+    Mirrors the equivalent guard over the 62477 annex recipes.
+    """
+    for spec in recipe.tables:
+        for column in spec.columns:
+            assert column.heading == column.heading.strip()
+            assert column.heading == column.heading.lower()
+            assert 0 < len(column.heading) <= 60
+            assert not any(sign in column.heading for sign in ("≤", "<", ">", "="))
+            digits = [word for word in column.heading.split() if any(c.isdigit() for c in word)]
+            assert digits in ([], [str(column.source_column)])
+
+
 def _test_recipes() -> tuple[StandardRecipe, StandardRecipe, StandardRecipe]:
     def recipe(
         *,
