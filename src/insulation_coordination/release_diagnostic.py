@@ -8,11 +8,13 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
-from insulation_coordination.calculation.engine import calculate_pair
+from insulation_coordination.calculation.engine import (
+    calculate_project_pair,
+    derive_project_supply,
+)
 from insulation_coordination.calculation.grouping import group_results
 from insulation_coordination.domain.project import FrozenModel, Project
 from insulation_coordination.project.persistence import load_project
-from insulation_coordination.project.resolver import resolve_effective_case
 from insulation_coordination.report.compiler import compile_pdf
 from insulation_coordination.report.latex import render_latex
 from insulation_coordination.report.model import build_report_model
@@ -67,8 +69,9 @@ def render_release_tex(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     try:
+        supply = derive_project_supply(project, rules)
         results = tuple(
-            calculate_pair(resolve_effective_case(project.defaults, pair), rules)
+            calculate_project_pair(project, pair, rules, supply=supply)
             for pair in project.pairs
             if not pair.is_excluded
         )

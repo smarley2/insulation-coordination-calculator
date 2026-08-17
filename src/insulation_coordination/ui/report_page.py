@@ -24,7 +24,8 @@ from PySide6.QtWidgets import (
 from insulation_coordination.calculation.engine import (
     CalculationError,
     PairResult,
-    calculate_pair,
+    calculate_project_pair,
+    derive_project_supply,
 )
 from insulation_coordination.calculation.grouping import (
     CalculationGroup,
@@ -35,7 +36,6 @@ from insulation_coordination.calculation.grouping import (
 from insulation_coordination.domain.display import group_label, pair_label
 from insulation_coordination.domain.project import Project
 from insulation_coordination.domain.rules import RulePackage
-from insulation_coordination.project.resolver import resolve_effective_case
 from insulation_coordination.report.compiler import CompilerCommand, compile_pdf
 from insulation_coordination.report.latex import render_latex
 from insulation_coordination.report.model import ReportBuildError, build_report_model
@@ -299,12 +299,23 @@ class ReportPage(QWidget):
             return
         results: list[PairResult] = []
         blocking: list[str] = []
-        for pair in self._project.pairs:
+        supply = None
+        derivable = True
+        try:
+            supply = derive_project_supply(self._project, self._rules)
+        except CalculationError as error:
+            # A project that asks for a derivation and cannot have one is blocked whole. No
+            # pair is dimensioned from its manual entries instead: that would answer a
+            # question nobody asked and look like a report.
+            derivable = False
+            blocking.append(f"Supply stresses cannot be derived: {error}")
+        for pair in self._project.pairs if derivable else ():
             if pair.is_excluded:
                 continue
             try:
-                effective = resolve_effective_case(self._project.defaults, pair)
-                results.append(calculate_pair(effective, self._rules))
+                results.append(
+                    calculate_project_pair(self._project, pair, self._rules, supply=supply)
+                )
             except CalculationError as error:
                 blocking.append(f"{pair_label(self._project, pair)}: {error}")
         self._results = tuple(results)

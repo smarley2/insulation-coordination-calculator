@@ -1457,6 +1457,19 @@ def synthetic_supply_rule_package(*, edition: str = EDITION) -> RulePackage:
                         column_mode="exact",
                     ),
                     unit="V",
+                    # Declared because a formula naming variables and no parameter set fails
+                    # the whole-package validation gate the clearance engine runs, and a real
+                    # installation carries the supply rules and the clearance rules together.
+                    parameter_sets=(
+                        ParameterSet(
+                            id=f"{base_id}.{form}.parameters",
+                            parameters=(
+                                Parameter(name=row_axis_id, unit="V"),
+                                Parameter(name=column_axis_id, unit="1"),
+                            ),
+                            source=reference,
+                        ),
+                    ),
                     latex="U_{synthetic} = f(U_{sys}, k)",
                     applicability="Synthetic fixture only.",
                     source=reference,

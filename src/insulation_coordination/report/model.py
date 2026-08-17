@@ -22,6 +22,8 @@ from insulation_coordination.calculation.engine import (
     PairResult,
     VerificationRequirement,
     calculate_pair,
+    derive_project_supply,
+    resolve_supply_effective_case,
 )
 from insulation_coordination.calculation.grouping import CalculationGroup, calculation_signature
 from insulation_coordination.calculation.high_frequency import FieldIteration
@@ -54,7 +56,6 @@ from insulation_coordination.project.image_attachments import (
     ImageAttachmentError,
     stage_report_image,
 )
-from insulation_coordination.project.resolver import resolve_effective_case
 from insulation_coordination.rules.validation import validate_rule_package
 
 
@@ -305,15 +306,19 @@ def build_report_model(
     supplied_by_pair = {str(result.pair_id): result for result in results}
     pair_by_id = {str(pair.id): pair for pair in project.pairs}
     authoritative_by_pair: dict[str, PairResult] = {}
+    try:
+        supply = derive_project_supply(project, rules)
+    except CalculationError as error:
+        raise ReportBuildError(f"supply stresses cannot be derived: {error}") from error
     for pair_id in project_pair_ids:
         pair = pair_by_id[pair_id]
-        expected_effective = resolve_effective_case(project.defaults, pair)
+        expected_effective, resolution = resolve_supply_effective_case(project, pair, supply)
         supplied = supplied_by_pair[pair_id]
         if supplied.effective_inputs != _effective_snapshot(expected_effective):
             raise ReportBuildError(f"pair {pair_id} effective input snapshot is stale")
         _validate_result(supplied, rules_identity)
         try:
-            authoritative = calculate_pair(expected_effective, rules)
+            authoritative = calculate_pair(expected_effective, rules, supply=resolution)
         except CalculationError as error:
             raise ReportBuildError(f"pair {pair_id} is blocked: {error}") from error
         if supplied != authoritative:

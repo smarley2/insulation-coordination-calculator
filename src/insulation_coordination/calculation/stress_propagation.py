@@ -45,6 +45,10 @@ from itertools import combinations
 from typing import Final
 from uuid import UUID
 
+from insulation_coordination.calculation.clearance import (
+    CalculationRangeError,
+    apply_reinforced_stress_treatment,
+)
 from insulation_coordination.calculation.impulse_override import (
     OverrideOutcome,
     PairImpulseOverride,
@@ -97,6 +101,7 @@ TRANSFER_UNSTATED_WARNING: Final = "supply_transfer_unstated"
 CONNECTION_UNSTATED_WARNING: Final = "supply_connection_unstated"
 REDUNDANT_BARRIER_WARNING: Final = "supply_barrier_bypassed"
 TOV_ENTRY_CONTRADICTS_WARNING: Final = "supply_pair_tov_entry_contradicts_derivation"
+TREATMENT_UNAVAILABLE_WARNING: Final = "supply_insulation_treatment_unavailable"
 
 #: This application's overvoltage categories in the package's own words, and back again.
 _RULE_CATEGORIES: Final[Mapping[OvervoltageCategory, str]] = {
@@ -230,9 +235,8 @@ class EffectivePairStressResolution(FrozenModel):
 
     The stages are kept apart rather than collapsed because each answers a different question
     a reviewer asks: what the supply itself required, what the pair's own domain had, what
-    arrived from elsewhere, what governed before anyone intervened, and what a verified
-    override made of it. The insulation treatment that follows is the clearance engine's and
-    is not applied here.
+    arrived from elsewhere, what governed before anyone intervened, what a verified override
+    made of it, and what the pair's own insulation class asks of that.
     """
 
     pair_id: UUID
@@ -250,8 +254,14 @@ class EffectivePairStressResolution(FrozenModel):
     transferred_impulse_v: DecimalValue | None = None
     #: What governs before any override: the worst of the two sides.
     governing_pre_override_impulse_v: DecimalValue | None = None
-    #: What governs after one. Equal to the pre-override value when no override applied.
+    #: What governs after one. Equal to the pre-override value when no override applied. This
+    #: is the value the clearance engine is handed, and it is deliberately untreated.
     verified_effective_impulse_v: DecimalValue | None = None
+    #: The same value once the pair's insulation class has been treated. Reported, never
+    #: consumed: the engine applies that treatment itself, to the untreated value above, so
+    #: this figure exists to be read beside the others and feeding it back to the engine is
+    #: exactly what applying the treatment twice would look like.
+    insulation_treated_impulse_v: DecimalValue | None = None
     override_outcome: OverrideOutcome | None = None
     temporary_overvoltage: PairTemporaryOvervoltage
     warnings: tuple[CalculationWarning, ...] = ()
@@ -806,13 +816,19 @@ def resolve_pair_stresses(
             )
         )
 
-    outcome = _apply_override(project, pair, override, rules, stresses, governing)
+    insulation = resolve_effective_case(project.defaults, pair).insulation_type.value
+    outcome = _apply_override(project, pair, override, rules, stresses, governing, insulation)
     if outcome is not None:
         warnings.extend(outcome.warnings)
         steps.extend(outcome.trace_steps)
     effective = (
         outcome.effective_impulse_v if outcome is not None and outcome.applied else governing
     )
+    treated, treatment_step, treatment_warning = _insulation_treated(effective, insulation)
+    if treatment_step is not None:
+        steps.append(treatment_step)
+    if treatment_warning is not None:
+        warnings.append(treatment_warning)
 
     temporary = _temporary_overvoltage(pair, relationship, stresses, blocked=blocked)
     if temporary.contradicted_derived_peak_v is not None:
@@ -831,6 +847,7 @@ def resolve_pair_stresses(
         transferred_impulse_v=transferred,
         governing_pre_override_impulse_v=governing,
         verified_effective_impulse_v=effective,
+        insulation_treated_impulse_v=treated,
         override_outcome=outcome,
         temporary_overvoltage=temporary,
         warnings=tuple(warnings),
@@ -926,11 +943,10 @@ def _apply_override(
     rules: SupplyRuleSet,
     stresses: tuple[DomainStress, ...],
     governing: Decimal | None,
+    insulation: InsulationType | None,
 ) -> OverrideOutcome | None:
     if override is None:
         return None
-    effective = resolve_effective_case(project.defaults, pair)
-    insulation: InsulationType | None = effective.insulation_type.value
     return resolve_impulse_override(
         project,
         pair,
@@ -940,6 +956,34 @@ def _apply_override(
         insulation_type=insulation,
         mains_supplied=_is_mains_supplied(stresses),
     )
+
+
+def _insulation_treated(
+    effective_impulse: Decimal | None,
+    insulation: InsulationType | None,
+) -> tuple[Decimal | None, TraceStep | None, CalculationWarning | None]:
+    """What the pair's insulation class makes of the effective impulse, for a reader.
+
+    The treatment itself belongs to the clearance engine and is applied there, once, to the
+    untreated value this resolution hands over. Reproducing it here through the engine's own
+    function rather than restating the arithmetic is what keeps the reported figure and the
+    dimensioned one from drifting apart, and a class that treats nothing simply reports the
+    value unchanged with no step to explain.
+    """
+
+    if effective_impulse is None or insulation is None:
+        return None, None, None
+    try:
+        treated, step = apply_reinforced_stress_treatment(
+            effective_impulse, kind=insulation, treatment="impulse"
+        )
+    except CalculationRangeError as error:
+        return (
+            None,
+            None,
+            CalculationWarning(code=TREATMENT_UNAVAILABLE_WARNING, message=str(error)),
+        )
+    return treated, step, None
 
 
 def _is_mains_supplied(stresses: tuple[DomainStress, ...]) -> bool:
@@ -1073,6 +1117,7 @@ __all__ = [
     "REDUNDANT_BARRIER_WARNING",
     "TOV_ENTRY_CONTRADICTS_WARNING",
     "TRANSFER_UNSTATED_WARNING",
+    "TREATMENT_UNAVAILABLE_WARNING",
     "UNATTACHED_SCENARIO_WARNING",
     "UNRESOLVED_TOPOLOGY_WARNING",
     "DomainSourceStress",
