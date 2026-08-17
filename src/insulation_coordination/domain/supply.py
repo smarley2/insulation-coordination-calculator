@@ -33,6 +33,7 @@ from uuid import UUID
 
 from pydantic import Field, model_validator
 
+from insulation_coordination.domain.enums import NetClassType
 from insulation_coordination.domain.frozen_model import FrozenModel
 from insulation_coordination.domain.quantities import DecimalValue, PositiveDecimal
 from insulation_coordination.domain.trace import CalculationWarning, TraceStep
@@ -301,6 +302,11 @@ class DerivedSupplyScenario(FrozenModel):
 
     configuration_id: UUID
     configuration_name: str
+    #: The kind of the configuration this was derived from, carried here because propagation
+    #: reads it after the configuration is out of reach: which side of a two-supply transfer a
+    #: scenario stands on, and which of the two parallel lookup axes a transferred requirement
+    #: is selected from, are both decided by it.
+    supply_kind: SupplyKind
     system_voltage_for_impulse_v: DecimalValue
     system_voltage_for_tov_v: DecimalValue | None
     source_ovc: OvervoltageCategory | None
@@ -400,6 +406,57 @@ class GoverningSupplyStress(FrozenModel):
         return self
 
 
+class PairRelationship(StrEnum):
+    """What kind of insulation one net-class pair is, read from the two nets' types.
+
+    The distinction exists because a mains temporary overvoltage is automatically applicable
+    to one of these and to neither of the others - see
+    :func:`~insulation_coordination.calculation.stress_propagation.resolve_pair_stresses`.
+    """
+
+    CIRCUIT_TO_SURROUNDINGS = "circuit_to_surroundings"
+    CIRCUIT_TO_CIRCUIT = "circuit_to_circuit"
+    NON_CIRCUIT_REFERENCE = "non_circuit_reference"
+
+
+#: The net types that stand for the surroundings of a circuit: the earthed enclosure, an
+#: accessible conductive part, and an accessible insulating surface as the foil laid on it
+#: represents it. Every non-circuit type this application knows is one of them, which is
+#: deliberate - a fourth type would have to state which side of this line it falls on rather
+#: than inherit an answer.
+SURROUNDINGS_NET_TYPES: frozenset[NetClassType] = frozenset(
+    {
+        NetClassType.PE_BONDED_CONDUCTIVE_PART,
+        NetClassType.ACCESSIBLE_CONDUCTIVE_PART,
+        NetClassType.ACCESSIBLE_INSULATING_SURFACE,
+    }
+)
+
+
+def pair_relationship(first: NetClassType, second: NetClassType) -> PairRelationship:
+    """How a pair of these two net types is classified, in either order."""
+
+    circuits = (first is NetClassType.CIRCUIT) + (second is NetClassType.CIRCUIT)
+    if circuits == 2:
+        return PairRelationship.CIRCUIT_TO_CIRCUIT
+    if circuits == 1:
+        return PairRelationship.CIRCUIT_TO_SURROUNDINGS
+    return PairRelationship.NON_CIRCUIT_REFERENCE
+
+
+class SpdDevicePlacement(StrEnum):
+    """Where the surge-protective device or transient limiter behind a reduction sits.
+
+    Neutral application names, mapped to the active package's own vocabulary where the rules
+    are asked. It matters because a device inside the equipment is the manufacturer's to
+    monitor and to type-test, and a device the user installs is not.
+    """
+
+    INTERNAL_TO_EQUIPMENT = "internal_to_equipment"
+    EXTERNAL_TO_EQUIPMENT = "external_to_equipment"
+    BUNDLED_WITH_EQUIPMENT = "bundled_with_equipment"
+
+
 class ImpulseOverrideBasis(StrEnum):
     """Why a pair's impulse stress differs from the value derived and propagated to it.
 
@@ -437,6 +494,14 @@ class VerifiedImpulseOverride(FrozenModel):
     evidence_reference: str
     affected_location: str
     transformer_frequency_hz: PositiveDecimal | None = None
+    #: Where the reducing device sits, and whether it degrades in service. Required by the
+    #: surge-protective-device basis and carried by no other, exactly as the transformer
+    #: frequency is: the monitoring a device owes, and whether a type test of that monitoring
+    #: is owed with it, cannot be asked of the rules without them. Optional in the field
+    #: declaration and mandatory in the validator, so the two are one refusal rather than a
+    #: type error a user never sees.
+    spd_device_placement: SpdDevicePlacement | None = None
+    spd_device_degradable: bool | None = None
 
     @property
     def is_reduction(self) -> bool:
@@ -465,6 +530,17 @@ class VerifiedImpulseOverride(FrozenModel):
             raise ValueError(
                 "Only a high-frequency isolation transformer basis carries a transformer frequency"
             )
+        device = self.basis is ImpulseOverrideBasis.SPD_OR_TRANSIENT_LIMITER
+        stated = (self.spd_device_placement, self.spd_device_degradable)
+        if device and None in stated:
+            raise ValueError(
+                "A surge-protective device basis needs the device's placement and whether it "
+                "degrades in service"
+            )
+        if not device and stated != (None, None):
+            raise ValueError(
+                "Only a surge-protective device basis carries a device placement or degradability"
+            )
         return self
 
 
@@ -472,6 +548,7 @@ __all__ = [
     "BRIDGE_SYSTEM_VOLTAGE_MEASURE",
     "MAINS_SUPPLY_KINDS",
     "PHASELESS_SUPPLY_KINDS",
+    "SURROUNDINGS_NET_TYPES",
     "DeclaredSystemVoltage",
     "DerivedSupplyScenario",
     "EarthingArrangement",
@@ -479,8 +556,10 @@ __all__ = [
     "ImpulseOverrideBasis",
     "InputTopology",
     "OvervoltageCategory",
+    "PairRelationship",
     "PhaseSystem",
     "ReductionVerificationMethod",
+    "SpdDevicePlacement",
     "SupplyConfiguration",
     "SupplyConfigurationProblem",
     "SupplyConfigurationProblemCode",
@@ -490,5 +569,6 @@ __all__ = [
     "UnresolvedSupplyScenario",
     "VerifiedImpulseOverride",
     "normalized_configuration_name",
+    "pair_relationship",
     "validate_supply_configurations",
 ]
