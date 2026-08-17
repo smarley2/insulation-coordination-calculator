@@ -619,7 +619,8 @@ def _require_complete_inventory(draft: DraftRulePackage) -> None:
         )
 
 
-def _require_complete_audit(draft: DraftRulePackage) -> None:
+def _unaudited_content(draft: DraftRulePackage) -> tuple[str, ...]:
+    """Content this draft carries that no extraction or correction record accounts for."""
     audited = {
         record.notes
         for record in draft.manifest.approval_records
@@ -648,8 +649,11 @@ def _require_complete_audit(draft: DraftRulePackage) -> None:
     if isinstance(draft, ImportedRuleDraft):
         required.update(f"equation:{equation.id}" for equation in draft.extracted_equations)
         required.update(f"raw-clause:{fragment.id}" for fragment in draft.raw_clause_fragments)
-    missing = required - audited
-    if missing:
+    return tuple(sorted(required - audited))
+
+
+def _require_complete_audit(draft: DraftRulePackage) -> None:
+    if _unaudited_content(draft):
         raise ApprovalError("draft has incomplete extraction, table, formula, or mapping audits")
 
 
@@ -1148,6 +1152,78 @@ def _clause_fact_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, .
     return tuple(blockers)
 
 
+#: How many missing items of one kind the gate names before it reports a count instead.
+#: A required inventory is two dozen items and an audit trail is a few hundred, and a
+#: review list of hundreds of lines names nothing a maintainer can act on.
+_MAX_NAMED_MISSING = 10
+
+
+def _missing_item_blockers(
+    draft: ImportedRuleDraft,
+    *,
+    code: str,
+    entries: tuple[tuple[str, str], ...],
+    remainder: str,
+) -> tuple[ImportReviewItem, ...]:
+    """One blocker per missing item, truncated to a readable list plus a counted rest."""
+    named = entries[:_MAX_NAMED_MISSING]
+    blockers = [
+        _semantic_blocker(draft, code=code, semantic_id=semantic_id, message=message)
+        for semantic_id, message in named
+    ]
+    if len(entries) > len(named):
+        blockers.append(
+            _semantic_blocker(
+                draft,
+                code=code,
+                semantic_id=draft.manifest.version,
+                message=f"a further {len(entries) - len(named)} {remainder}",
+            )
+        )
+    return tuple(blockers)
+
+
+def _completeness_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
+    """Name the two package-completeness gates approval enforces after this one.
+
+    Approving projects the typed content the recipes declare before it gates, so a draft
+    with content still to project is incomplete by design: judging its inventory here would
+    refuse the very click that fills it. Once nothing is left to project, whatever the
+    inventory or the audit trail still lacks is the maintainer's work, and it belongs in the
+    review list under its own name rather than in an exception raised by the click.
+    """
+    from insulation_coordination.rules.importer.review import (
+        missing_inventory_items,
+        missing_required_content,
+    )
+
+    if missing_required_content(draft):
+        return ()
+    return (
+        *_missing_item_blockers(
+            draft,
+            code="INVENTORY_ITEM_REQUIRED",
+            entries=tuple(
+                (
+                    status.semantic_id,
+                    f"required source item {status.semantic_id} is not approved in this draft",
+                )
+                for status in missing_inventory_items(draft)
+            ),
+            remainder="required source item(s) are not approved in this draft",
+        ),
+        *_missing_item_blockers(
+            draft,
+            code="CONTENT_AUDIT_REQUIRED",
+            entries=tuple(
+                (note, f"content {note} carries no extraction or correction audit record")
+                for note in _unaudited_content(draft)
+            ),
+            remainder="content item(s) carry no extraction or correction audit record",
+        ),
+    )
+
+
 def approval_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
     """Return the one authoritative manual and semantic approval gate."""
     from insulation_coordination.rules.importer.review import (
@@ -1307,6 +1383,7 @@ def approval_blockers(draft: ImportedRuleDraft) -> tuple[ImportReviewItem, ...]:
                         ),
                     )
                 )
+    blockers.extend(_completeness_blockers(draft))
     return tuple(blockers)
 
 
@@ -1387,6 +1464,9 @@ def approve_draft(
             + "; ".join(item.expected_contract for item in blockers)
         )
     _require_source_genesis(draft)
+    # ``approval_blockers`` reports both completeness gates so the button never enables on a
+    # draft they would refuse. They stay here because approval is also reached without a
+    # button, and an approved package that skipped required content is not recoverable.
     _require_complete_inventory(draft)
     _require_complete_audit(draft)
     _require_compatibility_mapping(draft)
