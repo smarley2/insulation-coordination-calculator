@@ -2255,8 +2255,10 @@ def clause_fact_defect(
     Citing the route's own fragment is required *as well as*, never instead of: a statement that
     genuinely rests on a second fragment may cite it too. The ``supply_kind`` check reads
     ``SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE``, the recipe's own declaration of which concrete kind each
-    such route states, and lets ``any_supply_kind`` through on either route: it restricts nothing,
-    so it never contradicts a route the way a concrete, wrong kind does. The isolation check reads
+    such route states. Every field spelling it names one concrete kind -- it is the one dimension of
+    those families that stayed scalar when the rest became scopes, because the route settles it
+    rather than the statement -- so there is no unrestricted reading of it to let through. The
+    isolation check reads
     ``SUPPLY_FACT_ISOLATION_BY_ROUTE`` the same way, through the one dimension a barrier statement
     still spells: a statement naming the connection kind the other scope addresses is refused, which
     is what makes a positive-isolation reading of the unisolated clause unauthorable rather than
@@ -2288,7 +2290,7 @@ def clause_fact_defect(
     fact_supply_kind = getattr(fact, "supply_kind", None)
     if (
         expected_supply_kind is not None
-        and fact_supply_kind in ("mains", "non_mains")
+        and fact_supply_kind is not None
         and fact_supply_kind != expected_supply_kind
     ):
         return f"states supply_kind {fact_supply_kind} where {rule_route} is {expected_supply_kind}"

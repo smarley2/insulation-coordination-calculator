@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from insulation_coordination.domain.rules import RulePackageError, SourceReference
 from insulation_coordination.rules.importer.clause_fact_proposals import (
+    SCOPE_UNRESTRICTED,
     ClauseFactGrammar,
     ClauseFactProposal,
     ClauseKeywordRule,
@@ -59,6 +60,18 @@ def fragment_with_sentences(semantic_id: str, texts: tuple[str, ...]) -> RawClau
     return fragment.model_copy(update={"raw_sha256": canonical_model_sha256(fragment)})
 
 
+def scope_of(wire: str) -> DimensionScope[str]:
+    """One synthetic statement's scope, from the wire form the editor and a proposal both spell.
+
+    Shared by every test module that builds a fact by hand, so those helpers keep taking one string
+    per dimension: ``"*"`` is the unrestricted reading and ``"a|b"`` a set. Parametrized with ``str``
+    and re-validated by the field it is assigned to, which is what refuses a token the family never
+    declared.
+    """
+
+    return DimensionScope[str].model_validate(scope_from_wire(wire))
+
+
 def _keyword(dimension: str, value: str, *keywords: str, without: tuple[str, ...] = ()):
     return ClauseKeywordRule(
         dimension=dimension, value=value, keywords=keywords, excluded_keywords=without
@@ -83,7 +96,9 @@ _GRAMMAR = ClauseFactGrammar(
         _keyword("obligation", "permission", "may"),
         _keyword("dvc_gate", "dvc_as", "DVC", "As"),
         _keyword("dvc_gate", "dvc_b", "DVC", "B"),
-        _keyword("evidence_kind", "any_evidence", "test", "simulation", "calculation"),
+        # The unrestricted reading of a scope dimension, spelled in the scope's own wire form: a
+        # sentence naming every route it accepts restricts the dimension to nothing.
+        _keyword("evidence_kind", SCOPE_UNRESTRICTED, "test", "simulation", "calculation"),
         _keyword("comparison_required", "true", "shall", "shown"),
     ),
     constants={"threshold_reference": "synthetic.threshold.route"},
@@ -234,34 +249,99 @@ def test_a_scalar_dimension_naming_several_values_still_yields_a_draft_per_value
     """The other half: a scalar field cannot carry a set, so its values still multiply.
 
     The scope dimension unions in the same sentence, so this also pins that the two behaviours
-    coexist rather than one replacing the other -- the families whose remaining scalar dimensions
-    state disjunctions gain their own scopes in the later slices.
+    coexist rather than one replacing the other. ``obligation`` is the scalar because it is what a
+    scalar dimension is *for*: a statement is a requirement or a permission, never both, so a
+    sentence carrying both modalities is two candidate readings rather than one over a set.
     """
 
-    grammar = _GRAMMAR.model_copy(
-        update={
-            "keyword_rules": (
-                *_GRAMMAR.keyword_rules,
-                # A second value for the same dimension the same sentence also names.
-                _keyword("evidence_kind", "test", "test"),
-            )
-        }
-    )
     fragment = fragment_with_sentences(
-        ROUTE, ("Synthetic DVC As and DVC B gate shall be shown by test, simulation, calculation.",)
+        ROUTE, ("Synthetic DVC As and DVC B gate shall be shown, and may be relied on.",)
     )
 
     proposals = propose_clause_facts(
         fragment,
         rule_route=ROUTE,
         fact_kind="hf_attenuation",
+        propose=keyword_proposer(_GRAMMAR),
+    )
+
+    assert {(item.chosen["dvc_gate"], item.chosen["obligation"]) for item in proposals} == {
+        ("dvc_as|dvc_b", "requirement"),
+        ("dvc_as|dvc_b", "permission"),
+    }
+
+
+def test_a_rule_may_declare_a_scopes_unrestricted_reading() -> None:
+    """The reading that used to need an ``any_*`` member invented inside the vocabulary.
+
+    A statement restricting a dimension to nothing is a reading, and it is one a declared rule has
+    to be able to reach: without it, an unrestricted reading is prefilled as nothing at all and the
+    reviewer states it by hand on every sentence that makes it. Spelled in the scope's own wire form
+    rather than as a fake vocabulary member, so the fact model's own vocabulary stays exactly the
+    values a statement can name.
+
+    The unrestricted reading wins where a concrete value fires beside it: it is the wider one, so
+    honouring it can never propose something narrower than the declarations matched.
+    """
+
+    grammar = _GRAMMAR.model_copy(
+        update={"keyword_rules": (*_GRAMMAR.keyword_rules, _keyword("dvc_gate", "*", "either"))}
+    )
+    fragment = fragment_with_sentences(
+        ROUTE, ("Synthetic reading for either gate. Synthetic DVC As reading for either gate.",)
+    )
+
+    unrestricted, alongside = propose_clause_facts(
+        fragment, rule_route=ROUTE, fact_kind="hf_attenuation", propose=keyword_proposer(grammar)
+    )
+
+    assert unrestricted.chosen["dvc_gate"] == SCOPE_UNRESTRICTED
+    assert alongside.chosen["dvc_gate"] == SCOPE_UNRESTRICTED
+
+
+def test_a_scalar_dimension_may_not_declare_the_unrestricted_reading() -> None:
+    """It is the scope's own wire form, not a value: on a scalar it would author that literal."""
+
+    with pytest.raises(ValidationError, match="no value"):
+        ClauseFactGrammar(
+            fact_kind="hf_attenuation", keyword_rules=(_keyword("obligation", "*", "synthetic"),)
+        )
+
+
+def test_a_sentence_naming_several_earthing_arrangements_yields_one_draft() -> None:
+    """The duplicate-draft defect, on the last family that was still multiplying.
+
+    Two sentences of the mains system voltage clause each name three earthing arrangements. While
+    ``earthing`` was a scalar with an ``any_*`` token the proposer had no choice but to multiply
+    them: three drafts per sentence, differing in nothing a reviewer could see, and three statements
+    of one reading if they were authored. As a scope it is one draft naming an exact set.
+
+    The designations are the ordinary system-earthing arrangement designations, which the fact
+    model's own vocabulary already spells; the sentence is written for this test.
+    """
+
+    grammar = ClauseFactGrammar(
+        fact_kind="system_voltage",
+        statement_kind="measure",
+        keyword_rules=(
+            _keyword("earthing", "tn", "TN"),
+            _keyword("earthing", "tt", "TT"),
+            _keyword("earthing", "it", "IT"),
+        ),
+    )
+    fragment = fragment_with_sentences(
+        ROUTE, ("Synthetic reading for TN, TT and IT arrangements alike.",)
+    )
+
+    proposals = propose_clause_facts(
+        fragment,
+        rule_route=ROUTE,
+        fact_kind="system_voltage",
+        statement_kind="measure",
         propose=keyword_proposer(grammar),
     )
 
-    assert {(item.chosen["dvc_gate"], item.chosen["evidence_kind"]) for item in proposals} == {
-        ("dvc_as|dvc_b", "any_evidence"),
-        ("dvc_as|dvc_b", "test"),
-    }
+    assert [item.chosen["earthing"] for item in proposals] == ["it|tn|tt"]
 
 
 def test_two_rules_naming_one_value_propose_it_once() -> None:
@@ -725,7 +805,8 @@ def test_a_scope_dimension_is_offered_as_a_scope_over_its_own_vocabulary() -> No
     kinds = {name: (kind, options) for name, kind, options in fact_dimensions("hf_attenuation")}
 
     assert kinds["dvc_gate"] == ("scope", ("dvc_as", "dvc_b"))
-    assert kinds["evidence_kind"][0] == "choice"
+    assert kinds["evidence_kind"] == ("scope", ("test", "simulation", "calculation"))
+    assert kinds["obligation"][0] == "choice"
 
 
 @pytest.mark.parametrize(
@@ -799,7 +880,7 @@ def test_a_keyword_carrying_a_capital_is_matched_case_sensitively() -> None:
 
 
 def test_a_rule_naming_only_exclusions_records_the_unrestricted_reading() -> None:
-    rule = _keyword("purpose", "any_purpose", without=("withstand",))
+    rule = _keyword("purpose", SCOPE_UNRESTRICTED, without=("withstand",))
 
     assert rule.matches("Synthetic reading restricting nothing.") is True
     assert rule.matches("Synthetic withstand reading.") is False

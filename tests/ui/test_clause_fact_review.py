@@ -213,7 +213,7 @@ def _fill_hf_dimensions(dialog: ClauseFactReviewDialog) -> None:
 
     dialog.dimension_combo("obligation").setCurrentText("requirement")
     dialog.choose_scope("dvc_gate", "dvc_as")
-    dialog.dimension_combo("evidence_kind").setCurrentText("test")
+    dialog.choose_scope("evidence_kind", "test")
     dialog.dimension_edit("threshold_reference").setText(ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC)
     dialog.dimension_combo("comparison_required").setCurrentText("true")
 
@@ -646,7 +646,7 @@ def test_authoring_stays_disabled_while_any_dimension_is_unchosen(
     assert dialog.author_button.isEnabled() is False
     dialog.dimension_combo("obligation").setCurrentText("requirement")
     dialog.choose_scope("dvc_gate", "dvc_as")
-    dialog.dimension_combo("evidence_kind").setCurrentText("test")
+    dialog.choose_scope("evidence_kind", "test")
     dialog.dimension_edit("threshold_reference").setText(ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC)
     assert dialog.author_button.isEnabled() is False
     dialog.dimension_combo("comparison_required").setCurrentText("true")
@@ -665,7 +665,7 @@ def test_authoring_stays_disabled_while_no_node_is_selected(
 
     dialog.dimension_combo("obligation").setCurrentText("requirement")
     dialog.choose_scope("dvc_gate", "dvc_as")
-    dialog.dimension_combo("evidence_kind").setCurrentText("test")
+    dialog.choose_scope("evidence_kind", "test")
     dialog.dimension_edit("threshold_reference").setText(ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC)
     dialog.dimension_combo("comparison_required").setCurrentText("true")
 
@@ -763,8 +763,8 @@ def test_a_variant_family_authors_the_kind_the_reviewer_chose(
 
     dialog.choose_statement_kind("applicability")
     dialog.dimension_combo("obligation").setCurrentText("requirement")
-    dialog.dimension_combo("input_topology").setCurrentText("isolated_secondary")
-    dialog.dimension_combo("purpose").setCurrentText("impulse")
+    dialog.choose_scope("input_topology", "isolated_secondary")
+    dialog.choose_scope("purpose", "impulse")
     dialog.dimension_combo("counts_as_system_voltage").setCurrentText("true")
     assert dialog.author_button.isEnabled() is True
     dialog.author_selected()

@@ -143,6 +143,14 @@ class _Fact(FrozenModel):
     obligation: Obligation
 
 
+#: How a supply reaches the equipment. Its own alias because a reviewed scope's vocabulary is read
+#: back out of the annotation -- see ``scope_vocabulary``.
+InputTopology = Literal["direct", "rectified_dc", "series_rectifier_bridges", "isolated_secondary"]
+
+#: What a resolved voltage is calculated for. Its own alias for the same reason.
+CalculationPurpose = Literal["impulse", "temporary_overvoltage"]
+
+
 class SystemVoltageStatement(_Fact):
     """What every system-voltage statement states, whichever kind of reading it is.
 
@@ -156,32 +164,39 @@ class SystemVoltageStatement(_Fact):
 
     ``supply_kind`` sits here rather than on a variant because the route determines it structurally
     for every statement it carries -- see ``SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE`` and
-    ``clause_fact_defect``, which is what refuses a statement contradicting its own route.
+    ``clause_fact_defect``, which is what refuses a statement contradicting its own route. It is
+    the one dimension of this family that is **not** a scope, and deliberately: the route settles
+    it, so there is no unrestricted reading of it to state and no set of values a statement could
+    name. It carried an ``any_supply_kind`` token for exactly as long as the other dimensions
+    carried theirs, and that token was authorable by nothing -- the dialog prefills this field from
+    the route's declaration and disables it -- so it left with them rather than becoming a scope
+    nothing would ever widen.
 
-    ``any_*`` on a dimension records a reading that dimension does not restrict -- authored once
-    rather than once per value. Where a general reading and a narrower one cover the same values,
-    the narrower one's own dimension is what separates them, and the projector refuses an
-    overlapping pair rather than serving whichever row comes first.
-
-    Known gap, disclosed rather than dropped: these tokens are the scalar-plus-``any_*`` shape
-    ``DimensionScope`` replaces, and converting them is what deletes ``_dimension_matcher``. Their
-    projection is already correct -- the shim maps each to a scope -- so the conversion is a
-    modelling tidy-up rather than a behaviour fix, and it is not this commit's variant work.
+    Every other dimension here is a ``DimensionScope``, which is what a statement naming several
+    values needs: as scalars with an ``any_*`` token, one sentence naming three earthing
+    arrangements became three drafts and, once authored, three statements of one reading. Where a
+    general reading and a narrower one cover the same values, the narrower one's own dimension is
+    what separates them, and the projector refuses an overlapping pair rather than serving
+    whichever row comes first.
     """
 
     fact_kind: Literal["system_voltage"] = "system_voltage"
-    supply_kind: Literal["mains", "non_mains", "any_supply_kind"]
-    input_topology: Literal[
-        "direct",
-        "rectified_dc",
-        "series_rectifier_bridges",
-        "isolated_secondary",
-        "any_input_topology",
-    ]
-    #: ``any_purpose`` names a statement that does not restrict which calculation purpose it
-    #: applies to -- one normative statement, not two, so it needs its own token rather than being
-    #: authored as a separate fact per purpose.
-    purpose: Literal["impulse", "temporary_overvoltage", "any_purpose"]
+    supply_kind: Literal["mains", "non_mains"]
+    input_topology: DimensionScope[InputTopology]
+    #: An unrestricted reading names a statement that does not restrict which calculation purpose
+    #: it applies to -- one normative statement, not two, and not one per purpose.
+    purpose: DimensionScope[CalculationPurpose]
+
+
+#: The phase systems a reviewed measure statement may name. Its own alias because the scope's
+#: vocabulary is read back out of the annotation, and because the reviewed domain is deliberately
+#: narrower than the consumer input's: the rule also declares a bare single-phase system and an
+#: unspecified one, so an unrestricted reading must not answer for them.
+PhaseSystem = Literal["three_phase_star", "three_phase_delta", "three_phase_it", "single_phase_it"]
+
+#: The earthing arrangements a reviewed measure statement may name. Its own alias for the same
+#: reason; here the reviewed and consumer domains coincide, so an unrestricted reading is a wildcard.
+EarthingArrangement = Literal["tn", "tt", "it", "unspecified"]
 
 
 class SystemVoltageMeasureFact(SystemVoltageStatement):
@@ -194,17 +209,15 @@ class SystemVoltageMeasureFact(SystemVoltageStatement):
     ``supply_kind`` and ``input_topology`` inputs sat declared but unreachable behind matchers
     that accepted anything. A statement's dimensions are separate readings and need separate
     fields.
+
+    ``measure`` stays one value while the dimensions above are scopes, because it is the *answer*
+    rather than a condition: the projected rule carries one categorical output, and a statement
+    naming two measures would not say which of them a consumer gets.
     """
 
     statement_kind: Literal["measure"] = "measure"
-    phase_system: Literal[
-        "three_phase_star",
-        "three_phase_delta",
-        "three_phase_it",
-        "single_phase_it",
-        "any_phase_system",
-    ]
-    earthing: Literal["tn", "tt", "it", "unspecified", "any_earthing"]
+    phase_system: DimensionScope[PhaseSystem]
+    earthing: DimensionScope[EarthingArrangement]
     measure: Literal[
         "phase_to_earth_rms",
         "phase_to_artificial_neutral_rms",
@@ -603,6 +616,13 @@ SpdMonitoringFact = Annotated[
 #: reviewed reading of this clause can name, so an unrestricted gate reading must not answer for it.
 DvcGate = Literal["dvc_as", "dvc_b"]
 
+#: The evidence routes a statement may accept. Its own alias because the scope's vocabulary is read
+#: back out of the annotation -- see ``scope_vocabulary`` -- and because the reviewed domain is
+#: deliberately narrower than the consumer input's: that input also declares the *absence* of
+#: evidence, which is the one state a permission may never be granted for, so an unrestricted
+#: reading here projects an ``in`` over these three rather than a wildcard.
+AttenuationEvidence = Literal["test", "simulation", "calculation"]
+
 
 class HfAttenuationFact(_Fact):
     fact_kind: Literal["hf_attenuation"] = "hf_attenuation"
@@ -610,11 +630,11 @@ class HfAttenuationFact(_Fact):
     #: statement. Authored as a scalar it had to be authored twice, which projected two rows and
     #: showed as two drafts for one sentence -- a reading duplicated to fit the field's shape.
     dvc_gate: DimensionScope[DvcGate]
-    #: ``any_evidence`` records a reading not restricted to one evidence route, authored once
-    #: rather than once per route -- the same shape ``any_purpose`` carries for a calculation
-    #: purpose. Without it, authoring such a reading forces a single route and the others reach
-    #: no row at all.
-    evidence_kind: Literal["test", "simulation", "calculation", "any_evidence"]
+    #: A scope for the same reason, and the narrower-reviewed-domain case the general projection
+    #: rule already handles: an unrestricted reading accepts every route the statement can name and
+    #: never the absence of one, which is exactly what ``_evidence_matcher`` was written by hand to
+    #: do while this field was a scalar carrying an ``any_evidence`` token.
+    evidence_kind: DimensionScope[AttenuationEvidence]
     #: Known gap, disclosed rather than dropped: neither field is read by any projector yet. The
     #: executable contract this route needs is a verification *result* -- a comparison against the
     #: requirement the referenced route resolves -- rather than the evidence kind the rule can
@@ -728,11 +748,13 @@ class ConfirmedFacts(FrozenModel):
 
 
 __all__ = [
+    "AttenuationEvidence",
     "BarrierCombinedRequirementFact",
     "BarrierDownstreamInheritanceFact",
     "BarrierRatingResolutionFact",
     "BarrierTransferFact",
     "BarrierTransferStatement",
+    "CalculationPurpose",
     "CitedNode",
     "ClauseFactCompletion",
     "ClauseFactReview",
@@ -741,13 +763,16 @@ __all__ = [
     "DimensionScope",
     "DownstreamConnection",
     "DvcGate",
+    "EarthingArrangement",
     "HfAttenuationFact",
+    "InputTopology",
     "InsulationClass",
     "MonitoringComplianceEvidence",
     "Obligation",
     "OvercategoryDesignation",
     "OvercategoryStep",
     "OvercategoryStepSequence",
+    "PhaseSystem",
     "PropagationStepFact",
     "ScopeMode",
     "SpdMonitoringComplianceFact",

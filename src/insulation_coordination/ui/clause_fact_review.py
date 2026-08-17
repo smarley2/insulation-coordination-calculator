@@ -54,6 +54,7 @@ from insulation_coordination.rules.importer.clause_fact_proposals import (
     proposed_fact,
     scope_tokens,
     scope_wire,
+    scope_wire_from_tokens,
 )
 from insulation_coordination.rules.importer.clause_facts import (
     CitedNode,
@@ -1428,15 +1429,14 @@ class ClauseFactReviewDialog(QDialog):
     def _scope_text(self, field: str) -> str:
         """One scope dimension's wire value, blank while nothing is selected.
 
-        The unrestricted row wins over any value rows selected with it. It is the wider reading, so
-        honouring it can never record a narrower reading than the reviewer selected -- and the two
-        are never merged, because unrestricted is not "these values" and must not become them.
+        The unrestricted row wins over any value rows selected with it, through the one function the
+        declared rules reach the same decision by -- see ``scope_wire_from_tokens``. Two copies of it
+        could disagree about what selecting both had stated.
         """
 
-        selected = {item.text() for item in self._scope_lists[field].selectedItems()}
-        if _UNRESTRICTED_ENTRY in selected:
-            return SCOPE_UNRESTRICTED
-        return scope_wire(DimensionScope[str].of(*selected)) if selected else ""
+        selected = [item.text() for item in self._scope_lists[field].selectedItems()]
+        tokens = [SCOPE_UNRESTRICTED if text == _UNRESTRICTED_ENTRY else text for text in selected]
+        return scope_wire_from_tokens(tokens) if tokens else ""
 
     def _pair_text(self, field: str) -> str:
         """One pair collection's wire value, blank while the reviewer has stated no whole pair.

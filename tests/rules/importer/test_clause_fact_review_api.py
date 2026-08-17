@@ -13,6 +13,7 @@ from insulation_coordination.rules.importer.approval import (
     record_correction,
 )
 from insulation_coordination.rules.importer.clause_facts import (
+    AttenuationEvidence,
     CitedNode,
     ClauseFactCompletion,
     ClauseFactReview,
@@ -48,6 +49,7 @@ from insulation_coordination.rules.importer.review import (
 )
 from tests.conftest import _logged
 from tests.rules.importer.iec62477_2022.test_supply_clause_recipes import SOURCE, _fragment
+from tests.rules.importer.test_clause_fact_proposals import scope_of
 
 # draft_with_supply_fragments is a shared fixture; see tests/conftest.py.
 
@@ -87,7 +89,7 @@ def _hf_fact(
         node_references=(_cited(draft, fragment_id),),
         obligation="requirement",
         dvc_gate=DimensionScope.of(dvc_gate),  # type: ignore[arg-type]
-        evidence_kind="test",
+        evidence_kind=scope_of("test"),
         threshold_reference=ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC,
         comparison_required=True,
     )
@@ -824,7 +826,7 @@ def test_a_corrected_fact_covers_the_statement_it_was_authored_for(
     ).model_copy(
         update={
             "obligation": "permission",
-            "evidence_kind": "calculation",
+            "evidence_kind": DimensionScope[AttenuationEvidence].of("calculation"),
             "comparison_required": False,
         }
     )

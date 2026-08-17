@@ -122,6 +122,7 @@ def synthetic_private_grammars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     """
     from insulation_coordination.rules.importer.clause_fact_proposals import (
         PRIVATE_MATERIAL_DIRECTORY_VARIABLE,
+        SCOPE_UNRESTRICTED,
         ClauseFactGrammar,
         ClauseKeywordRule,
         ClauseSequenceRule,
@@ -139,8 +140,9 @@ def synthetic_private_grammars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             ClauseKeywordRule(dimension="obligation", value="permission", keywords=("synthallow",)),
             ClauseKeywordRule(dimension="dvc_gate", value="dvc_as", keywords=("synthgateone",)),
             ClauseKeywordRule(dimension="dvc_gate", value="dvc_b", keywords=("synthgatetwo",)),
+            # The unrestricted reading of a scope dimension, spelled in the scope's own wire form.
             ClauseKeywordRule(
-                dimension="evidence_kind", value="any_evidence", keywords=("synthevidence",)
+                dimension="evidence_kind", value=SCOPE_UNRESTRICTED, keywords=("synthevidence",)
             ),
             ClauseKeywordRule(
                 dimension="comparison_required", value="true", keywords=("synthcompare",)

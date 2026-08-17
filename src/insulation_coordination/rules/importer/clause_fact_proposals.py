@@ -245,6 +245,23 @@ def scope_tokens(value: str) -> tuple[str, ...]:
     return () if value == SCOPE_UNRESTRICTED else tuple(value.split(_SCOPE_SEPARATOR))
 
 
+def scope_wire_from_tokens(tokens: Sequence[str]) -> str:
+    """One scope's wire value from the tokens something matched or a reviewer selected.
+
+    The unrestricted token wins over any concrete value beside it. It is the wider reading, so
+    honouring it can never record something narrower than was matched or selected -- and the two are
+    never merged, because unrestricted is not "these values" and must not become them.
+
+    One decision point for both authoring paths, the way ``authored_dimension`` is: the declared
+    rules and the editor's own multi-selection each arrive at a scope from a set of tokens, and two
+    copies of this could disagree about what a sentence naming both had stated.
+    """
+
+    if SCOPE_UNRESTRICTED in tokens:
+        return SCOPE_UNRESTRICTED
+    return scope_wire(DimensionScope[str].of(*tokens))
+
+
 def scope_from_wire(value: str) -> dict[str, object]:
     """One scope dimension's authored value, decoded from its wire form.
 
@@ -370,8 +387,9 @@ class ClauseKeywordRule(FrozenModel):
 
     Every keyword must occur in the sentence and no excluded keyword may. A rule with no
     keywords at all and only exclusions is how a dimension records that a sentence restricts
-    it to nothing -- the ``any_*`` tokens -- which is a different claim from a dimension no
-    rule settled.
+    it to nothing, which is a different claim from a dimension no rule settled. On a scope
+    dimension that reading is spelled ``SCOPE_UNRESTRICTED`` -- the scope's own wire form for it --
+    rather than as a made-up member of the dimension's vocabulary.
     """
 
     dimension: str = Field(min_length=1)
@@ -499,6 +517,10 @@ class ClauseFactGrammar(FrozenModel):
         except RulePackageError as error:
             raise ValueError(str(error)) from error
         vocabularies = {name: options for name, _kind, options in declared}
+        # A scope dimension's unrestricted reading is a declarable value of that dimension without
+        # being a member of its vocabulary: it is the reading a statement makes when it restricts
+        # the dimension to nothing, and it is spelled in the scope's own wire form.
+        unrestricted = {name for name, kind, _options in declared if kind == "scope"}
         for dimension, value in (
             *((rule.dimension, rule.value) for rule in self.keyword_rules),
             *self.constants.items(),
@@ -506,6 +528,8 @@ class ClauseFactGrammar(FrozenModel):
             if dimension not in vocabularies:
                 raise ValueError(f"{self.fact_kind} declares no dimension {dimension}")
             options = vocabularies[dimension]
+            if value == SCOPE_UNRESTRICTED and dimension in unrestricted:
+                continue
             if options and value not in options:
                 raise ValueError(f"{self.fact_kind}.{dimension} declares no value {value}")
         unknown_inherited = sorted(set(self.inherited_dimensions) - set(vocabularies))
@@ -755,7 +779,7 @@ def keyword_proposer(grammar: ClauseFactGrammar) -> SentenceProposer:
                 ):
                     by_dimension.setdefault(rule.dimension, []).append(rule.value)
         axes: list[list[dict[str, str]]] = [
-            [{dimension: scope_wire(DimensionScope[str].of(*values))}]
+            [{dimension: scope_wire_from_tokens(values)}]
             if dimension in scopes
             else [{dimension: value} for value in values]
             for dimension, values in by_dimension.items()
@@ -884,4 +908,5 @@ __all__ = [
     "scope_from_wire",
     "scope_tokens",
     "scope_wire",
+    "scope_wire_from_tokens",
 ]

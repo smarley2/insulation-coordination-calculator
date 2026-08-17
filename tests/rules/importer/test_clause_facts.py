@@ -30,6 +30,7 @@ from insulation_coordination.rules.importer.extract import (
     canonical_model_sha256,
     draft_content_digest,
 )
+from tests.rules.importer.test_clause_fact_proposals import scope_of
 
 # draft_with_axis_proposals is a shared fixture; see tests/conftest.py.
 
@@ -67,10 +68,10 @@ def _measure_fact() -> SystemVoltageMeasureFact:
         node_references=(CitedNode(fragment_id="raw-b", node_order=2, node_sha256="b" * 64),),
         obligation="requirement",
         supply_kind="mains",
-        phase_system="three_phase_it",
-        earthing="it",
-        input_topology="any_input_topology",
-        purpose="impulse",
+        phase_system=scope_of("three_phase_it"),
+        earthing=scope_of("it"),
+        input_topology=scope_of("*"),
+        purpose=scope_of("impulse"),
         measure="phase_to_artificial_neutral_rms",
     )
 
@@ -81,8 +82,8 @@ def _applicability_fact() -> SystemVoltageApplicabilityFact:
         node_references=(CitedNode(fragment_id="raw-b", node_order=3, node_sha256="c" * 64),),
         obligation="requirement",
         supply_kind="mains",
-        input_topology="isolated_secondary",
-        purpose="impulse",
+        input_topology=scope_of("isolated_secondary"),
+        purpose=scope_of("impulse"),
         counts_as_system_voltage=True,
     )
 

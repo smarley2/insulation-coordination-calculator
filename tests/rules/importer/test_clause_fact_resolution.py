@@ -32,6 +32,7 @@ from insulation_coordination.rules.importer.review import (
 )
 from tests.conftest import _logged
 from tests.rules.importer.iec62477_2022.test_supply_clause_recipes import _fragment
+from tests.rules.importer.test_clause_fact_proposals import scope_of
 
 # draft_with_supply_fragments is a shared fixture; see tests/conftest.py.
 
@@ -69,7 +70,7 @@ def _hf_fact(draft: ImportedRuleDraft, *, statement_index: int) -> HfAttenuation
         node_references=(_cited(draft, HF_FRAGMENT_ID),),
         obligation="requirement",
         dvc_gate=DimensionScope.of("dvc_as"),
-        evidence_kind="test",
+        evidence_kind=scope_of("test"),
         threshold_reference=ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC,
         comparison_required=True,
     )
@@ -88,10 +89,10 @@ def _system_voltage_fact(
         node_references=(_cited(draft, fragment_id, node_order),),
         obligation="requirement",
         supply_kind=supply_kind,  # type: ignore[arg-type]
-        phase_system="three_phase_it",
-        earthing="it",
-        input_topology="any_input_topology",
-        purpose="impulse",
+        phase_system=scope_of("three_phase_it"),
+        earthing=scope_of("it"),
+        input_topology=scope_of("*"),
+        purpose=scope_of("impulse"),
         measure="phase_to_artificial_neutral_rms",
     )
 
@@ -249,8 +250,8 @@ def test_a_carried_statement_is_hashed_into_the_fact_set_and_then_resolves(
         node_references=(_cited(completed_system_voltage_draft, SV_FRAGMENT_ID, 1),),
         obligation="requirement",
         supply_kind="mains",
-        input_topology="isolated_secondary",
-        purpose="impulse",
+        input_topology=scope_of("isolated_secondary"),
+        purpose=scope_of("impulse"),
         counts_as_system_voltage=True,
     )
     draft = author_clause_fact(

@@ -58,6 +58,7 @@ from insulation_coordination.rules.importer.review import (
     retract_clause_fact,
 )
 from tests.private.test_iec62477_slice_c_roundtrip import _approved_slice_c
+from tests.rules.importer.test_clause_fact_proposals import scope_of
 
 pytestmark = pytest.mark.private_standard
 
@@ -99,15 +100,16 @@ def _first_cited_node(draft: ImportedRuleDraft, route: str) -> tuple[CitedNode, 
     return _cited_node(draft, route, fragment.nodes[0].order)
 
 
-#: Structurally distinct tokens for the placeholder applicability statements below, cycled by node
-#: so no two of them read alike beyond the node each rests on. Vocabulary tokens only; they state
-#: nothing about the clause.
+#: Structurally distinct topology scopes for the placeholder applicability statements below, cycled
+#: by node so no two of them read alike beyond the node each rests on. Spelled as the scope wire
+#: form -- ``"*"`` being the unrestricted reading -- and vocabulary tokens only; they state nothing
+#: about the clause.
 _PLACEHOLDER_TOPOLOGIES = (
     "direct",
     "rectified_dc",
     "series_rectifier_bridges",
     "isolated_secondary",
-    "any_input_topology",
+    "*",
 )
 
 
@@ -135,10 +137,10 @@ def _system_voltage_placeholders(
         node_references=_cited_node(draft, route, fragment.nodes[0].order),
         obligation="requirement",
         supply_kind=supply_kind,  # type: ignore[arg-type]
-        phase_system="three_phase_delta" if supply_kind == "mains" else "single_phase_it",
-        earthing="tn" if supply_kind == "mains" else "it",
-        input_topology="direct" if supply_kind == "mains" else "isolated_secondary",
-        purpose="impulse" if supply_kind == "mains" else "temporary_overvoltage",
+        phase_system=scope_of("three_phase_delta" if supply_kind == "mains" else "single_phase_it"),
+        earthing=scope_of("tn" if supply_kind == "mains" else "it"),
+        input_topology=scope_of("direct" if supply_kind == "mains" else "isolated_secondary"),
+        purpose=scope_of("impulse" if supply_kind == "mains" else "temporary_overvoltage"),
         measure="phase_to_earth_rms" if supply_kind == "mains" else "between_supply_conductors_rms",
     )
     carried = tuple(
@@ -147,8 +149,8 @@ def _system_voltage_placeholders(
             node_references=_cited_node(draft, route, node.order),
             obligation="requirement",
             supply_kind=supply_kind,  # type: ignore[arg-type]
-            input_topology=_PLACEHOLDER_TOPOLOGIES[index % len(_PLACEHOLDER_TOPOLOGIES)],  # type: ignore[arg-type]
-            purpose="impulse" if index % 2 else "temporary_overvoltage",
+            input_topology=scope_of(_PLACEHOLDER_TOPOLOGIES[index % len(_PLACEHOLDER_TOPOLOGIES)]),  # type: ignore[arg-type]
+            purpose=scope_of("impulse" if index % 2 else "temporary_overvoltage"),
             counts_as_system_voltage=bool(index % 2),
         )
         for index, node in enumerate(fragment.nodes[1:], start=1)
@@ -242,7 +244,7 @@ def _placeholder_facts(draft: ImportedRuleDraft) -> dict[str, tuple[SupplyFact, 
 
     The two system-voltage scopes project into one rule's rows, so their dimensions are authored
     explicitly and differ: ``_require_distinct_branches`` refuses a set whose distinguishing
-    dimension nobody authored, and an unrestricted ``any_*`` beside a specific value is exactly
+    dimension nobody authored, and an unrestricted reading beside a specific value is exactly
     the overlap it exists to catch.
 
     A tuple per route rather than one statement, for two independent reasons that both have to
@@ -296,7 +298,7 @@ def _placeholder_facts(draft: ImportedRuleDraft) -> dict[str, tuple[SupplyFact, 
                 node_references=_first_cited_node(draft, ids.SUPPLY_HF_TRANSFORMER_ATTENUATION),
                 obligation="permission",
                 dvc_gate=DimensionScope.of("dvc_b"),
-                evidence_kind="simulation",
+                evidence_kind=scope_of("simulation"),
                 threshold_reference=ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC,
                 comparison_required=True,
             ),

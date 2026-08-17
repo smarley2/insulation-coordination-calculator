@@ -357,8 +357,8 @@ _require_declared_fact_families(SUPPLY_CLAUSES, SUPPLY_FACT_FAMILY_BY_ROUTE)
 #: carries a ``supply_kind`` field: system voltage's mains and non-mains subclauses, and each SPD
 #: reduction subclause. The route determines this dimension structurally -- it is not a reviewed
 #: choice -- so a fact naming the other concrete kind cannot state that route at all; see
-#: ``clause_fact_defect``. ``any_supply_kind`` is not a concrete kind and never contradicts either
-#: route, the same way ``any_purpose`` never narrows a rule's calculation purpose.
+#: ``clause_fact_defect``. Every such field names one concrete kind: this is the one dimension of
+#: those families that is not a reviewed scope, precisely because the route settles it.
 SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE: dict[str, str] = {
     ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: "mains",
     SUPPLY_SYSTEM_VOLTAGE_NON_MAINS: "non_mains",
@@ -685,10 +685,10 @@ def _require_distinct_branches(
     happily. That is the hazard ``_require_distinct_selectors`` refuses for two axis positions
     confirmed as the same selector.
 
-    Overlap rather than equality, because equality catches only the narrowest case: an
-    ``any_placement`` or ``any_purpose`` statement that also covers a specific one projects
-    matchers that are never equal to it, and row order alone would decide which reading a
-    consumer receives. Where the source really states a general rule and a special case, the
+    Overlap rather than equality, because equality catches only the narrowest case: a statement
+    whose placement or purpose scope restricts nothing, and which therefore also covers a specific
+    one, projects matchers that are never equal to it, and row order alone would decide which
+    reading a consumer receives. Where the source really states a general rule and a special case, the
     special case's own dimension is what distinguishes them, and a set of statements this
     refuses is one whose distinguishing dimension nobody authored.
 
@@ -772,16 +772,18 @@ _INPUT_TOPOLOGIES = (
 #: whole rule with a message about a categorical input rather than about the authoring.
 _CALCULATION_PURPOSES = ("impulse", "temporary_overvoltage")
 
-#: Which fact field feeds which declared input, and the token that means "this statement
-#: restricts this dimension to nothing". Every dimension gets a real matcher: two of these
-#: inputs were once wired to ``op="any"`` on every row, which left them declared, asked about
+#: Which reviewed scope feeds which declared input. Every dimension gets a real matcher: two of
+#: these inputs were once wired to ``op="any"`` on every row, which left them declared, asked about
 #: by consumers, and unable to affect any answer.
-_SYSTEM_VOLTAGE_DIMENSIONS = (
-    ("supply_kind", "supply_kind", "any_supply_kind"),
-    ("phase_system", "phase_system", "any_phase_system"),
-    ("earthing_arrangement", "earthing", "any_earthing"),
-    ("input_topology", "input_topology", "any_input_topology"),
-    ("calculation_purpose", "purpose", "any_purpose"),
+#:
+#: ``supply_kind`` is not here. It is the one dimension of this family the route determines rather
+#: than the statement, so it stays one concrete value and projects as a plain equality -- see
+#: ``SystemVoltageStatement`` and ``clause_fact_defect``.
+_SYSTEM_VOLTAGE_SCOPES = (
+    ("phase_system", "phase_system"),
+    ("earthing_arrangement", "earthing"),
+    ("input_topology", "input_topology"),
+    ("calculation_purpose", "purpose"),
 )
 
 
@@ -873,42 +875,26 @@ def _scope_matcher(
     return _matcher(input_name, scope.values)
 
 
-def _reviewed_domain(
-    model: type[FrozenModel],
-    field: str,
-    unrestricted_token: str | None = None,
-) -> tuple[str, ...]:
+def _reviewed_domain(model: type[FrozenModel], field: str) -> tuple[str, ...]:
     """A dimension's declared domain, read from the fact model that declares it.
 
     Read from the model rather than written down beside the consumer vocabulary, so the two cannot
     drift: adding a value to a fact field widens this automatically, and no second list has to be
     remembered. A ``DimensionScope`` field's domain is the vocabulary it scopes, and a scalar
-    field's is its own literal members less ``unrestricted_token`` -- a legacy ``any_*`` member,
-    which is a scope and not a value of the domain.
+    field's is its own literal members.
     """
 
     annotation = model.model_fields[field].annotation
     scoped = scope_vocabulary(annotation)
     if scoped is not None:
         return scoped
-    values = tuple(value for value in get_args(annotation) if isinstance(value, str))
-    return tuple(value for value in values if value != unrestricted_token)
+    return tuple(value for value in get_args(annotation) if isinstance(value, str))
 
 
-def _dimension_matcher(input_name: str, field: str, value: str, unrestricted: str) -> Matcher:
-    """One authored dimension value, or its unrestricted reading, through ``_scope_matcher``.
-
-    A shim while the fact fields are still scalar-plus-``any_*``: it turns that pair into a
-    ``DimensionScope`` so the wildcard over-match is gone before the fields themselves become
-    scopes. The ``any_*`` tokens and this shim go together in the variant slice.
-    """
+def _reviewed_scope_matcher(input_name: str, field: str, scope: DimensionScope[Any]) -> Matcher:
+    """One reviewed scope against its declared input, with both domains looked up by field."""
 
     reviewed, consumer = _REVIEWED_AND_CONSUMER_DOMAINS[field]
-    scope: DimensionScope[str] = (
-        DimensionScope(mode="unrestricted")
-        if value == unrestricted
-        else DimensionScope(mode="exact_one", values=(value,))
-    )
     return _scope_matcher(input_name, scope, reviewed, consumer)
 
 
@@ -973,9 +959,12 @@ def project_system_voltage_resolution(
     measures = tuple(dict.fromkeys(fact.measure for fact in system_voltage_facts))
     rows = tuple(
         DecisionRow(
-            matchers=tuple(
-                _dimension_matcher(input_name, field, getattr(fact, field), unrestricted)
-                for input_name, field, unrestricted in _SYSTEM_VOLTAGE_DIMENSIONS
+            matchers=(
+                _matcher("supply_kind", (fact.supply_kind,)),
+                *(
+                    _reviewed_scope_matcher(input_name, field, getattr(fact, field))
+                    for input_name, field in _SYSTEM_VOLTAGE_SCOPES
+                ),
             ),
             values=(DecisionValue(name="system_voltage_measure", categorical=fact.measure),),
             source=_statement_source(fact, grounding),
@@ -1286,35 +1275,53 @@ _DVC_DESIGNATIONS = ("dvc_as", "dvc_b", "dvc_c")
 #: table below, because that table reads it.
 _INSULATION_CLASSES = ("functional", "basic", "supplementary", "double", "reinforced")
 
+#: The consumer's question space for evidence, declared here and never derived from the reviewed
+#: facts. ``none`` -- no evidence yet -- is the first question a consumer asks and no authored
+#: statement can name it, so deriving this vocabulary from the facts would put that question
+#: outside the input's allowed values and raise instead of answering it.
+#:
+#: Declared here beside the other consumer question spaces rather than in the attenuation section,
+#: for the reason ``_DVC_DESIGNATIONS`` is: the reviewed-versus-consumer table below reads it now
+#: that the evidence reading is a scope.
+_ATTENUATION_EVIDENCE_KINDS = ("none", "test", "simulation", "calculation")
+
 #: Per reviewed dimension: the fact field's declared domain, and the consumer input it projects
 #: into. Keyed by fact field name, since two of the inputs are named differently from the field
 #: that feeds them. Where the two domains coincide an unrestricted reading is a wildcard; where the
 #: reviewed domain is narrower it is an explicit ``in``, because the difference is exactly the set
 #: of consumer states no reviewed reading can name.
 _REVIEWED_AND_CONSUMER_DOMAINS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
-    "supply_kind": (
-        _reviewed_domain(SystemVoltageMeasureFact, "supply_kind", "any_supply_kind"),
-        _SUPPLY_KINDS,
-    ),
+    #: Not projected through ``_scope_matcher`` -- the route settles this one, so a statement names
+    #: one concrete kind and the row is a plain equality. Declared here anyway, because the
+    #: import-time check below is what refuses a reviewed value the input never declares.
+    "supply_kind": (_reviewed_domain(SystemVoltageMeasureFact, "supply_kind"), _SUPPLY_KINDS),
     "phase_system": (
-        _reviewed_domain(SystemVoltageMeasureFact, "phase_system", "any_phase_system"),
+        _reviewed_domain(SystemVoltageMeasureFact, "phase_system"),
         _PHASE_SYSTEMS,
     ),
     "earthing": (
-        _reviewed_domain(SystemVoltageMeasureFact, "earthing", "any_earthing"),
+        _reviewed_domain(SystemVoltageMeasureFact, "earthing"),
         _EARTHING_ARRANGEMENTS,
     ),
     "input_topology": (
-        _reviewed_domain(SystemVoltageMeasureFact, "input_topology", "any_input_topology"),
+        _reviewed_domain(SystemVoltageMeasureFact, "input_topology"),
         _INPUT_TOPOLOGIES,
     ),
     "purpose": (
-        _reviewed_domain(SystemVoltageMeasureFact, "purpose", "any_purpose"),
+        _reviewed_domain(SystemVoltageMeasureFact, "purpose"),
         _CALCULATION_PURPOSES,
     ),
     "device_placement": (
         _reviewed_domain(SpdMonitoringRequirementFact, "device_placement"),
         _DEVICE_PLACEMENTS,
+    ),
+    #: The reviewed domain is the three routes a statement can accept; the consumer's also carries
+    #: the absence of evidence, which no reviewed reading may answer for. That gap is why an
+    #: unrestricted evidence reading projects an ``in`` rather than a wildcard, which
+    #: ``_evidence_matcher`` used to arrange by hand.
+    "evidence_kind": (
+        _reviewed_domain(HfAttenuationFact, "evidence_kind"),
+        _ATTENUATION_EVIDENCE_KINDS,
     ),
     #: The reviewed and consumer domains coincide here, so an unrestricted class reading is a
     #: wildcard. It is in the table anyway: leaving a projected scope out of it is exactly the drift
@@ -1677,33 +1684,11 @@ def _spd_reduction_rules(
 
 # --- high-frequency isolating transformer ------------------------------------------
 
-#: The consumer's question space for evidence, declared here and never derived from the reviewed
-#: facts. ``none`` -- no evidence yet -- is the first question a consumer asks and no authored
-#: statement can name it, so deriving this vocabulary from the facts would put that question
-#: outside the input's allowed values and raise instead of answering it.
-_ATTENUATION_EVIDENCE_KINDS = ("none", "test", "simulation", "calculation")
-#: The evidence routes a statement may accept: every declared kind except the absence of one.
-_SHOWN_EVIDENCE_KINDS = tuple(kind for kind in _ATTENUATION_EVIDENCE_KINDS if kind != "none")
 #: What a consumer must still show, never an echo of what it supplied.
 _REQUIRED_EVIDENCE_KINDS = ("test_or_simulation_or_calculation", "already_provided")
 #: Multipliers from a reviewed frequency unit token to hertz. Names the units the
 #: generic tokenizer emits; the threshold itself is read from the document.
 _FREQUENCY_UNIT_SCALES = {"Hz": 1, "kHz": 1_000, "MHz": 1_000_000}
-
-
-def _evidence_matcher(evidence_kind: str) -> Matcher:
-    """Match one authored evidence route, or every route the statement accepts.
-
-    Deliberately not ``op="any"`` for ``any_evidence``, unlike ``any_purpose``: there every
-    declared value of ``calculation_purpose`` is one the statement covers, while here the declared
-    vocabulary also carries ``none``, which is the one value the permission may never be granted
-    for. A kind this rule declares but no statement accepts falls through to no match, the way a
-    DVC designation no fact gates through does.
-    """
-
-    if evidence_kind == "any_evidence":
-        return _matcher("attenuation_evidence_kind", _SHOWN_EVIDENCE_KINDS)
-    return _matcher("attenuation_evidence_kind", (evidence_kind,))
 
 
 def _frequency_threshold_hz(fragment: RawClauseFragment, label: str) -> Decimal:
@@ -1732,10 +1717,11 @@ def project_hf_transformer_attenuation(
     """Project the isolating-transformer attenuation clause into a decision.
 
     Every row comes from one reviewed ``HfAttenuationFact``: it states the DVC gate the clause
-    applies to and the evidence route or routes it accepts. The gate is a scope, so a statement
-    naming several designations is one statement and projects one row over them -- and an
-    unrestricted gate reading projects an ``in`` over the reviewed designations rather than a
-    wildcard, because this rule declares a designation no reviewed reading of the clause names.
+    applies to and the evidence route or routes it accepts. Both are scopes, so a statement naming
+    several designations or several routes is one statement and projects one row over them -- and an
+    unrestricted reading of either projects an ``in`` over the reviewed values rather than a
+    wildcard, because this rule declares a designation no reviewed reading of the clause names and
+    an evidence state -- the absence of any -- that no reviewed reading may be granted for.
     ``working_voltage_basis_permitted`` is not independently authored content -- an accepted
     evidence kind is what grants the permission, so it mirrors the fact's presence, the same way
     a verified barrier's transfer permission mirrors its own presence in
@@ -1798,7 +1784,9 @@ def project_hf_transformer_attenuation(
     shown = tuple(
         _row(
             gate=_scope_matcher("circuit_dvc", fact.dvc_gate, reviewed_gates, consumer_gates),
-            evidence=_evidence_matcher(fact.evidence_kind),
+            evidence=_reviewed_scope_matcher(
+                "attenuation_evidence_kind", "evidence_kind", fact.evidence_kind
+            ),
             permitted=True,
             required="already_provided",
         )

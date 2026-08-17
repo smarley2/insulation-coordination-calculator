@@ -68,7 +68,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply impor
     project_verified_barrier_transfer,
 )
 from tests.rules.importer.iec62477_2022.test_procedure_recipes import _draft as _empty_draft
-from tests.rules.importer.test_clause_fact_proposals import fragment_with_sentences
+from tests.rules.importer.test_clause_fact_proposals import fragment_with_sentences, scope_of
 
 SOURCE = SourceReference(
     document_id="synthetic-supply",
@@ -246,7 +246,7 @@ def _system_voltage_fact(
     supply_kind: str = "mains",
     phase_system: str = "three_phase_it",
     earthing: str = "it",
-    input_topology: str = "any_input_topology",
+    input_topology: str = "*",
     purpose: str = "impulse",
     measure: str,
 ) -> SystemVoltageMeasureFact:
@@ -257,10 +257,10 @@ def _system_voltage_fact(
         node_references=(_cited_node(fragment, node_order=index % len(fragment.nodes)),),
         obligation="requirement",
         supply_kind=supply_kind,  # type: ignore[arg-type]
-        phase_system=phase_system,  # type: ignore[arg-type]
-        earthing=earthing,  # type: ignore[arg-type]
-        input_topology=input_topology,  # type: ignore[arg-type]
-        purpose=purpose,  # type: ignore[arg-type]
+        phase_system=scope_of(phase_system),  # type: ignore[arg-type]
+        earthing=scope_of(earthing),  # type: ignore[arg-type]
+        input_topology=scope_of(input_topology),  # type: ignore[arg-type]
+        purpose=scope_of(purpose),  # type: ignore[arg-type]
         measure=measure,  # type: ignore[arg-type]
     )
 
@@ -282,8 +282,8 @@ def _system_voltage_applicability_fact(
         node_references=(_cited_node(fragment, node_order=index % len(fragment.nodes)),),
         obligation="requirement",
         supply_kind="mains",
-        input_topology=input_topology,  # type: ignore[arg-type]
-        purpose=purpose,  # type: ignore[arg-type]
+        input_topology=scope_of(input_topology),  # type: ignore[arg-type]
+        purpose=scope_of(purpose),  # type: ignore[arg-type]
         counts_as_system_voltage=True,
     )
 
@@ -558,7 +558,7 @@ def _hf_attenuation_fact(
         node_references=(_cited_node(fragment),),
         obligation="requirement",
         dvc_gate=dvc_gate if dvc_gate is not None else DimensionScope.of("dvc_b"),  # type: ignore[arg-type]
-        evidence_kind=evidence_kind,  # type: ignore[arg-type]
+        evidence_kind=scope_of(evidence_kind),  # type: ignore[arg-type]
         threshold_reference=ids.SUPPLY_HF_TRANSFORMER_ATTENUATION,
         comparison_required=True,
     )
@@ -917,7 +917,7 @@ def test_a_fact_stated_without_a_purpose_covers_both_purposes() -> None:
                     fragment,
                     index=2,
                     phase_system="single_phase_it",
-                    purpose="any_purpose",
+                    purpose="*",
                     measure="between_supply_conductors_rms",
                 ),
             )
@@ -1340,9 +1340,7 @@ def test_an_unrestricted_statement_overlapping_a_specific_one_is_refused() -> No
     facts = ConfirmedFacts(
         by_route={
             ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: (
-                _system_voltage_fact(
-                    fragment, index=0, purpose="any_purpose", measure="phase_to_phase_rms"
-                ),
+                _system_voltage_fact(fragment, index=0, purpose="*", measure="phase_to_phase_rms"),
                 _system_voltage_fact(
                     fragment,
                     index=1,
@@ -1368,15 +1366,15 @@ def test_a_narrower_statement_on_its_own_dimension_is_not_refused() -> None:
                     fragment,
                     index=0,
                     input_topology="direct",
-                    purpose="any_purpose",
+                    purpose="*",
                     measure="phase_to_phase_rms",
                 ),
                 _system_voltage_fact(
                     fragment,
                     index=1,
-                    phase_system="any_phase_system",
+                    phase_system="*",
                     input_topology="rectified_dc",
-                    purpose="any_purpose",
+                    purpose="*",
                     measure="pre_rectifier_ac_rms",
                 ),
             )
@@ -1794,10 +1792,10 @@ def _unrestricted_phase_system_rule() -> DecisionRule:
     # matches and these tests cannot pass or fail for an unrelated reason.
     fact = _system_voltage_fact(
         fragment,
-        phase_system="any_phase_system",
-        earthing="any_earthing",
-        input_topology="any_input_topology",
-        purpose="any_purpose",
+        phase_system="*",
+        earthing="*",
+        input_topology="*",
+        purpose="*",
         measure="phase_to_earth_rms",
     )
     facts = ConfirmedFacts(by_route={ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: (fact,)})
@@ -1849,6 +1847,35 @@ def test_an_unrestricted_reading_projects_the_declared_domain_not_the_authored_o
     assert projected == set(_REVIEWED_PHASE_SYSTEMS)
     for value in _REVIEWED_PHASE_SYSTEMS:
         assert _lookup(rule, **_system_voltage_inputs(phase_system=value)) is not None, value
+
+
+def test_one_statement_naming_several_earthing_arrangements_projects_one_row() -> None:
+    """The other half of the duplicate-draft fix: one statement stays one row.
+
+    Authoring the reading once per arrangement -- which is all a scalar field allowed -- projected a
+    row per arrangement and claimed three reviewed statements for one. One scope is one condition
+    over the set with one answer, so it is one row, and each named arrangement still reaches it.
+    """
+
+    fragment = _bullet_fragment()
+    fact = _system_voltage_fact(
+        fragment,
+        earthing="it|tn",
+        phase_system="*",
+        input_topology="*",
+        purpose="*",
+        measure="phase_to_earth_rms",
+    )
+    facts = ConfirmedFacts(by_route={ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION: (fact,)})
+    rule = _project_system_voltage(fragment, facts)
+
+    assert len(rule.rows) == 1
+    for named in ("it", "tn"):
+        row = _lookup(rule, **_system_voltage_inputs(earthing_arrangement=named))
+        assert row is not None, named
+        assert _value(row, "system_voltage_measure") == "phase_to_earth_rms"
+    # An arrangement the statement does not name reaches no row rather than the wrong answer.
+    assert _lookup(rule, **_system_voltage_inputs(earthing_arrangement="tt")) is None
 
 
 def test_a_requirement_and_an_exemption_over_one_placement_are_refused() -> None:
@@ -2106,7 +2133,7 @@ def test_one_statement_may_accept_every_evidence_route_it_names() -> None:
     """
 
     fragment = _hf_fragment(("42", "kHz"))
-    facts = _confirmed_hf_facts(evidence_kinds=("any_evidence",), fragment=fragment)
+    facts = _confirmed_hf_facts(evidence_kinds=("*",), fragment=fragment)
     rule = _project_hf_transformer(fragment, facts)
 
     for kind in ("test", "simulation", "calculation"):
@@ -2131,7 +2158,7 @@ def test_an_any_evidence_statement_overlapping_a_specific_one_is_refused() -> No
     """
 
     fragment = _hf_fragment(("42", "kHz"))
-    facts = _confirmed_hf_facts(evidence_kinds=("any_evidence", "test"), fragment=fragment)
+    facts = _confirmed_hf_facts(evidence_kinds=("*", "test"), fragment=fragment)
 
     with pytest.raises(ClauseStructureError, match="not disjoint"):
         _project_hf_transformer(fragment, facts)
@@ -2424,9 +2451,9 @@ def test_both_evidence_scopes_reach_the_one_projected_rule() -> None:
                     evidence_fragment,
                     index=0,
                     supply_kind="non_mains",
-                    phase_system="any_phase_system",
-                    earthing="any_earthing",
-                    purpose="any_purpose",
+                    phase_system="*",
+                    earthing="*",
+                    purpose="*",
                     measure="phase_to_phase_rms",
                 ),
             ),
