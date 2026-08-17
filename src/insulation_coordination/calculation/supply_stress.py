@@ -85,6 +85,11 @@ _IMPULSE_COLUMNS: Final[Mapping[OvervoltageCategory, str]] = {
 TOV_RMS_COLUMN: Final = "temporary_overvoltage_rms_v"
 TOV_PEAK_COLUMN: Final = "temporary_overvoltage_peak_v"
 
+#: The warning a mains configuration in the lowest overvoltage category always carries. It
+#: cannot be dismissed because nothing stores a dismissal: every warning here is recomputed
+#: from the configuration, so it is present exactly while the category is selected.
+OVERVOLTAGE_CATEGORY_I_WARNING: Final = "supply_overvoltage_category_i"
+
 #: The resolution rule's declared input vocabulary, mapped from this application's own. A
 #: combination with no counterpart is absent rather than approximated, and blocks: the rule
 #: cannot be asked a question in words it does not declare, and asking it a neighbouring one
@@ -322,12 +327,26 @@ def _resolve_system_voltage(
     return measure, value
 
 
-def _select(
-    derivation: _Derivation,
+class LookupOutcome(NamedTuple):
+    """One reviewed lookup's answer, or the typed reason it gave none.
+
+    Returned rather than raised so a caller can decide whether an absent value blocks its own
+    result or only warns about part of it - the two callers here do different things with the
+    same refusal.
+    """
+
+    value: Decimal | None
+    steps: tuple[TraceStep, ...]
+    rule_id: str
+    code: SupplyDerivationBlockCode | None = None
+    message: str = ""
+
+
+def _lookup_cell(
     lookup: SupplyLookup,
     system_voltage: Decimal,
     column_label: str,
-) -> Decimal | None:
+) -> LookupOutcome:
     """One cell of one reviewed lookup, selected by system voltage and column label.
 
     The column is found by its declared label and passed to the reviewed formula as that
@@ -337,14 +356,14 @@ def _select(
     """
 
     table = lookup.table
-    derivation.note_rule(lookup.formula.id)
     if column_label not in table.column_axis.labels:
-        derivation.block(
+        return LookupOutcome(
+            None,
+            (),
+            lookup.formula.id,
             SupplyDerivationBlockCode.MISSING_LOOKUP_COLUMN,
             f"The active package's {table.id} carries no {column_label} column.",
-            semantic_rule_id=lookup.formula.id,
         )
-        return None
     column = table.column_axis.values[table.column_axis.labels.index(column_label)]
     try:
         evaluated = evaluate_formula(
@@ -356,14 +375,47 @@ def _select(
             {table.id: table},
         )
     except EvaluationError as error:
-        derivation.block(
+        return LookupOutcome(
+            None,
+            (),
+            lookup.formula.id,
             SupplyDerivationBlockCode.LOOKUP_REFUSED,
             f"The active package refused {table.id} at {system_voltage} {_VOLTAGE_UNIT}: {error}",
-            semantic_rule_id=lookup.formula.id,
         )
+    return LookupOutcome(evaluated.value, evaluated.steps, lookup.formula.id)
+
+
+def select_impulse(
+    rules: SupplyRuleSet,
+    form: SupplyForm,
+    system_voltage: Decimal,
+    category: OvervoltageCategory,
+) -> LookupOutcome:
+    """The rated impulse this package states for one system voltage and one category.
+
+    Public because propagation asks the same question of the same table at a *transferred*
+    category, and re-deriving the column identifiers beside it would be a second place for
+    them to drift from the ones a scenario is derived through.
+    """
+
+    return _lookup_cell(rules.impulse.for_form(form), system_voltage, _IMPULSE_COLUMNS[category])
+
+
+def _select(
+    derivation: _Derivation,
+    lookup: SupplyLookup,
+    system_voltage: Decimal,
+    column_label: str,
+) -> Decimal | None:
+    """One cell, recorded onto a derivation in progress: steps kept, refusals blocked."""
+
+    outcome = _lookup_cell(lookup, system_voltage, column_label)
+    derivation.note_rule(outcome.rule_id)
+    if outcome.code is not None:
+        derivation.block(outcome.code, outcome.message, semantic_rule_id=outcome.rule_id)
         return None
-    derivation.steps.extend(evaluated.steps)
-    return evaluated.value
+    derivation.steps.extend(outcome.steps)
+    return outcome.value
 
 
 def _derive_temporary_overvoltage(
@@ -386,6 +438,40 @@ def _derive_temporary_overvoltage(
         rms = _select(derivation, lookup, system_voltage, TOV_RMS_COLUMN)
         peak = _select(derivation, lookup, system_voltage, TOV_PEAK_COLUMN)
     return system_voltage, rms, peak
+
+
+def _warn_about_the_lowest_category(derivation: _Derivation) -> None:
+    """Attach the standing warning a mains supply in the lowest category always carries.
+
+    Limiting the transient alone does not make a supply that category: the temporary
+    overvoltage has to be limited too, and nothing in a configuration can show that it is. So
+    this is a warning on every derived scenario that selects it, on every recomputation, and
+    there is no dismissal to store.
+
+    It does not block. The active package declares no evidence fields for the claim - see the
+    adapter's resolved rule set - so there is nothing for a configuration to be incomplete
+    *against*, and refusing to derive a scenario the package answers happily would be this
+    application inventing a requirement.
+    """
+
+    configuration = derivation.configuration
+    if (
+        not configuration.is_mains
+        or configuration.overvoltage_category is not OvervoltageCategory.I
+    ):
+        return
+    derivation.warnings.append(
+        CalculationWarning(
+            code=OVERVOLTAGE_CATEGORY_I_WARNING,
+            message=(
+                f"{configuration.name} is a mains supply in overvoltage category "
+                f"{OvervoltageCategory.I.value}. Limiting transients alone does not place a "
+                "supply in that category: the temporary overvoltage must be limited as well, "
+                "and this application cannot show that it is. Record the evidence for both."
+            ),
+            semantic_rule_id=derivation.rules.system_voltage_resolution.id,
+        )
+    )
 
 
 class SupplyStressService:
@@ -422,18 +508,20 @@ class SupplyStressService:
         if resolved is None or category is None:
             return derivation.unresolved()
         _measure, impulse_system_voltage = resolved
-        impulse = _select(
-            derivation,
-            rules.impulse.for_form(derivation.form),
-            impulse_system_voltage,
-            _IMPULSE_COLUMNS[category],
-        )
-        if impulse is None:
+        outcome = select_impulse(rules, derivation.form, impulse_system_voltage, category)
+        derivation.note_rule(outcome.rule_id)
+        if outcome.value is None:
+            assert outcome.code is not None
+            derivation.block(outcome.code, outcome.message, semantic_rule_id=outcome.rule_id)
             return derivation.unresolved()
+        impulse = outcome.value
+        derivation.steps.extend(outcome.steps)
+        _warn_about_the_lowest_category(derivation)
         tov_system_voltage, tov_rms, tov_peak = _derive_temporary_overvoltage(derivation)
         return DerivedSupplyScenario(
             configuration_id=configuration.id,
             configuration_name=configuration.name,
+            supply_kind=configuration.supply_kind,
             system_voltage_for_impulse_v=impulse_system_voltage,
             system_voltage_for_tov_v=tov_system_voltage,
             source_ovc=category,
@@ -577,9 +665,12 @@ def _govern(
 __all__ = [
     "GOVERNING_TRACE_ID",
     "IMPULSE_PURPOSE",
+    "OVERVOLTAGE_CATEGORY_I_WARNING",
     "TOV_PEAK_COLUMN",
     "TOV_PURPOSE",
     "TOV_RMS_COLUMN",
+    "LookupOutcome",
     "SupplyStressService",
+    "select_impulse",
     "supply_form",
 ]

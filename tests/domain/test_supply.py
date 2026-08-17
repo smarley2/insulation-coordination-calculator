@@ -4,6 +4,7 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
+from insulation_coordination.domain.enums import NetClassType
 from insulation_coordination.domain.supply import (
     DerivedSupplyScenario,
     EarthingArrangement,
@@ -11,13 +12,16 @@ from insulation_coordination.domain.supply import (
     ImpulseOverrideBasis,
     InputTopology,
     OvervoltageCategory,
+    PairRelationship,
     PhaseSystem,
     ReductionVerificationMethod,
+    SpdDevicePlacement,
     SupplyConfiguration,
     SupplyConfigurationProblemCode,
     SupplyKind,
     VerifiedImpulseOverride,
     normalized_configuration_name,
+    pair_relationship,
     validate_supply_configurations,
 )
 
@@ -223,6 +227,7 @@ def _scenario(**overrides: object) -> DerivedSupplyScenario:
     fields: dict[str, object] = {
         "configuration_id": UUID(int=1),
         "configuration_name": "Synthetic mains",
+        "supply_kind": SupplyKind.AC_MAINS,
         "system_voltage_for_impulse_v": Decimal(123),
         "system_voltage_for_tov_v": Decimal(123),
         "source_ovc": OvervoltageCategory.III,
@@ -284,6 +289,9 @@ def _override(**overrides: object) -> VerifiedImpulseOverride:
         "affected_location": "pair A-B",
     }
     fields.update(overrides)
+    if fields["basis"] is ImpulseOverrideBasis.SPD_OR_TRANSIENT_LIMITER:
+        fields.setdefault("spd_device_placement", SpdDevicePlacement.INTERNAL_TO_EQUIPMENT)
+        fields.setdefault("spd_device_degradable", False)
     return VerifiedImpulseOverride(**fields)
 
 
@@ -335,3 +343,62 @@ def test_an_override_value_must_be_positive() -> None:
 def test_no_generic_basis_or_method_exists() -> None:
     assert "other" not in {member.value for member in ImpulseOverrideBasis}
     assert "other" not in {member.value for member in ReductionVerificationMethod}
+
+
+def test_a_device_basis_needs_the_device_it_rests_on() -> None:
+    with pytest.raises(ValidationError, match="placement"):
+        VerifiedImpulseOverride(
+            value_v=Decimal(200),
+            basis=ImpulseOverrideBasis.SPD_OR_TRANSIENT_LIMITER,
+            verification_method=ReductionVerificationMethod.TEST,
+            justification="Synthetic justification",
+            evidence_reference="SYN-001",
+            affected_location="pair A-B",
+        )
+
+    device = _override(spd_device_degradable=True)
+
+    assert device.spd_device_placement is SpdDevicePlacement.INTERNAL_TO_EQUIPMENT
+    assert device.spd_device_degradable is True
+
+
+def test_only_a_device_basis_carries_a_device() -> None:
+    with pytest.raises(ValidationError, match="Only a surge-protective device"):
+        _override(
+            basis=ImpulseOverrideBasis.VERIFIED_CIRCUIT_CHARACTERISTIC,
+            spd_device_placement=SpdDevicePlacement.INTERNAL_TO_EQUIPMENT,
+            spd_device_degradable=False,
+        )
+
+
+_SURROUNDINGS = (
+    NetClassType.PE_BONDED_CONDUCTIVE_PART,
+    NetClassType.ACCESSIBLE_CONDUCTIVE_PART,
+    NetClassType.ACCESSIBLE_INSULATING_SURFACE,
+)
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "expected"),
+    [
+        (NetClassType.CIRCUIT, NetClassType.CIRCUIT, PairRelationship.CIRCUIT_TO_CIRCUIT),
+        *(
+            (NetClassType.CIRCUIT, other, PairRelationship.CIRCUIT_TO_SURROUNDINGS)
+            for other in _SURROUNDINGS
+        ),
+        *(
+            (other, NetClassType.CIRCUIT, PairRelationship.CIRCUIT_TO_SURROUNDINGS)
+            for other in _SURROUNDINGS
+        ),
+        *(
+            (first, second, PairRelationship.NON_CIRCUIT_REFERENCE)
+            for index, first in enumerate(_SURROUNDINGS)
+            for second in _SURROUNDINGS[index:]
+        ),
+    ],
+)
+def test_every_net_type_combination_classifies(
+    first: NetClassType, second: NetClassType, expected: PairRelationship
+) -> None:
+    assert pair_relationship(first, second) is expected
+    assert pair_relationship(second, first) is expected

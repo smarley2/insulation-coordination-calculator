@@ -17,6 +17,7 @@ from hypothesis import strategies as st
 
 from insulation_coordination.calculation.supply_rules import SupplyRuleSet, read_supply_rules
 from insulation_coordination.calculation.supply_stress import (
+    OVERVOLTAGE_CATEGORY_I_WARNING,
     TOV_PEAK_COLUMN,
     TOV_RMS_COLUMN,
     SupplyStressService,
@@ -381,6 +382,67 @@ def test_the_temporary_overvoltage_reads_its_rms_and_peak_columns_independently(
     selected = {cell for step in scenario.trace_steps for cell in step.source_cells}
     assert any(cell.endswith(TOV_RMS_COLUMN) for cell in selected)
     assert any(cell.endswith(TOV_PEAK_COLUMN) for cell in selected)
+
+
+def test_a_derived_scenario_carries_the_kind_it_came_from(
+    service: SupplyStressService, rules: SupplyRuleSet
+) -> None:
+    scenario = _derived(service.derive_scenario(_configuration(), rules))
+
+    assert scenario.supply_kind is SupplyKind.AC_MAINS
+
+
+# --- the lowest overvoltage category -----------------------------------------------------
+
+
+def test_the_lowest_category_on_a_mains_supply_always_warns(
+    service: SupplyStressService, rules: SupplyRuleSet
+) -> None:
+    scenario = _derived(
+        service.derive_scenario(_configuration(overvoltage_category=OvervoltageCategory.I), rules)
+    )
+    again = _derived(
+        service.derive_scenario(_configuration(overvoltage_category=OvervoltageCategory.I), rules)
+    )
+
+    codes = {warning.code for warning in scenario.warnings}
+    assert OVERVOLTAGE_CATEGORY_I_WARNING in codes
+    # Recomputed rather than stored, so it cannot be dismissed away between two runs.
+    assert scenario.warnings == again.warnings
+    assert scenario.rated_impulse_v > 0
+
+
+@pytest.mark.parametrize(
+    ("category", "kind", "earthing"),
+    [
+        (OvervoltageCategory.II, SupplyKind.AC_MAINS, EarthingArrangement.TN_STAR_POINT_EARTHED),
+        (OvervoltageCategory.III, SupplyKind.AC_MAINS, EarthingArrangement.TN_STAR_POINT_EARTHED),
+        (OvervoltageCategory.I, SupplyKind.NON_MAINS_AC, EarthingArrangement.NOT_APPLICABLE),
+    ],
+)
+def test_no_other_configuration_carries_that_warning(
+    service: SupplyStressService,
+    rules: SupplyRuleSet,
+    category: OvervoltageCategory,
+    kind: SupplyKind,
+    earthing: EarthingArrangement,
+) -> None:
+    measure = (
+        "phase_to_earth_rms" if kind is SupplyKind.AC_MAINS else "between_supply_conductors_rms"
+    )
+    scenario = _derived(
+        service.derive_scenario(
+            _configuration(
+                overvoltage_category=category,
+                supply_kind=kind,
+                earthing_arrangement=earthing,
+                declared_system_voltages=(DeclaredSystemVoltage(measure=measure, value_v=IN_BAND),),
+            ),
+            rules,
+        )
+    )
+
+    assert OVERVOLTAGE_CATEGORY_I_WARNING not in {warning.code for warning in scenario.warnings}
 
 
 # --- blocking --------------------------------------------------------------------------
