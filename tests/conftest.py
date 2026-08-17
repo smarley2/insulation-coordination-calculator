@@ -108,13 +108,14 @@ def synthetic_private_grammars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     one yields one draft per statement sentence whether or not a keyword matched, which is what
     gives the completion guard its obligations to count and the review dialog its draft rows.
 
-    Every keyword below is a coined marker (``SYNTH_*``) that means nothing outside this file and
+    Every keyword below is a coined marker (``synth*``) that means nothing outside this file and
     occurs in no document, so no mapping from any source's phrasing to a typed meaning appears in
-    this repository. Only the attenuation family gets rules, because it is the family the public
-    surfaces are exercised through; every other route gets a rule-free grammar, which still yields
-    one draft per statement sentence with every dimension unchosen. Families and statement kinds are
-    derived from the recipe's own public declarations, which is what
-    ``_require_declared_proposal_grammars`` demands of the real file too.
+    this repository. Two families get rules -- the attenuation family, because it is the family the
+    public surfaces are exercised through, and the reduction family, because it is the only one
+    declaring a pair collection and a rule-free grammar can never reach one. Every other route gets a
+    rule-free grammar, which still yields one draft per statement sentence with every dimension
+    unchosen. Families and statement kinds are derived from the recipe's own public declarations,
+    which is what ``_require_declared_proposal_grammars`` demands of the real file too.
 
     Written through the real file and the real environment variable rather than by patching the
     loader, so the loading path the maintainer depends on is the one the public suite covers.
@@ -123,6 +124,7 @@ def synthetic_private_grammars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         PRIVATE_MATERIAL_DIRECTORY_VARIABLE,
         ClauseFactGrammar,
         ClauseKeywordRule,
+        ClauseSequenceRule,
         fact_variants,
     )
     from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
@@ -143,6 +145,35 @@ def synthetic_private_grammars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             ClauseKeywordRule(
                 dimension="comparison_required", value="true", keywords=("synthcompare",)
             ),
+        ),
+        # The reduction family's proposed statement kind is its permission, which is the one
+        # variant in the recipe declaring an ordered pair collection. Between these rules and the
+        # sequence rule below, one marked sentence settles every dimension the variant declares --
+        # which is what a draft has to do before anything builds a candidate statement from it.
+        "spd_reduction": (
+            ClauseKeywordRule(dimension="obligation", value="permission", keywords=("synthallow",)),
+            ClauseKeywordRule(
+                dimension="insulation_classes", value="basic", keywords=("synthclassone",)
+            ),
+            ClauseKeywordRule(
+                dimension="insulation_classes", value="supplementary", keywords=("synthclasstwo",)
+            ),
+        ),
+    }
+    #: Coined scale markers, deliberately declared in the same order the fact model's own
+    #: vocabulary declares the designations, and gated the way the real declarations are.
+    synthetic_sequences = {
+        "spd_reduction": (
+            ClauseSequenceRule(
+                tokens=(
+                    ("synthovcfour", "ovc_iv"),
+                    ("synthovcthree", "ovc_iii"),
+                    ("synthovctwo", "ovc_ii"),
+                    ("synthovcone", "ovc_i"),
+                ),
+                dimension="permitted_steps",
+                keywords=("synthreduce",),
+            ),
         )
     }
     directory = tmp_path / "synthetic-private-material"
@@ -152,6 +183,7 @@ def synthetic_private_grammars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             fact_kind=family,
             statement_kind=next(iter(fact_variants(family)), ""),
             keyword_rules=synthetic_rules.get(family, ()),
+            sequence_rules=synthetic_sequences.get(family, ()),
             constants=(
                 {"threshold_reference": "synthetic.threshold.route"}
                 if family == "hf_attenuation"

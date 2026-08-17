@@ -269,6 +269,32 @@ def pair_wire(pairs: Sequence[Sequence[str]]) -> str:
     return _SCOPE_SEPARATOR.join(_PAIR_ARROW.join(members) for members in pairs)
 
 
+def canonical_pairs(
+    pairs: Sequence[Sequence[str]], vocabulary: Sequence[str]
+) -> tuple[tuple[str, ...], ...]:
+    """One machine-read pair collection in the order its declared vocabulary states.
+
+    The counterpart of ``DimensionScope.of`` for a pair collection, and needed for exactly the same
+    reason: a fact model's collection validator refuses a reading that is not in declared order, so
+    a collection built by code rather than typed by a reviewer has to arrive canonical or it cannot
+    be built into a statement at all.
+
+    Sorting *here* and rejecting at the model is the whole distinction. A reviewer's rows are the
+    reading in the order they arranged them, and quietly reordering those would hide a duplicate they
+    meant to notice; a positional reading of a sentence carries no arrangement of the reviewer's to
+    respect -- the order is an artifact of where the terms happen to fall in the wording.
+
+    Deduplicating too, again as ``DimensionScope.of`` does: one transition named twice by one
+    sentence is one stated transition, not a collection the model must refuse.
+    """
+
+    position = {value: index for index, value in enumerate(vocabulary)}
+    unique = tuple(dict.fromkeys(tuple(members) for members in pairs))
+    return tuple(
+        sorted(unique, key=lambda members: tuple(position.get(member, -1) for member in members))
+    )
+
+
 def authored_pair_wire(members: Sequence[object]) -> str:
     """One authored pair collection's wire value, read off the member models themselves.
 
@@ -699,12 +725,18 @@ def keyword_proposer(grammar: ClauseFactGrammar) -> SentenceProposer:
     A declared inherited dimension its own text settles nowhere is then read from the sentence's
     stem. Second, and only into an empty dimension, so inheritance can neither override a
     bullet's own reading nor multiply it into two drafts.
+
+    A pair collection read positionally out of a sentence is canonicalised on the way out -- see
+    ``canonical_pairs``. Without it a sentence stating its transitions in any order but the declared
+    one proposed a collection the fact model refuses, so the draft could not be built into a
+    statement: the prefill was unauthorable as offered, and every caller that builds a candidate
+    statement from a draft raised on it.
     """
 
-    scopes = {
-        name
-        for name, kind, _options in fact_dimensions(grammar.fact_kind, grammar.variant)
-        if kind == "scope"
+    declared = fact_dimensions(grammar.fact_kind, grammar.variant)
+    scopes = {name for name, kind, _options in declared if kind == "scope"}
+    pair_vocabularies = {
+        name: options for name, kind, options in declared if kind == "pair_sequence"
     }
 
     def propose(sentence: ClauseSentence) -> tuple[Mapping[str, str], ...]:
@@ -733,7 +765,10 @@ def keyword_proposer(grammar: ClauseFactGrammar) -> SentenceProposer:
             if pairs:
                 # One reading naming every pair, never one per pair: the same union a scope gets,
                 # for the same reason -- a sentence stating several steps states one collection.
-                axes.append([{sequence.dimension: pair_wire(pairs)}])
+                # Canonical, for the same reason a scope's values are: the collection has to be
+                # authorable, and the sentence's own order is not the declared one.
+                canonical = canonical_pairs(pairs, pair_vocabularies[sequence.dimension])
+                axes.append([{sequence.dimension: pair_wire(canonical)}])
         readings: list[dict[str, str]] = [dict(grammar.constants)]
         for axis in axes:
             readings = [{**base, **choice} for base in readings for choice in axis]

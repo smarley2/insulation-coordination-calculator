@@ -284,10 +284,30 @@ def test_two_rules_naming_one_value_propose_it_once() -> None:
     assert [item.chosen["dvc_gate"] for item in proposals] == ["dvc_as"]
 
 
-def _step_grammar(*tokens: tuple[str, str], keywords: tuple[str, ...] = ()) -> ClauseFactGrammar:
+def _step_grammar(
+    *tokens: tuple[str, str],
+    keywords: tuple[str, ...] = (),
+    settle_the_rest: bool = False,
+) -> ClauseFactGrammar:
+    """A grammar over the reduction permission's pair collection.
+
+    ``settle_the_rest`` adds the variant's other dimensions, so a step sentence can be a *fully*
+    proposed draft -- which is the only kind anything builds a candidate statement from. The supply
+    kind is a constant here because the route determines it; the real proposer locks it per route.
+    """
+
     return ClauseFactGrammar(
         fact_kind="spd_reduction",
         statement_kind="permission",
+        keyword_rules=(
+            (
+                _keyword("obligation", "permission", "may"),
+                _keyword("insulation_classes", "basic", "basic"),
+            )
+            if settle_the_rest
+            else ()
+        ),
+        constants={"supply_kind": "mains"} if settle_the_rest else {},
         sequence_rules=(
             ClauseSequenceRule(tokens=tokens, dimension="permitted_steps", keywords=keywords),
         ),
@@ -310,6 +330,10 @@ def test_a_sequence_rule_states_every_pair_it_finds_as_one_reading() -> None:
     And a sentence naming several steps is **one** statement naming all of them, not one per step:
     two independent value sets, or one draft per pair, would read as a cartesian product of the
     endpoints and would author several statements where the reviewer read one.
+
+    The collection comes back in the *declared* scale order rather than the order the sentence
+    happens to state its steps in -- see ``test_a_proposed_collection_can_be_built_into_a_statement``
+    for why a proposal that does not is unauthorable.
     """
 
     grammar = _step_grammar(("IV", "ovc_iv"), ("III", "ovc_iii"), ("II", "ovc_ii"), ("I", "ovc_i"))
@@ -317,9 +341,56 @@ def test_a_sequence_rule_states_every_pair_it_finds_as_one_reading() -> None:
     (proposal,) = _propose_steps(grammar, "Synthetic step IV to III, then III to II.")
 
     assert pair_tokens(proposal.chosen["permitted_steps"]) == (
-        ("ovc_iv", "ovc_iii"),
         ("ovc_iii", "ovc_ii"),
+        ("ovc_iv", "ovc_iii"),
     )
+
+
+def test_a_proposed_collection_can_be_built_into_a_statement() -> None:
+    """A prefill nothing can author is worse than no prefill: it takes its whole draft list down.
+
+    A proposal is validated per dimension -- each name and value one the variant declares -- and
+    nothing checks it against the refusals the fact model makes *across* fields. A collection is
+    where those live: the reduction family refuses a step collection out of the declared scale's
+    order, so a positional reading of a sentence stating its steps downward proposed a draft the
+    model would not accept, and every caller that builds a candidate statement from a draft raised
+    on it rather than skipping the draft.
+
+    Both orders of the same two stated steps, because the defect was invisible for the ascending
+    one: the sentence's own order happened to be the declared order there.
+    """
+
+    grammar = _step_grammar(
+        ("IV", "ovc_iv"), ("III", "ovc_iii"), ("II", "ovc_ii"), settle_the_rest=True
+    )
+    downward = "Synthetic reading over basic which may step IV to III, then III to II."
+    upward = "Synthetic reading over basic which may step III to II, then IV to III."
+
+    for sentence in (downward, upward):
+        (proposal,) = _propose_steps(grammar, sentence)
+
+        assert proposal.fully_proposed, sentence
+        fact = proposed_fact(proposal, statement_index=0)
+        assert [(step.source_ovc, step.target_ovc) for step in fact.permitted_steps] == [
+            ("ovc_iii", "ovc_ii"),
+            ("ovc_iv", "ovc_iii"),
+        ], sentence
+
+
+def test_a_sequence_rule_states_one_transition_named_twice_once() -> None:
+    """One sentence naming a transition twice states it once, exactly as a scope's values do.
+
+    The collection's own refusal of a repeat is about a reviewer's rows, where a duplicate they
+    typed is something to see rather than to silently drop. A positional reading has no such
+    arrangement to respect, so its repeat is an artifact of the wording and the reading is one
+    transition.
+    """
+
+    grammar = _step_grammar(("IV", "ovc_iv"), ("III", "ovc_iii"))
+
+    (proposal,) = _propose_steps(grammar, "Synthetic step IV to III, and again IV to III.")
+
+    assert pair_tokens(proposal.chosen["permitted_steps"]) == (("ovc_iv", "ovc_iii"),)
 
 
 def test_a_sequence_rules_trailing_unpaired_token_settles_nothing() -> None:

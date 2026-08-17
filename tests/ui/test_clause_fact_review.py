@@ -1109,6 +1109,102 @@ def test_a_draft_prefills_the_rows_from_the_collection_it_proposes(
     assert not proposing.draft.clause_fact_reviews
 
 
+#: One invented sentence carrying every marker the synthetic reduction grammar names, with its two
+#: transitions stated in the order the declared scale does *not* put them in. The markers are coined
+#: in ``synthetic_private_grammars`` and mean nothing outside these tests; the real declarations live
+#: beside the licensed material (amendment A1) and are spelled nowhere here.
+_PROPOSED_COLLECTION_SENTENCE = (
+    "Synthetic reading: synthallow synthclassone synthreduce synthovcfour to synthovcthree, "
+    "then synthovcthree to synthovctwo."
+)
+
+
+@pytest.fixture
+def draft_with_a_proposed_collection(synthetic_private_grammars: Path) -> ImportedRuleDraft:
+    """Every supply fragment, with the mains reduction route's node carrying the sentence above."""
+
+    fragments = tuple(
+        fragment_with_sentences(spec.semantic_id, (_PROPOSED_COLLECTION_SENTENCE,))
+        if spec.semantic_id == MAINS_ROUTE
+        else _fragment(spec.semantic_id)
+        for spec in SUPPLY_CLAUSES
+    )
+    return _logged(_draft(fragments=fragments))
+
+
+def test_a_route_whose_draft_states_a_collection_still_shows_its_statements(
+    qtbot, draft_with_a_proposed_collection
+) -> None:
+    """The defect the maintainer hit on both reduction routes, and its three visible symptoms.
+
+    Selecting the route left the statements pane empty, the suggestion button disabled and the editor
+    still describing the route selected *before* it -- because listing the drafts asks whether each is
+    already authored, that asks the fact model to build the draft's own statement, and the model
+    refuses a step collection that is not in its declared scale order. The refusal escaped into a Qt
+    slot, which took the rest of route loading with it.
+
+    So the assertions are the whole of what was broken: the pane lists the draft, the editor is the
+    route's own family, and the draft is authorable -- a prefill the model refuses is not a prefill.
+    """
+
+    model = ClauseFactReviewModel(draft_with_a_proposed_collection)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    # Another family first, so a stale editor would be visible as staleness rather than emptiness.
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+    assert dialog.family_text == "hf_attenuation"
+
+    dialog.table.selectRow(_route_position(model, MAINS_ROUTE))
+
+    (proposal,) = model.open_proposals(MAINS_ROUTE)
+    assert proposal.fully_proposed
+    assert dialog.facts_list.count() == 1
+    assert dialog.family_text == "spd_reduction"
+    assert dialog.use_suggested_button.isEnabled() is False
+
+    dialog.facts_list.setCurrentRow(0)
+
+    assert dialog.use_suggested_button.isEnabled() is True
+
+    dialog.use_suggested_button.click()
+    dialog.author_selected()
+
+    (review,) = model.draft.clause_fact_reviews
+    assert review.fact.statement_kind == "permission"
+    # In the declared scale's order, which is the only order the collection can be authored in.
+    assert [(step.source_ovc, step.target_ovc) for step in review.fact.permitted_steps] == [
+        ("ovc_iii", "ovc_ii"),
+        ("ovc_iv", "ovc_iii"),
+    ]
+
+
+class _ModelThatCannotLoad(ClauseFactReviewModel):
+    """A review model whose draft listing refuses, standing in for any failure inside it."""
+
+    def open_proposals(self, rule_route: str) -> tuple[ClauseFactProposal, ...]:
+        raise ValueError("synthetic refusal from inside route loading")
+
+
+def test_a_route_that_cannot_be_loaded_says_so_instead_of_failing_in_silence(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """Route loading is a Qt slot, so a failure in it reached nobody the maintainer could ask.
+
+    Qt prints such an exception to a stream a packaged application has no console for and the slot
+    returns, so the only symptom was three panes disagreeing with each other. Whatever refuses in
+    there next, it says so here.
+    """
+
+    model = _ModelThatCannotLoad(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+
+    assert "could not be loaded" in dialog.status_text
+    assert "synthetic refusal from inside route loading" in dialog.status_text
+
+
 def test_an_importer_refusal_lands_in_the_status_line(qtbot, draft_with_supply_fragments) -> None:
     """Completing a route with no authored facts is the importer's refusal, not the dialog's."""
 

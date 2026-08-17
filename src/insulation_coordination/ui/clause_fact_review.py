@@ -410,11 +410,20 @@ class ClauseFactReviewModel:
         a *different* reading, not the same one -- so comparing on the chosen subset would call a
         draft done that nobody has finished reading. ``statement_index`` is arbitrary here because
         the predicate ignores it.
+
+        A draft the fact model *refuses* is uncovered rather than an error. A proposal is validated
+        only per dimension -- that each name and value is one the variant declares -- so any refusal
+        the model makes across fields, which is every collection rule, first surfaces here. Left to
+        propagate it took the whole route's draft list with it: the panes came up empty, the editor
+        still showed the previously selected route, and nothing said why.
         """
 
         if not proposal.fully_proposed:
             return None
-        candidate = proposed_fact(proposal, statement_index=0)
+        try:
+            candidate = proposed_fact(proposal, statement_index=0)
+        except (ValidationError, ValueError):
+            return None
         return next(
             (
                 row.statement_index
@@ -1039,6 +1048,28 @@ class ClauseFactReviewDialog(QDialog):
         )
 
     def _load_route(self) -> None:
+        """Show the selected route, or say in the status line why it could not be shown.
+
+        This is a Qt slot, and an exception raised inside one reaches Qt rather than a caller: it
+        prints to a stream the maintainer of a packaged application never sees and the slot simply
+        returns, leaving the panes half-filled and the editor still describing the *previously*
+        selected route. That is how a refused draft collection cost two routes their whole statement
+        pane in silence, with the stale editor as the only visible symptom.
+
+        So a failure here becomes a visible refusal instead. Broad on purpose: what must never happen
+        again is a route that fails to load and says nothing, and narrowing this to the exception
+        types already known would leave the next one just as silent.
+        """
+
+        try:
+            self._show_route()
+        except Exception as error:  # noqa: BLE001 - a route that fails in silence is the defect.
+            self._status.setText(
+                f"This route could not be loaded: {type(error).__name__}: {error}. "
+                "The editor above still describes the previously selected route."
+            )
+
+    def _show_route(self) -> None:
         """Show the selected route's nodes and facts, and offer its declared family's editor."""
 
         row = self._current_route_row()
