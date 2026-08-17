@@ -2229,6 +2229,41 @@ def test_selecting_a_partly_proposed_draft_names_the_dimensions_still_needed(
     assert "ready" in dialog.status_text
 
 
+def test_the_dimension_hint_does_not_survive_a_change_of_route(
+    qtbot, draft_with_supply_fragments, synthetic_private_grammars: Path
+) -> None:
+    """A hint naming a family's dimensions under a route that declares none of them is a dead end.
+
+    The maintainer selected the monitoring and attenuation routes and the status line still asked
+    for the reduction family's own dimensions, which those routes' editors do not offer at all --
+    so the one line telling them what to do next named fields that were not on the screen.
+    """
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, MAINS_ROUTE))
+    dialog.facts_list.setCurrentRow(0)
+    reduction_only = {"insulation_classes", "permitted_steps"}
+
+    assert "unchosen dimension(s)" in dialog.status_text
+    assert reduction_only <= {field for field in reduction_only if field in dialog.status_text}
+
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+
+    # Nothing carried over: the route being left is what wrote that line.
+    assert not any(field in dialog.status_text for field in reduction_only)
+
+    dialog.facts_list.setCurrentRow(0)
+    offered = {*dialog.dimension_options, *dialog.scope_options, *dialog.pair_options}
+    hint = dialog.status_text
+
+    assert "unchosen dimension(s)" in hint
+    assert not any(field in hint for field in reduction_only)
+    # And it names this route's own dimensions, so clearing it did not silence the hint instead.
+    assert any(field in hint for field in offered)
+
+
 def test_the_routes_table_stretches_the_columns_a_reviewer_picks_a_row_by(
     qtbot, draft_with_supply_fragments
 ) -> None:

@@ -1157,7 +1157,18 @@ class ClauseFactReviewDialog(QDialog):
             )
 
     def _show_route(self) -> None:
-        """Show the selected route's nodes and facts, and offer its declared family's editor."""
+        """Show the selected route's nodes and facts, and offer its declared family's editor.
+
+        The status line is cleared on the way through, because everything that could have written it
+        was about the route being left. Emptying the statement list mid-way through here emits a
+        selection change, which describes the next step once more while ``_kinds`` still holds the
+        *previous* family's dimensions -- so the maintainer selected the attenuation route and was
+        asked for the reduction family's dimensions, which its editor does not offer at all. The
+        final refresh cannot undo that: a route change selects no draft, so ``_describe_next_step``
+        declines to speak, deliberately, so an outcome message survives the reviewer fiddling with
+        the editor. Cleared here rather than by making that method speak unconditionally, because
+        the hint is stale exactly when the route changes and nowhere else.
+        """
 
         row = self._current_route_row()
         if row is None:
@@ -1173,6 +1184,7 @@ class ClauseFactReviewDialog(QDialog):
             self.complete_button.setToolTip("")
             self._set_enabled(self.retract_button, False, "retract")
             self._set_enabled(self.duplicate_button, False, "duplicate")
+            self._status.clear()
             return
         standard, regions = self._model.source_regions(row.rule_route)
         self.source_preview.render_regions(
@@ -1216,6 +1228,7 @@ class ClauseFactReviewDialog(QDialog):
         self._set_enabled(self.use_suggested_button, False, "use_suggested")
         self._set_enabled(self.retract_button, False, "retract")
         self._set_enabled(self.duplicate_button, False, "duplicate")
+        self._status.clear()
         self._refresh_author_enabled()
 
     def _reset_statement_kind(self) -> None:
