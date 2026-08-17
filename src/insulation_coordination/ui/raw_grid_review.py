@@ -34,7 +34,9 @@ from insulation_coordination.rules.importer.identify import TableAuditSpec
 from insulation_coordination.rules.importer.review import (
     accept_raw_table,
     correctable_coordinates,
+    fill_suggested_compound_associations,
     flagged_coordinates,
+    suggested_compound_associations,
     unresolved_raw_review_items,
     unresolved_table_items,
 )
@@ -191,6 +193,9 @@ class RawGridReviewDialog(QDialog):
 
         action_row = QHBoxLayout()
         action_row.addStretch(1)
+        self._fill_button = QPushButton()
+        self._fill_button.clicked.connect(self._fill_suggested)
+        action_row.addWidget(self._fill_button)
         self._accept_button = QPushButton("Accept table")
         self._accept_button.clicked.connect(self._accept_table)
         action_row.addWidget(self._accept_button)
@@ -419,6 +424,7 @@ class RawGridReviewDialog(QDialog):
             self._column_header_labels = ()
             self._clear_axis_panel()
             self._accept_button.setEnabled(False)
+            self._refresh_fill_button(None)
             return
         pending = self._pending_coordinates(grid.id)
         self._table.clear()
@@ -450,6 +456,7 @@ class RawGridReviewDialog(QDialog):
         self._table.resizeColumnsToContents()
         table_pending = self._table_pending(grid.id)
         self._accept_button.setEnabled(table_pending)
+        self._refresh_fill_button(grid)
         state = "pending" if table_pending else "accepted"
         self._progress.setText(
             f"This table is {state}. All tables: {self.pending_table_count} pending. "
@@ -751,6 +758,31 @@ class RawGridReviewDialog(QDialog):
         self._details.setText(
             self._cell_details(cell, coordinate in self._pending_coordinates(grid.id))
         )
+
+    def _refresh_fill_button(self, grid: RawGrid | None) -> None:
+        suggested = suggested_compound_associations(grid) if grid is not None else {}
+        cells = {(row, column) for row, column, _source_index in suggested}
+        self._fill_button.setText(f"Fill suggested associations and values ({len(cells)})")
+        self._fill_button.setEnabled(bool(cells))
+
+    def _fill_suggested(self) -> None:
+        """Record the suggested association and extracted value for every suggested cell.
+
+        The filled cells stay visible and coloured for scan review, and the table itself
+        stays pending: accepting it remains the reviewer's explicit decision.
+        """
+        try:
+            self._draft, _filled, _skipped = fill_suggested_compound_associations(
+                self._draft,
+                grid_id=self._current_grid_id(),
+                actor=self._actor,
+                notes="filled the suggested component associations; extracted values kept",
+            )
+        except ValueError as error:
+            QMessageBox.warning(self, "Review Extracted Table", str(error))
+            return
+        self.draft_changed.emit(self._draft)
+        self._load_grid(self._grid_selector.currentIndex())
 
     def _accept_table(self) -> None:
         grid_id = self._current_grid_id()

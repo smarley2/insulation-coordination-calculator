@@ -14,6 +14,7 @@ from insulation_coordination.rules.importer.extract import (
     RawGrid,
     RawGridCell,
     RawGridSegment,
+    compound_review_items,
     parse_compound_data_cell,
 )
 from insulation_coordination.rules.importer.identify import CompoundQuantitySpec, TableColumnSpec
@@ -401,6 +402,73 @@ def test_dialog_applies_association_and_formula_atomically(
 
     assert dialog.pending_association_corrections == {(2, 1, 1): "peak"}
     assert dialog.pending_formula_corrections == {(2, 1, 1): "synthetic-peak-formula"}
+
+
+def test_fill_button_fills_every_suggested_cell_without_accepting_the_table(
+    qtbot,
+    draft,
+) -> None:
+    """One click records the suggested reading; accepting the table stays the human gate."""
+    grid = draft.raw_grids[0]
+    original = next(cell for cell in grid.cells if (cell.row, cell.column) == (2, 1))
+    parsed = parse_compound_data_cell(
+        text="11 / 17",
+        spec=CompoundQuantitySpec(component_ids=("rms", "peak")),
+        source=original.source,
+    )
+    compound = original.model_copy(
+        update={
+            "raw_text": "11 / 17",
+            "value": None,
+            "components": parsed.components,
+            "compound_component_ids": parsed.compound_component_ids,
+            "parse_status": parsed.parse_status,
+        }
+    )
+    changed_grid = grid.model_copy(
+        update={"cells": tuple(compound if cell is original else cell for cell in grid.cells)}
+    )
+    changed = _logged(
+        draft.model_copy(
+            update={
+                "raw_grids": tuple(
+                    changed_grid if item is grid else item for item in draft.raw_grids
+                ),
+                "review_items": (*draft.review_items, *compound_review_items(changed_grid)),
+            }
+        )
+    )
+    dialog = RawGridReviewDialog(changed, actor="Maintainer")
+    qtbot.addWidget(dialog)
+    emitted = []
+    dialog.draft_changed.connect(emitted.append)
+    tables_pending = dialog.pending_table_count
+
+    assert dialog._fill_button.text() == "Fill suggested associations and values (1)"
+    assert dialog._fill_button.isEnabled()
+    qtbot.mouseClick(dialog._fill_button, Qt.MouseButton.LeftButton)
+
+    assert emitted
+    filled = next(
+        cell
+        for item in dialog.reviewed_draft.raw_grids
+        if item.id == grid.id
+        for cell in item.cells
+        if (cell.row, cell.column) == (2, 1)
+    )
+    assert filled.parse_status == "compound"
+    assert [(part.component_id, part.value) for part in filled.components] == [
+        ("rms", Decimal(11)),
+        ("peak", Decimal(17)),
+    ]
+    # The filled cell stays on screen, its extracted text untouched, for scan review.
+    assert dialog._table.item(2, 1).text() == "11 / 17"
+    # The bulk action never accepts the table: that decision stays with the reviewer.
+    assert dialog.pending_table_count == tables_pending
+    assert dialog._accept_button.isEnabled()
+    # Nothing left to fill, so the action says so and refuses another run.
+    assert dialog._fill_button.isEnabled() is False
+    assert dialog._fill_button.text() == "Fill suggested associations and values (0)"
 
 
 @pytest.mark.parametrize("value", ("", "not-a-number", "NaN"))
