@@ -2248,12 +2248,42 @@ obligation is what the variant *is*, so the boolean field goes and the row's `mo
 comes from the variant — check `_require_distinct_branches` still separates the two, since a
 requirement and an exemption over one placement must not both answer.
 
-**5. Still outstanding, and not part of the variant commits.** The five `any_*` tokens on
-`SystemVoltageStatement`/`SystemVoltageMeasureFact`, plus `any_placement` and `any_evidence`, remain
-scalar-plus-token. Their projection is already correct through `_dimension_matcher` and
-`_placement_matcher`, which both build a `DimensionScope` from the token, so this is a modelling
-tidy-up rather than a behaviour fix — and it is what deletes those two shims. Do it per family or as
-one commit after family 5; say which in your report.
+**5. Done, as one commit after family 5 — the option this item offered.** The remaining `any_*`
+tokens are gone and no shim is left. `SystemVoltageStatement.input_topology` and `.purpose`,
+`SystemVoltageMeasureFact.phase_system` and `.earthing`, and `HfAttenuationFact.evidence_kind` are
+`DimensionScope` fields; `_dimension_matcher` and `_evidence_matcher` are deleted
+(`_placement_matcher` had already gone with family 3). It was **not** only a modelling tidy-up, as
+this item predicted: a scalar dimension forces `keyword_proposer` to multiply, so a sentence naming
+three earthing arrangements produced three drafts differing in nothing a reviewer could see, and
+three statements of one reading if authored. A2 and A7 are the amendments it answers, and the union
+happens in the proposer rather than in any presentation layer.
+
+`any_supply_kind` was **deleted rather than converted**, and `supply_kind` stays one concrete value.
+The route settles that dimension structurally, so there is no unrestricted reading of it to state
+and no set of values a statement could name — converting it would have made a route-determined
+dimension look like a reviewed scope and reworked the locked-dimension path in the dialog, the
+proposer and `clause_fact_defect` for a reading that cannot be spelled. The token was unauthorable
+anyway, because the dialog prefills that field from the route's declaration and disables it, so
+`clause_fact_defect` no longer carries its exception for it. The reasoning is recorded on
+`SystemVoltageStatement` itself and beside `SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE`, so a successor meets
+it where the field is. A third route-determined dimension should follow `supply_kind` and the
+isolation scope, not the scopes.
+
+`measure` stays scalar too, for a different reason: it is the answer the rule outputs rather than a
+condition, and a statement naming two measures would not say which one a consumer gets.
+
+**5a. How a grammar declares an unrestricted reading now.** A `ClauseFactGrammar` keyword rule may
+name `SCOPE_UNRESTRICTED` (`"*"`) for a scope dimension — the scope's own wire form — rather than a
+member of that dimension's vocabulary, which is what the `any_*` members used to be. Without it the
+reading those tokens carried would have become unproposable and the maintainer would have had to
+state it by hand on every sentence that makes it. `scope_wire_from_tokens` is the single point where
+the unrestricted reading wins over a concrete value matched beside it, shared by the declared rules
+and by the editor's own multi-selection, so the two cannot disagree about what naming both stated.
+
+The private grammar file beside the licensed material was edited to match, and that edit cannot be
+reviewed through git: five rule values that spelled `any_evidence`, `any_purpose` and
+`any_input_topology` now spell `*`. Nothing else in the file changed. It has to be carried to any
+other machine, or those routes lose their unrestricted-reading prefills and the loader raises.
 
 **6. The private placeholders are one statement per route.** `_placeholder_facts` returns a
 `dict[str, SupplyFact]`, so the licensed path exercises one variant per route -- the measure one for
@@ -2283,8 +2313,9 @@ these two routes' inputs and outputs look different from their siblings'.
   branch in `clause_fact_defect`. Both halves are live: the projector reads the declared scope for
   every answer that follows from it, and the defect predicate refuses the one dimension a statement
   still spells that could contradict it. A third such dimension should follow the same three pieces.
-- `_placement_matcher` is gone; `_dimension_matcher` is the last shim, and item 5 above still stands
-  for it.
+- `_placement_matcher` is gone. So are `_dimension_matcher` and `_evidence_matcher`, since item 5
+  above landed: **no `any_*` shim remains**, and every reviewed dimension reaches its consumer
+  input through `_scope_matcher` from a scope the model declares.
 - `_placeholder_facts` is now `dict[str, tuple[SupplyFact, ...]]`, widened by family 4 **and** by the
   completion guard, independently: a reduction route projects two rules and the second exists only if
   a statement was reviewed for it, so that route needs two placeholders; and the guard refuses a route
