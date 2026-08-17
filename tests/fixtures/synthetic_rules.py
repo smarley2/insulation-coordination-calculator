@@ -46,6 +46,7 @@ from insulation_coordination.domain.rules import (
     Table,
     TableAxis,
     TableCell,
+    TableSelect,
     Variable,
 )
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
@@ -1285,6 +1286,390 @@ def synthetic_dvc_rule_package(*, edition: str = EDITION) -> RulePackage:
             impulse_reference,
             not_applicable,
             protection_matrix,
+        ),
+    )
+
+
+def synthetic_supply_rule_package(*, edition: str = EDITION) -> RulePackage:
+    """A supply-only package in the semantic shape the real supply projections produce.
+
+    Shape only. Every number here is invented: the band boundaries, the cell values and the
+    frequency are this fixture's own, and no reviewed reading of any clause is reproduced. What
+    is faithful is the structure the adapter resolves against - the AC and DC lookup pair per
+    quantity, the routes beneath the reduction identifier, and each decision's declared input
+    and output names.
+
+    The two lookups differ exactly as the source's own treatment of them does: the impulse pair
+    selects a band and declares no interpolation, the temporary-overvoltage pair interpolates.
+    That is what lets a test prove the adapter refuses an impulse lookup that interpolates.
+
+    ``edition`` builds a package carrying the right identifiers under the wrong source edition,
+    so the refusal of a wrong-edition package needs no second fixture.
+    """
+    reference = SourceReference(
+        document_id="synthetic-supply-source",
+        standard=STANDARD,
+        edition=edition,
+        clause="synthetic-clause",
+        table="synthetic-supply-table",
+        row="synthetic row",
+        column="synthetic column",
+        note="Synthetic fixture only; contains no IEC numeric values.",
+    )
+
+    def categorical(name: str, values: Iterable[str]) -> DecisionInput:
+        return DecisionInput(name=name, kind="categorical", allowed_values=tuple(values))
+
+    def lookup_pair(
+        base_id: str,
+        column_axis_id: str,
+        column_labels: tuple[str, ...],
+        *,
+        interpolation: str,
+        row_mode: str,
+    ) -> tuple[tuple[Table, ...], tuple[Formula, ...]]:
+        tables: list[Table] = []
+        formulas: list[Formula] = []
+        for form in ("ac", "dc"):
+            row_axis_id = f"system_voltage_{form}_v"
+            row_values = (Decimal(11), Decimal(22), Decimal(33))
+            column_values = tuple(Decimal(index + 1) for index in range(len(column_labels)))
+            table = Table(
+                id=f"{base_id}.{form}",
+                unit="V",
+                row_axis=TableAxis(
+                    id=row_axis_id,
+                    unit="V",
+                    values=row_values,
+                    labels=tuple(f"{row_axis_id}-{value}" for value in row_values),
+                ),
+                column_axis=TableAxis(
+                    id=column_axis_id,
+                    unit="1",
+                    values=column_values,
+                    labels=column_labels,
+                ),
+                cells=tuple(
+                    TableCell(
+                        row=row,
+                        column=column,
+                        value=Decimal((row + 1) * 100 + (column + 1) * 7),
+                        unit="V",
+                        source=reference,
+                    )
+                    for row in range(len(row_values))
+                    for column in range(len(column_values))
+                ),
+                interpolation=interpolation,  # type: ignore[arg-type]
+                source=reference,
+            )
+            tables.append(table)
+            formulas.append(
+                Formula(
+                    id=f"{base_id}.{form}.lookup",
+                    expression=TableSelect(
+                        table_id=table.id,
+                        row=Variable(name=row_axis_id),
+                        column=Variable(name=column_axis_id),
+                        row_mode=row_mode,  # type: ignore[arg-type]
+                        column_mode="exact",
+                    ),
+                    unit="V",
+                    latex="U_{synthetic} = f(U_{sys}, k)",
+                    applicability="Synthetic fixture only.",
+                    source=reference,
+                )
+            )
+        return tuple(tables), tuple(formulas)
+
+    impulse_tables, impulse_formulas = lookup_pair(
+        ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC,
+        "overvoltage_category",
+        ("ovc-1", "ovc-2", "ovc-3", "ovc-4"),
+        interpolation="none",
+        row_mode="ceiling",
+    )
+    tov_tables, tov_formulas = lookup_pair(
+        ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE,
+        "tov_basis",
+        ("tov-rms", "tov-peak"),
+        interpolation="linear",
+        row_mode="linear",
+    )
+
+    overvoltage_categories = ("ovc_i", "ovc_ii", "ovc_iii", "ovc_iv")
+    insulation_classes = ("functional", "basic", "supplementary", "double", "reinforced")
+
+    system_voltage = DecisionRule(
+        id=ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,
+        inputs=(
+            categorical("supply_kind", ("mains", "non_mains")),
+            categorical("phase_system", ("single_phase", "three_phase_star", "unspecified")),
+            categorical("earthing_arrangement", ("tn", "tt", "it", "unspecified")),
+            categorical("input_topology", ("direct", "rectified_dc", "series_rectifier_bridges")),
+            categorical("calculation_purpose", ("impulse", "temporary_overvoltage")),
+        ),
+        outputs=(
+            DecisionOutput(
+                name="system_voltage_measure",
+                kind="categorical",
+                allowed_values=("synthetic_measure_a", "synthetic_measure_b"),
+            ),
+        ),
+        rows=tuple(
+            DecisionRow(
+                matchers=(Matcher(input="supply_kind", op="equals", values=(kind,)),),
+                values=(DecisionValue(name="system_voltage_measure", categorical=measure),),
+                source=reference,
+            )
+            for kind, measure in (
+                ("mains", "synthetic_measure_a"),
+                ("non_mains", "synthetic_measure_b"),
+            )
+        ),
+        exhaustive=False,
+        source=reference,
+    )
+
+    propagation = DecisionRule(
+        id=ids.SUPPLY_MULTIPLE_SOURCE_PROPAGATION,
+        inputs=(
+            categorical("evaluated_side", ("mains", "non_mains")),
+            categorical("mains_overvoltage_category", overvoltage_categories),
+            categorical("non_mains_overvoltage_category", overvoltage_categories),
+            DecisionInput(name="galvanic_isolation_present", kind="boolean"),
+        ),
+        outputs=tuple(
+            DecisionOutput(name=name, kind="categorical", allowed_values=overvoltage_categories)
+            for name in ("source_requirement", "transferred_requirement", "governing_requirement")
+        ),
+        rows=(
+            DecisionRow(
+                matchers=(Matcher(input="galvanic_isolation_present", op="equals", boolean=True),),
+                values=tuple(
+                    DecisionValue(name=name, categorical="ovc_ii")
+                    for name in (
+                        "source_requirement",
+                        "transferred_requirement",
+                        "governing_requirement",
+                    )
+                ),
+                source=reference,
+            ),
+        ),
+        exhaustive=False,
+        source=reference,
+    )
+
+    barrier = DecisionRule(
+        id=ids.SUPPLY_VERIFIED_BARRIER_TRANSFER,
+        inputs=(
+            DecisionInput(name="galvanic_isolation_verified", kind="boolean"),
+            categorical("isolation_evidence_kind", ("none", "test", "calculation")),
+            categorical("downstream_connection_kind", ("no_isolation", "verified_isolation")),
+        ),
+        outputs=(
+            DecisionOutput(name="transfer_permitted", kind="boolean"),
+            DecisionOutput(
+                name="combined_circuit_requirement",
+                kind="categorical",
+                allowed_values=("synthetic_requirement",),
+            ),
+            DecisionOutput(name="propagates_to_connected_circuits", kind="boolean"),
+        ),
+        rows=(
+            DecisionRow(
+                matchers=(
+                    Matcher(input="galvanic_isolation_verified", op="equals", boolean=False),
+                ),
+                values=(
+                    DecisionValue(name="transfer_permitted", boolean=False),
+                    DecisionValue(
+                        name="combined_circuit_requirement",
+                        categorical="synthetic_requirement",
+                    ),
+                    DecisionValue(name="propagates_to_connected_circuits", boolean=True),
+                ),
+                source=reference,
+            ),
+        ),
+        exhaustive=False,
+        source=reference,
+    )
+
+    def spd_reduction(route: str) -> DecisionRule:
+        return DecisionRule(
+            id=route,
+            inputs=(
+                categorical("source_overvoltage_category", overvoltage_categories),
+                categorical("insulation_class", insulation_classes),
+                DecisionInput(name="part_of_category_reduction", kind="boolean"),
+            ),
+            outputs=(
+                DecisionOutput(name="reduction_permitted", kind="boolean"),
+                DecisionOutput(
+                    name="reduced_category", kind="categorical", allowed_values=("ovc_ii",)
+                ),
+            ),
+            rows=(
+                DecisionRow(
+                    matchers=(
+                        Matcher(input="part_of_category_reduction", op="equals", boolean=True),
+                    ),
+                    values=(
+                        DecisionValue(name="reduction_permitted", boolean=True),
+                        DecisionValue(name="reduced_category", categorical="ovc_ii"),
+                    ),
+                    source=reference,
+                ),
+            ),
+            exhaustive=False,
+            source=reference,
+        )
+
+    def spd_device_monitoring(route: str) -> DecisionRule:
+        return DecisionRule(
+            id=f"{route}.device_monitoring",
+            inputs=(DecisionInput(name="device_degradable", kind="boolean"),),
+            outputs=(
+                DecisionOutput(name="monitoring_required", kind="boolean"),
+                DecisionOutput(name="status_indication_required", kind="boolean"),
+                DecisionOutput(name="monitoring_reference", kind="reference"),
+            ),
+            rows=(
+                DecisionRow(
+                    matchers=(Matcher(input="device_degradable", op="equals", boolean=True),),
+                    values=(
+                        DecisionValue(name="monitoring_required", boolean=True),
+                        DecisionValue(name="status_indication_required", boolean=True),
+                        DecisionValue(
+                            name="monitoring_reference",
+                            reference=f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring",
+                        ),
+                    ),
+                    source=reference,
+                ),
+            ),
+            exhaustive=False,
+            source=reference,
+        )
+
+    spd_monitoring = DecisionRule(
+        id=f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring",
+        inputs=(
+            categorical("device_placement", ("internal_to_pecs", "external_to_pecs")),
+            categorical("insulation_class", insulation_classes),
+            DecisionInput(name="device_degradable", kind="boolean"),
+            DecisionInput(name="part_of_category_reduction", kind="boolean"),
+        ),
+        outputs=(
+            DecisionOutput(name="reduction_permitted", kind="boolean"),
+            DecisionOutput(
+                name="reduced_category", kind="categorical", allowed_values=("not_reduced",)
+            ),
+            DecisionOutput(name="monitoring_required", kind="boolean"),
+            DecisionOutput(name="status_indication_required", kind="boolean"),
+            DecisionOutput(
+                name="verification_reference",
+                kind="categorical",
+                allowed_values=("synthetic_verification", "not_required"),
+            ),
+            DecisionOutput(name="reinforced_floor_applies", kind="boolean"),
+        ),
+        rows=(
+            DecisionRow(
+                matchers=(
+                    Matcher(input="device_placement", op="equals", values=("internal_to_pecs",)),
+                ),
+                values=(
+                    DecisionValue(name="reduction_permitted", boolean=False),
+                    DecisionValue(name="reduced_category", categorical="not_reduced"),
+                    DecisionValue(name="monitoring_required", boolean=True),
+                    DecisionValue(name="status_indication_required", boolean=True),
+                    DecisionValue(
+                        name="verification_reference", categorical="synthetic_verification"
+                    ),
+                    DecisionValue(name="reinforced_floor_applies", boolean=False),
+                ),
+                source=reference,
+            ),
+        ),
+        exhaustive=False,
+        source=reference,
+    )
+
+    transformer = DecisionRule(
+        id=ids.SUPPLY_HF_TRANSFORMER_ATTENUATION,
+        inputs=(
+            categorical("circuit_dvc", ("dvc_as", "dvc_b", "dvc_c")),
+            DecisionInput(name="transformer_frequency_hz", kind="numeric", unit="Hz"),
+            DecisionInput(name="isolation_provided", kind="boolean"),
+            categorical("attenuation_evidence_kind", ("none", "test", "simulation")),
+        ),
+        outputs=(
+            DecisionOutput(name="working_voltage_basis_permitted", kind="boolean"),
+            DecisionOutput(
+                name="required_evidence_kinds",
+                kind="categorical",
+                allowed_values=("synthetic_showing", "already_provided"),
+            ),
+        ),
+        rows=(
+            DecisionRow(
+                matchers=(
+                    Matcher(input="transformer_frequency_hz", op="range", minimum=Decimal(4321)),
+                    Matcher(input="isolation_provided", op="equals", boolean=True),
+                ),
+                values=(
+                    DecisionValue(name="working_voltage_basis_permitted", boolean=True),
+                    DecisionValue(name="required_evidence_kinds", categorical="already_provided"),
+                ),
+                source=reference,
+            ),
+        ),
+        exhaustive=False,
+        source=reference,
+    )
+
+    return RulePackage(
+        manifest=Manifest(
+            schema_version=RULE_SCHEMA_VERSION,
+            package_id="00000000-0000-0000-0000-00000000000b",
+            version="supply-synthetic-1",
+            importer_version="test-1",
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            source_documents=(
+                SourceDocument(
+                    id="synthetic-supply-source",
+                    standard=STANDARD,
+                    edition=edition,
+                    sha256="e" * 64,
+                ),
+            ),
+            approved=True,
+            compatible=True,
+            approval_records=(
+                ApprovalRecord(
+                    action="approval",
+                    actor="Synthetic Reviewer",
+                    recorded_at=datetime(2026, 1, 2, tzinfo=UTC),
+                    notes="Synthetic supply data reviewed.",
+                ),
+            ),
+        ),
+        tables=(*impulse_tables, *tov_tables),
+        formulas=(*impulse_formulas, *tov_formulas),
+        mappings=(),
+        decisions=(
+            system_voltage,
+            propagation,
+            barrier,
+            spd_reduction(f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains"),
+            spd_reduction(f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains"),
+            spd_monitoring,
+            spd_device_monitoring(f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.mains"),
+            spd_device_monitoring(f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains"),
+            transformer,
         ),
     )
 

@@ -7,10 +7,13 @@ IEC standard as its source identity. Boundary properties that are not yet true
 (rule-backed UI options, rule-backed reinforced policy) are inventoried in
 docs/licensed-content-audit.md instead of being asserted here.
 
-One fixture package is deliberately outside the identity property and so is not
-listed below: the DVC package has to carry the identity the guidance service
-gates on, because that gate is the behavior under test. Its numbers are invented
-and its document id and note say so.
+Two fixture packages are deliberately outside the identity property and so are
+not listed below. The DVC package has to carry the identity the guidance service
+gates on, and the supply package has to carry the identity ``read_supply_rules``
+gates on, because in both cases that gate is the behavior under test - including
+its refusal of the wrong edition, which needs a package that is right about
+everything else. Their numbers are invented and their document ids and notes say
+so. Both are inventoried in docs/licensed-content-audit.md.
 """
 
 from __future__ import annotations
