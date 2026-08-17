@@ -434,6 +434,32 @@ def _require_declared_isolation_scopes(
 _require_declared_isolation_scopes(SUPPLY_FACT_FAMILY_BY_ROUTE, SUPPLY_FACT_ISOLATION_BY_ROUTE)
 
 
+def declared_rule_references() -> tuple[str, ...]:
+    """Every id a reviewed statement may defer to, in sorted order.
+
+    A ``RouteIdentifier`` dimension names another rule rather than restating its content, and until
+    now nothing checked that the id it named existed: nothing consumes these references yet, so a
+    mistyped one would have been recorded silently and surfaced only when a consumer first tried to
+    follow it. This is the set ``clause_fact_defect`` refuses an unresolvable reference against, and
+    the set the review dialog offers as a choice so the reviewer picks rather than recalls.
+
+    **Every declared id, not a per-field shortlist.** Narrowing the choice to the ids plausible for
+    one field would encode which rules may reference which, and no reviewed reading states that. What
+    a reference must not be is a typo or an id nobody declares, and that is exactly what this
+    refuses.
+
+    Three sources, because a rule is declared in three shapes: the standard's own required semantic
+    ids, the clause-fact routes -- a subclause-level route is not a required semantic id of its own --
+    and each clause spec's projected rule ids, which is where a route's second projected rule is
+    named.
+    """
+
+    projected = {
+        rule_id for spec in SUPPLY_CLAUSES for rule_id in getattr(spec, "projected_rule_ids", ())
+    }
+    return tuple(sorted(ids.REQUIRED_SEMANTIC_IDS | set(SUPPLY_FACT_FAMILY_BY_ROUTE) | projected))
+
+
 # --- proposal grammars ---------------------------------------------------------------
 #
 # Which term settles which dimension of which fact family is a mapping from the source's own
@@ -1842,6 +1868,7 @@ __all__ = [
     "SUPPLY_FACT_ISOLATION_BY_ROUTE",
     "SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE",
     "SUPPLY_SYSTEM_VOLTAGE_NON_MAINS",
+    "declared_rule_references",
     "project_hf_transformer_attenuation",
     "project_multiple_source_propagation",
     "project_spd_reduction_requirements",

@@ -15,6 +15,7 @@ from insulation_coordination.rules.importer.extract import (
     draft_content_digest,
     propose_axis_selectors,
 )
+from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import SUPPLY_CLAUSES
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.tables import TABLE_2
 from tests.rules.importer.iec62477_2022.test_axis_proposals import _voltage_limits_grid
@@ -214,7 +215,7 @@ def synthetic_private_grammars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             keyword_rules=synthetic_rules.get(family, ()),
             sequence_rules=synthetic_sequences.get(family, ()),
             constants=(
-                {"threshold_reference": "synthetic.threshold.route"}
+                {"threshold_reference": ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC}
                 if family == "hf_attenuation"
                 else {}
             ),

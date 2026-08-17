@@ -2236,6 +2236,35 @@ def uncovered_clause_fact_statements(draft: ImportedRuleDraft, route: str) -> tu
     return tuple(uncovered)
 
 
+def _unresolvable_rule_reference(fact: SupplyFact) -> str | None:
+    """Why one statement's deferral to another rule cannot be followed, or ``None``.
+
+    A ``RouteIdentifier`` dimension names a rule instead of restating its content, and nothing
+    consumes those references yet -- that is a disclosed gap awaiting #53C. So until this, a mistyped
+    id was recorded silently, covered by the fact digest and by the route's completion record, and
+    would have surfaced only when a consumer first tried to follow it, long after the review that was
+    supposed to have checked it. Refused at authoring instead, beside the other identity defects.
+
+    The reference dimensions come from ``fact_dimensions``, the one place a dimension's kind is
+    reported, so a field gaining or losing the marker changes this with it.
+    """
+
+    from insulation_coordination.rules.importer.clause_fact_proposals import fact_dimensions
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        declared_rule_references,
+    )
+
+    declared = declared_rule_references()
+    statement_kind: str | None = getattr(fact, "statement_kind", "") or None
+    for name, kind, _options in fact_dimensions(fact.fact_kind, statement_kind):
+        if kind != "route_reference":
+            continue
+        value = getattr(fact, name)
+        if value not in declared:
+            return f"states {name} {value}, which names no rule this recipe declares"
+    return None
+
+
 def clause_fact_defect(
     rule_route: str,
     fact: SupplyFact,
@@ -2245,9 +2274,10 @@ def clause_fact_defect(
 
     Identity rather than evidence, the half ``axis_review_is_current`` keeps for an axis position
     and the digests alone cannot: the route must be one the recipe declares, the fact must belong
-    to the family that route's clause states, it must cite that route's own fragment, and where the
+    to the family that route's clause states, it must cite that route's own fragment, where the
     route determines a dimension structurally -- a concrete ``supply_kind``, or the isolation the
-    clause is scoped by -- the fact must not name the contradicting value. Without all of them a
+    clause is scoped by -- the fact must not name the contradicting value, and a dimension that
+    defers to another rule must name one the recipe declares. Without all of them a
     fact that cannot express a route's branches -- or one resting entirely on another clause, or one
     that states the wrong supply or the wrong barrier for its route -- certifies the route as
     reviewed, and reprinting the cited clause blocks a route whose rule it never stated.
@@ -2305,6 +2335,9 @@ def clause_fact_defect(
                 f"states downstream_connection_kind {connection} where {rule_route} is scoped to "
                 f"{expected_connection}"
             )
+    unresolvable = _unresolvable_rule_reference(fact)
+    if unresolvable is not None:
+        return unresolvable
     duplicate = next(
         (
             other.statement_index

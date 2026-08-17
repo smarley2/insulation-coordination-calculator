@@ -37,6 +37,7 @@ from insulation_coordination.rules.importer.clause_facts import (
     HfAttenuationFact,
     OvercategoryStep,
     PropagationStepFact,
+    RouteReference,
     SpdMonitoringComplianceFact,
     SpdMonitoringExemptionFact,
     SpdMonitoringRequirementFact,
@@ -103,7 +104,9 @@ _UNDIMENSIONED_FIELDS = frozenset(
     {"fact_kind", "statement_kind", "statement_index", "node_references"}
 )
 
-DimensionKind = Literal["choice", "boolean", "identifier", "scope", "pair_sequence"]
+DimensionKind = Literal[
+    "choice", "boolean", "identifier", "route_reference", "scope", "pair_sequence"
+]
 
 #: A boolean dimension's two authored values. Spelled as text because that is what an editor
 #: offers and what a declared rule states; converted once, in ``proposed_fact``.
@@ -185,7 +188,10 @@ def fact_dimensions(
     not pick, and a checkbox has no unchosen state. A ``DimensionScope`` field is a ``"scope"``
     over the same kind of vocabulary, offered as a multi-selection plus an explicit unrestricted
     entry rather than as one value. An ordered collection of pairs is a ``"pair_sequence"`` over the
-    vocabulary both halves draw from. An ``Identifier`` field has no vocabulary and gets a line edit.
+    vocabulary both halves draw from. An identifier marked ``RouteReference`` is a
+    ``"route_reference"``, offered as a choice over the ids the *recipe* declares rather than as free
+    text nobody could recall -- its vocabulary is empty here because which ids are declared is the
+    recipe's question, not this module's. Any other identifier gets a line edit.
     Anything else is refused here rather than degrading silently: a dimension the editor cannot
     offer is a fact no reviewer can author, and approval would block on the route with nothing to
     explain why.
@@ -216,7 +222,8 @@ def fact_dimensions(
             dimensions.append((name, "choice", options))
             continue
         if field.annotation is str:
-            dimensions.append((name, "identifier", ()))
+            reference = any(isinstance(item, RouteReference) for item in field.metadata)
+            dimensions.append((name, "route_reference" if reference else "identifier", ()))
             continue
         raise RulePackageError(
             f"{fact_kind}.{name} declares no vocabulary of strings the review dialog could offer"

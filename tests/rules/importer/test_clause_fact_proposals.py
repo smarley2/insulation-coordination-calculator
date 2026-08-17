@@ -30,6 +30,7 @@ from insulation_coordination.rules.importer.clause_fact_proposals import (
 from insulation_coordination.rules.importer.clause_facts import DimensionScope
 from insulation_coordination.rules.importer.clauses import ClauseNode, RawClauseFragment
 from insulation_coordination.rules.importer.extract import canonical_model_sha256
+from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 
 SOURCE = SourceReference(
     document_id="synthetic-proposals",
@@ -101,7 +102,7 @@ _GRAMMAR = ClauseFactGrammar(
         _keyword("evidence_kind", SCOPE_UNRESTRICTED, "test", "simulation", "calculation"),
         _keyword("comparison_required", "true", "shall", "shown"),
     ),
-    constants={"threshold_reference": "synthetic.threshold.route"},
+    constants={"threshold_reference": ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC},
 )
 
 
@@ -683,7 +684,7 @@ def test_a_dimension_no_rule_settles_stays_out_of_the_reading() -> None:
 
     (proposal,) = _propose(("Synthetic reading naming nothing the grammar looks for.",))
 
-    assert proposal.chosen == {"threshold_reference": "synthetic.threshold.route"}
+    assert proposal.chosen == {"threshold_reference": ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC}
     assert set(proposal.unchosen) == {
         name for name, _kind, _options in fact_dimensions("hf_attenuation")
     } - {"threshold_reference"}

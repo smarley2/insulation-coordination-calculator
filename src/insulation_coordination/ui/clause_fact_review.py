@@ -69,6 +69,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply impor
     LEGACY_BRANCH_AUTHORITY_RULE_IDS,
     SUPPLY_FACT_FAMILY_BY_ROUTE,
     SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE,
+    declared_rule_references,
     propose_supply_facts,
     supply_fact_proposal_grammars,
 )
@@ -419,6 +420,18 @@ class ClauseFactReviewModel:
             return _NO_GRAMMAR_FOR_ROUTE
         return _NO_STATEMENT_SENTENCES
 
+    def _route_constants(self, rule_route: str) -> frozenset[str]:
+        """Dimensions this route's grammar gives every one of its sentences the same value.
+
+        Declared as constants, so they are undiscriminating *by construction*: agreeing on one says
+        the statement is of this route, which every statement of it is. Read from the declaration
+        rather than measured across the drafts, so whether a draft can be closed never depends on
+        what its siblings happen to settle.
+        """
+
+        grammar = supply_fact_proposal_grammars().get(rule_route)
+        return frozenset() if grammar is None else frozenset(grammar.constants)
+
     def covered_by(self, rule_route: str, proposal: ClauseFactProposal) -> int | None:
         """The authored statement that has dealt with this draft, or ``None``.
 
@@ -437,9 +450,11 @@ class ClauseFactReviewModel:
         applicability statement carries no measure -- so they drop out of the comparison.
 
         **The overlap has to discriminate**, whichever kind was authored. Closing needs the compared
-        dimensions to include at least one outside ``_UNDISCRIMINATING_DIMENSIONS``: agreeing only on
-        the route's own supply kind and on the modality every sentence carries identifies no sentence
-        at all, so it is "agreeing on the empty set" one level up. Matching the kind is not a
+        dimensions to include at least one that is neither in ``_UNDISCRIMINATING_DIMENSIONS`` nor a
+        constant of the route's own grammar -- see ``_route_constants``. Agreeing only on the route's
+        supply kind, on the modality every sentence carries, and on a value the grammar hands every
+        sentence of the route identifies no sentence at all, so it is "agreeing on the empty set" one
+        level up. Matching the kind is not a
         substitute for it. On a family whose variants share nothing but the obligation, one authored
         statement closed a sibling sentence's draft on the same node -- and *both* safety nets were
         blind at once, because the guard's anchor is node-granular and so was already satisfied by
@@ -481,13 +496,14 @@ class ClauseFactReviewModel:
             name: kind for name, kind, _options in fact_dimensions(proposal.fact_kind, variant)
         }
         cited = {(item.fragment_id, item.node_order) for item in proposal.node_references}
+        undiscriminating = _UNDISCRIMINATING_DIMENSIONS | self._route_constants(rule_route)
         for row in self.facts(rule_route):
             authored_variant = _statement_kind(row.fact)
             comparable = set(settled) & {
                 name
                 for name, _kind, _options in fact_dimensions(row.fact.fact_kind, authored_variant)
             }
-            if not (comparable - _UNDISCRIMINATING_DIMENSIONS):
+            if not (comparable - undiscriminating):
                 continue
             authored_nodes = {
                 (item.fragment_id, item.node_order) for item in row.fact.node_references
@@ -1479,7 +1495,12 @@ class ClauseFactReviewDialog(QDialog):
             # A blank first entry, so every dimension starts unchosen: a reviewer must never
             # be able to record a reading they did not pick.
             combo.addItem("")
-            combo.addItems(options)
+            # A dimension deferring to another rule is a choice over the ids the recipe declares,
+            # never free text: its value is an identifier the reviewer would otherwise have to recall
+            # from the recipe source, which is how one arrived at a blank line edit with no way to
+            # know what belonged in it. An ordinary combo, so the prefill a declared grammar constant
+            # gives it, the row summary and the enable check all keep treating it as one value.
+            combo.addItems(declared_rule_references() if kind == "route_reference" else options)
             combo.currentIndexChanged.connect(self._refresh_author_enabled)
             self._editor_form.addRow(field.replace("_", " "), combo)
             self._combos[field] = combo

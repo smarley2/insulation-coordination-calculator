@@ -25,6 +25,7 @@ from insulation_coordination.rules.importer.clause_facts import (
     CitedNode,
     DimensionScope,
     HfAttenuationFact,
+    RouteReference,
     SpdMonitoringComplianceFact,
     SpdMonitoringExemptionFact,
     SpdMonitoringRequirementFact,
@@ -48,6 +49,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply impor
     SUPPLY_CLAUSES,
     SUPPLY_FACT_FAMILY_BY_ROUTE,
     SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE,
+    declared_rule_references,
 )
 from insulation_coordination.ui import clause_fact_review
 from insulation_coordination.ui.clause_fact_review import (
@@ -145,6 +147,11 @@ def _expected_options(
             continue
         if field.annotation is bool:
             options[name] = ("true", "false")
+        elif any(isinstance(item, RouteReference) for item in field.metadata):
+            # A dimension deferring to another rule is a combo like any other, over the ids the
+            # recipe declares rather than a vocabulary the model carries -- so the expectation comes
+            # from the recipe here, exactly as the dialog builds it.
+            options[name] = declared_rule_references()
         elif get_args(field.annotation):
             options[name] = get_args(field.annotation)
     return options
@@ -214,7 +221,9 @@ def _fill_hf_dimensions(dialog: ClauseFactReviewDialog) -> None:
     dialog.dimension_combo("obligation").setCurrentText("requirement")
     dialog.choose_scope("dvc_gate", "dvc_as")
     dialog.choose_scope("evidence_kind", "test")
-    dialog.dimension_edit("threshold_reference").setText(ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC)
+    dialog.dimension_combo("threshold_reference").setCurrentText(
+        ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC
+    )
     dialog.dimension_combo("comparison_required").setCurrentText("true")
 
 
@@ -647,7 +656,9 @@ def test_authoring_stays_disabled_while_any_dimension_is_unchosen(
     dialog.dimension_combo("obligation").setCurrentText("requirement")
     dialog.choose_scope("dvc_gate", "dvc_as")
     dialog.choose_scope("evidence_kind", "test")
-    dialog.dimension_edit("threshold_reference").setText(ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC)
+    dialog.dimension_combo("threshold_reference").setCurrentText(
+        ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC
+    )
     assert dialog.author_button.isEnabled() is False
     dialog.dimension_combo("comparison_required").setCurrentText("true")
     assert dialog.author_button.isEnabled() is True
@@ -666,7 +677,9 @@ def test_authoring_stays_disabled_while_no_node_is_selected(
     dialog.dimension_combo("obligation").setCurrentText("requirement")
     dialog.choose_scope("dvc_gate", "dvc_as")
     dialog.choose_scope("evidence_kind", "test")
-    dialog.dimension_edit("threshold_reference").setText(ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC)
+    dialog.dimension_combo("threshold_reference").setCurrentText(
+        ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC
+    )
     dialog.dimension_combo("comparison_required").setCurrentText("true")
 
     assert dialog.author_button.isEnabled() is False
@@ -780,6 +793,88 @@ def test_a_variant_family_authors_the_kind_the_reviewer_chose(
     dialog.choose_statement_kind("measure")
     assert "measure" in dialog.dimension_options
     assert "counts_as_system_voltage" not in dialog.dimension_options
+
+
+def test_a_route_reference_is_offered_as_a_choice_over_the_declared_ids(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """A blank line edit for a rule identifier is a field nobody can fill from the screen.
+
+    The maintainer authoring the reduction clause's monitoring statement had no way to know what
+    ``monitoring_reference`` wanted: the value is a route id discoverable only by reading the recipe
+    source, and a grammar constant cannot reach it because the grammar proposes one statement kind
+    and this dimension lives on a variant it does not propose. Offered as a choice, the reviewer picks
+    rather than recalls and a typo is not expressible.
+
+    Every declared id rather than a per-field shortlist, because narrowing means encoding which rules
+    may reference which and no reviewed reading states that.
+    """
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, MAINS_ROUTE))
+    dialog.choose_statement_kind("monitoring")
+
+    kinds = {
+        name: kind
+        for name, kind, _options in clause_fact_proposals.fact_dimensions(
+            "spd_reduction", "monitoring"
+        )
+    }
+
+    assert kinds["monitoring_reference"] == "route_reference"
+    # A choice, not a line edit -- and over ids that actually exist.
+    assert "monitoring_reference" not in dialog.pair_options
+    with pytest.raises(KeyError):
+        dialog.dimension_edit("monitoring_reference")
+    offered = dialog.dimension_options["monitoring_reference"]
+    assert offered == declared_rule_references()
+    assert MAINS_ROUTE in offered
+    assert f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring" in offered
+    # The family id a barrier rating statement defers to is offered too: that field names a route
+    # *family*, so narrowing the choice to leaf routes would put its correct value out of reach.
+    assert ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS in offered
+
+
+def test_a_statement_deferring_to_an_undeclared_rule_is_refused(
+    qtbot, draft_with_supply_fragments
+) -> None:
+    """Nothing consumes these references yet, so a typo would have surfaced years later.
+
+    Refused where the other identity defects are refused -- the wrong family, the foreign citation,
+    the contradicting supply kind -- so both ``author_clause_fact`` and the approval gate reject it
+    and a hand-built draft cannot slip one past either.
+    """
+
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, MAINS_ROUTE))
+    dialog.nodes_list.item(0).setSelected(True)
+    dialog.choose_statement_kind("monitoring")
+    dialog.dimension_combo("obligation").setCurrentText("requirement")
+    dialog.dimension_combo("device_degradable").setCurrentText("true")
+    dialog.dimension_combo("monitoring_obligation").setCurrentText("required")
+    dialog.dimension_combo("status_indication").setCurrentText("required")
+    # A well-formed identifier that names no declared rule: exactly what a typo produces.
+    combo = dialog.dimension_combo("monitoring_reference")
+    combo.setEditable(True)
+    combo.setCurrentText("iec62477_2022.supply.spd_reduction_requirements.monitorng")
+
+    dialog.author_selected()
+
+    assert "refused" in dialog.status_text
+    assert "monitorng" in dialog.status_text
+    assert "names no rule this recipe declares" in dialog.status_text
+    assert model.draft.clause_fact_reviews == ()
+
+    # The declared id authors, through the same press.
+    combo.setCurrentText(f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring")
+    dialog.author_selected()
+
+    (review,) = model.draft.clause_fact_reviews
+    assert review.fact.monitoring_reference == f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring"
 
 
 def test_a_scope_dimension_offers_its_values_and_an_explicit_unrestricted_entry(
@@ -1425,8 +1520,13 @@ def test_selecting_a_draft_cites_its_own_node_and_leaves_unsettled_dimensions_un
     assert [item.text() for item in dialog.nodes_list.selectedItems()] == [
         dialog.nodes_list.item(1).text()
     ]
+    # Every dimension the draft did not settle stays blank -- and the one this route's grammar
+    # declares as a constant arrives filled, which is what a prefill is for.
+    draft = model.open_proposals(HF_ROUTE)[1]
+    assert draft.chosen == {"threshold_reference": ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC}
     assert all(
-        dialog.dimension_combo(field).currentText() == "" for field in dialog.dimension_options
+        dialog.dimension_combo(field).currentText() == draft.chosen.get(field, "")
+        for field in dialog.dimension_options
     )
     assert all(not _selected_scope(dialog, field) for field in dialog.scope_options)
     assert dialog.author_button.isEnabled() is False
@@ -1815,7 +1915,9 @@ def test_agreement_on_the_obligation_alone_closes_no_sibling_draft(
 
     dialog.facts_list.setCurrentRow(0)
     dialog.use_suggested_button.click()
-    dialog.dimension_edit("rating_reference").setText(ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC)
+    dialog.dimension_combo("rating_reference").setCurrentText(
+        ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC
+    )
     dialog.author_selected()
 
     assert len(model.facts(barrier_route)) == 1
@@ -1861,7 +1963,9 @@ def test_a_draft_that_settles_no_dimension_is_never_covered(
     dialog.choose_statement_kind("rating_resolution")
     dialog.dimension_combo("obligation").setCurrentText("requirement")
     dialog.choose_scope("rated_side", "mains")
-    dialog.dimension_edit("rating_reference").setText(ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC)
+    dialog.dimension_combo("rating_reference").setCurrentText(
+        ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC
+    )
     dialog.author_selected()
 
     assert len(model.facts(barrier_route)) == 1

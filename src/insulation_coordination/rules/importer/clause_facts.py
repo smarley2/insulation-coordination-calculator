@@ -123,6 +123,29 @@ def pair_vocabulary(annotation: object) -> tuple[str, ...] | None:
     return vocabularies.pop()
 
 
+class RouteReference:
+    """Annotation marker: this identifier must name a rule the recipe declares.
+
+    Carried by the *model* rather than inferred from the field's name in the editor. A field called
+    ``*_reference`` is a convention and nothing enforces it, so a heuristic over the name would be
+    silently wrong for the first field that broke it -- in either direction. This is a contract the
+    field states, and ``fact_dimensions`` is the one place that reads it, exactly as it is for a
+    scope's vocabulary and a pair collection's.
+
+    Which ids count as declared is the *recipe's* question, not this module's: the fact models know a
+    dimension defers to another rule, and the recipe knows what it declares. So the marker carries no
+    vocabulary and the answer comes from ``declared_rule_references``, which is also what
+    ``clause_fact_defect`` refuses an unresolvable reference against.
+    """
+
+
+#: An identifier that defers to another rule: a route, a route family, or a projected rule of one.
+#: Deliberately not narrowed to leaf routes -- ``BarrierRatingResolutionFact.rating_reference`` names
+#: the route *family* each side's rating is resolved by, and a statement may legitimately defer to a
+#: family whose leaf a consumer then picks by the side it asked about.
+RouteIdentifier = Annotated[Identifier, RouteReference()]
+
+
 class CitedNode(FrozenModel):
     """One fragment node a statement rests on, by identity and content."""
 
@@ -315,7 +338,7 @@ class BarrierRatingResolutionFact(BarrierTransferStatement):
     #: deferral shape ``SpdReductionFact.monitoring_reference`` carries. The side and this
     #: reference together name the route; the reference alone would have to be authored once per
     #: side, which would split one reading in two.
-    rating_reference: Identifier
+    rating_reference: RouteIdentifier
 
 
 class BarrierCombinedRequirementFact(BarrierTransferStatement):
@@ -503,7 +526,7 @@ class SpdReductionMonitoringFact(SpdReductionStatement):
     device_degradable: bool
     monitoring_obligation: Literal["required", "not_required"]
     status_indication: Literal["required", "not_required"]
-    monitoring_reference: Identifier
+    monitoring_reference: RouteIdentifier
 
 
 #: The family's three variants under one ``fact_kind``, discriminated by ``statement_kind``.
@@ -640,7 +663,7 @@ class HfAttenuationFact(_Fact):
     #: requirement the referenced route resolves -- rather than the evidence kind the rule can
     #: express today. #53C item 4 turns both into it; until then the fact carries a reading the
     #: rule cannot yet consume, the way ``SpdMonitoringFact.compliance_evidence`` does.
-    threshold_reference: Identifier
+    threshold_reference: RouteIdentifier
     #: Carried rather than dropped even where every authored reading gives it the same value: it is
     #: part of the reading, and a field is not redundant for being constant across a fact set.
     #: #53C item 4 is where its second value becomes reachable.
@@ -774,6 +797,8 @@ __all__ = [
     "OvercategoryStepSequence",
     "PhaseSystem",
     "PropagationStepFact",
+    "RouteIdentifier",
+    "RouteReference",
     "ScopeMode",
     "SpdMonitoringComplianceFact",
     "SpdMonitoringExemptionFact",
