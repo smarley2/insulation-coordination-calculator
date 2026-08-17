@@ -38,7 +38,7 @@ from insulation_coordination.rules.audit import (
     export_inventory_json,
     export_table_csv,
 )
-from insulation_coordination.rules.importer.approval import is_fully_resolved
+from insulation_coordination.rules.importer.approval import approval_blockers, is_fully_resolved
 from insulation_coordination.rules.importer.extract import _REQUIRED_RECIPES, ImportedRuleDraft
 from insulation_coordination.rules.installation import install_rule_package
 from insulation_coordination.ui.axis_review import AxisReviewModel
@@ -319,18 +319,15 @@ class RulesManagerWindow(QWidget):
             self._review_curves_button.setEnabled(False)
             self._review_clause_facts_button.setEnabled(False)
             return
-        from insulation_coordination.rules.importer.review import (
-            recipe_derived_items,
-            unresolved_equation_items,
-            unresolved_mapping_items,
-            unresolved_raw_review_items,
-            unresolved_table_items,
-        )
+        from insulation_coordination.rules.importer.review import recipe_derived_items
 
-        raw_pending = unresolved_raw_review_items(self._draft)
-        table_pending = unresolved_table_items(self._draft)
-        equation_pending = unresolved_equation_items(self._draft)
-        mapping_pending = unresolved_mapping_items(self._draft)
+        # The list and the Approve button read the same gate, so the panel can never claim
+        # there is nothing left while the button stays grey: every blocker gets a line.
+        blockers = approval_blockers(self._draft)
+        raw_pending = tuple(item for item in blockers if item.kind == "raw_cell")
+        table_pending = tuple(item for item in blockers if item.kind == "table")
+        equation_pending = tuple(item for item in blockers if item.kind == "formula")
+        mapping_pending = tuple(item for item in blockers if item.kind == "mapping")
         tables_done = not table_pending and not raw_pending
         # An axis selector is confirmed inside the table review dialog, beside the row or column
         # it describes, so that dialog has to stay reachable while any position is unreviewed --
@@ -360,15 +357,25 @@ class RulesManagerWindow(QWidget):
                 f"{item.kind.capitalize()} {item.semantic_id} — "
                 f"{item.source.standard} {item.source.clause}, {item.source.note}"
             )
-        if not self._review_list.count():
+        # Everything the dedicated buttons cannot open is still named, with the blocker's own
+        # explanation -- a gate nothing says out loud is the defect this list is here to prevent.
+        counted_cells = tuple(f"raw-{item.semantic_id}:" for item in table_pending)
+        for item in blockers:
+            if item.kind in {"table", "formula", "mapping"}:
+                continue
+            if item.kind == "raw_cell" and item.semantic_id.startswith(counted_cells):
+                continue  # already counted on its table's line above
+            self._review_list.addItem(f"{item.code} {item.semantic_id} — {item.expected_contract}")
+        if not blockers:
             self._review_list.addItem(
                 "Nothing left to review. Add approval notes, then approve the draft."
             )
+        approve_step = " — ready" if not blockers else f" — {len(blockers)} blocker(s) left"
         self._review_status.setText(
             f"① Tables {len(self._draft.raw_grids) - len(table_pending)}"
             f" of {len(self._draft.raw_grids)} accepted"
             f"  ·  ② Equations and mappings {len(equation_pending) + len(mapping_pending)} pending"
-            f"  ·  ③ Approve{' — ready' if self.can_approve else ''}"
+            f"  ·  ③ Approve{approve_step}"
         )
         derived = recipe_derived_items(self._draft)
         formulas = sum(item.kind == "formula" for item in derived)
@@ -377,7 +384,7 @@ class RulesManagerWindow(QWidget):
             f"Taken from this app's recipe, no PDF content: {formulas} formula(s), "
             f"{mappings} mapping(s) — resolved by the importer, see the audit tree."
         )
-        self._review_approve_button.setEnabled(self.can_approve)
+        self._review_approve_button.setEnabled(not blockers)
 
     def _on_review_tables_clicked(self) -> None:
         if self._draft is None:
