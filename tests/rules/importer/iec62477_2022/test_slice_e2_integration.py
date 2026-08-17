@@ -30,10 +30,10 @@ def test_the_deferred_set_is_empty_and_every_item_has_a_recipe() -> None:
 
     While anything was deferred, a required item without a recipe was reported as deferred
     rather than missing. With the set empty the two halves have to agree: every one of the
-    twenty-six items is declared by a spec, under its own identifier or one of its routes.
+    items is declared by a spec, under its own identifier or one of its routes.
     """
     assert DEFERRED_SEMANTIC_IDS == frozenset()
-    assert len(REQUIRED_SOURCE_ITEMS) == 26
+    assert len(REQUIRED_SOURCE_ITEMS) == 27
 
     declared = frozenset(EXPECTATIONS.typed_results)
     for item in REQUIRED_SOURCE_ITEMS:

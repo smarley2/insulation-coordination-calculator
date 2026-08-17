@@ -28,6 +28,11 @@ CREEPAGE_REQUIREMENTS = "iec62477_2022.creepage.requirements"
 ALTITUDE_CLEARANCE_CORRECTION = "iec62477_2022.altitude.clearance_correction"
 ALTITUDE_TEST_VOLTAGE_CORRECTION = "iec62477_2022.altitude.test_voltage_correction"
 HIGH_FREQUENCY_APPLICABILITY = "iec62477_2022.high_frequency.applicability"
+#: The annex's own band grid resolves a factor from a frequency (#72), which is a different
+#: question from whether the annex applies at all, so it gets its own identifier rather than a
+#: route under the applicability one. A sibling for the same reason the two Annex E identifiers
+#: are siblings: neither is a route of the other.
+HIGH_FREQUENCY_BAND_FACTOR = "iec62477_2022.high_frequency.band_factor"
 
 TEST_IMPULSE_PROCEDURE = "iec62477_2022.test.impulse_procedure"
 TEST_IMPULSE_SELECTION = "iec62477_2022.test.impulse_selection"
@@ -58,6 +63,7 @@ REQUIRED_SEMANTIC_IDS: frozenset[str] = frozenset(
         ALTITUDE_CLEARANCE_CORRECTION,
         ALTITUDE_TEST_VOLTAGE_CORRECTION,
         HIGH_FREQUENCY_APPLICABILITY,
+        HIGH_FREQUENCY_BAND_FACTOR,
         TEST_IMPULSE_PROCEDURE,
         TEST_IMPULSE_SELECTION,
         TEST_MAINS_DIELECTRIC_VALUES,

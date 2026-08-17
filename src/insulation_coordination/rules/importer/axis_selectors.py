@@ -14,6 +14,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from insulation_coordination.domain.project import FrozenModel
+from insulation_coordination.domain.quantities import DecimalValue
 from insulation_coordination.domain.rules import Identifier, NotesText
 from insulation_coordination.rules.importer.artifacts import canonical_model_sha256
 
@@ -56,9 +57,35 @@ class ProtectionTargetSelector(FrozenModel):
     adjacent_dvc: Literal["dvc_as", "dvc_b", "dvc_c", "not_applicable"]
 
 
+class FrequencyBandSelector(FrozenModel):
+    """A row axis position the source states as a band rather than as one number.
+
+    The two bounds are extracted from the position's own cells and converted to the base
+    unit; nothing declares them. ``inclusive_bound`` names which end the source closes, so
+    a consumer resolving a frequency that sits exactly on a boundary lands in the one band
+    the source puts it in, rather than in whichever band happens to be tried first.
+    """
+
+    selector_kind: Literal["frequency_band"] = "frequency_band"
+    lower_hz: DecimalValue
+    upper_hz: DecimalValue
+    inclusive_bound: Literal["lower", "upper", "both", "neither"]
+
+
 AxisSelector = Annotated[
-    DvcDesignationSelector | Table2QuantitySelector | ProtectionTargetSelector,
+    DvcDesignationSelector
+    | Table2QuantitySelector
+    | ProtectionTargetSelector
+    | FrequencyBandSelector,
     Field(discriminator="selector_kind"),
+]
+#: Every axis reading kind, named once so the spec, the proposal and the review dialog
+#: cannot drift apart over which kinds exist.
+SelectorKind = Literal[
+    "dvc_designation",
+    "table2_quantity",
+    "protection_target",
+    "frequency_band",
 ]
 
 
@@ -81,7 +108,7 @@ class AxisSelectorProposal(FrozenModel):
     #: discover it at resolution. Deliberately outside ``_axis_proposal_sha256``'s payload,
     #: which hashes the position and its reading only, so stating the kind here invalidates no
     #: existing review.
-    selector_kind: Literal["dvc_designation", "table2_quantity", "protection_target"]
+    selector_kind: SelectorKind
     proposal_sha256: str = Field(pattern=r"[0-9a-f]{64}")
     #: Digest of exactly this position's own header cells, not the whole grid -- see
     #: ``axis_evidence_sha256``. A correction to any other cell must not disturb this.

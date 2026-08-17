@@ -15,14 +15,22 @@ from PySide6.QtCore import Qt
 from insulation_coordination.domain.rules import RulePackageError
 from insulation_coordination.rules.importer.axis_selectors import (
     DvcDesignationSelector,
+    FrequencyBandSelector,
     ProtectionTargetSelector,
     Table2QuantitySelector,
 )
-from insulation_coordination.rules.importer.extract import ImportedRuleDraft
+from insulation_coordination.rules.importer.extract import (
+    ImportedRuleDraft,
+    propose_axis_selectors,
+)
+from insulation_coordination.rules.importer.recipes.iec62477_1_2022.annex_f import TABLE_F2
 from insulation_coordination.rules.importer.review import review_axis_selector
 from insulation_coordination.ui import axis_review
 from insulation_coordination.ui.axis_review import AxisReviewModel, AxisReviewRow
 from insulation_coordination.ui.raw_grid_review import RawGridReviewDialog
+from tests.conftest import _logged
+from tests.rules.importer.iec62477_2022.test_band_factor import _band_grid
+from tests.rules.importer.iec62477_2022.test_procedure_recipes import _draft
 from tests.rules.importer.test_axis_resolution import _with_one_corrected_header_cell
 
 # Stated here independently of the UI's own mapping, so these tests prove the editor offers the
@@ -325,6 +333,73 @@ def test_a_duplicate_selector_is_surfaced_rather_than_raised(
     assert "refused" in dialog.axis_status_text
     assert dialog._table.verticalHeaderItem(second.index).text().endswith("needs_review")
     assert len(dialog.reviewed_draft.axis_selector_reviews) == 1
+
+
+@pytest.fixture
+def draft_with_band_proposals() -> ImportedRuleDraft:
+    """The Annex F band grid, with the band each of its rows was read as.
+
+    Same surface as every other axis position: the reviewer opens the grid, picks the row,
+    and confirms. What differs is that two of the band's dimensions are quantities the
+    document states rather than a vocabulary anyone chooses from.
+    """
+
+    grid = _band_grid()
+    return _logged(
+        _draft(grid).model_copy(
+            update={"axis_selector_proposals": propose_axis_selectors(TABLE_F2, grid)}
+        )
+    )
+
+
+def test_a_band_position_shows_its_bounds_and_offers_only_the_choice_it_has(
+    qtbot, draft_with_band_proposals
+) -> None:
+    """A reviewer confirms a band; they never type one. Only inclusivity is chosen."""
+
+    row = _position(AxisReviewModel(draft_with_band_proposals), "row")
+    dialog = _grid_dialog(qtbot, draft_with_band_proposals)
+
+    dialog.show_axis_position("row", row.index)
+
+    assert set(dialog._axis_editor.dimension_options) == {"inclusive_bound"}
+    assert set(dialog._axis_editor.extracted_values) == {"lower_hz", "upper_hz"}
+    assert isinstance(row.proposed, FrequencyBandSelector)
+    assert dialog._axis_editor.extracted_values["lower_hz"] == str(row.proposed.lower_hz)
+
+
+def test_confirming_a_band_records_exactly_the_extracted_bounds(
+    qtbot, draft_with_band_proposals
+) -> None:
+    """The recorded reading must be the document's, not one the editor could have rounded."""
+
+    row = _position(AxisReviewModel(draft_with_band_proposals), "row")
+    dialog = _grid_dialog(qtbot, draft_with_band_proposals)
+    dialog.show_axis_position("row", row.index)
+
+    qtbot.mouseClick(dialog._confirm_axis_button, Qt.MouseButton.LeftButton)
+
+    assert dialog.axis_status_text == "Selector confirmed for this position."
+    assert dialog.reviewed_draft.axis_selector_reviews[0].confirmed_selector == row.proposed
+
+
+def test_a_band_nothing_was_read_from_can_never_be_confirmed(
+    qtbot, draft_with_band_proposals
+) -> None:
+    """No bounds means no band. The reviewer is not offered a way to supply their own."""
+
+    unread = tuple(
+        proposal.model_copy(update={"selector": None})
+        for proposal in draft_with_band_proposals.axis_selector_proposals
+    )
+    draft = draft_with_band_proposals.model_copy(update={"axis_selector_proposals": unread})
+    dialog = _grid_dialog(qtbot, draft)
+
+    dialog.show_axis_position("row", unread[0].index)
+    dialog._axis_editor.dimension_combo("inclusive_bound").setCurrentText("upper")
+
+    assert dialog._axis_editor.extracted_values == {}
+    assert dialog._confirm_axis_button.isEnabled() is False
 
 
 def test_table_review_stays_reachable_while_a_position_is_unreviewed(

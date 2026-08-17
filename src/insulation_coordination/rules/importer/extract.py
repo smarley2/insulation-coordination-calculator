@@ -50,6 +50,7 @@ from insulation_coordination.rules.importer.axis_selectors import (
     AxisSelector,
     AxisSelectorProposal,
     AxisSelectorReview,
+    FrequencyBandSelector,
     selector_sha256,
 )
 from insulation_coordination.rules.importer.clause_facts import (
@@ -516,15 +517,26 @@ def apply_table_structure(grid: RawGrid, spec: TableAuditSpec) -> RawGrid:
 def _axis_evidence_cells(
     grid: RawGrid, spec: TableAuditSpec, axis: str, index: int
 ) -> list[RawGridCell]:
-    """The reviewed header cells one position's selector is read from.
+    """The reviewed cells one position's selector is read from.
 
-    A row's header is the cells left of the data rectangle; a column's header is the cells
-    above it. Both come from the reviewed grid, never from the recipe.
+    A row's reading comes from the cells left of the data rectangle and from any column the
+    recipe declares as the axis; a column's comes from the cells above the data rectangle.
+    Both come from the reviewed grid, never from the recipe. The declared axis column matters
+    where a table states its row axis inside the data rectangle rather than in a row header:
+    without it such a row would resolve no evidence at all, every position would digest the
+    same empty payload, and a re-extracted reading would leave its review looking current.
     """
 
     if axis == "row":
         limit = spec.data_column_start or 0
-        return [cell for cell in grid.cells if cell.row == index and cell.column < limit]
+        axis_columns = {
+            position for position, column in enumerate(spec.columns) if column.role == "axis"
+        }
+        return [
+            cell
+            for cell in grid.cells
+            if cell.row == index and (cell.column < limit or cell.column in axis_columns)
+        ]
     limit = spec.data_row_start or 0
     return [cell for cell in grid.cells if cell.column == index and cell.row < limit]
 
@@ -589,19 +601,41 @@ def axis_positions(
     return positions
 
 
+def _proposed_band(
+    spec: TableAuditSpec, grid: RawGrid, axis: str, index: int
+) -> AxisSelector | None:
+    """One position's band, read from its own axis cell and that column's stated unit.
+
+    Both halves come from the document: the bounds from the cell, the SI prefix scaling them
+    from the header the column states its unit in. A position whose cell states no readable
+    band proposes nothing and reaches the reviewer unread.
+    """
+
+    cells = _axis_evidence_cells(grid, spec, axis, index)
+    if len(cells) != 1:
+        return None
+    cell = cells[0]
+    header_text = " ".join(
+        item.raw_text for item in grid.cells if item.column == cell.column and item.role == "header"
+    )
+    base_unit = spec.row_axis_unit if axis == "row" else spec.column_axis_unit
+    return parse_frequency_band(cell.raw_text, header_text, base_unit)
+
+
 def propose_axis_selectors(spec: TableAuditSpec, grid: RawGrid) -> tuple[AxisSelectorProposal, ...]:
     """One proposal per declared axis position, with no positional fallback anywhere."""
 
     proposals: list[AxisSelectorProposal] = []
     for axis_spec in spec.axis_selectors:
         for index in axis_positions(spec, axis_spec, grid):
-            selector = (
-                None
-                if axis_spec.reviewer_supplied
-                else _matched_selector(
+            if axis_spec.selector_kind == "frequency_band":
+                selector = _proposed_band(spec, grid, axis_spec.axis, index)
+            elif axis_spec.reviewer_supplied:
+                selector = None
+            else:
+                selector = _matched_selector(
                     axis_spec, _axis_header_text(grid, spec, axis_spec.axis, index)
                 )
-            )
             proposals.append(
                 AxisSelectorProposal(
                     grid_id=grid.id,
@@ -844,6 +878,79 @@ def _header_bound_in_base_unit(text: str, base_unit: str) -> Decimal | None:
     value, prefix = matches[-1].groups()
     normalized = re.sub(r"[ \u00a0]", "", value).replace(",", ".")
     return Decimal(normalized) * _SI_PREFIX_MULTIPLIERS[prefix]
+
+
+#: One token of a two-bounded band: a quantity, or a comparison between the quantity and a
+#: bound. Everything else in the cell -- the variable the source compares, any subscript the
+#: layout broke onto its own line -- carries no bound and is skipped.
+_BAND_TOKEN = re.compile(rf"(?P<number>{_NUMBER_TOKEN})|(?P<comparison><=|>=|≤|≥|<|>)")
+_CLOSED_COMPARISONS = frozenset({"<=", ">=", "≤", "≥"})
+_ASCENDING_COMPARISONS = frozenset({"<", "<=", "≤"})
+_DESCENDING_COMPARISONS = frozenset({">", ">=", "≥"})
+#: Which end a band closes, keyed by (lower is closed, upper is closed).
+_INCLUSIVE_BOUNDS: dict[tuple[bool, bool], Literal["lower", "upper", "both", "neither"]] = {
+    (True, True): "both",
+    (True, False): "lower",
+    (False, True): "upper",
+    (False, False): "neither",
+}
+
+
+def _unit_scale(text: str, base_unit: str) -> Decimal | None:
+    """The multiplier the SI prefix in front of ``base_unit`` states, read from the source.
+
+    A table that states its axis unit once in a header and then prints bare numbers in the
+    axis cells leaves the scale in that header. Reading it here keeps the conversion a fact
+    of the document rather than a constant this repository would have to declare.
+    """
+
+    match = re.search(rf"(?<![A-Za-z])([kMG]?){re.escape(base_unit)}(?![A-Za-z])", text)
+    return None if match is None else _SI_PREFIX_MULTIPLIERS[match.group(1)]
+
+
+def parse_frequency_band(
+    cell_text: str,
+    header_text: str,
+    base_unit: str,
+) -> FrequencyBandSelector | None:
+    """Read one band cell as two bounds and the end the source closes, or nothing.
+
+    The cell is accepted only in the one shape a two-bounded band has: a quantity, two
+    comparisons pointing the same way, and a second quantity. Anything else -- one bound, a
+    third, a mixed direction, an unscaled header -- returns ``None`` so the position reaches
+    the reviewer unread instead of being guessed into a band.
+    """
+
+    scale = _unit_scale(header_text, base_unit)
+    if scale is None:
+        return None
+    tokens = [
+        ("number", match["number"]) if match["number"] else ("comparison", match[0])
+        for match in _BAND_TOKEN.finditer(cell_text.replace("\n", " "))
+    ]
+    if [kind for kind, _text in tokens] != ["number", "comparison", "comparison", "number"]:
+        return None
+    first, second = (
+        Decimal(re.sub(r"[ \u00a0]", "", text).replace(",", "."))
+        for kind, text in tokens
+        if kind == "number"
+    )
+    comparisons = tuple(text for kind, text in tokens if kind == "comparison")
+    if set(comparisons) <= _ASCENDING_COMPARISONS:
+        (lower, upper), (lower_sign, upper_sign) = (first, second), comparisons
+    elif set(comparisons) <= _DESCENDING_COMPARISONS:
+        (lower, upper), (lower_sign, upper_sign) = (second, first), comparisons[::-1]
+    else:
+        return None
+    if lower >= upper:
+        return None
+    return FrequencyBandSelector(
+        lower_hz=lower * scale,
+        upper_hz=upper * scale,
+        inclusive_bound=_INCLUSIVE_BOUNDS[
+            lower_sign in _CLOSED_COMPARISONS, upper_sign in _CLOSED_COMPARISONS
+        ],
+    )
 
 
 def _numeric_token(
@@ -1583,6 +1690,16 @@ def _extract_layout_table(
     )
     cells = list(grid.cells)
     compound_reviews = compound_review_items(grid)
+    # Cells a declared axis reads its selector from are reviewed as that selector, in the axis
+    # review, and confirming a band there is what types them. Flagging them for retyping as a
+    # number as well would ask the maintainer for a number the cell does not state and leave a
+    # review item nothing could ever resolve.
+    axis_reading_cells = {
+        (evidence.row, evidence.column)
+        for axis_spec in spec.axis_selectors
+        for index in axis_positions(spec, axis_spec, grid)
+        for evidence in _axis_evidence_cells(grid, spec, axis_spec.axis, index)
+    }
     reviews = (
         *compound_reviews,
         *tuple(
@@ -1605,6 +1722,7 @@ def _extract_layout_table(
             and not spec.text_field_table
             and spec.token_grammar is None
             and cell.role == "data"
+            and (cell.row, cell.column) not in axis_reading_cells
             and cell.reference_token is None
             and cell.blank_semantics != "not_applicable"
             and cell.parse_status not in {"numeric", "compound", "ambiguous_compound"}
