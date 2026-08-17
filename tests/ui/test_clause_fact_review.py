@@ -2399,6 +2399,104 @@ def test_the_statement_the_grammar_could_not_settle_is_left_for_the_reviewer(
     assert dialog.author_button.isEnabled() is False
 
 
+# --- a sentence this route models nothing of -------------------------------------------
+
+
+def test_a_sentence_the_route_models_nothing_of_is_recorded_and_listed(
+    qtbot, draft_with_a_multi_node_fragment
+) -> None:
+    """The widened regions made sentences reachable whose drafts no statement can ever close.
+
+    The reviewer's answer for one is a decision, so it is recorded and shown: the row stays in the
+    list under its own heading, the record names who decided, and Retract fact takes it back. A
+    hidden filter would have removed the permanently outstanding row and the record together.
+    """
+
+    model = ClauseFactReviewModel(draft_with_a_multi_node_fragment)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+
+    assert dialog.facts_list.count() == _SEEDED_NODE_COUNT
+    assert dialog.dismiss_button.isEnabled() is False
+    assert dialog.dismiss_button.toolTip()
+
+    dialog.facts_list.setCurrentRow(0)
+    assert dialog.dismiss_button.isEnabled() is True
+    dialog.dismiss_button.click()
+
+    # Out of the open drafts and into its own section, not out of the list.
+    assert len(model.open_proposals(HF_ROUTE)) == _SEEDED_NODE_COUNT - 1
+    assert len(model.dismissed_proposals(HF_ROUTE)) == 1
+    assert dialog.facts_list.count() == _SEEDED_NODE_COUNT
+    listed = dialog.facts_list.item(_SEEDED_NODE_COUNT - 1).text()
+    assert "nothing this route models" in listed
+    (record,) = model.draft.clause_fact_dismissals
+    assert record.actor == "maintainer"
+    assert record.notes
+    assert "Retract fact" in dialog.status_text
+
+    # The same Retract withdraws it, and there is nothing to duplicate about a decision.
+    dialog.facts_list.setCurrentRow(_SEEDED_NODE_COUNT - 1)
+    assert dialog.retract_button.isEnabled() is True
+    assert dialog.duplicate_button.isEnabled() is False
+    dialog.retract_button.click()
+
+    assert model.draft.clause_fact_dismissals == ()
+    assert len(model.open_proposals(HF_ROUTE)) == _SEEDED_NODE_COUNT
+    assert "outstanding again" in dialog.status_text
+
+
+def test_completion_becomes_available_once_every_sentence_is_authored_or_decided(
+    qtbot, draft_with_a_multi_node_fragment
+) -> None:
+    """The payoff: a route's pane can be finished, so completion is asserted over a finished list.
+
+    And only permitted by it -- pressing Record completion is still the maintainer's own assertion
+    that nothing further was missed, which is what the route's status then says.
+    """
+
+    model = ClauseFactReviewModel(draft_with_a_multi_node_fragment)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    position = _route_position(model, HF_ROUTE)
+    dialog.table.selectRow(position)
+
+    assert dialog.complete_button.isEnabled() is False
+
+    dialog.facts_list.setCurrentRow(0)
+    _fill_hf_dimensions(dialog)
+    dialog.author_selected()
+    # Still blocked: two sentences of this clause have been read by nobody.
+    assert dialog.complete_button.isEnabled() is False
+
+    # The sentences the authored statement does not rest on, by their own nodes: a sentence an
+    # authored statement covers cannot also be decided to state nothing.
+    for node_order in range(1, _SEEDED_NODE_COUNT):
+        row = next(
+            index
+            for index, proposal in enumerate(model.open_proposals(HF_ROUTE))
+            if proposal.node_references[0].node_order == node_order
+        )
+        dialog.facts_list.setCurrentRow(len(model.facts(HF_ROUTE)) + row)
+        dialog.dismiss_button.click()
+
+    assert len(model.dismissed_proposals(HF_ROUTE)) == _SEEDED_NODE_COUNT - 1
+    assert model.uncovered(HF_ROUTE) == ()
+    assert dialog.complete_button.isEnabled() is True
+    assert dialog.complete_button.toolTip() == ""
+    # The authored sentence's own draft is still listed, for the reason `covered_by` records: this
+    # route's grammar settles nothing discriminating on it, so no statement can close it. The guard
+    # is clear all the same, because it counts source statements and not draft rows.
+    assert len(model.open_proposals(HF_ROUTE)) == 1
+    # Available, not done.
+    assert dialog.table.item(position, _STATUS_COLUMN).text() == "needs_completion"
+
+    dialog.complete_selected()
+
+    assert dialog.table.item(position, _STATUS_COLUMN).text() == "complete"
+
+
 def test_the_button_is_enabled_by_clause_fragments(qtbot, draft_with_supply_fragments) -> None:
     """Clause fact review is its own approval gate, reachable whenever fragments exist."""
 

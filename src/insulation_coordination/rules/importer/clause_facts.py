@@ -797,6 +797,37 @@ class ClauseFactReview(FrozenModel):
     notes: NotesText
 
 
+class ClauseFactDismissal(FrozenModel):
+    """The reviewer's decision that one clause sentence states nothing this route models.
+
+    A reviewed decision, not a filter. The widened clause regions made normative paragraphs
+    reachable that a route's fact family cannot express at all -- another rule's design basis, a
+    determination this clause only refers to, a recommendation that is not normative -- and their
+    drafts could never be closed by authoring anything. The pane then read as a permanent list of
+    outstanding items, and completion became an assertion over a list that always looked unfinished.
+    Hiding them would have removed the symptom and the signal together.
+
+    So it is recorded like an authored statement: attributable, timestamped, carrying the reviewer's
+    own reason, and **anchored to the sentence's evidence identity** rather than to its index -- the
+    same ``(fragment_id, node_order, node_sha256)`` triple the completion guard counts obligations by.
+    That anchor is what makes it re-open by itself: a sentence whose text moves gets a new node
+    digest, so the decision stops matching the statement it was made about and the obligation comes
+    back. A decision must never outlive the evidence it was made against.
+
+    Scoped to a route, because scope is a route's question: two routes sharing a clause may model
+    different halves of it, and a sentence outside one is not thereby outside the other.
+    """
+
+    rule_route: Identifier
+    #: Exactly the nodes the dismissed statement rests on, as its proposal cites them.
+    node_references: tuple[CitedNode, ...] = Field(min_length=1)
+    actor: str = Field(min_length=1, max_length=200)
+    recorded_at: datetime
+    #: Why this sentence states nothing the route models. Required, like every reviewed record's:
+    #: a decision that removes an obligation has to say what was read.
+    notes: NotesText
+
+
 class ClauseFactCompletion(FrozenModel):
     """The reviewer's assertion that one route's fact set is complete.
 
@@ -832,6 +863,7 @@ __all__ = [
     "CalculationPurpose",
     "CitedNode",
     "ClauseFactCompletion",
+    "ClauseFactDismissal",
     "ClauseFactReview",
     "ConfirmedFacts",
     "DevicePlacement",

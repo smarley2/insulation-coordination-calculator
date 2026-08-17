@@ -76,9 +76,12 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply impor
 from insulation_coordination.rules.importer.review import (
     author_clause_fact,
     clause_fact_route_defect,
+    clause_fact_statement_dismissed,
+    dismiss_clause_fact_statement,
     live_evidence_sha256,
     record_fact_completion,
     retract_clause_fact,
+    retract_clause_fact_dismissal,
     uncovered_clause_fact_statements,
 )
 from insulation_coordination.ui.page_preview import PagePreview, Region
@@ -93,8 +96,12 @@ _DISABLED_REASONS = {
         "node it rests on."
     ),
     "use_suggested": "Select a proposed draft in the list first.",
-    "retract": "Select an authored statement in the list first.",
+    "retract": "Select an authored statement, or a dismissed sentence, in the list first.",
     "duplicate": "Select an authored statement in the list first.",
+    "dismiss": (
+        "Select a proposed draft in the list first. Record this only for a sentence you have read "
+        "and found no statement of this route's own kind in."
+    ),
 }
 _NO_SOURCE_REGION = (
     "Source region not available: re-extract from the licensed PDFs to see the clause's own page."
@@ -225,6 +232,17 @@ _UNDISCRIMINATING_DIMENSIONS = frozenset({"supply_kind", "obligation"})
 #: What each authoring path writes into a fact's notes, so the audit distinguishes a statement
 #: whose editor was prefilled from a suggestion from one a maintainer typed from scratch. Both
 #: name the dialog; only the prefilled one names the grammar.
+#: The reason recorded with an out-of-scope decision made from this dialog. Fixed text, because what
+#: the dialog knows is that the reviewer read the sentence beside the button and pressed it; a free
+#: text field would be a second authoring surface, and the audit already carries the actor, the time
+#: and the sentence's own evidence identity.
+#:
+#: ponytail: one fixed reason. Give the dialog a reason field when a maintainer needs to distinguish
+#: *why* a sentence was out of scope -- another rule's basis, a cross-reference, a recommendation.
+_DISMISSED_NOTES = (
+    "reviewed in the clause fact review dialog: this sentence states nothing this route's fact "
+    "family models"
+)
 _HAND_AUTHORED_NOTES = "authored in the clause fact review dialog"
 _FROM_PROPOSAL_NOTES = "authored from a grammar proposal in the clause fact review dialog"
 
@@ -518,14 +536,33 @@ class ClauseFactReviewModel:
         return None
 
     def open_proposals(self, rule_route: str) -> tuple[ClauseFactProposal, ...]:
-        """The route's drafts no authored statement has dealt with.
+        """The route's drafts no authored statement has dealt with and no decision has closed.
 
         A draft the reviewer has authored from is done, so it leaves the list rather than sitting
-        there as an open item inviting a second copy of itself.
+        there as an open item inviting a second copy of itself. So is one whose sentence the reviewer
+        has read and found nothing of this route in -- but that one is *listed separately* rather
+        than dropped, because a decision nobody can see is a filter.
         """
 
         return tuple(
-            item for item in self.proposals(rule_route) if self.covered_by(rule_route, item) is None
+            item
+            for item in self.proposals(rule_route)
+            if self.covered_by(rule_route, item) is None
+            and not clause_fact_statement_dismissed(self._draft, rule_route, item.node_references)
+        )
+
+    def dismissed_proposals(self, rule_route: str) -> tuple[ClauseFactProposal, ...]:
+        """The route's drafts whose sentence the reviewer decided states nothing it models.
+
+        Read back through the route's own drafts rather than off the records, so a sentence whose
+        text has moved since the decision simply stops appearing here -- and reappears among the open
+        drafts, which is the same re-opening the completion guard performs on the same anchor.
+        """
+
+        return tuple(
+            item
+            for item in self.proposals(rule_route)
+            if clause_fact_statement_dismissed(self._draft, rule_route, item.node_references)
         )
 
     def uncovered(self, rule_route: str) -> tuple[str, ...]:
@@ -577,6 +614,32 @@ class ClauseFactReviewModel:
             statement_index=statement_index,
             actor=actor,
             notes=notes,
+        )
+        return self._draft
+
+    def dismiss(
+        self,
+        rule_route: str,
+        nodes: tuple[CitedNode, ...],
+        *,
+        actor: str,
+        notes: str,
+    ) -> ImportedRuleDraft:
+        self._draft = dismiss_clause_fact_statement(
+            self._draft, rule_route=rule_route, nodes=nodes, actor=actor, notes=notes
+        )
+        return self._draft
+
+    def retract_dismissal(
+        self,
+        rule_route: str,
+        nodes: tuple[CitedNode, ...],
+        *,
+        actor: str,
+        notes: str,
+    ) -> ImportedRuleDraft:
+        self._draft = retract_clause_fact_dismissal(
+            self._draft, rule_route=rule_route, nodes=nodes, actor=actor, notes=notes
         )
         return self._draft
 
@@ -753,6 +816,7 @@ class ClauseFactReviewDialog(QDialog):
         self._node_rows: tuple[ClauseFactNodeRow, ...] = ()
         self._fact_rows: tuple[ClauseFactStatementRow, ...] = ()
         self._proposal_rows: tuple[ClauseFactProposal, ...] = ()
+        self._dismissed_rows: tuple[ClauseFactProposal, ...] = ()
 
         self.table = QTableWidget(0, len(_HEADINGS), self)
         self.table.setHorizontalHeaderLabels([heading for heading in _HEADINGS])
@@ -823,6 +887,13 @@ class ClauseFactReviewDialog(QDialog):
         self.duplicate_button.setEnabled(False)
         self.duplicate_button.clicked.connect(self.duplicate_selected)
         facts_layout.addWidget(self.duplicate_button)
+        # The reviewed answer for a sentence this route's family cannot express. Worded as the
+        # decision it records rather than as "hide" or "skip": it is an audited reading of that
+        # sentence, it is listed afterwards, and Retract fact takes it back.
+        self.dismiss_button = QPushButton("Record: states nothing this route models", facts_box)
+        self.dismiss_button.setEnabled(False)
+        self.dismiss_button.clicked.connect(self.dismiss_selected)
+        facts_layout.addWidget(self.dismiss_button)
 
         # The clause as it is printed. A reviewer interpreting a statement needs the page it is
         # on -- the extracted text alone loses the list structure, the emphasis and the table
@@ -1055,29 +1126,81 @@ class ClauseFactReviewDialog(QDialog):
             return
         self._load_proposal()
 
+    def dismiss_selected(self) -> None:
+        """Record that the selected draft's sentence states nothing this route models.
+
+        The reviewed answer for a sentence this route's fact family cannot express. It is not a
+        filter: the row stays in the list under its own heading, the record carries the actor and the
+        reason, Retract fact withdraws it, and the decision is anchored on the sentence's evidence
+        identity so a change to that sentence brings the obligation back on its own.
+        """
+
+        position = self.table.currentRow()
+        row = self._current_route_row()
+        proposal = self._current_proposal()
+        if row is None or proposal is None:
+            self._status.setText("Select a proposed draft to record a decision about it first.")
+            return
+        try:
+            self._model.dismiss(
+                row.rule_route,
+                proposal.node_references,
+                actor="maintainer",
+                notes=_DISMISSED_NOTES,
+            )
+        except (ValidationError, ValueError) as error:
+            self._status.setText(f"Decision refused: {error}")
+            return
+        self.refresh()
+        self.table.selectRow(position)
+        self._load_route()
+        self._status.setText(
+            "Recorded: this sentence states nothing this route models. It is listed below the "
+            "drafts, and Retract fact takes it back."
+        )
+
     def retract_selected(self) -> None:
-        """Remove the selected authored statement. The model owns the mutation."""
+        """Remove the selected authored statement, or withdraw the selected decision.
+
+        One button for both, because both are the same act from the reviewer's side: undoing a
+        record they made about the selected row. Which record it is follows from which section of
+        the list the row is in.
+        """
 
         position = self.table.currentRow()
         row = self._current_route_row()
         fact_row = self._current_fact_row()
-        if row is None or fact_row is None:
-            self._status.setText("Select an authored statement first.")
+        dismissed = self._current_dismissal()
+        if row is None or (fact_row is None and dismissed is None):
+            self._status.setText("Select an authored statement or a dismissed sentence first.")
             return
         try:
-            self._model.retract(
-                row.rule_route,
-                fact_row.statement_index,
-                actor="maintainer",
-                notes="retracted in the clause fact review dialog",
-            )
+            if dismissed is not None:
+                self._model.retract_dismissal(
+                    row.rule_route,
+                    dismissed.node_references,
+                    actor="maintainer",
+                    notes="decision withdrawn in the clause fact review dialog",
+                )
+            else:
+                assert fact_row is not None
+                self._model.retract(
+                    row.rule_route,
+                    fact_row.statement_index,
+                    actor="maintainer",
+                    notes="retracted in the clause fact review dialog",
+                )
         except (ValidationError, ValueError) as error:
             self._status.setText(f"Retraction refused: {error}")
             return
         self.refresh()
         self.table.selectRow(position)
         self._load_route()
-        self._status.setText("Statement retracted for this route.")
+        self._status.setText(
+            "Decision withdrawn; its statement is outstanding again."
+            if dismissed is not None
+            else "Statement retracted for this route."
+        )
 
     def complete_selected(self) -> None:
         """Assert the selected route's fact set is complete. The model owns the mutation."""
@@ -1115,10 +1238,11 @@ class ClauseFactReviewDialog(QDialog):
         )
 
     def _current_proposal(self) -> ClauseFactProposal | None:
-        """The selected proposed draft, or ``None`` when an authored statement is selected.
+        """The selected open draft, or ``None`` when anything else is selected.
 
-        The list holds the route's authored statements and then its drafts, so a position past
-        the authored ones indexes into the drafts.
+        The list holds the route's authored statements, then its open drafts, then the sentences it
+        has dismissed, so a position past the authored ones indexes into the drafts and a position
+        past those into the dismissals.
         """
 
         position = self.facts_list.currentRow() - len(self._fact_rows)
@@ -1126,6 +1250,17 @@ class ClauseFactReviewDialog(QDialog):
         return (
             self._proposal_rows[position]
             if selected and 0 <= position < len(self._proposal_rows)
+            else None
+        )
+
+    def _current_dismissal(self) -> ClauseFactProposal | None:
+        """The selected dismissed sentence, or ``None`` when anything else is selected."""
+
+        position = self.facts_list.currentRow() - len(self._fact_rows) - len(self._proposal_rows)
+        selected = bool(self.facts_list.selectedItems())
+        return (
+            self._dismissed_rows[position]
+            if selected and 0 <= position < len(self._dismissed_rows)
             else None
         )
 
@@ -1178,12 +1313,14 @@ class ClauseFactReviewDialog(QDialog):
             self._node_rows = ()
             self._fact_rows = ()
             self._proposal_rows = ()
+            self._dismissed_rows = ()
             self._set_enabled(self.author_button, False, "author")
             self._set_enabled(self.use_suggested_button, False, "use_suggested")
             self.complete_button.setEnabled(False)
             self.complete_button.setToolTip("")
             self._set_enabled(self.retract_button, False, "retract")
             self._set_enabled(self.duplicate_button, False, "duplicate")
+            self._set_enabled(self.dismiss_button, False, "dismiss")
             self._status.clear()
             return
         standard, regions = self._model.source_regions(row.rule_route)
@@ -1208,6 +1345,7 @@ class ClauseFactReviewDialog(QDialog):
         # Only the drafts still open: an authored one is done and leaves the list, rather than
         # sitting there as an open item inviting a second copy of itself.
         self._proposal_rows = self._model.open_proposals(row.rule_route)
+        self._dismissed_rows = self._model.dismissed_proposals(row.rule_route)
         self._list_proposals(row.rule_route)
         family = SUPPLY_FACT_FAMILY_BY_ROUTE[row.rule_route]
         if self._editor_kind != family:
@@ -1228,6 +1366,7 @@ class ClauseFactReviewDialog(QDialog):
         self._set_enabled(self.use_suggested_button, False, "use_suggested")
         self._set_enabled(self.retract_button, False, "retract")
         self._set_enabled(self.duplicate_button, False, "duplicate")
+        self._set_enabled(self.dismiss_button, False, "dismiss")
         self._status.clear()
         self._refresh_author_enabled()
 
@@ -1289,11 +1428,19 @@ class ClauseFactReviewDialog(QDialog):
                 f"{proposal.node_references[0].node_order} · {reading} · "
                 f"{proposal.sentence_text}"
             )
+        # Listed, not hidden. A sentence the reviewer read and found no statement of this route in
+        # is a decision, so it stays visible, says who decided and why, and Retract fact takes it
+        # back. Dropping the row would remove the outstanding item and the record of it together.
+        for proposal in self._dismissed_rows:
+            self.facts_list.addItem(
+                f"nothing this route models · sentence {proposal.sentence_index} · cites node "
+                f"{proposal.node_references[0].node_order} · {proposal.sentence_text}"
+            )
         unavailable = self._model.proposals_unavailable(rule_route)
         if unavailable:
-            # Unselectable, so it can never be loaded as if it were a draft: both row readers
-            # index by position into the authored statements and then the drafts, and neither
-            # reaches past them.
+            # Unselectable, so it can never be loaded as if it were a draft: the three row readers
+            # index by position into the authored statements, then the open drafts, then the
+            # dismissed sentences, and none of them reaches past those.
             notice = QListWidgetItem(unavailable, self.facts_list)
             notice.setFlags(Qt.ItemFlag.NoItemFlags)
 
@@ -1335,11 +1482,14 @@ class ClauseFactReviewDialog(QDialog):
         """
 
         fact_row = self._current_fact_row()
-        self._set_enabled(self.retract_button, fact_row is not None, "retract")
-        self._set_enabled(self.duplicate_button, fact_row is not None, "duplicate")
+        proposal = self._current_proposal()
+        dismissed = self._current_dismissal()
         self._set_enabled(
-            self.use_suggested_button, self._current_proposal() is not None, "use_suggested"
+            self.retract_button, fact_row is not None or dismissed is not None, "retract"
         )
+        self._set_enabled(self.duplicate_button, fact_row is not None, "duplicate")
+        self._set_enabled(self.use_suggested_button, proposal is not None, "use_suggested")
+        self._set_enabled(self.dismiss_button, proposal is not None, "dismiss")
         if fact_row is None:
             self._load_proposal()
             return

@@ -57,6 +57,7 @@ from insulation_coordination.rules.importer.axis_selectors import (
 from insulation_coordination.rules.importer.clause_facts import (
     CitedNode,
     ClauseFactCompletion,
+    ClauseFactDismissal,
     ClauseFactReview,
     ConfirmedFacts,
     SupplyFact,
@@ -2177,6 +2178,158 @@ def _statement_label(anchor: _StatementAnchor) -> str:
     return f"the statement resting on clause node(s) {orders}"
 
 
+def _dismissed_anchors(draft: ImportedRuleDraft, route: str) -> set[_StatementAnchor]:
+    """The evidence identity of every statement this route's reviewer dismissed as out of scope."""
+
+    return {
+        _statement_anchor(item.node_references)
+        for item in draft.clause_fact_dismissals
+        if item.rule_route == route
+    }
+
+
+def _proposed_anchors(draft: ImportedRuleDraft, route: str) -> set[_StatementAnchor]:
+    """The evidence identity of every statement this route's own drafts rest on.
+
+    What a dismissal has to name one of. One reader for the guard and for the dismissal check, so a
+    statement the guard counts as an obligation is exactly a statement the reviewer may dismiss.
+    """
+
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        propose_supply_facts,
+    )
+
+    fragment = next(
+        (item for item in draft.raw_clause_fragments if item.id == f"raw-{route}"), None
+    )
+    if fragment is None:
+        return set()
+    return {
+        _statement_anchor(proposal.node_references)
+        for proposal in propose_supply_facts(fragment, route)
+    }
+
+
+def clause_fact_statement_dismissed(
+    draft: ImportedRuleDraft, route: str, nodes: tuple[CitedNode, ...]
+) -> bool:
+    """Whether this route's reviewer has dismissed the statement resting on exactly these nodes.
+
+    The one reader a surface needs: the review dialog asks it of each draft so a dismissed sentence
+    is shown as decided rather than as outstanding, and asks nothing about how the anchor is spelled.
+    """
+
+    return _statement_anchor(nodes) in _dismissed_anchors(draft, route)
+
+
+def dismiss_clause_fact_statement(
+    draft: ImportedRuleDraft,
+    *,
+    rule_route: str,
+    nodes: tuple[CitedNode, ...],
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Record that one proposed statement of a route states nothing that route models.
+
+    The reviewed answer for a sentence a route's fact family cannot express: another rule's design
+    basis, a determination this clause only refers to, a recommendation that is not normative. Such a
+    statement's draft can never be closed by authoring anything, so without this the route's pane
+    reads as permanently outstanding and completion is asserted over a list that always looks
+    unfinished.
+
+    It is deliberately not cheap, and these are the reasons why -- attributability and re-opening are
+    the minimum, and three more come free:
+
+    - it must name a statement **this route actually proposes**, so a route cannot be quietened by
+      dismissing anchors nobody suggested;
+    - its citations must match the fragment's **current** nodes, exactly as an authored statement's
+      must, so a decision cannot be recorded against evidence that has already moved;
+    - a statement an authored fact already covers cannot be dismissed, so one sentence never carries
+      a reading *and* the claim that there was nothing to read;
+    - and a route still needs at least one authored statement to be complete
+      (``clause_fact_route_defect``), so no route can be certified by dismissing all of it.
+
+    Clearing the guard still only **permits** completion (amendment A5): the maintainer's own
+    assertion remains what completes a route, and a dismissal changes what the guard counts, never
+    what completion means.
+    """
+
+    if not actor.strip() or not notes.strip():
+        raise ApprovalError("clause fact actor and notes are required")
+    anchor = _statement_anchor(nodes)
+    label = _statement_label(anchor)
+    if anchor not in _proposed_anchors(draft, rule_route):
+        raise ValueError(f"{rule_route} proposes no statement resting on those nodes")
+    for cited in nodes:
+        fragment = next(
+            (item for item in draft.raw_clause_fragments if item.id == cited.fragment_id), None
+        )
+        node = (
+            None
+            if fragment is None
+            else next((item for item in fragment.nodes if item.order == cited.node_order), None)
+        )
+        if node is None or canonical_model_sha256(node) != cited.node_sha256:
+            raise ValueError(
+                f"citation does not match a current node: {cited.fragment_id} "
+                f"node {cited.node_order}"
+            )
+    if anchor in _dismissed_anchors(draft, rule_route):
+        raise ValueError(f"{rule_route} has already dismissed {label}")
+    if any(
+        anchor <= _statement_anchor(item.fact.node_references)
+        for item in draft.clause_fact_reviews
+        if item.rule_route == rule_route
+    ):
+        raise ValueError(f"{rule_route} has authored {label} rather than finding nothing in it")
+    dismissal = ClauseFactDismissal(
+        rule_route=rule_route,
+        node_references=nodes,
+        actor=actor.strip(),
+        recorded_at=datetime.now(UTC),
+        notes=notes.strip(),
+    )
+    changed = draft.model_copy(
+        update={"clause_fact_dismissals": (*draft.clause_fact_dismissals, dismissal)}
+    )
+    return record_correction(
+        draft, changed, actor=actor, notes=f"dismiss clause fact statement: {notes}"
+    )
+
+
+def retract_clause_fact_dismissal(
+    draft: ImportedRuleDraft,
+    *,
+    rule_route: str,
+    nodes: tuple[CitedNode, ...],
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Withdraw one out-of-scope decision, putting its statement back among the obligations.
+
+    Retractable for the reason an authored statement is: a reviewer who reads a sentence again and
+    finds a statement of this route in it after all must be able to say so, and an audited
+    withdrawal is how. Any completion for the route is left in place, where the returning obligation
+    blocks it until the reviewer asserts completeness again -- never silently repaired.
+    """
+
+    if not actor.strip() or not notes.strip():
+        raise ApprovalError("clause fact actor and notes are required")
+    anchor = _statement_anchor(nodes)
+    kept = tuple(
+        item
+        for item in draft.clause_fact_dismissals
+        if not (item.rule_route == rule_route and _statement_anchor(item.node_references) == anchor)
+    )
+    if len(kept) == len(draft.clause_fact_dismissals):
+        raise ValueError(f"{rule_route} has not dismissed {_statement_label(anchor)}")
+    changed = draft.model_copy(update={"clause_fact_dismissals": kept})
+    return record_correction(
+        draft, changed, actor=actor, notes=f"retract clause fact dismissal: {notes}"
+    )
+
+
 def uncovered_clause_fact_statements(draft: ImportedRuleDraft, route: str) -> tuple[str, ...]:
     """Every known source statement of one route that no authored fact covers.
 
@@ -2190,6 +2343,13 @@ def uncovered_clause_fact_statements(draft: ImportedRuleDraft, route: str) -> tu
     an anchor when it cites every node that anchor names -- which is what lets a statement completing
     a list's opener cite the opener as well and still cover its own bullet -- and each fact covers at
     most one anchor, so one authored fact can never mark two distinct source statements as reviewed.
+
+    A statement the reviewer has **dismissed as stating nothing this route models** is not an
+    obligation either -- see ``dismiss_clause_fact_statement``. Subtracted from the obligations
+    rather than accepted as coverage, because the two are different reviewed answers: one says a
+    statement was read into a fact, the other says there was no statement of this route's kind to
+    read. Both are decisions, and neither is a filter: the dismissal is anchored on the same evidence
+    identity, so a sentence whose text moves becomes an obligation again by itself.
 
     Context-only nodes are not obligations, and this needs no branch of its own for it: a sentence
     that only scopes the ones after it yields no proposal at all (amendment A4, in
@@ -2220,7 +2380,7 @@ def uncovered_clause_fact_statements(draft: ImportedRuleDraft, route: str) -> tu
     obligations: set[_StatementAnchor] = {
         _statement_anchor(proposal.node_references)
         for proposal in propose_supply_facts(fragment, route)
-    }
+    } - _dismissed_anchors(draft, route)
     unused = [
         _statement_anchor(item.fact.node_references)
         for item in draft.clause_fact_reviews

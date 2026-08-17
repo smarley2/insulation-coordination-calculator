@@ -50,6 +50,7 @@ from insulation_coordination.rules.importer.axis_selectors import (
 )
 from insulation_coordination.rules.importer.clause_facts import (
     ClauseFactCompletion,
+    ClauseFactDismissal,
     ClauseFactReview,
 )
 
@@ -655,6 +656,7 @@ class ImportedRuleDraft(DraftRulePackage):
     axis_selector_proposals: tuple[AxisSelectorProposal, ...] = ()
     axis_selector_reviews: tuple[AxisSelectorReview, ...] = ()
     clause_fact_reviews: tuple[ClauseFactReview, ...] = ()
+    clause_fact_dismissals: tuple[ClauseFactDismissal, ...] = ()
     clause_fact_completions: tuple[ClauseFactCompletion, ...] = ()
     extracted_equations: tuple[ExtractedEquation, ...] = ()
     semantic_proposals: tuple[SemanticProposal, ...] = ()
@@ -683,6 +685,7 @@ def _content_digest(
     axis_selector_proposals: tuple[AxisSelectorProposal, ...] = (),
     axis_selector_reviews: tuple[AxisSelectorReview, ...] = (),
     clause_fact_reviews: tuple[ClauseFactReview, ...] = (),
+    clause_fact_dismissals: tuple[ClauseFactDismissal, ...] = (),
     clause_fact_completions: tuple[ClauseFactCompletion, ...] = (),
 ) -> str:
     payload = {
@@ -711,6 +714,7 @@ def _content_digest(
         ],
         "axis_selector_reviews": [item.model_dump(mode="json") for item in axis_selector_reviews],
         "clause_fact_reviews": [item.model_dump(mode="json") for item in clause_fact_reviews],
+        "clause_fact_dismissals": [item.model_dump(mode="json") for item in clause_fact_dismissals],
         "clause_fact_completions": [
             item.model_dump(mode="json") for item in clause_fact_completions
         ],
@@ -751,6 +755,7 @@ def draft_content_digest(draft: DraftRulePackage) -> str:
         axis_selector_proposals=imported.axis_selector_proposals if imported else (),
         axis_selector_reviews=imported.axis_selector_reviews if imported else (),
         clause_fact_reviews=imported.clause_fact_reviews if imported else (),
+        clause_fact_dismissals=imported.clause_fact_dismissals if imported else (),
         clause_fact_completions=imported.clause_fact_completions if imported else (),
     )
 

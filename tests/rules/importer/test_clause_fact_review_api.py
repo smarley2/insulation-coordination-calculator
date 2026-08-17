@@ -42,9 +42,12 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply impor
 )
 from insulation_coordination.rules.importer.review import (
     author_clause_fact,
+    clause_fact_statement_dismissed,
+    dismiss_clause_fact_statement,
     fact_set_sha256,
     record_fact_completion,
     retract_clause_fact,
+    retract_clause_fact_dismissal,
     uncovered_clause_fact_statements,
 )
 from tests.conftest import _logged
@@ -1022,3 +1025,194 @@ def test_a_route_whose_family_carries_supply_kind_needs_a_declared_expectation()
 
     with pytest.raises(ValueError, match="disagree"):
         _require_declared_supply_kinds(SUPPLY_FACT_FAMILY_BY_ROUTE, missing)
+
+
+# --- a sentence this route models nothing of -------------------------------------------
+
+
+def _hf_citation(draft: ImportedRuleDraft, node_order: int) -> tuple[CitedNode, ...]:
+    """The attenuation fragment's node, cited as its own draft cites it."""
+
+    fragment = next(item for item in draft.raw_clause_fragments if item.id == HF_FRAGMENT_ID)
+    node = next(item for item in fragment.nodes if item.order == node_order)
+    return (
+        CitedNode(
+            fragment_id=fragment.id,
+            node_order=node.order,
+            node_sha256=canonical_model_sha256(node),
+        ),
+    )
+
+
+def _dismiss_hf(draft: ImportedRuleDraft, node_order: int, **overrides: str) -> ImportedRuleDraft:
+    arguments = {"actor": "tester", "notes": "another rule's basis; this route models none of it"}
+    arguments.update(overrides)
+    return dismiss_clause_fact_statement(
+        draft, rule_route=HF_ROUTE, nodes=_hf_citation(draft, node_order), **arguments
+    )
+
+
+def test_a_statement_stating_nothing_this_route_models_stops_being_an_obligation(
+    three_node_hf_draft,
+) -> None:
+    """The widened regions made unauthorable sentences reachable; their drafts never close.
+
+    A route whose pane permanently reads as outstanding makes completion an assertion over a list
+    that always looks unfinished. Recording the reviewer's decision removes the obligation without
+    removing the record of it -- and still only *permits* completion, which the maintainer asserts.
+    """
+
+    draft = three_node_hf_draft
+    for index, node_order in enumerate((0, 1)):
+        draft = _author_hf_citing(draft, statement_index=index, node_orders=(node_order,))
+    assert uncovered_clause_fact_statements(draft, HF_ROUTE) == (
+        "the statement resting on clause node(s) 2",
+    )
+
+    draft = _dismiss_hf(draft, 2)
+
+    assert uncovered_clause_fact_statements(draft, HF_ROUTE) == ()
+    assert clause_fact_statement_dismissed(draft, HF_ROUTE, _hf_citation(draft, 2)) is True
+    # Attributable, and carrying the reason: an audit record, not a filter.
+    (dismissal,) = draft.clause_fact_dismissals
+    assert (dismissal.rule_route, dismissal.actor) == (HF_ROUTE, "tester")
+    assert dismissal.notes
+    # A5 is intact: the guard is clear and the route is still blocked until the assertion is made.
+    assert HF_ROUTE in _blocked(draft)
+    assert HF_ROUTE not in _blocked(
+        record_fact_completion(
+            draft,
+            rule_route=HF_ROUTE,
+            fragment_id=HF_FRAGMENT_ID,
+            actor="tester",
+            notes="complete: two statements, and one sentence this route models nothing of",
+        )
+    )
+
+
+def test_a_decision_never_outlives_the_sentence_it_was_made_about(three_node_hf_draft) -> None:
+    """Anchored on the sentence's evidence identity, so its text moving brings the obligation back.
+
+    A decision that survived the evidence would be a permanent hole in the guard, opened by one press
+    against wording nobody has read since.
+    """
+
+    draft = three_node_hf_draft
+    for index, node_order in enumerate((0, 1)):
+        draft = _author_hf_citing(draft, statement_index=index, node_orders=(node_order,))
+    draft = _dismiss_hf(draft, 2)
+    assert uncovered_clause_fact_statements(draft, HF_ROUTE) == ()
+
+    fragment = next(item for item in draft.raw_clause_fragments if item.id == HF_FRAGMENT_ID)
+    rewritten = fragment.model_copy(
+        update={
+            "nodes": tuple(
+                node.model_copy(update={"raw_text": "Synthetic neutral replacement sentence."})
+                if node.order == 2
+                else node
+                for node in fragment.nodes
+            )
+        }
+    )
+    moved = _with_fragment(
+        draft, rewritten.model_copy(update={"raw_sha256": canonical_model_sha256(rewritten)})
+    )
+
+    assert uncovered_clause_fact_statements(moved, HF_ROUTE) == (
+        "the statement resting on clause node(s) 2",
+    )
+    assert clause_fact_statement_dismissed(moved, HF_ROUTE, _hf_citation(moved, 2)) is False
+    assert HF_ROUTE in _blocked(moved)
+
+
+def test_a_decision_must_name_a_statement_the_route_actually_proposes(
+    three_node_hf_draft,
+) -> None:
+    """Otherwise a route could be quietened by recording decisions about nothing."""
+
+    invented = (CitedNode(fragment_id=HF_FRAGMENT_ID, node_order=7, node_sha256="b" * 64),)
+
+    with pytest.raises(ValueError, match="proposes no statement"):
+        dismiss_clause_fact_statement(
+            three_node_hf_draft,
+            rule_route=HF_ROUTE,
+            nodes=invented,
+            actor="tester",
+            notes="a statement nobody suggested",
+        )
+
+
+def test_a_decision_and_an_authored_statement_are_not_recorded_about_one_sentence(
+    three_node_hf_draft,
+) -> None:
+    """One sentence never carries a reading *and* the claim that there was nothing to read."""
+
+    draft = _author_hf_citing(three_node_hf_draft, statement_index=0, node_orders=(0,))
+
+    with pytest.raises(ValueError, match="rather than finding nothing"):
+        _dismiss_hf(draft, 0)
+
+    draft = _dismiss_hf(draft, 1)
+    with pytest.raises(ValueError, match="already dismissed"):
+        _dismiss_hf(draft, 1)
+
+
+def test_a_decision_is_attributable_or_it_is_not_recorded(three_node_hf_draft) -> None:
+    """The minimum an audit record is: who decided, and what they read."""
+
+    for missing in ({"actor": " "}, {"notes": " "}):
+        with pytest.raises(ApprovalError, match="actor and notes"):
+            _dismiss_hf(three_node_hf_draft, 2, **missing)
+
+
+def test_a_decision_is_retractable_and_its_statement_returns(three_node_hf_draft) -> None:
+    """A reviewer who reads a sentence again and finds a statement in it must be able to say so."""
+
+    draft = three_node_hf_draft
+    for index, node_order in enumerate((0, 1)):
+        draft = _author_hf_citing(draft, statement_index=index, node_orders=(node_order,))
+    draft = _dismiss_hf(draft, 2)
+
+    withdrawn = retract_clause_fact_dismissal(
+        draft,
+        rule_route=HF_ROUTE,
+        nodes=_hf_citation(draft, 2),
+        actor="tester",
+        notes="read again; it states a branch after all",
+    )
+
+    assert withdrawn.clause_fact_dismissals == ()
+    assert uncovered_clause_fact_statements(withdrawn, HF_ROUTE) == (
+        "the statement resting on clause node(s) 2",
+    )
+    with pytest.raises(ValueError, match="has not dismissed"):
+        retract_clause_fact_dismissal(
+            withdrawn,
+            rule_route=HF_ROUTE,
+            nodes=_hf_citation(withdrawn, 2),
+            actor="tester",
+            notes="nothing to withdraw",
+        )
+
+
+def test_a_route_cannot_be_certified_by_finding_nothing_in_all_of_it(three_node_hf_draft) -> None:
+    """The floor under the whole mechanism: a route still has to state something.
+
+    Every sentence dismissed clears the guard's own count, and the route is still refused, because a
+    route that projects a rule from no reviewed statement is not a reviewed route.
+    """
+
+    draft = three_node_hf_draft
+    for node_order in (0, 1, 2):
+        draft = _dismiss_hf(draft, node_order)
+
+    assert uncovered_clause_fact_statements(draft, HF_ROUTE) == ()
+    assert HF_ROUTE in _blocked(draft)
+    with pytest.raises(ApprovalError, match="no authored facts"):
+        record_fact_completion(
+            draft,
+            rule_route=HF_ROUTE,
+            fragment_id=HF_FRAGMENT_ID,
+            actor="tester",
+            notes="nothing here at all",
+        )
