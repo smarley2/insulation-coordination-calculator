@@ -24,21 +24,37 @@ from insulation_coordination.calculation.high_frequency import (
     _calculate_high_frequency_candidates,
     apply_a2_altitude_correction,
 )
+from insulation_coordination.calculation.impulse_override import PairImpulseOverride
+from insulation_coordination.calculation.stress_propagation import (
+    DomainStressMap,
+    EffectivePairStressResolution,
+    TemporaryOvervoltageSource,
+    propagate_impulse_to_domains,
+    resolve_pair_stresses,
+)
+from insulation_coordination.calculation.supply_rules import SupplyRuleSet, read_supply_rules
+from insulation_coordination.calculation.supply_stress import SupplyStressService
 from insulation_coordination.domain.enums import (
     Applicability,
     ConstructionType,
     FieldCondition,
     InsulationType,
+    Provenance,
 )
 from insulation_coordination.domain.project import (
     EffectiveCase,
     EffectiveValue,
     FrozenModel,
+    PairCase,
+    PairVoltage,
     PairVoltages,
+    Project,
 )
-from insulation_coordination.domain.quantities import DecimalValue
+from insulation_coordination.domain.quantities import DecimalValue, PositiveDecimal
 from insulation_coordination.domain.rules import Maximum, RulePackage, SourceReference, Variable
+from insulation_coordination.domain.supply import GoverningSupplyStress
 from insulation_coordination.domain.trace import CalculationWarning, Quantity, TraceStep
+from insulation_coordination.project.resolver import resolve_effective_case
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_formula
 
 CALCULATION_ENGINE_VERSION = "pcb-annex-gh-3"
@@ -46,9 +62,13 @@ CALCULATION_ENGINE_VERSION = "pcb-annex-gh-3"
 INNER_LAYER_POLLUTION_DEGREE = 1
 """Inner printed-wiring layers are dimensioned in pollution degree 1."""
 
+SUPERSEDED_ENTRY_WARNING = "supply_derived_stress_supersedes_entry"
+"""A derived stress replaced a value somebody entered. Never silently: this says so."""
+
 __all__ = [
     "CALCULATION_ENGINE_VERSION",
     "INNER_LAYER_POLLUTION_DEGREE",
+    "SUPERSEDED_ENTRY_WARNING",
     "CalculationError",
     "CalculationRangeError",
     "CalculationTrace",
@@ -59,9 +79,13 @@ __all__ = [
     "RequiredStressError",
     "RuleMappingError",
     "RulePackageValidationError",
+    "SupplyDerivation",
     "UnsupportedCaseError",
     "VerificationRequirement",
     "calculate_pair",
+    "calculate_project_pair",
+    "derive_project_supply",
+    "resolve_supply_effective_case",
 ]
 
 
@@ -157,7 +181,168 @@ class PairResult(FrozenModel):
         return self
 
 
-def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
+class SupplyDerivation(FrozenModel):
+    """One project's supply stresses, derived once and read by every pair of it.
+
+    Held apart from the pair calculation because deriving each enabled arrangement's scenario
+    and carrying it across the galvanic domains are questions about the project, asked once.
+    Only the last stage is per pair: which of those stresses reaches this insulation, and what
+    a verified override recorded at it makes of them.
+    """
+
+    rules: SupplyRuleSet
+    governing: GoverningSupplyStress
+    domain_stresses: DomainStressMap
+
+
+def derive_project_supply(project: Project, rules: RulePackage) -> SupplyDerivation | None:
+    """``project``'s derived supply stresses, or ``None`` when it enables no arrangement.
+
+    ``None`` is the state every project saved before this feature existed is in, and it is the
+    whole of the guarantee that they are unaffected: no supply rule is read at all, so a
+    package carrying none cannot block them, and every pair is dimensioned from exactly the
+    stresses it was entered with.
+
+    A project that does enable one is derived against the active package, which raises
+    :class:`~insulation_coordination.calculation.supply_rules.SupplyRulesUnavailable` if it
+    cannot answer. That refusal is deliberate: a project asking for a derivation and getting a
+    guess instead is the one outcome worse than being told it cannot have one.
+    """
+
+    if not any(item.enabled for item in project.supply_configurations):
+        return None
+    supply_rules = read_supply_rules(rules)
+    governing = SupplyStressService().derive_all(project.supply_configurations, supply_rules)
+    return SupplyDerivation(
+        rules=supply_rules,
+        governing=governing,
+        domain_stresses=propagate_impulse_to_domains(project, governing.scenarios, supply_rules),
+    )
+
+
+def resolve_supply_effective_case(
+    project: Project,
+    pair: PairCase,
+    supply: SupplyDerivation | None,
+) -> tuple[EffectiveCase, EffectivePairStressResolution | None]:
+    """The inputs one pair is dimensioned from, and the supply resolution behind them.
+
+    With no derivation this is exactly ``resolve_effective_case``, which is what makes an
+    existing project's numbers unchanged rather than merely unlikely to change.
+    """
+
+    effective = resolve_effective_case(project.defaults, pair)
+    if supply is None:
+        return effective, None
+    override = (
+        None
+        if pair.impulse_override is None
+        else PairImpulseOverride(pair_id=pair.id, override=pair.impulse_override)
+    )
+    resolution = resolve_pair_stresses(
+        project, pair, supply.domain_stresses, supply.rules, override=override
+    )
+    return _with_supply_stresses(effective, resolution)
+
+
+def calculate_project_pair(
+    project: Project,
+    pair: PairCase,
+    rules: RulePackage,
+    *,
+    supply: SupplyDerivation | None = None,
+) -> PairResult:
+    """One pair of ``project``, dimensioned from its derived supply stresses where it has any."""
+
+    effective, resolution = resolve_supply_effective_case(project, pair, supply)
+    return calculate_pair(effective, rules, supply=resolution)
+
+
+def _with_supply_stresses(
+    effective: EffectiveCase,
+    resolution: EffectivePairStressResolution,
+) -> tuple[EffectiveCase, EffectivePairStressResolution]:
+    """Substitute the resolved supply stresses into one pair's inputs, saying what they replace.
+
+    The impulse handed over is :attr:`verified_effective_impulse_v`, which is untreated: the
+    reinforced treatment is the clearance engine's and is applied there, once, immediately
+    before the table is read. The temporary overvoltage is substituted only where the
+    derivation is what governs it - where the pair's own entry does, the entry is already in
+    these inputs and nothing needs replacing.
+
+    Every replacement of an entered value is reported. A derived figure quietly displacing
+    something a user typed is indistinguishable, from the outside, from the application
+    losing it.
+    """
+
+    updates: dict[str, object] = {}
+    warnings: list[CalculationWarning] = []
+    impulse = resolution.verified_effective_impulse_v
+    if impulse is not None:
+        entered = effective.impulse_v
+        if entered.value is not None and entered.value != impulse:
+            warnings.append(
+                _superseded(entered.provenance.value, "impulse", entered.value, impulse)
+            )
+        updates["impulse_v"] = EffectiveValue[PositiveDecimal | None](
+            value=impulse, provenance=Provenance.DERIVED_SUPPLY
+        )
+
+    temporary = resolution.temporary_overvoltage
+    if (
+        temporary.source is TemporaryOvervoltageSource.DERIVED_MAINS
+        and temporary.peak_v is not None
+    ):
+        entry = effective.voltages.temporary_overvoltage_peak_v
+        if entry.applicability is Applicability.APPLICABLE and entry.value != temporary.peak_v:
+            assert entry.value is not None
+            warnings.append(
+                _superseded(
+                    "pair entry",
+                    "temporary overvoltage peak",
+                    entry.value,
+                    temporary.peak_v,
+                )
+            )
+        updates["voltages"] = effective.voltages.model_copy(
+            update={"temporary_overvoltage_peak_v": PairVoltage.applicable(temporary.peak_v)}
+        )
+
+    if not updates:
+        return effective, resolution
+    return (
+        effective.model_copy(update=updates),
+        resolution.model_copy(update={"warnings": (*resolution.warnings, *tuple(warnings))}),
+    )
+
+
+def _superseded(
+    source: str, quantity: str, entered: Decimal, derived: Decimal
+) -> CalculationWarning:
+    return CalculationWarning(
+        code=SUPERSEDED_ENTRY_WARNING,
+        message=(
+            f"The {source} {quantity} of {entered} V is superseded by the {derived} V "
+            "this project's supply configurations derive for this pair. A different value "
+            "belongs in a verified override, where its evidence is recorded with it."
+        ),
+    )
+
+
+def calculate_pair(
+    effective: EffectiveCase,
+    rules: RulePackage,
+    *,
+    supply: EffectivePairStressResolution | None = None,
+) -> PairResult:
+    """Dimension one pair from ``effective``, unchanged by anything ``supply`` says.
+
+    ``supply`` is the resolution the stresses in ``effective`` already came from, and is read
+    only for what it has to report: its trace steps and its warnings. Nothing in it is
+    substituted here - by the time this is called the substitution has happened - so a caller
+    that passes none gets exactly the calculation this function always performed.
+    """
+
     _require_valid_rule_package(rules)
     kind = effective.insulation_type.value
     if kind is None:
@@ -219,6 +404,10 @@ def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
     )
 
     steps = (
+        # First, because the supply derivation is what produced the stresses everything after
+        # it reads. A reader following the trace top to bottom meets the source before the
+        # dimension it led to.
+        *(() if supply is None else supply.trace_steps),
         *(() if high_frequency is None else high_frequency.applicability_steps),
         *(step for candidate in clearance.candidates for step in candidate.steps),
         *(
@@ -241,6 +430,8 @@ def calculate_pair(effective: EffectiveCase, rules: RulePackage) -> PairResult:
         steps,
         rules,
     )
+    if supply is not None:
+        warnings = (*supply.warnings, *warnings)
     inner = _inner_layer_result(effective, rules)
     return PairResult(
         pair_id=effective.id,

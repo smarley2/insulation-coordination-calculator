@@ -11,6 +11,10 @@ class InsulationType(StrEnum):
 class Provenance(StrEnum):
     PROJECT_DEFAULT = "project_default"
     PAIR_OVERRIDE = "pair_override"
+    #: Derived from the project's supply configurations rather than entered by anyone. Kept
+    #: apart from the two entered provenances so a reviewer reading an effective input can
+    #: tell a value the application worked out from one a user took responsibility for.
+    DERIVED_SUPPLY = "derived_supply"
 
 
 class FieldCondition(StrEnum):

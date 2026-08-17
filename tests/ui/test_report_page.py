@@ -359,14 +359,14 @@ def test_load_project_defers_calculation_until_shown(
     from insulation_coordination.ui import report_page as report_page_module
 
     calls = 0
-    real = report_page_module.calculate_pair
+    real = report_page_module.calculate_project_pair
 
     def counting(*args, **kwargs):
         nonlocal calls
         calls += 1
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(report_page_module, "calculate_pair", counting)
+    monkeypatch.setattr(report_page_module, "calculate_project_pair", counting)
 
     page = ReportPage()
     qtbot.addWidget(page)
@@ -388,14 +388,14 @@ def test_generate_forces_calculation_when_never_shown(
     from insulation_coordination.ui import report_page as report_page_module
 
     calls = 0
-    real = report_page_module.calculate_pair
+    real = report_page_module.calculate_project_pair
 
     def counting(*args, **kwargs):
         nonlocal calls
         calls += 1
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(report_page_module, "calculate_pair", counting)
+    monkeypatch.setattr(report_page_module, "calculate_project_pair", counting)
 
     tectonic = _fake_tectonic(complete_workspace.tmp_path / "lazy-generate-tectonic")
     page = ReportPage(tectonic=tectonic)

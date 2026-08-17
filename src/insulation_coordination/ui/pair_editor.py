@@ -1215,19 +1215,29 @@ class PairPage(QWidget):
                 "Load an approved rules package before recalculating.",
             )
             return
-        from insulation_coordination.calculation.engine import calculate_pair
-        from insulation_coordination.project.resolver import resolve_effective_case
+        from insulation_coordination.calculation.engine import (
+            calculate_project_pair,
+            derive_project_supply,
+        )
 
         self._results = {}
         self.matrix_model.set_results({})
         self.calculation_review.update_results((), self._project)
         errors: list[str] = []
-        for pair in self._project.pairs:
+        supply = None
+        derivable = True
+        try:
+            supply = derive_project_supply(self._project, self._rules)
+        except (ValueError, RuntimeError, TypeError, KeyError) as error:
+            # Nothing is dimensioned from the manual entries instead. A project asking for a
+            # derivation it cannot have is blocked, not quietly answered another way.
+            derivable = False
+            errors.append(format_calculation_error("Supply configurations", error))
+        for pair in self._project.pairs if derivable else ():
             if pair.is_excluded:
                 continue
             try:
-                effective = resolve_effective_case(self._project.defaults, pair)
-                result = calculate_pair(effective, self._rules)
+                result = calculate_project_pair(self._project, pair, self._rules, supply=supply)
                 self._results[str(pair.id)] = result
             except (ValueError, RuntimeError, TypeError, KeyError) as error:
                 errors.append(format_calculation_error(pair_label(self._project, pair), error))

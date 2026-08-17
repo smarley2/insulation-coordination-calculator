@@ -10,7 +10,7 @@ from uuid import UUID
 from pydantic import Field, StrictBool, ValidationError, field_validator, model_validator
 from pydantic.config import ExtraValues
 
-from insulation_coordination.domain.project import FrozenModel
+from insulation_coordination.domain.frozen_model import FrozenModel
 from insulation_coordination.domain.quantities import DecimalValue
 
 RULE_SCHEMA_VERSION = 4
