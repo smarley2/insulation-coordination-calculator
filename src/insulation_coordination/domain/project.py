@@ -22,6 +22,7 @@ from insulation_coordination.domain.enums import (
 )
 from insulation_coordination.domain.frozen_model import FrozenModel
 from insulation_coordination.domain.quantities import DecimalValue, PositiveDecimal
+from insulation_coordination.domain.supply import SupplyConfiguration, VerifiedImpulseOverride
 from insulation_coordination.domain.topology import GalvanicBarrier, GalvanicDomain
 
 # `FrozenModel` used to be defined here; many other modules still import it from this module.
@@ -214,6 +215,11 @@ class PairCase(FrozenModel):
     conventional_construction_assumptions: OverrideValue[tuple[str, ...]] = Field(
         default_factory=OverrideValue.inherit
     )
+    #: The verified impulse value recorded against this pair, if one was. It is evidence a
+    #: user takes responsibility for, which is why it is persisted here beside the manual
+    #: entries; the derived and propagated stress it replaces is a runtime result and is
+    #: never written back. Clearing this field restores that value with nothing copied out.
+    impulse_override: VerifiedImpulseOverride | None = None
     notes: str | None = None
 
     @model_validator(mode="after")
@@ -250,6 +256,11 @@ class Project(FrozenModel):
     circuit_diagram: ProjectImageAttachment | None = None
     galvanic_domains: tuple[GalvanicDomain, ...] = ()
     galvanic_barriers: tuple[GalvanicBarrier, ...] = ()
+    #: The supply arrangements the equipment supports, in the order the user listed them. A
+    #: disabled row stays here and takes no part in any calculation. Nothing derived from
+    #: these is persisted: the scenarios, the propagation and the governing selection are all
+    #: recomputed from this tuple and the active rule package.
+    supply_configurations: tuple[SupplyConfiguration, ...] = ()
 
     @model_validator(mode="after")
     def _requires_consistent_pairs(self) -> Self:
@@ -297,6 +308,13 @@ class Project(FrozenModel):
         barrier_keys = [barrier.domain_key for barrier in self.galvanic_barriers]
         if len(barrier_keys) != len(set(barrier_keys)):
             raise ValueError("Galvanic barriers must not duplicate a domain pair")
+
+        configuration_ids = [item.id for item in self.supply_configurations]
+        if len(configuration_ids) != len(set(configuration_ids)):
+            raise ValueError("Supply configuration IDs must be unique")
+        # Duplicate *names* are deliberately not refused here. They are reported by
+        # ``validate_supply_configurations`` alongside every other incompleteness, so the
+        # project page can show them all at once and a user renaming a row can still save.
         return self
 
     @property

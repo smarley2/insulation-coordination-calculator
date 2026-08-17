@@ -5,7 +5,7 @@ from typing import Self
 
 from pydantic import field_validator
 
-from insulation_coordination.domain.project import FrozenModel
+from insulation_coordination.domain.frozen_model import FrozenModel
 from insulation_coordination.domain.quantities import DecimalValue
 from insulation_coordination.domain.rules import Identifier, SourceReference
 

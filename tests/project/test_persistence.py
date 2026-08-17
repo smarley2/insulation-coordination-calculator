@@ -25,6 +25,20 @@ from insulation_coordination.domain.project import (
     ProjectMetadata,
     RulePackageReference,
 )
+from insulation_coordination.domain.supply import (
+    DeclaredSystemVoltage,
+    EarthingArrangement,
+    ImpulseOverrideBasis,
+    InputTopology,
+    OvervoltageCategory,
+    PhaseSystem,
+    ReductionVerificationMethod,
+    SupplyConfiguration,
+    SupplyConfigurationProblemCode,
+    SupplyKind,
+    VerifiedImpulseOverride,
+    validate_supply_configurations,
+)
 from insulation_coordination.project.persistence import (
     NET_TOPOLOGY_KEYS,
     PROJECT_SCHEMA_VERSION,
@@ -105,10 +119,11 @@ def topology_migration_project() -> Project:
     )
 
 
-def _without_topology_fields(document: dict[str, object]) -> dict[str, object]:
-    """Strip everything the version 3 -> 4 migration introduces, in place."""
+def _without_fields_added_since_v3(document: dict[str, object]) -> dict[str, object]:
+    """Strip everything the migrations after version 3 introduce, in place."""
     document.pop("galvanic_domains", None)
     document.pop("galvanic_barriers", None)
+    document.pop("supply_configurations", None)
     for net in document["net_classes"]:  # type: ignore[union-attr]
         for key in NET_TOPOLOGY_KEYS:
             net.pop(key, None)
@@ -116,7 +131,7 @@ def _without_topology_fields(document: dict[str, object]) -> dict[str, object]:
 
 
 def _as_schema_v3_document(project: Project) -> dict[str, object]:
-    return _without_topology_fields({"schema_version": 3, **project.model_dump(mode="json")})
+    return _without_fields_added_since_v3({"schema_version": 3, **project.model_dump(mode="json")})
 
 
 def test_migration_v3_to_v4_adds_direct_domain_and_classifies_every_net(
@@ -170,7 +185,13 @@ def test_migration_v3_to_v4_changes_nothing_outside_the_topology_fields_it_intro
 
     migrated = migrate_project_document(raw)
 
-    introduced = {"schema_version", "galvanic_domains", "galvanic_barriers", "net_classes"}
+    introduced = {
+        "schema_version",
+        "galvanic_domains",
+        "galvanic_barriers",
+        "supply_configurations",
+        "net_classes",
+    }
     assert set(migrated) - set(original) == introduced - {"schema_version", "net_classes"}
     for key, value in original.items():
         if key in introduced:
@@ -320,7 +341,7 @@ def test_failed_replace_preserves_previous_file(
     assert list(tmp_path.glob("*.tmp")) == [unrelated]
 
 
-def test_migration_chains_v1_through_v3_to_v4_without_mutating_source() -> None:
+def test_migration_chains_every_step_from_v1_without_mutating_source() -> None:
     raw: dict[str, object] = {"schema_version": 1, "sentinel": True}
     original = deepcopy(raw)
 
@@ -328,12 +349,13 @@ def test_migration_chains_v1_through_v3_to_v4_without_mutating_source() -> None:
 
     domain = migrated["galvanic_domains"][0]  # type: ignore[index]
     assert migrated == {
-        "schema_version": 4,
+        "schema_version": PROJECT_SCHEMA_VERSION,
         "sentinel": True,
         "group_splits": [],
         "circuit_diagram": None,
         "galvanic_domains": [domain],
         "galvanic_barriers": [],
+        "supply_configurations": [],
     }
     assert domain["is_direct_source_domain"] is True  # type: ignore[index]
     assert domain["review_state"] == "needs_review"  # type: ignore[index]
@@ -371,6 +393,7 @@ def test_schema_v1_loads_with_empty_group_splits_and_save_writes_the_current_sch
     old_document.pop("circuit_diagram", None)
     old_document.pop("galvanic_domains", None)
     old_document.pop("galvanic_barriers", None)
+    old_document.pop("supply_configurations", None)
     for net in old_document["net_classes"]:
         for key in NET_TOPOLOGY_KEYS:
             net.pop(key, None)
@@ -391,7 +414,7 @@ def test_schema_v1_loads_with_empty_group_splits_and_save_writes_the_current_sch
 
 
 def test_schema_v2_loads_without_a_circuit_diagram(sample_project: Project, tmp_path: Path) -> None:
-    document = _without_topology_fields(
+    document = _without_fields_added_since_v3(
         {"schema_version": 2, **sample_project.model_dump(mode="json")}
     )
     document.pop("circuit_diagram", None)
@@ -597,3 +620,209 @@ def test_project_requires_unique_net_names_and_consistent_pairs(sample_project: 
 def test_rules_reference_rejects_invalid_sha256() -> None:
     with pytest.raises(ValidationError, match="64"):
         RulePackageReference(package_id="rules", version="1", sha256="not-a-hash")
+
+
+# --- supply configurations and verified pair overrides (schema 4 -> 5) --------------------
+
+
+def _supply_project(sample_project: Project) -> Project:
+    """``sample_project`` with two supply rows - one disabled - and a verified pair override.
+
+    Every value is this module's own. What a round-trip of it proves is that the arrangement
+    a user entered survives, not that any of it is a reading of a standard.
+    """
+    return sample_project.model_copy(
+        update={
+            "supply_configurations": (
+                SupplyConfiguration(
+                    id=UUID(int=41),
+                    enabled=True,
+                    name="Site supply",
+                    supply_kind=SupplyKind.AC_MAINS,
+                    nominal_voltage_v=Decimal(15),
+                    phase_system=PhaseSystem.THREE_PHASE,
+                    earthing_arrangement=EarthingArrangement.TN_STAR_POINT_EARTHED,
+                    overvoltage_category=OvervoltageCategory.III,
+                    input_topology=InputTopology.DIRECT_INPUT,
+                    declared_system_voltages=(
+                        DeclaredSystemVoltage(measure="phase_to_earth_rms", value_v=Decimal(15)),
+                    ),
+                    notes="Primary arrangement",
+                ),
+                SupplyConfiguration(
+                    id=UUID(int=42),
+                    enabled=False,
+                    name="Bench supply",
+                    supply_kind=SupplyKind.NON_MAINS_DC,
+                    nominal_voltage_v=Decimal(22),
+                    phase_system=None,
+                    earthing_arrangement=EarthingArrangement.NOT_APPLICABLE,
+                    overvoltage_category=None,
+                    input_topology=InputTopology.DIRECT_INPUT,
+                ),
+            ),
+            "pairs": (
+                sample_project.pairs[0].model_copy(
+                    update={
+                        "impulse_override": VerifiedImpulseOverride(
+                            value_v=Decimal(111),
+                            basis=ImpulseOverrideBasis.VERIFIED_CIRCUIT_CHARACTERISTIC,
+                            verification_method=ReductionVerificationMethod.TEST,
+                            justification="Measured at the terminals",
+                            evidence_reference="LAB-7",
+                            affected_location="HV to LV at the input filter",
+                        )
+                    }
+                ),
+            ),
+        }
+    )
+
+
+def test_schema_v4_loads_with_no_supply_configurations_and_no_pair_overrides(
+    topology_migration_project: Project, tmp_path: Path
+) -> None:
+    document = {"schema_version": 4, **topology_migration_project.model_dump(mode="json")}
+    document.pop("supply_configurations", None)
+    path = tmp_path / "v4.icproj"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    loaded = load_project(path)
+
+    assert loaded.supply_configurations == ()
+    assert all(pair.impulse_override is None for pair in loaded.pairs)
+    assert loaded == topology_migration_project
+
+
+def test_schema_v4_carrying_supply_configurations_is_rejected(
+    sample_project: Project, tmp_path: Path
+) -> None:
+    document = {"schema_version": 4, **sample_project.model_dump(mode="json")}
+    document["supply_configurations"] = []
+    original = json.dumps(document)
+    path = tmp_path / "mislabeled-v4.icproj"
+    path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ProjectVersionError, match="supply_configurations"):
+        load_project(path)
+
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_a_legacy_project_keeps_its_stresses_and_gains_no_derived_values(
+    topology_migration_project: Project, tmp_path: Path
+) -> None:
+    """Opening and saving an existing project adds an empty list and nothing else."""
+    raw = _as_schema_v3_document(topology_migration_project)
+    original_pairs = deepcopy(raw["pairs"])
+    path = tmp_path / "legacy.icproj"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    loaded = load_project(path)
+    save_project_atomic(path, loaded)
+    saved = json.loads(path.read_text(encoding="utf-8"))
+
+    assert saved["schema_version"] == PROJECT_SCHEMA_VERSION
+    assert saved["supply_configurations"] == []
+    for saved_pair, original_pair in zip(saved["pairs"], original_pairs, strict=True):  # type: ignore[arg-type]
+        assert saved_pair["impulse_override"] is None
+        assert saved_pair["voltages"] == original_pair["voltages"]
+        assert saved_pair["impulse_v"] == original_pair["impulse_v"]
+    assert load_project(path) == loaded
+
+
+def test_supply_configurations_and_pair_overrides_round_trip_unchanged(
+    sample_project: Project, tmp_path: Path
+) -> None:
+    project = _supply_project(sample_project)
+    path = tmp_path / "supply.icproj"
+
+    save_project_atomic(path, project)
+    reloaded = load_project(path)
+
+    assert reloaded == project
+    save_project_atomic(path, reloaded)
+    assert load_project(path) == project
+
+
+def test_a_disabled_configuration_and_the_project_order_survive_a_round_trip(
+    sample_project: Project, tmp_path: Path
+) -> None:
+    project = _supply_project(sample_project)
+    path = tmp_path / "supply.icproj"
+
+    save_project_atomic(path, project)
+    reloaded = load_project(path)
+
+    assert tuple(item.id for item in reloaded.supply_configurations) == (
+        UUID(int=41),
+        UUID(int=42),
+    )
+    assert [item.enabled for item in reloaded.supply_configurations] == [True, False]
+    assert reloaded.supply_configurations[1].name == "Bench supply"
+
+
+def test_only_entered_evidence_is_persisted_never_a_derived_result(
+    sample_project: Project, tmp_path: Path
+) -> None:
+    """The saved document carries configurations and override evidence and nothing else.
+
+    A derived impulse, a governing scenario or a propagated domain stress reaching the file
+    would make a stale number authoritative on the next open. None of them has a key here.
+    """
+    path = tmp_path / "supply.icproj"
+    save_project_atomic(path, _supply_project(sample_project))
+
+    saved = json.loads(path.read_text(encoding="utf-8"))
+
+    entered = {
+        "id",
+        "enabled",
+        "name",
+        "supply_kind",
+        "nominal_voltage_v",
+        "phase_system",
+        "earthing_arrangement",
+        "overvoltage_category",
+        "input_topology",
+        "rectifier_bridge_rms_v",
+        "declared_system_voltages",
+        "notes",
+    }
+    assert all(set(row) == entered for row in saved["supply_configurations"])
+    override = saved["pairs"][0]["impulse_override"]
+    assert override["value_v"] == "111"
+    assert override["evidence_reference"] == "LAB-7"
+
+
+def test_supply_configuration_ids_must_be_unique(sample_project: Project) -> None:
+    project = _supply_project(sample_project)
+    first = project.supply_configurations[0]
+    with pytest.raises(ValidationError, match="unique"):
+        Project(
+            **project.model_dump(exclude={"supply_configurations"}),
+            supply_configurations=(first, first.model_copy(update={"name": "Second"})),
+        )
+
+
+def test_two_configurations_sharing_a_name_are_reported_rather_than_refused(
+    sample_project: Project,
+) -> None:
+    """Incompleteness is reportable data, not a save-blocking contradiction."""
+    project = _supply_project(sample_project)
+    first, second = project.supply_configurations
+
+    renamed = project.model_copy(
+        update={
+            "supply_configurations": (
+                first,
+                second.model_copy(update={"name": first.name, "enabled": True}),
+            )
+        }
+    )
+
+    assert len(renamed.supply_configurations) == 2
+    assert any(
+        problem.code is SupplyConfigurationProblemCode.DUPLICATE_NAME
+        for problem in validate_supply_configurations(renamed.supply_configurations)
+    )

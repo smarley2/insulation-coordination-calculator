@@ -18,7 +18,7 @@ from insulation_coordination.domain.enums import (
 )
 from insulation_coordination.domain.project import Project
 
-PROJECT_SCHEMA_VERSION = 4
+PROJECT_SCHEMA_VERSION = 5
 
 # Net-level keys the version 3 -> 4 migration adds. A version-3 document must not carry any of
 # these yet - their presence means the document was already migrated (or hand-edited), and the
@@ -109,6 +109,17 @@ def migrate_project_document(raw: dict[str, object]) -> dict[str, object]:
             net["galvanic_domain_id"] = domain_id
             net["classification_review_state"] = ReviewState.NEEDS_REVIEW.value
         version = 4
+    if version == 4:
+        if "supply_configurations" in document:
+            raise ProjectVersionError(
+                f"Project schema {declared} must not contain supply_configurations"
+            )
+        # An existing project declares no supply arrangement, so it derives nothing and keeps
+        # every stress it was saved with. Pair-level impulse overrides are left absent rather
+        # than written as nulls: the field defaults to none, and a migration that writes into
+        # every pair could only ever overwrite something.
+        document["supply_configurations"] = []
+        version = 5
     if version != PROJECT_SCHEMA_VERSION:
         raise ProjectVersionError(f"Project schema {declared} is unsupported")
     document["schema_version"] = PROJECT_SCHEMA_VERSION
