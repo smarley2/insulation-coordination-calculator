@@ -21,7 +21,7 @@ from insulation_coordination.rules.importer.review import (
     unresolved_table_items,
 )
 from insulation_coordination.ui.rules_manager import RulesManagerWindow
-from tests.rules.test_importer import _test_recipes
+from tests.rules.test_importer import _accept_all_source_artifacts, _test_recipes
 from tests.ui.test_rules_manager_review import supported_pdfs as _supported_pdfs
 
 
@@ -352,3 +352,23 @@ def test_resume_reports_a_source_document_that_no_longer_matches(
     assert fresh.draft is None
     assert [title for title, _ in messages] == ["Resume Draft"]
     assert "missing or changed" in messages[0][1]
+
+
+def test_projecting_declared_content_is_autosaved_like_any_other_correction(
+    qtbot,
+    rules_manager,
+    monkeypatch: pytest.MonkeyPatch,
+    source_pdfs: tuple[Path, ...],
+) -> None:
+    """Building declared content goes through ``set_draft``, so autosave already covers it."""
+    _extracted(rules_manager, monkeypatch, source_pdfs)
+    assert rules_manager.draft is not None
+    rules_manager.set_draft(_accept_all_source_artifacts(rules_manager.draft))
+    saved = rules_manager.draft_path
+    assert saved is not None
+    assert load_rule_draft(saved).draft.tables == ()
+
+    rules_manager._review_notes.setText("Project accepted source artifacts")
+    qtbot.mouseClick(rules_manager._review_build_button, Qt.MouseButton.LeftButton)
+
+    assert load_rule_draft(saved).draft.tables
