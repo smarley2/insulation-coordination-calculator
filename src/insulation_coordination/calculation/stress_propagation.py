@@ -38,7 +38,7 @@ declares for these rules' inputs and outputs.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from decimal import Decimal
 from enum import StrEnum
 from itertools import combinations
@@ -782,34 +782,10 @@ def resolve_pair_stresses(
                 ),
             )
         )
-    governing = (
-        None
-        if blocked
-        else max(
-            (item.governing_impulse_v for item in stresses if item.governing_impulse_v is not None),
-            default=None,
-        )
-    )
-    local = (
-        None
-        if blocked
-        else max(
-            (item.own_impulse_v for item in stresses if item.own_impulse_v is not None),
-            default=None,
-        )
-    )
-    transferred = (
-        None
-        if blocked
-        else max(
-            (
-                item.transferred_impulse_v
-                for item in stresses
-                if item.transferred_impulse_v is not None
-            ),
-            default=None,
-        )
-    )
+    worst = _worst_of_both_sides(() if blocked else stresses)
+    governing = worst("governing_impulse_v")
+    local = worst("own_impulse_v")
+    transferred = worst("transferred_impulse_v")
     origin = None if blocked else _origin_impulse(stresses, governing)
     if governing is not None:
         steps.append(
@@ -860,6 +836,23 @@ def resolve_pair_stresses(
         warnings=tuple(warnings),
         trace_steps=tuple(steps),
     )
+
+
+def _worst_of_both_sides(
+    stresses: tuple[DomainStress, ...],
+) -> Callable[[str], Decimal | None]:
+    """Reads one stage off both sides of a pair and returns the worse of the two.
+
+    An empty side list answers ``None`` for every stage, which is how a pair whose topology is
+    unresolved reports every one of them: not zero, and not a value from a domain whose
+    surroundings nobody has evaluated.
+    """
+
+    def worst(stage: str) -> Decimal | None:
+        values = [value for item in stresses if (value := getattr(item, stage)) is not None]
+        return max(values) if values else None
+
+    return worst
 
 
 def _pair_side(
