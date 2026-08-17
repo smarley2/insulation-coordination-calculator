@@ -7,6 +7,7 @@ from decimal import Decimal
 import pytest
 
 from insulation_coordination.domain.rules import (
+    ApprovalRecord,
     CurveAxis,
     CurvePoint,
     CurveSegment,
@@ -17,10 +18,16 @@ from insulation_coordination.domain.rules import (
     SourceGeometryReference,
 )
 from insulation_coordination.rules.archive import _canonical_json
+from insulation_coordination.rules.importer import recipes as recipe_registry
+from insulation_coordination.rules.importer import review as review_module
 from insulation_coordination.rules.importer.approval import (
+    _MAX_NAMED_MISSING,
     ApprovalError,
+    _require_complete_audit,
+    _require_complete_inventory,
     approval_blockers,
     approve_draft,
+    is_fully_resolved,
     record_correction,
 )
 from insulation_coordination.rules.importer.extract import (
@@ -33,7 +40,9 @@ from insulation_coordination.rules.importer.extract import (
     canonical_model_sha256,
 )
 from insulation_coordination.rules.importer.review import (
+    InventoryStatus,
     mark_proposal_reviewed,
+    missing_required_content,
     proposal_for,
 )
 from tests.fixtures.synthetic_rules import synthetic_rule_package
@@ -471,3 +480,107 @@ def test_approval_blockers_are_the_single_manual_and_semantic_gate() -> None:
         }
     )
     assert approval_blockers(duplicate_resolution)[0].code == "REVIEW_RESOLUTION_INVALID"
+
+
+def _audit_notes(draft: ImportedRuleDraft) -> tuple[str, ...]:
+    return (
+        f"table:{draft.tables[0].id}",
+        f"formula:{draft.formulas[0].id}",
+        f"mapping:{draft.mappings[0].id}",
+        f"decision:{draft.decisions[0].id}",
+        f"procedure:{draft.procedures[0].id}",
+        f"guidance:{draft.guidance[0].id}",
+        f"curve:{draft.curves[0].id}",
+    )
+
+
+def test_content_left_to_project_is_not_reported_as_incomplete() -> None:
+    """Approving projects the declared content first, so its absence is not a blocker.
+
+    Reporting it would refuse the very click that fills it, which is why the completeness
+    gates only speak once nothing is left to project.
+    """
+    draft = _review_all_proposals(_draft_with_every_rule_kind())
+
+    assert missing_required_content(draft)
+    assert {item.code for item in approval_blockers(draft)} == {"CURVE_REQUIRED"}
+
+
+def test_unaudited_content_is_named_for_review_and_still_refused_at_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The audit gate used to surface only as an exception raised by the Approve click."""
+    monkeypatch.setattr(recipe_registry, "RECIPES", ())
+    draft = _review_all_proposals(_draft_with_every_rule_kind())
+
+    blockers = [item for item in approval_blockers(draft) if item.code == "CONTENT_AUDIT_REQUIRED"]
+
+    assert {item.semantic_id for item in blockers} == set(_audit_notes(draft))
+    assert all(
+        "no extraction or correction audit record" in item.expected_contract for item in blockers
+    )
+    assert not is_fully_resolved(draft)
+    with pytest.raises(ApprovalError, match="audit record"):
+        approve_draft(draft, "Maintainer", "Approve unaudited content.")
+    # Defence in depth: the gate stays on the approval path, not only in front of it.
+    with pytest.raises(ApprovalError, match="incomplete extraction"):
+        _require_complete_audit(draft)
+
+    audited = draft.model_copy(
+        update={
+            "manifest": draft.manifest.model_copy(
+                update={
+                    "approval_records": (
+                        *draft.manifest.approval_records,
+                        *(
+                            ApprovalRecord(
+                                action="correction",
+                                actor="Synthetic Reviewer",
+                                recorded_at=datetime(2026, 1, 4, tzinfo=UTC),
+                                notes=note,
+                            )
+                            for note in _audit_notes(draft)
+                        ),
+                    )
+                }
+            )
+        }
+    )
+
+    assert not [
+        item for item in approval_blockers(audited) if item.code == "CONTENT_AUDIT_REQUIRED"
+    ]
+
+
+def test_unapproved_required_source_items_are_named_and_the_list_is_capped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A maintainer sees which items are missing, without a review list of hundreds."""
+    monkeypatch.setattr(recipe_registry, "RECIPES", ())
+    missing = tuple(
+        InventoryStatus(
+            semantic_id=f"synthetic-required-{index:02d}",
+            consumer_issue_ids=(83,),
+            located=True,
+            extracted=True,
+            typed=False,
+            approved=False,
+            deferred=False,
+        )
+        for index in range(_MAX_NAMED_MISSING + 5)
+    )
+    monkeypatch.setattr(review_module, "missing_inventory_items", lambda _draft: missing)
+    draft = _review_all_proposals(_draft_with_every_rule_kind())
+
+    blockers = [item for item in approval_blockers(draft) if item.code == "INVENTORY_ITEM_REQUIRED"]
+
+    assert len(blockers) == _MAX_NAMED_MISSING + 1
+    assert [item.semantic_id for item in blockers[:-1]] == [
+        status.semantic_id for status in missing[:_MAX_NAMED_MISSING]
+    ]
+    assert all(item.semantic_id in item.expected_contract for item in blockers[:_MAX_NAMED_MISSING])
+    assert "a further 5" in blockers[-1].expected_contract
+    assert not is_fully_resolved(draft)
+    # Defence in depth: the gate stays on the approval path, not only in front of it.
+    with pytest.raises(ApprovalError, match="required inventory item"):
+        _require_complete_inventory(draft)
