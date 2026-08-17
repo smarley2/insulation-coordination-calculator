@@ -116,6 +116,7 @@ def test_loading_a_package_clears_the_draft_review_panel(
     assert rules_manager.review_approve_enabled is False
     assert rules_manager.review_tables_enabled is False
     assert rules_manager.formula_review_enabled is False
+    assert rules_manager.build_review_enabled is False
     assert rules_manager._recipe_status.text() == ""
     assert rules_manager._review_list.count() == 0
 
@@ -268,6 +269,47 @@ def test_approve_projects_typed_rules_but_still_requires_semantic_review(
     assert rules_manager._draft is not None
     assert rules_manager._draft.tables
     assert all(proposal.state == "proposed" for proposal in rules_manager._draft.semantic_proposals)
+
+
+def test_building_declared_content_is_a_step_the_maintainer_can_see_and_take(
+    qtbot, rules_manager, supported_pdfs, injected_recipes
+) -> None:
+    """Projection is reachable, named, and refreshes the panel -- without Approve."""
+    rules_manager.set_draft(_accept_all_source_artifacts(extract_draft(supported_pdfs)))
+
+    assert rules_manager.build_review_enabled is True
+    assert rules_manager.review_approve_enabled is True
+    assert [row for row in _listed(rules_manager) if "waiting to be projected" in row]
+    assert "③ Build declared content" in rules_manager._review_status.text()
+    assert rules_manager._draft is not None
+    assert rules_manager._draft.tables == ()
+
+    rules_manager._review_notes.setText("Project accepted source artifacts")
+    qtbot.mouseClick(rules_manager._review_build_button, Qt.MouseButton.LeftButton)
+
+    assert rules_manager._draft is not None
+    assert rules_manager._draft.tables
+    assert rules_manager.active_package is None
+    assert rules_manager.build_review_enabled is False
+    assert not [row for row in _listed(rules_manager) if "waiting to be projected" in row]
+    assert "③ Build declared content 0 pending" in rules_manager._review_status.text()
+
+
+def test_building_declared_content_requires_notes(
+    qtbot, rules_manager, supported_pdfs, injected_recipes, monkeypatch
+) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "insulation_coordination.ui.rules_manager.QMessageBox.warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    rules_manager.set_draft(_accept_all_source_artifacts(extract_draft(supported_pdfs)))
+
+    rules_manager._on_review_build_clicked()
+
+    assert warnings == ["Notes are required."]
+    assert rules_manager._draft is not None
+    assert rules_manager._draft.tables == ()
 
 
 def test_approve_requires_notes(qtbot, rules_manager, supported_pdfs, monkeypatch) -> None:

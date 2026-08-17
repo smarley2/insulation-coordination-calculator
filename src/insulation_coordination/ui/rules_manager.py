@@ -134,6 +134,7 @@ class RulesManagerWindow(QWidget):
         self._review_status = QLabel(
             "No draft loaded. Import a draft package or set one programmatically."
         )
+        self._review_status.setWordWrap(True)
         review_layout.addWidget(self._review_status)
         review_layout.addWidget(QLabel("Needs your review:"))
         self._review_list = QListWidget()
@@ -162,6 +163,10 @@ class RulesManagerWindow(QWidget):
         self._review_clause_facts_button.setEnabled(False)
         self._review_clause_facts_button.clicked.connect(self._on_review_clause_facts_clicked)
         review_actions.addWidget(self._review_clause_facts_button)
+        self._review_build_button = QPushButton("Build declared content")
+        self._review_build_button.setEnabled(False)
+        self._review_build_button.clicked.connect(self._on_review_build_clicked)
+        review_actions.addWidget(self._review_build_button)
         review_layout.addLayout(review_actions)
 
         draft_file_row = QHBoxLayout()
@@ -286,11 +291,7 @@ class RulesManagerWindow(QWidget):
     @property
     def build_review_enabled(self) -> bool:
         """True when approving would still have to project typed rule content."""
-        if self._draft is None:
-            return False
-        from insulation_coordination.rules.importer.review import missing_required_content
-
-        return self.is_fully_resolved and bool(missing_required_content(self._draft))
+        return self._review_build_button.isEnabled()
 
     @property
     def formula_review_enabled(self) -> bool:
@@ -340,11 +341,15 @@ class RulesManagerWindow(QWidget):
             self._review_equations_button.setEnabled(False)
             self._review_curves_button.setEnabled(False)
             self._review_clause_facts_button.setEnabled(False)
+            self._review_build_button.setEnabled(False)
             self._save_draft_button.setEnabled(False)
             self._draft_path_label.clear()
             return
         self._save_draft_button.setEnabled(True)
-        from insulation_coordination.rules.importer.review import recipe_derived_items
+        from insulation_coordination.rules.importer.review import (
+            missing_required_content,
+            recipe_derived_items,
+        )
 
         # The list and the Approve button read the same gate, so the panel can never claim
         # there is nothing left while the button stays grey: every blocker gets a line.
@@ -367,6 +372,11 @@ class RulesManagerWindow(QWidget):
         )
         self._review_curves_button.setEnabled(bool(self._draft.raw_figures))
         self._review_clause_facts_button.setEnabled(bool(self._draft.raw_clause_fragments))
+        # Projecting the typed content the recipes declare is a step of its own, reachable once
+        # nothing blocks approval. It is not an approval blocker -- approving still projects for
+        # a maintainer who never presses this -- so it is never added to ``approval_blockers``.
+        pending_content = missing_required_content(self._draft)
+        self._review_build_button.setEnabled(bool(pending_content) and not blockers)
         for item in table_pending:
             flagged = sum(
                 candidate.semantic_id.startswith(f"raw-{item.semantic_id}:")
@@ -392,15 +402,24 @@ class RulesManagerWindow(QWidget):
                 continue  # already counted on its table's line above
             self._review_list.addItem(f"{item.code} {item.semantic_id} — {item.expected_contract}")
         if not blockers:
+            # Unprojected content is work with a next step attached, not a wall: the list says so
+            # in the same voice as a blocker line, and never claims there is nothing left while
+            # that step is still available.
             self._review_list.addItem(
-                "Nothing left to review. Add approval notes, then approve the draft."
+                (
+                    f"Declared content — {len(pending_content)} item(s) waiting to be projected"
+                    " — build declared content, then approve."
+                )
+                if pending_content
+                else "Nothing left to review. Add approval notes, then approve the draft."
             )
         approve_step = " — ready" if not blockers else f" — {len(blockers)} blocker(s) left"
         self._review_status.setText(
             f"① Tables {len(self._draft.raw_grids) - len(table_pending)}"
             f" of {len(self._draft.raw_grids)} accepted"
             f"  ·  ② Equations and mappings {len(equation_pending) + len(mapping_pending)} pending"
-            f"  ·  ③ Approve{approve_step}"
+            f"  ·  ③ Build declared content {len(pending_content)} pending"
+            f"  ·  ④ Approve{approve_step}"
         )
         derived = recipe_derived_items(self._draft)
         formulas = sum(item.kind == "formula" for item in derived)
@@ -456,12 +475,31 @@ class RulesManagerWindow(QWidget):
         dialog.exec()
         self.set_draft(model.draft)
 
+    def _on_review_build_clicked(self) -> None:
+        if self._draft is None:
+            return
+        notes = self._review_notes.text().strip()
+        if not notes:
+            QMessageBox.warning(self, "Build Declared Content", "Notes are required.")
+            return
+        from insulation_coordination.rules.importer.review import build_reviewed_draft
+
+        try:
+            built = build_reviewed_draft(self._draft, actor="maintainer", notes=notes)
+        except (ValueError, KeyError) as error:
+            QMessageBox.critical(self, "Build Declared Content", str(error))
+            return
+        # Every other correction reaches the panel and the autosave file through ``set_draft``,
+        # and a projection is a correction like any other.
+        self.set_draft(built)
+
     def approve_reviewed_draft(self, approver: str, notes: str) -> None:
         """Project reviewed content, approve, and switch to the approved package.
 
         Projection is a deterministic function of the accepted source artifacts,
-        so it is part of approving rather than a separate button the maintainer
-        has to know to press first.
+        so approving still performs it. ``Build declared content`` makes it a
+        visible step of its own; this stays for the maintainer who never presses
+        it, and for approval reached without a button at all.
         """
         if self._draft is None:
             raise RuntimeError("No draft loaded")
