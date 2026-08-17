@@ -54,7 +54,7 @@ def test_pair_label_uses_net_class_names() -> None:
 
 def _table_select() -> TableSelect:
     return TableSelect(
-        table_id="iec60664-1-f2",
+        table_id="synthetic-clearance",
         row=Variable(name="impulse_withstand_kv"),
         column=Variable(name="clearance_branch"),
         row_mode="ceiling",
@@ -65,11 +65,11 @@ def _table_select() -> TableSelect:
 @pytest.mark.parametrize(
     ("expression", "expected"),
     (
-        (Literal(value=Decimal("0.2")), "0.2"),
+        (Literal(value=Decimal("9.9")), "9.9"),
         (Variable(name="clearance_mm"), "clearance_mm"),
         (
-            Divide(numerator=Literal(value=Decimal("0.2")), denominator=Variable(name="d")),
-            "(0.2 / d)",
+            Divide(numerator=Literal(value=Decimal("9.9")), denominator=Variable(name="d")),
+            "(9.9 / d)",
         ),
         (
             Add(operands=(Variable(name="a"), Literal(value=Decimal(1)))),
@@ -145,7 +145,7 @@ def _table_select() -> TableSelect:
         (
             _table_select(),
             (
-                "table iec60664-1-f2[row impulse_withstand_kv (next value up), "
+                "table synthetic-clearance[row impulse_withstand_kv (next value up), "
                 "column clearance_branch (exact match)]"
             ),
         ),
