@@ -51,7 +51,6 @@ from insulation_coordination.rules.importer.clause_fact_proposals import (
     fact_variants,
     pair_tokens,
     pair_wire,
-    proposed_fact,
     scope_tokens,
     scope_wire,
     scope_wire_from_tokens,
@@ -60,7 +59,6 @@ from insulation_coordination.rules.importer.clause_facts import (
     CitedNode,
     DimensionScope,
     SupplyFact,
-    same_clause_fact_reading,
 )
 from insulation_coordination.rules.importer.clauses import RawClauseFragment
 from insulation_coordination.rules.importer.extract import (
@@ -400,45 +398,64 @@ class ClauseFactReviewModel:
         return _NO_STATEMENT_SENTENCES
 
     def covered_by(self, rule_route: str, proposal: ClauseFactProposal) -> int | None:
-        """The authored statement already carrying this draft's reading, or ``None``.
+        """The authored statement that has dealt with this draft, or ``None``.
 
-        The same predicate ``clause_fact_defect`` refuses a duplicate with, so a draft this calls
-        covered is exactly one Author would refuse -- the two cannot drift into disagreeing about
-        what a duplicate is.
+        A **subset** match, and that is the whole of it: an authored statement of the same kind
+        covers a draft when it cites every node the draft cites and agrees on every dimension the
+        draft actually settled. What the draft left unchosen is not compared, because the reviewer
+        supplying it *is* the workflow -- a grammar settles what a declared term reaches and the
+        maintainer reads the rest out of the clause.
 
-        Only a fully proposed draft can be covered. A draft with an unchosen dimension carries an
-        incomplete reading, and an authored statement that settles more than the draft proposes is
-        a *different* reading, not the same one -- so comparing on the chosen subset would call a
-        draft done that nobody has finished reading. ``statement_index`` is arbitrary here because
-        the predicate ignores it.
+        Matched on the whole reading before, which made every draft the grammar could not fully
+        settle permanent: the authored statement was then strictly *more* settled than the draft, so
+        equality never held and the row sat in the list indistinguishable from unstarted work. The
+        list then read as a to-do nobody could finish.
 
-        A draft the fact model *refuses* is uncovered rather than an error. A proposal is validated
-        only per dimension -- that each name and value is one the variant declares -- so any refusal
-        the model makes across fields, which is every collection rule, first surfaces here. Left to
-        propagate it took the whole route's draft list with it: the panes came up empty, the editor
-        still showed the previously selected route, and nothing said why.
+        **This is not the completion guard, deliberately.** ``uncovered_clause_fact_statements``
+        asks "does this clause still carry a statement nobody reviewed", is anchored on cited
+        evidence identity, and assigns one authored statement to one obligation -- a lower bound on
+        review whose semantics amendments A5 and A5-C settled. This asks "have I dealt with this
+        suggestion", which is a question about a *sentence's* draft and has no bearing on whether
+        the route may be completed. Unifying the two would be wrong in both directions: on the
+        guard's node-granular anchor, one statement citing a node carrying three sentences would
+        clear all three of that node's drafts and hide two statements still to write.
+
+        Citations are a subset rather than an equality for the same reason the dimensions are: a
+        statement resting on a further node the reviewer added by hand has still dealt with the
+        draft, and demanding equality would strand exactly the draft it was authored from.
+
+        A draft that settled **nothing** is never covered. Agreeing on the empty set is not
+        agreement, and any statement citing that node would otherwise clear a row nobody has read.
         """
 
-        if not proposal.fully_proposed:
+        settled = proposal.chosen
+        if not settled:
             return None
-        try:
-            candidate = proposed_fact(proposal, statement_index=0)
-        except (ValidationError, ValueError):
-            return None
-        return next(
-            (
-                row.statement_index
-                for row in self.facts(rule_route)
-                if same_clause_fact_reading(row.fact, candidate)
-            ),
-            None,
-        )
+        variant = _statement_kind(proposal)
+        kinds = {
+            name: kind for name, kind, _options in fact_dimensions(proposal.fact_kind, variant)
+        }
+        cited = {(item.fragment_id, item.node_order) for item in proposal.node_references}
+        for row in self.facts(rule_route):
+            if _statement_kind(row.fact) != variant:
+                continue
+            authored_nodes = {
+                (item.fragment_id, item.node_order) for item in row.fact.node_references
+            }
+            if not cited <= authored_nodes:
+                continue
+            if all(
+                _dimension_text(kinds[name], getattr(row.fact, name)) == value
+                for name, value in settled.items()
+            ):
+                return row.statement_index
+        return None
 
     def open_proposals(self, rule_route: str) -> tuple[ClauseFactProposal, ...]:
-        """The route's drafts whose reading no authored statement already carries.
+        """The route's drafts no authored statement has dealt with.
 
-        A draft the reviewer has authored is done, so it leaves the list rather than sitting there
-        as an open item inviting a second copy of itself.
+        A draft the reviewer has authored from is done, so it leaves the list rather than sitting
+        there as an open item inviting a second copy of itself.
         """
 
         return tuple(

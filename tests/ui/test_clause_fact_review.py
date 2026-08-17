@@ -1524,25 +1524,133 @@ def test_an_authored_draft_leaves_the_list(qtbot, draft_with_fully_proposed_sent
     assert model.covered_by(HF_ROUTE, model.proposals(HF_ROUTE)[0]) == 0
 
 
-def test_a_partly_proposed_draft_is_never_covered(
-    qtbot, draft_with_fully_proposed_sentences
-) -> None:
-    """An incomplete reading is not the same reading as one that settles more than it does.
+#: One invented sentence carrying two of the synthetic attenuation grammar's markers and neither of
+#: the other two, so its draft settles some dimensions and leaves the rest to the reviewer -- which
+#: is the ordinary case, and the one that used to strand a draft in the list forever.
+_PARTLY_PROPOSED_SENTENCE = "Synthetic reading: synthbind synthgateone."
 
-    Comparing on the chosen subset would call a draft done that nobody has finished reading, and
-    would then drop it from the list unauthored.
+
+@pytest.fixture
+def draft_with_a_partly_proposed_sentence(synthetic_private_grammars: Path) -> ImportedRuleDraft:
+    """Every supply fragment, with the attenuation route's one node carrying the sentence above."""
+
+    fragments = tuple(
+        fragment_with_sentences(spec.semantic_id, (_PARTLY_PROPOSED_SENTENCE,))
+        if spec.semantic_id == HF_ROUTE
+        else _fragment(spec.semantic_id)
+        for spec in SUPPLY_CLAUSES
+    )
+    return _logged(_draft(fragments=fragments))
+
+
+def test_a_draft_whose_unsettled_dimensions_the_reviewer_filled_leaves_the_list(
+    qtbot, draft_with_a_partly_proposed_sentence
+) -> None:
+    """The maintainer's case: a grammar settles what its terms reach, the reviewer reads the rest.
+
+    Matching a draft against an authored statement's *whole* reading made that permanent. The
+    authored fact is then strictly more settled than the draft, equality never holds, and the row
+    stays in the list indistinguishable from unstarted work -- so the list read as a to-do that could
+    never be finished. The reviewer supplying an unsettled dimension is the workflow, not a
+    divergence, so those dimensions are not compared.
     """
 
-    model = ClauseFactReviewModel(draft_with_fully_proposed_sentences)
+    model = ClauseFactReviewModel(draft_with_a_partly_proposed_sentence)
     dialog = ClauseFactReviewDialog(model)
     qtbot.addWidget(dialog)
-    _author_first_draft(model, dialog)
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+    (draft,) = model.open_proposals(HF_ROUTE)
 
-    partly = [item for item in model.proposals(HF_ROUTE) if not item.fully_proposed]
+    assert draft.fully_proposed is False
+    assert set(draft.unchosen) == {"evidence_kind", "comparison_required"}
 
-    assert partly
-    assert all(model.covered_by(HF_ROUTE, item) is None for item in partly)
-    assert all(item in model.open_proposals(HF_ROUTE) for item in partly)
+    dialog.facts_list.setCurrentRow(0)
+    dialog.use_suggested_button.click()
+    # Exactly the two the grammar could not settle, read out of the sentence by the reviewer.
+    dialog.choose_scope("evidence_kind", "test")
+    dialog.dimension_combo("comparison_required").setCurrentText("true")
+    dialog.author_selected()
+
+    assert model.open_proposals(HF_ROUTE) == ()
+    assert model.covered_by(HF_ROUTE, draft) == 0
+    # One authored statement and no draft left: the list is finishable.
+    assert dialog.facts_list.count() == 1
+    # And the guard agrees for its own reasons, which this test does not change.
+    assert model.uncovered(HF_ROUTE) == ()
+
+
+def test_an_authored_statement_disagreeing_with_a_settled_dimension_covers_nothing(
+    qtbot, draft_with_a_partly_proposed_sentence
+) -> None:
+    """Only the dimensions the draft left unchosen are exempt from the comparison.
+
+    A dimension the grammar did settle and the reviewer then read differently is a divergence from
+    the suggestion, and the row stays open to say so -- the reviewer has authored a statement, not
+    taken this draft.
+    """
+
+    model = ClauseFactReviewModel(draft_with_a_partly_proposed_sentence)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, HF_ROUTE))
+    (draft,) = model.open_proposals(HF_ROUTE)
+
+    assert draft.chosen["dvc_gate"] == "dvc_as"
+
+    dialog.facts_list.setCurrentRow(0)
+    dialog.use_suggested_button.click()
+    dialog.choose_scope("evidence_kind", "test")
+    dialog.dimension_combo("comparison_required").setCurrentText("true")
+    # The one dimension the grammar settled, read differently by the reviewer.
+    dialog.choose_scope("dvc_gate", "dvc_b")
+    dialog.author_selected()
+
+    assert len(model.facts(HF_ROUTE)) == 1
+    assert model.covered_by(HF_ROUTE, draft) is None
+    assert model.open_proposals(HF_ROUTE) == (draft,)
+    # The guard is satisfied all the same: it asks whether a statement of this clause is unreviewed,
+    # never whether a suggestion was taken.
+    assert model.uncovered(HF_ROUTE) == ()
+
+
+def test_a_draft_that_settles_no_dimension_is_never_covered(
+    qtbot, draft_with_supply_fragments, synthetic_private_grammars: Path
+) -> None:
+    """Agreeing on the empty set is not agreement.
+
+    This replaces the equality rule's own guarantee, which was that a draft settling less than an
+    authored statement is never called done. That rule is gone -- a draft the grammar could not fully
+    settle has to be closable -- and the risk it guarded against survives at the bottom end: a draft
+    that settled *nothing* would be covered by whatever statement happened to cite its node, and a
+    row nobody has read would leave the list looking done.
+
+    The barrier route's synthetic grammar declares no rule and no constant, so its draft settles
+    nothing at all. The statement authored below cites that draft's own node and still does not cover
+    it. The completion guard, meanwhile, *is* satisfied -- which is the two notions being different
+    on purpose, asserted in the one place they disagree.
+    """
+
+    barrier_route = ids.SUPPLY_VERIFIED_BARRIER_TRANSFER
+    model = ClauseFactReviewModel(draft_with_supply_fragments)
+    dialog = ClauseFactReviewDialog(model)
+    qtbot.addWidget(dialog)
+    dialog.table.selectRow(_route_position(model, barrier_route))
+    (draft,) = model.open_proposals(barrier_route)
+
+    assert draft.chosen == {}
+
+    dialog.facts_list.setCurrentRow(0)
+    dialog.nodes_list.item(draft.node_references[0].node_order).setSelected(True)
+    dialog.choose_statement_kind("rating_resolution")
+    dialog.dimension_combo("obligation").setCurrentText("requirement")
+    dialog.choose_scope("rated_side", "mains")
+    dialog.dimension_edit("rating_reference").setText(ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC)
+    dialog.author_selected()
+
+    assert len(model.facts(barrier_route)) == 1
+    assert model.covered_by(barrier_route, draft) is None
+    assert model.open_proposals(barrier_route) == (draft,)
+    assert model.uncovered(barrier_route) == ()
 
 
 def test_no_action_authors_more_than_one_statement(
