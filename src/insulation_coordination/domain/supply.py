@@ -26,6 +26,7 @@ user's own equipment data.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from enum import StrEnum
 from typing import Self
 from uuid import UUID
@@ -88,6 +89,31 @@ MAINS_SUPPLY_KINDS: frozenset[SupplyKind] = frozenset(
 #: in this set.
 PHASELESS_SUPPLY_KINDS: frozenset[SupplyKind] = frozenset({SupplyKind.NON_MAINS_DC})
 
+#: The one measure of the package's own vocabulary this model names, because it is the one
+#: whose value a configuration field already carries - see
+#: :attr:`SupplyConfiguration.rectifier_bridge_rms_v`, which exists for exactly this reading
+#: and which nothing would otherwise read.
+BRIDGE_SYSTEM_VOLTAGE_MEASURE = "highest_pre_rectifier_ac_rms_at_bridge"
+
+
+class DeclaredSystemVoltage(FrozenModel):
+    """One voltage of a supply arrangement, named by the measure it is a measure of.
+
+    The approved rule package answers "which voltage of this arrangement is the system
+    voltage" with the *name* of a measure, deliberately never with a calculation, so a
+    configuration has to be able to state that measure's value rather than have it computed
+    from another one. A three-phase IT arrangement is the case that makes this unavoidable:
+    the impulse and temporary-overvoltage questions resolve to two different measures of the
+    same supply, and the source relates them only in a note the package carries as guidance.
+
+    ``measure`` is left as free text on purpose. The vocabulary belongs to the active package,
+    which declares it on the resolution rule's own output, and a copy of it here would be a
+    second list to keep in step. A measure nothing resolves to is simply never read.
+    """
+
+    measure: str = Field(min_length=1)
+    value_v: PositiveDecimal
+
 
 def normalized_configuration_name(name: str) -> str:
     """One configuration name reduced to the form two names are compared as.
@@ -113,16 +139,40 @@ class SupplyConfiguration(FrozenModel):
     overvoltage_category: OvervoltageCategory | None
     input_topology: InputTopology
     rectifier_bridge_rms_v: PositiveDecimal | None = None
+    #: The arrangement's voltages, one per measure the rules may ask for. ``nominal_voltage_v``
+    #: is what the row is called - "the 400 V supply" - and stays the user's own headline
+    #: figure; this is what a derivation reads, because which measure a lookup needs is
+    #: decided by the package and not by the row.
+    declared_system_voltages: tuple[DeclaredSystemVoltage, ...] = ()
     notes: str = ""
 
     @property
     def is_mains(self) -> bool:
         return self.supply_kind in MAINS_SUPPLY_KINDS
 
+    def declared_voltage(self, measure: str) -> Decimal | None:
+        """The voltage this configuration declares for ``measure``, or ``None`` if it does not.
+
+        The bridge measure reads :attr:`rectifier_bridge_rms_v`, which is the field this model
+        already collects it in and already requires for that topology. Everything else is read
+        from :attr:`declared_system_voltages`, which may still override the bridge field if a
+        user states it there instead.
+        """
+
+        for declared in self.declared_system_voltages:
+            if declared.measure == measure:
+                return declared.value_v
+        if measure == BRIDGE_SYSTEM_VOLTAGE_MEASURE:
+            return self.rectifier_bridge_rms_v
+        return None
+
     @model_validator(mode="after")
     def _refuses_contradictions(self) -> Self:
         if not self.name.strip():
             raise ValueError("A supply configuration needs a name")
+        measures = tuple(declared.measure for declared in self.declared_system_voltages)
+        if len(set(measures)) != len(measures):
+            raise ValueError("A supply configuration states each system voltage measure once")
         if self.supply_kind in PHASELESS_SUPPLY_KINDS and self.phase_system is not None:
             raise ValueError("A DC supply has no phase system")
         bridges = self.input_topology is InputTopology.SERIES_CONNECTED_RECTIFIER_BRIDGES
@@ -262,19 +312,77 @@ class DerivedSupplyScenario(FrozenModel):
     source_rule_ids: tuple[str, ...] = ()
 
 
+class SupplyDerivationBlockCode(StrEnum):
+    """Why one enabled configuration produced no scenario.
+
+    Every member names something that was missing or could not be resolved. None of them is a
+    reason to substitute a value: a blocked configuration contributes nothing to the governing
+    stress and says so, rather than contributing a guess that would look derived.
+    """
+
+    #: The row is not complete enough to derive from - see
+    #: :func:`validate_supply_configurations`, whose problem is quoted in the message.
+    CONFIGURATION_INCOMPLETE = "configuration_incomplete"
+    #: The arrangement has no counterpart in the vocabulary the active package's resolution
+    #: rule declares, so the question cannot even be asked of it.
+    UNSUPPORTED_ARRANGEMENT = "unsupported_arrangement"
+    #: The rule was asked and stated nothing for this arrangement.
+    SYSTEM_VOLTAGE_UNRESOLVED = "system_voltage_unresolved"
+    #: The arrangement covers several states the rule distinguishes, and they do not agree.
+    AMBIGUOUS_ARRANGEMENT = "ambiguous_arrangement"
+    #: The rule named the measure that applies and the configuration states no voltage for it.
+    MISSING_DECLARED_VOLTAGE = "missing_declared_voltage"
+    #: The lookup's own table carries no column for the category or basis being asked about.
+    MISSING_LOOKUP_COLUMN = "missing_lookup_column"
+    #: The lookup was attempted and the package refused it - an out-of-range system voltage,
+    #: an absent cell, or an axis the reviewed table does not carry.
+    LOOKUP_REFUSED = "lookup_refused"
+
+
+class SupplyDerivationBlock(FrozenModel):
+    """One reason a configuration produced no derived scenario."""
+
+    configuration_id: UUID
+    code: SupplyDerivationBlockCode
+    message: str
+    semantic_rule_id: str | None = None
+
+
+class UnresolvedSupplyScenario(FrozenModel):
+    """An enabled configuration that could not be derived, and everything that stopped it.
+
+    Kept beside the derived scenarios rather than raised, so one bad row does not hide the
+    others and a reader sees the whole set at once. ``trace_steps`` holds whatever was resolved
+    before the derivation stopped, which is what makes a partial failure diagnosable.
+    """
+
+    configuration_id: UUID
+    configuration_name: str
+    blocks: tuple[SupplyDerivationBlock, ...]
+    trace_steps: tuple[TraceStep, ...] = ()
+
+
 class GoverningSupplyStress(FrozenModel):
     """The worst impulse and the worst temporary overvoltage across every enabled scenario.
 
-    The two are selected independently and may be governed by different configurations, which
-    is why each carries its own governing id. Every non-governing scenario is kept: a reader
-    checking the result has to be able to see what it was worse than.
+    The three governing values are selected independently and may be governed by different
+    configurations, which is why each carries its own governing id. Every non-governing
+    scenario is kept: a reader checking the result has to be able to see what it was worse
+    than. So is every configuration that produced no scenario at all.
+
+    The temporary overvoltage keeps its RMS and peak values separately, because they are two
+    measures of one quantity that the package states independently, and a consumer downstream
+    needs whichever its own verification rule asks for.
     """
 
     impulse_v: DecimalValue | None = None
     impulse_configuration_id: UUID | None = None
     tov_peak_v: DecimalValue | None = None
     tov_configuration_id: UUID | None = None
+    tov_rms_v: DecimalValue | None = None
+    tov_rms_configuration_id: UUID | None = None
     scenarios: tuple[DerivedSupplyScenario, ...] = ()
+    unresolved: tuple[UnresolvedSupplyScenario, ...] = ()
     trace_steps: tuple[TraceStep, ...] = ()
 
     @model_validator(mode="after")
@@ -283,6 +391,7 @@ class GoverningSupplyStress(FrozenModel):
         for value, owner, label in (
             (self.impulse_v, self.impulse_configuration_id, "impulse"),
             (self.tov_peak_v, self.tov_configuration_id, "temporary overvoltage"),
+            (self.tov_rms_v, self.tov_rms_configuration_id, "temporary overvoltage rms"),
         ):
             if (value is None) != (owner is None):
                 raise ValueError(f"A governing {label} and its configuration are recorded together")
@@ -360,8 +469,10 @@ class VerifiedImpulseOverride(FrozenModel):
 
 
 __all__ = [
+    "BRIDGE_SYSTEM_VOLTAGE_MEASURE",
     "MAINS_SUPPLY_KINDS",
     "PHASELESS_SUPPLY_KINDS",
+    "DeclaredSystemVoltage",
     "DerivedSupplyScenario",
     "EarthingArrangement",
     "GoverningSupplyStress",
@@ -373,7 +484,10 @@ __all__ = [
     "SupplyConfiguration",
     "SupplyConfigurationProblem",
     "SupplyConfigurationProblemCode",
+    "SupplyDerivationBlock",
+    "SupplyDerivationBlockCode",
     "SupplyKind",
+    "UnresolvedSupplyScenario",
     "VerifiedImpulseOverride",
     "normalized_configuration_name",
     "validate_supply_configurations",
