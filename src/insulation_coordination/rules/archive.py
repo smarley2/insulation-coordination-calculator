@@ -72,8 +72,8 @@ def _core_member_payloads(package: RulePackage) -> dict[str, bytes]:
     }
 
 
-def _member_checksums(payloads: dict[str, bytes]) -> dict[str, str]:
-    return {name: hashlib.sha256(payloads[name]).hexdigest() for name in CORE_MEMBERS}
+def _member_checksums(payloads: dict[str, bytes], members: tuple[str, ...]) -> dict[str, str]:
+    return {name: hashlib.sha256(payloads[name]).hexdigest() for name in members}
 
 
 def _require_usable_metadata(package: RulePackage) -> None:
@@ -91,17 +91,26 @@ def _require_usable_metadata(package: RulePackage) -> None:
         raise RulePackageError("approved rule package requires an approval record")
 
 
-def _archive_bytes(package: RulePackage) -> tuple[bytes, dict[str, str]]:
-    payloads = _core_member_payloads(package)
+def sealed_archive(
+    payloads: dict[str, bytes],
+    members: tuple[str, ...],
+) -> tuple[bytes, dict[str, str]]:
+    """Checksum the given members and write them as one byte-deterministic archive.
+
+    Every archive this module produces is written here, so a second member set -- the draft
+    under review, for one -- inherits the size ceilings, the fixed timestamps, the stored
+    (never deflated) members and the per-member checksums rather than restating them.
+    """
+
     if any(len(payload) > MAX_MEMBER_BYTES for payload in payloads.values()):
         raise RulePackageError("rules archive member exceeds the size limit")
     if sum(len(payload) for payload in payloads.values()) > MAX_ARCHIVE_BYTES:
         raise RulePackageError("rules archive exceeds the size limit")
-    checksums = _member_checksums(payloads)
-    payloads["checksums.json"] = _canonical_json(checksums)
+    checksums = _member_checksums(payloads, members)
+    payloads = {**payloads, "checksums.json": _canonical_json(checksums)}
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_STORED) as archive:
-        for name in ARCHIVE_MEMBERS:
+        for name in (*members, "checksums.json"):
             info = zipfile.ZipInfo(name, FIXED_ZIP_TIME)
             info.compress_type = zipfile.ZIP_STORED
             info.create_system = 3
@@ -111,6 +120,10 @@ def _archive_bytes(package: RulePackage) -> tuple[bytes, dict[str, str]]:
     if len(content) > MAX_ARCHIVE_BYTES:
         raise RulePackageError("rules archive exceeds the size limit")
     return content, checksums
+
+
+def _archive_bytes(package: RulePackage) -> tuple[bytes, dict[str, str]]:
+    return sealed_archive(_core_member_payloads(package), CORE_MEMBERS)
 
 
 def _require_valid(package: RulePackage) -> None:
@@ -145,7 +158,10 @@ def write_rule_package(path: Path, package: RulePackage) -> str:
     return digest
 
 
-def _read_members(path: Path) -> tuple[dict[str, bytes], bytes]:
+def _read_members(
+    path: Path,
+    members: tuple[str, ...] = ARCHIVE_MEMBERS,
+) -> tuple[dict[str, bytes], bytes]:
     try:
         if path.stat().st_size > MAX_ARCHIVE_BYTES:
             raise RulePackageError("rules archive exceeds the size limit")
@@ -155,7 +171,7 @@ def _read_members(path: Path) -> tuple[dict[str, bytes], bytes]:
             raise RulePackageError("rules archive exceeds the size limit")
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             names = archive.namelist()
-            if len(names) != len(set(names)) or set(names) != set(ARCHIVE_MEMBERS):
+            if len(names) != len(set(names)) or set(names) != set(members):
                 raise RulePackageError("rules archive has missing, duplicate, or extra members")
             infos = archive.infolist()
             if any(member.is_dir() or member.flag_bits & 1 for member in infos):
@@ -173,7 +189,7 @@ def _read_members(path: Path) -> tuple[dict[str, bytes], bytes]:
                 for member in infos
             ):
                 raise RulePackageError("rules archive member exceeds the compression ratio limit")
-            return {name: archive.read(name) for name in ARCHIVE_MEMBERS}, content
+            return {name: archive.read(name) for name in members}, content
     except RulePackageError:
         raise
     except (
@@ -190,10 +206,10 @@ def _read_members(path: Path) -> tuple[dict[str, bytes], bytes]:
         raise RulePackageError(f"could not read rules archive: {error}") from error
 
 
-def _decode_json(payload: bytes, member: str) -> Any:
+def _decode_json(payload: bytes, member: str, *, max_nodes: int = MAX_JSON_NODES) -> Any:
     try:
         value = json.loads(payload)
-        _validate_json_shape(value, member)
+        _validate_json_shape(value, member, max_nodes)
     except (
         UnicodeDecodeError,
         json.JSONDecodeError,
@@ -210,7 +226,7 @@ def _decode_json(payload: bytes, member: str) -> Any:
     return value
 
 
-def _validate_json_shape(value: object, member: str) -> None:
+def _validate_json_shape(value: object, member: str, max_nodes: int = MAX_JSON_NODES) -> None:
     nodes = 0
     stack = [(value, 1)]
     while stack:
@@ -218,7 +234,7 @@ def _validate_json_shape(value: object, member: str) -> None:
         nodes += 1
         if depth > MAX_JSON_DEPTH:
             raise ValueError(f"{member} exceeds the JSON depth limit")
-        if nodes > MAX_JSON_NODES:
+        if nodes > max_nodes:
             raise ValueError(f"{member} exceeds the JSON node limit")
         if isinstance(item, dict):
             stack.extend((child, depth + 1) for child in item.values())
@@ -226,18 +242,24 @@ def _validate_json_shape(value: object, member: str) -> None:
             stack.extend((child, depth + 1) for child in item)
 
 
-def load_rule_package(path: Path) -> RulePackage:
-    members, content = _read_members(path)
+def verified_checksums(members: dict[str, bytes], names: tuple[str, ...]) -> dict[str, str]:
+    """Return the archive's own checksums after proving they cover and match every member."""
+
     checksums = _decode_json(members["checksums.json"], "checksums.json")
-    if not isinstance(checksums, dict) or set(checksums) != set(CORE_MEMBERS):
+    if not isinstance(checksums, dict) or set(checksums) != set(names):
         raise RulePackageError("checksums.json must cover exactly the canonical members")
-    for name in CORE_MEMBERS:
+    for name in names:
         claimed = checksums[name]
         if not isinstance(claimed, str) or _SHA256.fullmatch(claimed) is None:
             raise RulePackageError(f"invalid checksum for {name}")
         if hashlib.sha256(members[name]).hexdigest() != claimed:
             raise RulePackageError(f"checksum mismatch for {name}")
+    return checksums
 
+
+def load_rule_package(path: Path) -> RulePackage:
+    members, content = _read_members(path)
+    checksums = verified_checksums(members, CORE_MEMBERS)
     manifest = _decode_json(members["manifest.json"], "manifest.json")
     if not isinstance(manifest, dict):
         raise RulePackageError("manifest.json root must be an object")
