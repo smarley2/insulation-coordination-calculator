@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal, InvalidOperation
+from itertools import takewhile
 from typing import Literal, NamedTuple
 
 import pdfplumber
@@ -19,7 +20,7 @@ from insulation_coordination.domain.rules import (
     Identifier,
     SourceReference,
 )
-from insulation_coordination.rules.importer.extract import (
+from insulation_coordination.rules.importer.artifacts import (
     ExtractionError,
     canonical_model_sha256,
 )
@@ -185,6 +186,10 @@ def _segment_nodes(
     Checked per region rather than per clause: a clause whose parts are a bullet list and
     then running prose would pass no single root-shape check, and relaxing the check into
     "any kind" is what would let a reflowed clause project silently.
+
+    A ``bullets`` region may open with its list's lead-in prose, which becomes a paragraph node
+    before the bullets; a region's declared root kind is what its *list* reads as, not a promise
+    that it contains nothing else.
     """
 
     lines = _lines(page, segment.expected_bbox)
@@ -219,10 +224,26 @@ def _segment_nodes(
             )
         )
         return nodes
-    seen_bullet = False
-    for line in lines:
+    # Lines before the first bullet are the list's own lead-in, and they are the sentence the
+    # bullets complete: a bullet has no finite verb of its own. They used to be dropped on the
+    # floor -- the shape check passed while the text that gave the bullets their modality was
+    # never extracted, so a reviewer had to consult wording the fragment did not show. They
+    # become one paragraph node preceding the bullets.
+    lead_in = list(takewhile(lambda line: not _is_bullet(line.text), lines))
+    if lead_in:
+        nodes.append(
+            ClauseNode(
+                order=0,
+                kind="paragraph",
+                raw_text=" ".join(line.text.strip() for line in lead_in),
+                segment_index=segment_index,
+                source=base.model_copy(
+                    update={"row": f"paragraph starting at line top {lead_in[0].top:.1f}"}
+                ),
+            )
+        )
+    for line in lines[len(lead_in) :]:
         if _is_bullet(line.text):
-            seen_bullet = True
             nodes.append(
                 ClauseNode(
                     order=len(nodes),
@@ -232,7 +253,7 @@ def _segment_nodes(
                     source=base.model_copy(update={"row": f"line top {line.top:.1f}"}),
                 )
             )
-        elif seen_bullet and nodes:
+        else:
             merged = f"{nodes[-1].raw_text} {line.text.strip()}"
             nodes[-1] = nodes[-1].model_copy(update={"raw_text": merged})
     return nodes

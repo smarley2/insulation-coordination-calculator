@@ -144,6 +144,10 @@ def create_clause_pdf(path: Path) -> None:
             # pdfplumber "top" coordinates: page height minus PDF y. Bbox top 300
             # to bottom 700 -> PDF y 492 down to 92. Decoy at top 720 (y 72).
             commands = [
+                # A list lead-in above the declared bbox, so the default spec is unchanged and a
+                # widened one reaches it: the shape a bullet list takes when its own stem sentence
+                # sits above the region a recipe first declared.
+                _text_command(80, 512, "synthetic neutral lead-in that the bullets complete:"),
                 _text_command(80, 480, "SYMBOL first neutral condition not exceeding 30 s"),
                 _text_command(80, 460, "SYMBOL second neutral condition with a wrapped"),
                 _text_command(96, 444, "line that continues here and references the curve slot"),

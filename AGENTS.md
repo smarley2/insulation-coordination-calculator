@@ -53,6 +53,13 @@ Note that identification reads each PDF in the folder. A malformed unrelated doc
 to crash the fixture rather than being skipped; that is fixed, but a folder of hundreds of
 PDFs will still cost seconds per file.
 
+**The clause-fact proposal grammar.** A grammar mapping the source's phrasing to a typed
+normative reading is licensed-derived, so it lives in the same folder rather than in this
+repository — `iec62477_1_2022-clause-fact-grammars.json`, read through the same environment
+variable. It is optional: without it no route proposes a draft, the review dialog says so, and
+every statement is authored by hand. The private tests that assert what a declared rule reads skip
+when it is absent, exactly as the ones needing the PDFs do.
+
 **Manual curve review.** The curve workflow imports only verified local source artifacts.
 Maintainers calibrate each plot and enter points during review.
 

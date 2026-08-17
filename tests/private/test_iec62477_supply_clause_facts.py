@@ -25,13 +25,19 @@ import pytest
 from insulation_coordination.rules.archive import load_rule_package, write_rule_package
 from insulation_coordination.rules.importer.approval import approval_blockers
 from insulation_coordination.rules.importer.clause_facts import (
-    BarrierTransferFact,
+    BarrierCombinedRequirementFact,
     CitedNode,
-    HfAttenuationFact,
-    SpdMonitoringFact,
-    SpdReductionFact,
+    DimensionScope,
+    HfAttenuationPermissionFact,
+    HfAttenuationRequirementFact,
+    OvercategoryStep,
+    SpdMonitoringRequirementFact,
+    SpdReductionFloorFact,
+    SpdReductionMonitoringFact,
+    SpdReductionPermissionFact,
     SupplyFact,
-    SystemVoltageFact,
+    SystemVoltageApplicabilityFact,
+    SystemVoltageMeasureFact,
 )
 from insulation_coordination.rules.importer.extract import (
     ImportedRuleDraft,
@@ -43,6 +49,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply impor
     SUPPLY_CLAUSES,
     SUPPLY_FACT_FAMILY_BY_ROUTE,
     SUPPLY_SYSTEM_VOLTAGE_NON_MAINS,
+    propose_supply_facts,
 )
 from insulation_coordination.rules.importer.review import (
     ClauseFactResolutionError,
@@ -52,6 +59,7 @@ from insulation_coordination.rules.importer.review import (
     retract_clause_fact,
 )
 from tests.private.test_iec62477_slice_c_roundtrip import _approved_slice_c
+from tests.rules.importer.test_clause_fact_proposals import scope_of
 
 pytestmark = pytest.mark.private_standard
 
@@ -68,7 +76,7 @@ AUTHORED_ROUTES: tuple[str, ...] = tuple(
 )
 
 
-def _first_cited_node(draft: ImportedRuleDraft, route: str) -> tuple[CitedNode, ...]:
+def _cited_node(draft: ImportedRuleDraft, route: str, node_order: int) -> tuple[CitedNode, ...]:
     """A citation of one real node of the route's own fragment, by identity and content.
 
     The nodes are the licensed ones -- a fact must cite its own clause -- but only their
@@ -76,7 +84,7 @@ def _first_cited_node(draft: ImportedRuleDraft, route: str) -> tuple[CitedNode, 
     """
 
     fragment = next(item for item in draft.raw_clause_fragments if item.id == f"raw-{route}")
-    node = fragment.nodes[0]
+    node = next(item for item in fragment.nodes if item.order == node_order)
     return (
         CitedNode(
             fragment_id=fragment.id,
@@ -86,8 +94,147 @@ def _first_cited_node(draft: ImportedRuleDraft, route: str) -> tuple[CitedNode, 
     )
 
 
-def _placeholder_facts(draft: ImportedRuleDraft) -> dict[str, SupplyFact]:
-    """One local placeholder statement per non-legacy route: valid tokens, invented readings.
+def _first_cited_node(draft: ImportedRuleDraft, route: str) -> tuple[CitedNode, ...]:
+    """A citation of the route's own first node."""
+
+    fragment = next(item for item in draft.raw_clause_fragments if item.id == f"raw-{route}")
+    return _cited_node(draft, route, fragment.nodes[0].order)
+
+
+#: Structurally distinct topology scopes for the placeholder applicability statements below, cycled
+#: by node so no two of them read alike beyond the node each rests on. Spelled as the scope wire
+#: form -- ``"*"`` being the unrestricted reading -- and vocabulary tokens only; they state nothing
+#: about the clause.
+_PLACEHOLDER_TOPOLOGIES = (
+    "direct",
+    "rectified_dc",
+    "series_rectifier_bridges",
+    "isolated_secondary",
+    "*",
+)
+
+
+def _system_voltage_placeholders(
+    draft: ImportedRuleDraft, route: str, supply_kind: str
+) -> tuple[SupplyFact, ...]:
+    """One placeholder statement per node of a system voltage subclause's fragment.
+
+    The completion guard refuses a route that leaves a known statement of its clause unauthored,
+    and this subclause is the one whose licensed fragment carries a bullet list, so a single
+    statement cannot complete it. Only the measure statement is projected; every other node gets
+    the **carried** applicability variant, which contributes no row and so cannot invent a branch
+    the source does not state while still recording that the node was read.
+
+    Driven off the fragment's own node count rather than a number written here, so the licensed
+    document's structure decides how many statements the workflow authors -- and so re-extracting
+    a widened clause region changes this fixture's behaviour rather than breaking it. Still
+    placeholders: each field is a token of its own declared vocabulary, cycled for structural
+    distinctness only.
+    """
+
+    fragment = next(item for item in draft.raw_clause_fragments if item.id == f"raw-{route}")
+    measure = SystemVoltageMeasureFact(
+        statement_index=0,
+        node_references=_cited_node(draft, route, fragment.nodes[0].order),
+        obligation="requirement",
+        supply_kind=supply_kind,  # type: ignore[arg-type]
+        phase_system=scope_of("three_phase_delta" if supply_kind == "mains" else "single_phase_it"),
+        earthing=scope_of("tn" if supply_kind == "mains" else "it"),
+        input_topology=scope_of("direct" if supply_kind == "mains" else "isolated_secondary"),
+        purpose=scope_of("impulse" if supply_kind == "mains" else "temporary_overvoltage"),
+        measure="phase_to_earth_rms" if supply_kind == "mains" else "between_supply_conductors_rms",
+    )
+    carried = tuple(
+        SystemVoltageApplicabilityFact(
+            statement_index=index,
+            node_references=_cited_node(draft, route, node.order),
+            obligation="requirement",
+            supply_kind=supply_kind,  # type: ignore[arg-type]
+            input_topology=scope_of(_PLACEHOLDER_TOPOLOGIES[index % len(_PLACEHOLDER_TOPOLOGIES)]),  # type: ignore[arg-type]
+            purpose=scope_of("impulse" if index % 2 else "temporary_overvoltage"),
+            counts_as_system_voltage=bool(index % 2),
+        )
+        for index, node in enumerate(fragment.nodes[1:], start=1)
+    )
+    return (measure, *carried)
+
+
+def _spd_reduction_placeholders(
+    draft: ImportedRuleDraft,
+    route: str,
+    supply_kind: str,
+    steps: tuple[tuple[str, str], ...],
+    monitoring: bool,
+) -> tuple[SupplyFact, ...]:
+    """Placeholder statements for one reduction subclause: its two projected kinds, then floors.
+
+    A reduction route projects two rules, so it needs a permission statement and a monitoring
+    statement or the second rule does not exist. Both are authored on the fragment's first node,
+    exactly as ``_system_voltage_placeholders`` authors its projected measure there: which node of a
+    licensed clause states which reading is the clause's own content, and this module records none
+    of it.
+
+    Every node the route's *own proposals* rest on then gets a **floor** statement -- the family's
+    carried variant, which contributes no row -- so the completion guard's lower bound is met
+    without a placeholder inventing a projected branch for a node whose real reading nobody has
+    authored. Walked from the proposals rather than from a number written here, for the same reason
+    ``_system_voltage_placeholders`` is driven off the node count: a subclause re-declared over
+    different regions changes what this fixture authors instead of breaking it, and neither the
+    count nor its distribution is recorded anywhere.
+
+    The floors are one repeated reading on distinct nodes, which is not a duplicate: two statements
+    resting on different nodes are two readings even where every dimension agrees -- see
+    ``same_clause_fact_reading``.
+    """
+
+    fragment = next(item for item in draft.raw_clause_fragments if item.id == f"raw-{route}")
+    stated = sorted(
+        {
+            cited.node_order
+            for proposal in propose_supply_facts(fragment, route)
+            for cited in proposal.node_references
+        }
+    )
+    projected: tuple[SupplyFact, ...] = (
+        SpdReductionPermissionFact(
+            statement_index=0,
+            node_references=_first_cited_node(draft, route),
+            obligation="permission",
+            supply_kind=supply_kind,  # type: ignore[arg-type]
+            permitted_steps=tuple(
+                OvercategoryStep(source_ovc=source, target_ovc=target)  # type: ignore[arg-type]
+                for source, target in steps
+            ),
+            insulation_classes=DimensionScope.of("basic"),
+        ),
+        SpdReductionMonitoringFact(
+            statement_index=1,
+            node_references=_first_cited_node(draft, route),
+            obligation="requirement",
+            supply_kind=supply_kind,  # type: ignore[arg-type]
+            device_degradable=monitoring,
+            monitoring_obligation="required" if monitoring else "not_required",
+            status_indication="required" if monitoring else "not_required",
+            monitoring_reference=SPD_MONITORING_ROUTE,
+        ),
+    )
+    floors = tuple(
+        SpdReductionFloorFact(
+            statement_index=index,
+            node_references=_cited_node(draft, route, order),
+            obligation="requirement",
+            supply_kind=supply_kind,  # type: ignore[arg-type]
+            insulation_classes=DimensionScope.of("double", "reinforced"),
+            unreduced_basis="basic_insulation_without_the_reducing_means",
+            relation="must_not_fall_below",
+        )
+        for index, order in enumerate(stated, start=len(projected))
+    )
+    return (*projected, *floors)
+
+
+def _placeholder_facts(draft: ImportedRuleDraft) -> dict[str, tuple[SupplyFact, ...]]:
+    """Local placeholder statements per non-legacy route: valid tokens, invented readings.
 
     Not the source's readings, and not to be read as them. Each field is filled with a token of
     its own declared vocabulary picked for structural distinctness only, and deliberately
@@ -98,93 +245,89 @@ def _placeholder_facts(draft: ImportedRuleDraft) -> dict[str, SupplyFact]:
 
     The two system-voltage scopes project into one rule's rows, so their dimensions are authored
     explicitly and differ: ``_require_distinct_branches`` refuses a set whose distinguishing
-    dimension nobody authored, and an unrestricted ``any_*`` beside a specific value is exactly
+    dimension nobody authored, and an unrestricted reading beside a specific value is exactly
     the overlap it exists to catch.
+
+    A tuple per route rather than one statement, for two independent reasons that both have to
+    hold. The completion guard refuses a route that leaves a known statement of its clause
+    unauthored -- see ``_system_voltage_placeholders`` for the subclause whose licensed fragment
+    carries a list, which one statement therefore cannot complete. And a route whose clause
+    projects more than one rule needs a statement of each kind those rules are built from: a
+    reduction clause projects a permission rule and its reducing device's monitoring rule, and the
+    second exists only if a monitoring statement was reviewed for it. Where neither reason applies
+    the tuple holds one statement.
     """
 
     return {
-        SV_ROUTE: SystemVoltageFact(
-            statement_index=0,
-            node_references=_first_cited_node(draft, SV_ROUTE),
-            obligation="requirement",
-            supply_kind="mains",
-            phase_system="three_phase_delta",
-            earthing="tn",
-            input_topology="direct",
-            purpose="impulse",
-            measure="phase_to_earth_rms",
+        SV_ROUTE: _system_voltage_placeholders(draft, SV_ROUTE, "mains"),
+        SUPPLY_SYSTEM_VOLTAGE_NON_MAINS: _system_voltage_placeholders(
+            draft, SUPPLY_SYSTEM_VOLTAGE_NON_MAINS, "non_mains"
         ),
-        SUPPLY_SYSTEM_VOLTAGE_NON_MAINS: SystemVoltageFact(
-            statement_index=0,
-            node_references=_first_cited_node(draft, SUPPLY_SYSTEM_VOLTAGE_NON_MAINS),
-            obligation="requirement",
-            supply_kind="non_mains",
-            phase_system="single_phase_it",
-            earthing="it",
-            input_topology="isolated_secondary",
-            purpose="temporary_overvoltage",
-            measure="between_supply_conductors_rms",
+        # The isolation this clause is scoped by is route-declared now, so this placeholder can no
+        # longer state the positive-isolation reading it used to: that combination contradicted the
+        # fragment it cited, and nothing refused it.
+        ids.SUPPLY_VERIFIED_BARRIER_TRANSFER: (
+            BarrierCombinedRequirementFact(
+                statement_index=0,
+                node_references=_first_cited_node(draft, ids.SUPPLY_VERIFIED_BARRIER_TRANSFER),
+                obligation="requirement",
+                combined_circuit_rule="side_specific_from_transfer",
+            ),
         ),
-        ids.SUPPLY_VERIFIED_BARRIER_TRANSFER: BarrierTransferFact(
-            statement_index=0,
-            node_references=_first_cited_node(draft, ids.SUPPLY_VERIFIED_BARRIER_TRANSFER),
-            obligation="requirement",
-            isolation_present=True,
-            downstream_connection_kind="verified_galvanic_isolation",
-            combined_circuit_rule="side_specific_from_transfer",
+        # A permission and a monitoring statement per reduction route, because the clause projects
+        # two rules and the second exists only if a statement was reviewed for it, and then a
+        # carried floor per node the route's proposals rest on. A transition authored the wrong way
+        # up the scale, so no placeholder here reads as a plausible reviewed permission.
+        SPD_MAINS_ROUTE: _spd_reduction_placeholders(
+            draft, SPD_MAINS_ROUTE, "mains", (("ovc_i", "ovc_iv"),), monitoring=True
         ),
-        SPD_MAINS_ROUTE: SpdReductionFact(
-            statement_index=0,
-            node_references=_first_cited_node(draft, SPD_MAINS_ROUTE),
-            obligation="permission",
-            supply_kind="mains",
-            source_ovc="ovc_i",
-            target_ovc="ovc_iv",
-            insulation_class="basic",
-            degradable=True,
-            monitoring_obligation="required",
-            monitoring_reference=SPD_MONITORING_ROUTE,
+        SPD_NON_MAINS_ROUTE: _spd_reduction_placeholders(
+            draft, SPD_NON_MAINS_ROUTE, "non_mains", (("ovc_i", "ovc_iii"),), monitoring=False
         ),
-        SPD_NON_MAINS_ROUTE: SpdReductionFact(
-            statement_index=0,
-            node_references=_first_cited_node(draft, SPD_NON_MAINS_ROUTE),
-            obligation="permission",
-            supply_kind="non_mains",
-            source_ovc="ovc_ii",
-            target_ovc="ovc_i",
-            insulation_class="double",
-            degradable=False,
-            monitoring_obligation="not_required",
-            monitoring_reference=SPD_MONITORING_ROUTE,
+        SPD_MONITORING_ROUTE: (
+            SpdMonitoringRequirementFact(
+                statement_index=0,
+                node_references=_first_cited_node(draft, SPD_MONITORING_ROUTE),
+                obligation="requirement",
+                device_placement=DimensionScope.of("internal_to_pecs"),
+                participates_in_reduction=True,
+            ),
         ),
-        SPD_MONITORING_ROUTE: SpdMonitoringFact(
-            statement_index=0,
-            node_references=_first_cited_node(draft, SPD_MONITORING_ROUTE),
-            obligation="requirement",
-            device_placement="internal_to_pecs",
-            participates_in_reduction=True,
-            monitoring_required=True,
-            compliance_evidence="monitoring_test",
-        ),
-        ids.SUPPLY_HF_TRANSFORMER_ATTENUATION: HfAttenuationFact(
-            statement_index=0,
-            node_references=_first_cited_node(draft, ids.SUPPLY_HF_TRANSFORMER_ATTENUATION),
-            obligation="permission",
-            dvc_gate="dvc_b",
-            evidence_kind="simulation",
-            threshold_reference=ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC,
-            comparison_required=True,
+        # One statement of each kind this clause states: the route projects both readings, so a
+        # placeholder set holding only one of them reaches the projector's refusal instead of a rule.
+        ids.SUPPLY_HF_TRANSFORMER_ATTENUATION: (
+            HfAttenuationPermissionFact(
+                statement_index=0,
+                node_references=_first_cited_node(draft, ids.SUPPLY_HF_TRANSFORMER_ATTENUATION),
+                obligation="permission",
+                dvc_gate=DimensionScope.of("dvc_b"),
+            ),
+            HfAttenuationRequirementFact(
+                statement_index=1,
+                node_references=_first_cited_node(draft, ids.SUPPLY_HF_TRANSFORMER_ATTENUATION),
+                obligation="requirement",
+                evidence_kind=scope_of("simulation"),
+                threshold_reference=ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC,
+                comparison_required=True,
+            ),
         ),
     }
 
 
 def author_placeholder_supply_clause_facts(draft: ImportedRuleDraft) -> ImportedRuleDraft:
-    """Author and complete one placeholder statement for every non-legacy supply route.
+    """Author and complete placeholder statements for every non-legacy supply route.
 
     Called from the shared private review pass, so every private test that builds or
     approves a licensed draft goes through the same authoring the maintainer's own session
-    would. The statements are local placeholders -- see ``_placeholder_facts`` -- and prove
-    only that the workflow reaches a projection, never what the clauses state.
+    would -- the completion guard included, which is what forces a subclause carrying several
+    statements to be authored several times over rather than certified once. The statements are
+    local placeholders -- see ``_placeholder_facts`` -- and prove only that the workflow reaches a
+    projection, never what the clauses state.
+
+    Completion is recorded once per route after all of its statements, because the record binds the
+    route's whole fact-set digest: recording it between two statements would bind a set the second
+    one then changes -- and because the guard is evaluated against the statements authored so far,
+    so a route is certified only once every one of them is in.
     """
 
     facts = _placeholder_facts(draft)
@@ -194,14 +337,15 @@ def author_placeholder_supply_clause_facts(draft: ImportedRuleDraft) -> Imported
             f"{sorted(set(AUTHORED_ROUTES) - set(facts))}, unexpected "
             f"{sorted(set(facts) - set(AUTHORED_ROUTES))}"
         )
-    for route, fact in facts.items():
-        draft = author_clause_fact(
-            draft,
-            rule_route=route,
-            fact=fact,
-            actor="Private fixture reviewer",
-            notes="Authored local placeholder statement.",
-        )
+    for route, statements in facts.items():
+        for fact in statements:
+            draft = author_clause_fact(
+                draft,
+                rule_route=route,
+                fact=fact,
+                actor="Private fixture reviewer",
+                notes="Authored local placeholder statement.",
+            )
         draft = record_fact_completion(
             draft,
             rule_route=route,

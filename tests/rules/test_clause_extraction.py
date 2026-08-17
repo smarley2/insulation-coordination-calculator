@@ -126,6 +126,34 @@ def test_normalization_preserves_hash_spans_and_merges_wrapped_lines(clause_pdf)
     assert normalized.tokens == fragment.tokens
 
 
+def test_a_bullet_lists_lead_in_becomes_a_paragraph_node_before_the_bullets(clause_pdf) -> None:
+    """A bullet completes its lead-in, so a region reaching one must extract it.
+
+    Dropped on the floor before: the shape check passed on the bullets alone while the sentence
+    that gives them their finite verb was never extracted, so a reviewer had to consult wording
+    the fragment did not show. Its node is a paragraph, and the bullets keep their own kind.
+    """
+
+    spec = _with_bbox(synthetic_clause_spec(), (70.0, 270.0, 524.0, 700.0))
+
+    fragment = extract_clause_fragment(clause_pdf, spec, IDENTITY)
+
+    assert [node.kind for node in fragment.nodes] == ["paragraph", "bullet", "bullet"]
+    assert "lead-in" in fragment.nodes[0].raw_text
+    assert [node.order for node in fragment.nodes] == [0, 1, 2]
+    # The lead-in must not be swallowed into a bullet, nor a bullet into it.
+    assert "lead-in" not in fragment.nodes[1].raw_text
+    assert "SYMBOL" not in fragment.nodes[0].raw_text
+
+
+def test_a_bullets_region_without_a_lead_in_gains_no_paragraph_node(clause_pdf) -> None:
+    """The narrower region is unchanged, so no other clause's node shape moved."""
+
+    fragment = extract_clause_fragment(clause_pdf, synthetic_clause_spec(), IDENTITY)
+
+    assert [node.kind for node in fragment.nodes] == ["bullet", "bullet"]
+
+
 def test_extraction_outside_bbox_is_ignored(clause_pdf) -> None:
     fragment = extract_clause_fragment(clause_pdf, synthetic_clause_spec(), IDENTITY)
     assert all("outside" not in node.raw_text for node in fragment.nodes)

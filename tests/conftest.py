@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from insulation_coordination.rules.importer.extract import (
     draft_content_digest,
     propose_axis_selectors,
 )
+from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import SUPPLY_CLAUSES
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.tables import TABLE_2
 from tests.rules.importer.iec62477_2022.test_axis_proposals import _voltage_limits_grid
@@ -95,6 +97,148 @@ def draft_with_unmatched_row(voltage_limits_grid: RawGrid) -> ImportedRuleDraft:
     )
     draft = _draft(voltage_limits_grid).model_copy(update={"axis_selector_proposals": unmatched})
     return _logged(draft)
+
+
+@pytest.fixture
+def synthetic_private_grammars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Install a grammar where the licensed material would live, so a public test can propose.
+
+    A grammar mapping source phrasing to typed meaning is licensed-derived and loads only from
+    beside the licensed material (amendment A1), so a public checkout has none and every route
+    proposes nothing. What the tests using this fixture need is a grammar *at all*: a route with
+    one yields one draft per statement sentence whether or not a keyword matched, which is what
+    gives the completion guard its obligations to count and the review dialog its draft rows.
+
+    Every keyword below is a coined marker (``synth*``) that means nothing outside this file and
+    occurs in no document, so no mapping from any source's phrasing to a typed meaning appears in
+    this repository. Two families get rules -- the attenuation family, because it is the family the
+    public surfaces are exercised through, and the reduction family, because it is the only one
+    declaring a pair collection and a rule-free grammar can never reach one. Every other route gets a
+    rule-free grammar, which still yields one draft per statement sentence with every dimension
+    unchosen. Families and statement kinds are derived from the recipe's own public declarations,
+    which is what ``_require_declared_proposal_grammars`` demands of the real file too.
+
+    Written through the real file and the real environment variable rather than by patching the
+    loader, so the loading path the maintainer depends on is the one the public suite covers.
+    """
+    from insulation_coordination.rules.importer.clause_fact_proposals import (
+        PRIVATE_MATERIAL_DIRECTORY_VARIABLE,
+        SCOPE_UNRESTRICTED,
+        ClauseFactGrammar,
+        ClauseKeywordRule,
+        ClauseSequenceRule,
+        fact_variants,
+    )
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        LEGACY_BRANCH_AUTHORITY_RULE_IDS,
+        SUPPLY_FACT_FAMILY_BY_ROUTE,
+        SUPPLY_FACT_GRAMMAR_FILE,
+    )
+
+    synthetic_rules = {
+        # The attenuation family's proposed kind is its demonstration requirement -- see
+        # ``proposed_kinds`` -- so these rules settle that variant's own dimensions. Its scope, its
+        # boolean and the constant below are between them every widget kind the editor offers except
+        # a pair collection, which is why this is the family the public surfaces run through.
+        "hf_attenuation": (
+            ClauseKeywordRule(dimension="obligation", value="requirement", keywords=("synthbind",)),
+            ClauseKeywordRule(dimension="obligation", value="permission", keywords=("synthallow",)),
+            ClauseKeywordRule(dimension="evidence_kind", value="test", keywords=("synthgateone",)),
+            ClauseKeywordRule(
+                dimension="evidence_kind", value="simulation", keywords=("synthgatetwo",)
+            ),
+            # The unrestricted reading of a scope dimension, spelled in the scope's own wire form.
+            ClauseKeywordRule(
+                dimension="evidence_kind", value=SCOPE_UNRESTRICTED, keywords=("synthevidence",)
+            ),
+            ClauseKeywordRule(
+                dimension="comparison_required", value="true", keywords=("synthcompare",)
+            ),
+        ),
+        # The barrier family's variants share nothing but the obligation, which makes it the family
+        # where a draft can settle *only* a dimension that identifies no sentence. One rule reaching
+        # the proposed variant's own scope is what lets a test have both kinds of draft at once.
+        "barrier_transfer": (
+            ClauseKeywordRule(dimension="obligation", value="requirement", keywords=("synthbind",)),
+            ClauseKeywordRule(dimension="rated_side", value="mains", keywords=("synthmainsside",)),
+            ClauseKeywordRule(
+                dimension="rated_side", value="non_mains", keywords=("synthothersid",)
+            ),
+        ),
+        # The system voltage family's proposed kind is its measure variant, and these four rules
+        # settle only dimensions its *other* variant carries too. That is what a cross-kind draft
+        # close needs to be selective about: the reviewer overriding a mis-proposed kind is the
+        # ordinary workflow, so the shared dimensions have to be able to tell two sentences apart.
+        "system_voltage": (
+            ClauseKeywordRule(dimension="obligation", value="requirement", keywords=("synthbind",)),
+            ClauseKeywordRule(
+                dimension="input_topology", value="direct", keywords=("synthdirect",)
+            ),
+            ClauseKeywordRule(
+                dimension="input_topology", value="rectified_dc", keywords=("synthrectified",)
+            ),
+            ClauseKeywordRule(dimension="purpose", value="impulse", keywords=("synthimpulse",)),
+            ClauseKeywordRule(
+                dimension="purpose", value="temporary_overvoltage", keywords=("synthtov",)
+            ),
+        ),
+        # The reduction family's proposed statement kind is its permission, which is the one
+        # variant in the recipe declaring an ordered pair collection. Between these rules and the
+        # sequence rule below, one marked sentence settles every dimension the variant declares --
+        # which is what a draft has to do before anything builds a candidate statement from it.
+        "spd_reduction": (
+            ClauseKeywordRule(dimension="obligation", value="permission", keywords=("synthallow",)),
+            ClauseKeywordRule(
+                dimension="insulation_classes", value="basic", keywords=("synthclassone",)
+            ),
+            ClauseKeywordRule(
+                dimension="insulation_classes", value="supplementary", keywords=("synthclasstwo",)
+            ),
+        ),
+    }
+    #: Coined scale markers, deliberately declared in the same order the fact model's own
+    #: vocabulary declares the designations, and gated the way the real declarations are.
+    synthetic_sequences = {
+        "spd_reduction": (
+            ClauseSequenceRule(
+                tokens=(
+                    ("synthovcfour", "ovc_iv"),
+                    ("synthovcthree", "ovc_iii"),
+                    ("synthovctwo", "ovc_ii"),
+                    ("synthovcone", "ovc_i"),
+                ),
+                dimension="permitted_steps",
+                keywords=("synthreduce",),
+            ),
+        )
+    }
+    #: Which variant a family's synthetic grammar proposes, where it is not the first one declared.
+    #: The attenuation family declares its permission first, in the order the clause reads, but the
+    #: statement a grammar can settle every dimension of is its demonstration requirement -- and one
+    #: grammar declares exactly one kind, so the other is authored by hand. The real declarations
+    #: beside the licensed material make the same choice for the same reason.
+    proposed_kinds = {"hf_attenuation": "requirement"}
+    directory = tmp_path / "synthetic-private-material"
+    directory.mkdir()
+    payload = {
+        route: ClauseFactGrammar(
+            fact_kind=family,
+            statement_kind=proposed_kinds.get(family, next(iter(fact_variants(family)), "")),
+            keyword_rules=synthetic_rules.get(family, ()),
+            sequence_rules=synthetic_sequences.get(family, ()),
+            constants=(
+                {"threshold_reference": ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC}
+                if family == "hf_attenuation"
+                else {}
+            ),
+        ).model_dump()
+        for route, family in SUPPLY_FACT_FAMILY_BY_ROUTE.items()
+        if route not in LEGACY_BRANCH_AUTHORITY_RULE_IDS
+    }
+    path = directory / SUPPLY_FACT_GRAMMAR_FILE
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    monkeypatch.setenv(PRIVATE_MATERIAL_DIRECTORY_VARIABLE, str(directory))
+    return path
 
 
 @pytest.fixture

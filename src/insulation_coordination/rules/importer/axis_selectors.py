@@ -15,6 +15,7 @@ from pydantic import Field
 
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import Identifier, NotesText
+from insulation_coordination.rules.importer.artifacts import canonical_model_sha256
 
 
 class DvcDesignationSelector(FrozenModel):
@@ -63,8 +64,6 @@ AxisSelector = Annotated[
 
 def selector_sha256(selector: AxisSelector) -> str:
     """Canonical hash of one selector, so a review can bind to the exact reading."""
-
-    from insulation_coordination.rules.importer.extract import canonical_model_sha256
 
     return canonical_model_sha256(selector)
 

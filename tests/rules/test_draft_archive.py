@@ -37,7 +37,7 @@ from insulation_coordination.rules.importer.clause_facts import (
     CitedNode,
     ClauseFactCompletion,
     ClauseFactReview,
-    SystemVoltageFact,
+    SystemVoltageMeasureFact,
     evidence_sha256,
 )
 from insulation_coordination.rules.importer.extract import (
@@ -50,6 +50,7 @@ from insulation_coordination.rules.importer.review import (
     draft_review_digest,
     mark_proposal_reviewed,
 )
+from tests.rules.importer.test_clause_fact_proposals import scope_of
 from tests.rules.test_importer import (
     _accept_all_source_artifacts,
     _compound_draft,
@@ -76,15 +77,15 @@ def _pdf_paths(draft: ImportedRuleDraft, paths: tuple[Path, ...]) -> dict[str, P
 def _authored_clause_facts(draft: ImportedRuleDraft) -> ImportedRuleDraft:
     """Attach one authored statement and its completion record, through the audit funnel."""
     nodes = (CitedNode(fragment_id="raw-synthetic-clause", node_order=0, node_sha256="e" * 64),)
-    fact = SystemVoltageFact(
+    fact = SystemVoltageMeasureFact(
         statement_index=0,
         node_references=nodes,
         obligation="requirement",
         supply_kind="mains",
-        phase_system="three_phase_star",
-        earthing="tn",
-        input_topology="direct",
-        purpose="impulse",
+        phase_system=scope_of("three_phase_star"),
+        earthing=scope_of("tn"),
+        input_topology=scope_of("direct"),
+        purpose=scope_of("impulse"),
         measure="phase_to_earth_rms",
     )
     review = ClauseFactReview(

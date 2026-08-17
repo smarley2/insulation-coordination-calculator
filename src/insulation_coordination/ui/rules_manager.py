@@ -44,10 +44,10 @@ from insulation_coordination.rules.draft_archive import (
     load_rule_draft,
     write_rule_draft,
 )
-from insulation_coordination.rules.importer.approval import is_fully_resolved
+from insulation_coordination.rules.importer.approval import approval_blockers, is_fully_resolved
 from insulation_coordination.rules.importer.extract import _REQUIRED_RECIPES, ImportedRuleDraft
 from insulation_coordination.rules.installation import default_rules_dir, install_rule_package
-from insulation_coordination.ui.axis_review import AxisReviewDialog, AxisReviewModel
+from insulation_coordination.ui.axis_review import AxisReviewModel
 from insulation_coordination.ui.clause_fact_review import (
     ClauseFactReviewDialog,
     ClauseFactReviewModel,
@@ -162,10 +162,6 @@ class RulesManagerWindow(QWidget):
         self._review_clause_facts_button.setEnabled(False)
         self._review_clause_facts_button.clicked.connect(self._on_review_clause_facts_clicked)
         review_actions.addWidget(self._review_clause_facts_button)
-        self._review_axis_selectors_button = QPushButton("Review axis selectors…")
-        self._review_axis_selectors_button.setEnabled(False)
-        self._review_axis_selectors_button.clicked.connect(self._on_review_axis_selectors_clicked)
-        review_actions.addWidget(self._review_axis_selectors_button)
         review_layout.addLayout(review_actions)
 
         draft_file_row = QHBoxLayout()
@@ -309,10 +305,6 @@ class RulesManagerWindow(QWidget):
         return self._review_clause_facts_button.isEnabled()
 
     @property
-    def axis_review_enabled(self) -> bool:
-        return self._review_axis_selectors_button.isEnabled()
-
-    @property
     def review_approve_enabled(self) -> bool:
         return self._review_approve_button.isEnabled()
 
@@ -348,31 +340,33 @@ class RulesManagerWindow(QWidget):
             self._review_equations_button.setEnabled(False)
             self._review_curves_button.setEnabled(False)
             self._review_clause_facts_button.setEnabled(False)
-            self._review_axis_selectors_button.setEnabled(False)
             self._save_draft_button.setEnabled(False)
             self._draft_path_label.clear()
             return
         self._save_draft_button.setEnabled(True)
-        from insulation_coordination.rules.importer.review import (
-            recipe_derived_items,
-            unresolved_equation_items,
-            unresolved_mapping_items,
-            unresolved_raw_review_items,
-            unresolved_table_items,
-        )
+        from insulation_coordination.rules.importer.review import recipe_derived_items
 
-        raw_pending = unresolved_raw_review_items(self._draft)
-        table_pending = unresolved_table_items(self._draft)
-        equation_pending = unresolved_equation_items(self._draft)
-        mapping_pending = unresolved_mapping_items(self._draft)
+        # The list and the Approve button read the same gate, so the panel can never claim
+        # there is nothing left while the button stays grey: every blocker gets a line.
+        blockers = approval_blockers(self._draft)
+        raw_pending = tuple(item for item in blockers if item.kind == "raw_cell")
+        table_pending = tuple(item for item in blockers if item.kind == "table")
+        equation_pending = tuple(item for item in blockers if item.kind == "formula")
+        mapping_pending = tuple(item for item in blockers if item.kind == "mapping")
         tables_done = not table_pending and not raw_pending
-        self._review_tables_button.setEnabled(not tables_done)
+        # An axis selector is confirmed inside the table review dialog, beside the row or column
+        # it describes, so that dialog has to stay reachable while any position is unreviewed --
+        # otherwise accepting every table first strands the reviewer with approval blocked on a
+        # gate no button opens. The model owns the status; this only reads it.
+        axis_pending = any(
+            row.status == "needs_review" for row in AxisReviewModel(self._draft).rows()
+        )
+        self._review_tables_button.setEnabled(not tables_done or axis_pending)
         self._review_equations_button.setEnabled(
             tables_done and bool(equation_pending or mapping_pending)
         )
         self._review_curves_button.setEnabled(bool(self._draft.raw_figures))
         self._review_clause_facts_button.setEnabled(bool(self._draft.raw_clause_fragments))
-        self._review_axis_selectors_button.setEnabled(bool(self._draft.axis_selector_proposals))
         for item in table_pending:
             flagged = sum(
                 candidate.semantic_id.startswith(f"raw-{item.semantic_id}:")
@@ -388,15 +382,25 @@ class RulesManagerWindow(QWidget):
                 f"{item.kind.capitalize()} {item.semantic_id} — "
                 f"{item.source.standard} {item.source.clause}, {item.source.note}"
             )
-        if not self._review_list.count():
+        # Everything the dedicated buttons cannot open is still named, with the blocker's own
+        # explanation -- a gate nothing says out loud is the defect this list is here to prevent.
+        counted_cells = tuple(f"raw-{item.semantic_id}:" for item in table_pending)
+        for item in blockers:
+            if item.kind in {"table", "formula", "mapping"}:
+                continue
+            if item.kind == "raw_cell" and item.semantic_id.startswith(counted_cells):
+                continue  # already counted on its table's line above
+            self._review_list.addItem(f"{item.code} {item.semantic_id} — {item.expected_contract}")
+        if not blockers:
             self._review_list.addItem(
                 "Nothing left to review. Add approval notes, then approve the draft."
             )
+        approve_step = " — ready" if not blockers else f" — {len(blockers)} blocker(s) left"
         self._review_status.setText(
             f"① Tables {len(self._draft.raw_grids) - len(table_pending)}"
             f" of {len(self._draft.raw_grids)} accepted"
             f"  ·  ② Equations and mappings {len(equation_pending) + len(mapping_pending)} pending"
-            f"  ·  ③ Approve{' — ready' if self.can_approve else ''}"
+            f"  ·  ③ Approve{approve_step}"
         )
         derived = recipe_derived_items(self._draft)
         formulas = sum(item.kind == "formula" for item in derived)
@@ -405,7 +409,7 @@ class RulesManagerWindow(QWidget):
             f"Taken from this app's recipe, no PDF content: {formulas} formula(s), "
             f"{mappings} mapping(s) — resolved by the importer, see the audit tree."
         )
-        self._review_approve_button.setEnabled(self.can_approve)
+        self._review_approve_button.setEnabled(not blockers)
 
     def _on_review_tables_clicked(self) -> None:
         if self._draft is None:
@@ -442,15 +446,13 @@ class RulesManagerWindow(QWidget):
         if self._draft is None:
             return
         model = ClauseFactReviewModel(self._draft)
-        dialog = ClauseFactReviewDialog(model)
-        dialog.exec()
-        self.set_draft(model.draft)
-
-    def _on_review_axis_selectors_clicked(self) -> None:
-        if self._draft is None:
-            return
-        model = AxisReviewModel(self._draft)
-        dialog = AxisReviewDialog(model)
+        # The reviewer interprets a clause statement against the page it is printed on, the same
+        # reason the grid and curve reviews get the PDFs.
+        dialog = ClauseFactReviewDialog(
+            model,
+            pdf_paths=self._draft_pdfs,
+            pdf_passwords=self._draft_passwords,
+        )
         dialog.exec()
         self.set_draft(model.draft)
 
@@ -573,8 +575,8 @@ class RulesManagerWindow(QWidget):
         """Save after every recorded correction, so a crash costs at most one action.
 
         Every review surface hands its corrected draft to ``set_draft`` -- the table, equation
-        and curve dialogs through ``draft_changed``, the clause fact and axis dialogs through
-        their models -- so one hook here covers all of them, and no dialog has to remember to
+        and curve dialogs through ``draft_changed``, the clause fact dialog through its model
+        -- so one hook here covers all of them, and no dialog has to remember to
         save. The identity check keeps a freshly extracted draft from being written over the
         file a different draft owns.
         """

@@ -57,10 +57,12 @@ from insulation_coordination.rules.importer.axis_selectors import (
 from insulation_coordination.rules.importer.clause_facts import (
     CitedNode,
     ClauseFactCompletion,
+    ClauseFactDismissal,
     ClauseFactReview,
     ConfirmedFacts,
     SupplyFact,
     evidence_sha256,
+    same_clause_fact_reading,
 )
 from insulation_coordination.rules.importer.curves import (
     ManualPlotCalibration,
@@ -1029,6 +1031,111 @@ def _corrected_compound_cells(
             formula_id=formula_id,
         )
     return tuple(by_coordinate[(cell.row, cell.column)] for cell in cells)
+
+
+def suggested_compound_associations(grid: RawGrid) -> dict[tuple[int, int, int], str]:
+    """Positional association suggestions for wholly unlabelled compound cells.
+
+    Extraction associates an occurrence only through the label it prints
+    (``parse_compound_data_cell``), never by position, so a cell printing bare
+    numbers refers every occurrence to the reviewer.  When such a cell holds
+    exactly one parsed occurrence per declared component, the natural reading is
+    the declared component order laid over the cell's own print order: occurrence
+    ``k`` names ``compound_component_ids[k]``, with the already-parsed decimal as
+    its value.  ``compound_component_ids`` preserves the recipe's
+    ``CompoundQuantitySpec.component_ids`` declaration order, which is the order
+    of the per-component data columns the spec declares over the shared source
+    column.  This is a suggestion for the reviewer to confirm against the source
+    page, not an extraction claim -- accepting the table stays the human gate.
+
+    A cell stays manual when its occurrence count does not match the declared
+    components, an occurrence failed to parse, any occurrence already carries a
+    label (a positional reading could contradict the document's own print), or a
+    route-local formula would have to be chosen.
+    """
+    suggestions: dict[tuple[int, int, int], str] = {}
+    for cell in grid.cells:
+        if cell.parse_status != "ambiguous_compound":
+            continue
+        occurrences = sorted(cell.components, key=lambda part: part.source_index)
+        if (
+            len(occurrences) != len(cell.compound_component_ids)
+            or any(part.component_id is not None for part in occurrences)
+            or any(part.value is None for part in occurrences)
+            or cell.allowed_component_formula_ids
+        ):
+            continue
+        for occurrence, component_id in zip(occurrences, cell.compound_component_ids, strict=True):
+            suggestions[(cell.row, cell.column, occurrence.source_index)] = component_id
+    return suggestions
+
+
+def fill_suggested_compound_associations(
+    draft: ImportedRuleDraft,
+    *,
+    grid_id: str,
+    actor: str,
+    notes: str,
+) -> tuple[ImportedRuleDraft, tuple[tuple[int, int, int], ...], tuple[tuple[int, int], ...]]:
+    """Apply every suggested compound association on one grid as one correction.
+
+    Each suggested cell is associated through the same per-occurrence machinery
+    the accept path uses, and the batch is recorded through ``record_correction``,
+    so the digest and audit trail read exactly as the same corrections done by
+    hand.  Returns the changed draft, the ``(row, column, source_index)`` keys it
+    filled, and the ambiguous compound cells it left for manual review.  The
+    table's own review item is untouched: accepting the table remains the
+    reviewer's explicit decision.
+    """
+    grid = next((item for item in draft.raw_grids if item.id == grid_id), None)
+    if grid is None:
+        raise ValueError(f"unknown raw grid: {grid_id}")
+    suggestions = suggested_compound_associations(grid)
+    filled_cells = {(row, column) for row, column, _source_index in suggestions}
+    skipped = tuple(
+        sorted(
+            {
+                (cell.row, cell.column)
+                for cell in grid.cells
+                if cell.parse_status == "ambiguous_compound"
+            }
+            - filled_cells
+        )
+    )
+    if not suggestions:
+        raise ValueError(f"raw grid {grid_id} has no suggested compound associations")
+    changed_grid = grid.model_copy(
+        update={"cells": _corrected_compound_cells(grid.cells, suggestions, {})}
+    )
+    changed = draft.model_copy(
+        update={
+            "raw_grids": tuple(
+                changed_grid if item.id == grid_id else item for item in draft.raw_grids
+            )
+        }
+    )
+    resolved = {resolution.review_item_sha256 for resolution in draft.review_resolutions}
+    prefixes = tuple(f"{grid_id}:{row}:{column}:" for row, column in sorted(filled_cells))
+    resolve = tuple(
+        item
+        for item in draft.review_items
+        if item.code == "AMBIGUOUS_COMPOUND_CELL"
+        and item.semantic_id.startswith(prefixes)
+        and item.sha256 not in resolved
+    )
+    if not resolve:
+        raise ValueError("suggested associations have no unresolved ambiguity")
+    return (
+        record_correction(
+            draft,
+            changed,
+            actor=actor.strip(),
+            notes=notes.strip(),
+            resolve=resolve,
+        ),
+        tuple(sorted(suggestions)),
+        skipped,
+    )
 
 
 def accept_raw_table(
@@ -2146,28 +2253,324 @@ def live_evidence_sha256(draft: ImportedRuleDraft, nodes: tuple[CitedNode, ...])
     return evidence_sha256(tuple(live))
 
 
-def clause_fact_defect(rule_route: str, fact: SupplyFact) -> str | None:
+#: One source statement's coverage anchor: which fragment, which node, and that node's content,
+#: for every node the statement rests on. Route plus this set is the whole anchor -- amendment
+#: A5-C -- and nothing about the values anybody proposed or authored enters it.
+_StatementAnchor = frozenset[tuple[str, int, str]]
+
+
+def _statement_anchor(nodes: tuple[CitedNode, ...]) -> _StatementAnchor:
+    """The cited-evidence bundle a statement is anchored by.
+
+    Deliberately **not** the sentence index: the clause-region slice widens the extracted regions
+    and renumbers every sentence, which would silently orphan the coverage of statements nobody
+    touched. And deliberately not the proposed or authored dimensions: a maintainer who reads the
+    source, finds a suggestion wrong and authors corrected values must still have covered the
+    statement they corrected, or exercising judgement would block completion for ever.
+
+    This is the structural spelling of the same identity ``evidence_sha256`` digests, kept as a set
+    here because coverage has to ask whether one statement's evidence is *among* a fact's citations,
+    which a digest cannot answer.
+    """
+
+    return frozenset((node.fragment_id, node.node_order, node.node_sha256) for node in nodes)
+
+
+def _statement_label(anchor: _StatementAnchor) -> str:
+    """One uncovered statement as the reviewer is told about it, by the nodes it rests on."""
+
+    orders = ", ".join(str(order) for _fragment, order, _digest in sorted(anchor))
+    return f"the statement resting on clause node(s) {orders}"
+
+
+def _dismissed_anchors(draft: ImportedRuleDraft, route: str) -> set[_StatementAnchor]:
+    """The evidence identity of every statement this route's reviewer dismissed as out of scope."""
+
+    return {
+        _statement_anchor(item.node_references)
+        for item in draft.clause_fact_dismissals
+        if item.rule_route == route
+    }
+
+
+def _proposed_anchors(draft: ImportedRuleDraft, route: str) -> set[_StatementAnchor]:
+    """The evidence identity of every statement this route's own drafts rest on.
+
+    What a dismissal has to name one of. One reader for the guard and for the dismissal check, so a
+    statement the guard counts as an obligation is exactly a statement the reviewer may dismiss.
+    """
+
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        propose_supply_facts,
+    )
+
+    fragment = next(
+        (item for item in draft.raw_clause_fragments if item.id == f"raw-{route}"), None
+    )
+    if fragment is None:
+        return set()
+    return {
+        _statement_anchor(proposal.node_references)
+        for proposal in propose_supply_facts(fragment, route)
+    }
+
+
+def clause_fact_statement_dismissed(
+    draft: ImportedRuleDraft, route: str, nodes: tuple[CitedNode, ...]
+) -> bool:
+    """Whether this route's reviewer has dismissed the statement resting on exactly these nodes.
+
+    The one reader a surface needs: the review dialog asks it of each draft so a dismissed sentence
+    is shown as decided rather than as outstanding, and asks nothing about how the anchor is spelled.
+    """
+
+    return _statement_anchor(nodes) in _dismissed_anchors(draft, route)
+
+
+def dismiss_clause_fact_statement(
+    draft: ImportedRuleDraft,
+    *,
+    rule_route: str,
+    nodes: tuple[CitedNode, ...],
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Record that one proposed statement of a route states nothing that route models.
+
+    The reviewed answer for a sentence a route's fact family cannot express: another rule's design
+    basis, a determination this clause only refers to, a recommendation that is not normative. Such a
+    statement's draft can never be closed by authoring anything, so without this the route's pane
+    reads as permanently outstanding and completion is asserted over a list that always looks
+    unfinished.
+
+    It is deliberately not cheap, and these are the reasons why -- attributability and re-opening are
+    the minimum, and three more come free:
+
+    - it must name a statement **this route actually proposes**, so a route cannot be quietened by
+      dismissing anchors nobody suggested;
+    - its citations must match the fragment's **current** nodes, exactly as an authored statement's
+      must, so a decision cannot be recorded against evidence that has already moved;
+    - a statement an authored fact already covers cannot be dismissed, so one sentence never carries
+      a reading *and* the claim that there was nothing to read;
+    - and a route still needs at least one authored statement to be complete
+      (``clause_fact_route_defect``), so no route can be certified by dismissing all of it.
+
+    Clearing the guard still only **permits** completion (amendment A5): the maintainer's own
+    assertion remains what completes a route, and a dismissal changes what the guard counts, never
+    what completion means.
+    """
+
+    if not actor.strip() or not notes.strip():
+        raise ApprovalError("clause fact actor and notes are required")
+    anchor = _statement_anchor(nodes)
+    label = _statement_label(anchor)
+    if anchor not in _proposed_anchors(draft, rule_route):
+        raise ValueError(f"{rule_route} proposes no statement resting on those nodes")
+    for cited in nodes:
+        fragment = next(
+            (item for item in draft.raw_clause_fragments if item.id == cited.fragment_id), None
+        )
+        node = (
+            None
+            if fragment is None
+            else next((item for item in fragment.nodes if item.order == cited.node_order), None)
+        )
+        if node is None or canonical_model_sha256(node) != cited.node_sha256:
+            raise ValueError(
+                f"citation does not match a current node: {cited.fragment_id} "
+                f"node {cited.node_order}"
+            )
+    if anchor in _dismissed_anchors(draft, rule_route):
+        raise ValueError(f"{rule_route} has already dismissed {label}")
+    if any(
+        anchor <= _statement_anchor(item.fact.node_references)
+        for item in draft.clause_fact_reviews
+        if item.rule_route == rule_route
+    ):
+        raise ValueError(f"{rule_route} has authored {label} rather than finding nothing in it")
+    dismissal = ClauseFactDismissal(
+        rule_route=rule_route,
+        node_references=nodes,
+        actor=actor.strip(),
+        recorded_at=datetime.now(UTC),
+        notes=notes.strip(),
+    )
+    changed = draft.model_copy(
+        update={"clause_fact_dismissals": (*draft.clause_fact_dismissals, dismissal)}
+    )
+    return record_correction(
+        draft, changed, actor=actor, notes=f"dismiss clause fact statement: {notes}"
+    )
+
+
+def retract_clause_fact_dismissal(
+    draft: ImportedRuleDraft,
+    *,
+    rule_route: str,
+    nodes: tuple[CitedNode, ...],
+    actor: str,
+    notes: str,
+) -> ImportedRuleDraft:
+    """Withdraw one out-of-scope decision, putting its statement back among the obligations.
+
+    Retractable for the reason an authored statement is: a reviewer who reads a sentence again and
+    finds a statement of this route in it after all must be able to say so, and an audited
+    withdrawal is how. Any completion for the route is left in place, where the returning obligation
+    blocks it until the reviewer asserts completeness again -- never silently repaired.
+    """
+
+    if not actor.strip() or not notes.strip():
+        raise ApprovalError("clause fact actor and notes are required")
+    anchor = _statement_anchor(nodes)
+    kept = tuple(
+        item
+        for item in draft.clause_fact_dismissals
+        if not (item.rule_route == rule_route and _statement_anchor(item.node_references) == anchor)
+    )
+    if len(kept) == len(draft.clause_fact_dismissals):
+        raise ValueError(f"{rule_route} has not dismissed {_statement_label(anchor)}")
+    changed = draft.model_copy(update={"clause_fact_dismissals": kept})
+    return record_correction(
+        draft, changed, actor=actor, notes=f"retract clause fact dismissal: {notes}"
+    )
+
+
+def uncovered_clause_fact_statements(draft: ImportedRuleDraft, route: str) -> tuple[str, ...]:
+    """Every known source statement of one route that no authored fact covers.
+
+    The completion guard's lower bound on review (amendment A5): a route carrying a proposal whose
+    source statement no authored fact covers cannot be completed. Empty is a *permission* to
+    complete and never a completion -- completion stays the maintainer's own assertion that no
+    additional statement was missed, which is why both this and the completion record are required.
+
+    Coverage is per **anchor**, not per draft: several drafts of one evidence bundle are one
+    obligation, because the anchor is the cited evidence and never the sentence index. A fact covers
+    an anchor when it cites every node that anchor names -- which is what lets a statement completing
+    a list's opener cite the opener as well and still cover its own bullet -- and each fact covers at
+    most one anchor, so one authored fact can never mark two distinct source statements as reviewed.
+
+    A statement the reviewer has **dismissed as stating nothing this route models** is not an
+    obligation either -- see ``dismiss_clause_fact_statement``. Subtracted from the obligations
+    rather than accepted as coverage, because the two are different reviewed answers: one says a
+    statement was read into a fact, the other says there was no statement of this route's kind to
+    read. Both are decisions, and neither is a filter: the dismissal is anchored on the same evidence
+    identity, so a sentence whose text moves becomes an obligation again by itself.
+
+    Context-only nodes are not obligations, and this needs no branch of its own for it: a sentence
+    that only scopes the ones after it yields no proposal at all (amendment A4, in
+    ``propose_clause_facts``), so no anchor of its own ever reaches this function. The filter that
+    used to sit here read the same stems the proposer reads and is gone with the drafts it skipped
+    -- one enforcement point rather than two that can disagree.
+
+    Knowingly partial, and knowingly so by design: it cannot catch a statement no proposal ever
+    suggested, and it cannot tell one statement resting on two normative nodes from two statements
+    resting on one each. Both are why the maintainer's assertion remains the definition of
+    completion rather than being replaced by this count.
+
+    ponytail: greedy assignment, smallest citation first, rather than a bipartite matching. It can
+    report an anchor uncovered where a cleverer pairing exists, which errs towards blocking
+    completion; upgrade to a real matching if a route ever carries facts whose citations overlap in
+    a way this mis-pairs.
+    """
+
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        propose_supply_facts,
+    )
+
+    fragment = next(
+        (item for item in draft.raw_clause_fragments if item.id == f"raw-{route}"), None
+    )
+    if fragment is None:
+        return ()
+    obligations: set[_StatementAnchor] = {
+        _statement_anchor(proposal.node_references)
+        for proposal in propose_supply_facts(fragment, route)
+    } - _dismissed_anchors(draft, route)
+    unused = [
+        _statement_anchor(item.fact.node_references)
+        for item in draft.clause_fact_reviews
+        if item.rule_route == route
+    ]
+    uncovered: list[str] = []
+    for anchor in sorted(obligations, key=sorted):
+        covering = [cited for cited in unused if anchor <= cited]
+        if not covering:
+            uncovered.append(_statement_label(anchor))
+            continue
+        unused.remove(min(covering, key=len))
+    return tuple(uncovered)
+
+
+def _unresolvable_rule_reference(fact: SupplyFact) -> str | None:
+    """Why one statement's deferral to another rule cannot be followed, or ``None``.
+
+    A ``RouteIdentifier`` dimension names a rule instead of restating its content, and nothing
+    consumes those references yet -- that is a disclosed gap awaiting #53C. So until this, a mistyped
+    id was recorded silently, covered by the fact digest and by the route's completion record, and
+    would have surfaced only when a consumer first tried to follow it, long after the review that was
+    supposed to have checked it. Refused at authoring instead, beside the other identity defects.
+
+    The reference dimensions come from ``fact_dimensions``, the one place a dimension's kind is
+    reported, so a field gaining or losing the marker changes this with it.
+    """
+
+    from insulation_coordination.rules.importer.clause_fact_proposals import fact_dimensions
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        declared_rule_references,
+    )
+
+    declared = declared_rule_references()
+    statement_kind: str | None = getattr(fact, "statement_kind", "") or None
+    for name, kind, _options in fact_dimensions(fact.fact_kind, statement_kind):
+        if kind != "route_reference":
+            continue
+        value = getattr(fact, name)
+        if value not in declared:
+            return f"states {name} {value}, which names no rule this recipe declares"
+    return None
+
+
+def clause_fact_defect(
+    rule_route: str,
+    fact: SupplyFact,
+    existing: tuple[SupplyFact, ...] = (),
+) -> str | None:
     """Why one fact cannot stand for one route, or ``None`` if it can.
 
     Identity rather than evidence, the half ``axis_review_is_current`` keeps for an axis position
     and the digests alone cannot: the route must be one the recipe declares, the fact must belong
-    to the family that route's clause states, it must cite that route's own fragment, and where
-    the route determines a concrete ``supply_kind`` the fact must not name the other one. Without
-    all four a fact that cannot express a route's branches -- or one resting entirely on another
-    clause, or one that states the wrong supply for its route -- certifies the route as reviewed,
-    and reprinting the cited clause blocks a route whose rule it never stated.
+    to the family that route's clause states, it must cite that route's own fragment, where the
+    route determines a dimension structurally -- a concrete ``supply_kind``, or the isolation the
+    clause is scoped by -- the fact must not name the contradicting value, and a dimension that
+    defers to another rule must name one the recipe declares. Without all of them a
+    fact that cannot express a route's branches -- or one resting entirely on another clause, or one
+    that states the wrong supply or the wrong barrier for its route -- certifies the route as
+    reviewed, and reprinting the cited clause blocks a route whose rule it never stated.
 
     Citing the route's own fragment is required *as well as*, never instead of: a statement that
     genuinely rests on a second fragment may cite it too. The ``supply_kind`` check reads
     ``SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE``, the recipe's own declaration of which concrete kind each
-    such route states, and lets ``any_supply_kind`` through on either route: it restricts nothing,
-    so it never contradicts a route the way a concrete, wrong kind does. Authoring raises on a
-    defect and the approval gate blocks on one, so a hand-built draft cannot bypass what authoring
-    enforces.
+    such route states. Every field spelling it names one concrete kind -- it is the one dimension of
+    those families that stayed scalar when the rest became scopes, because the route settles it
+    rather than the statement -- so there is no unrestricted reading of it to let through. The
+    isolation check reads
+    ``SUPPLY_FACT_ISOLATION_BY_ROUTE`` the same way, through the one dimension a barrier statement
+    still spells: a statement naming the connection kind the other scope addresses is refused, which
+    is what makes a positive-isolation reading of the unisolated clause unauthorable rather than
+    merely undocumented. Authoring raises on a defect and the approval gate blocks on one, so a
+    hand-built draft cannot bypass what authoring enforces.
+
+    ``existing`` is the route's other authored statements, and a fact repeating one of their
+    readings is the fifth defect. Without it, pressing Author twice on one draft recorded the same
+    reading under two indices, silently, and a reviewer could reach statement 10 without noticing
+    they had authored one reading ten times -- a fact set that certifies a route with far less
+    review than its size claims. A statement at an index ``existing`` already holds is the
+    sanctioned replace path and is never compared against itself, so replacing stays free.
     """
 
     from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
         SUPPLY_FACT_FAMILY_BY_ROUTE,
+        SUPPLY_FACT_ISOLATION_BY_ROUTE,
         SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE,
     )
 
@@ -2182,10 +2585,35 @@ def clause_fact_defect(rule_route: str, fact: SupplyFact) -> str | None:
     fact_supply_kind = getattr(fact, "supply_kind", None)
     if (
         expected_supply_kind is not None
-        and fact_supply_kind in ("mains", "non_mains")
+        and fact_supply_kind is not None
         and fact_supply_kind != expected_supply_kind
     ):
         return f"states supply_kind {fact_supply_kind} where {rule_route} is {expected_supply_kind}"
+    expected_isolation = SUPPLY_FACT_ISOLATION_BY_ROUTE.get(rule_route)
+    connection = getattr(fact, "downstream_connection_kind", None)
+    if expected_isolation is not None and connection is not None:
+        expected_connection = (
+            "verified_galvanic_isolation" if expected_isolation else "no_isolation"
+        )
+        if connection != expected_connection:
+            return (
+                f"states downstream_connection_kind {connection} where {rule_route} is scoped to "
+                f"{expected_connection}"
+            )
+    unresolvable = _unresolvable_rule_reference(fact)
+    if unresolvable is not None:
+        return unresolvable
+    duplicate = next(
+        (
+            other.statement_index
+            for other in existing
+            if other.statement_index != fact.statement_index
+            and same_clause_fact_reading(other, fact)
+        ),
+        None,
+    )
+    if duplicate is not None:
+        return f"repeats the reading already authored as statement {duplicate}"
     return None
 
 
@@ -2212,8 +2640,11 @@ def clause_fact_route_defect(draft: ImportedRuleDraft, route: str) -> str | None
         return None
     reviews = tuple(item for item in draft.clause_fact_reviews if item.rule_route == route)
     completions = tuple(item for item in draft.clause_fact_completions if item.rule_route == route)
+    authored = tuple(item.fact for item in reviews)
     defects = tuple(
-        defect for item in reviews if (defect := clause_fact_defect(route, item.fact)) is not None
+        defect
+        for item in reviews
+        if (defect := clause_fact_defect(route, item.fact, authored)) is not None
     )
     if not reviews:
         return "carries no authored clause fact"
@@ -2223,6 +2654,12 @@ def clause_fact_route_defect(draft: ImportedRuleDraft, route: str) -> str | None
     # nothing reads is a digest a second writer can get wrong unnoticed.
     if any(item.fact_sha256 != canonical_model_sha256(item.fact) for item in reviews):
         return "has a review whose fact hash is not its fact's"
+    # The lower bound before the assertion, never instead of it: a route clears this *and* carries
+    # its own completion record, because no count of consumed proposals is the maintainer saying
+    # nothing further was missed.
+    uncovered = uncovered_clause_fact_statements(draft, route)
+    if uncovered:
+        return f"leaves a known statement unauthored: {'; '.join(uncovered)}"
     if len(completions) != 1:
         return "lacks one exact fact-set completion record"
     if (
@@ -2256,7 +2693,11 @@ def author_clause_fact(
 
     if not actor.strip() or not notes.strip():
         raise ApprovalError("clause fact actor and notes are required")
-    defect = clause_fact_defect(rule_route, fact)
+    defect = clause_fact_defect(
+        rule_route,
+        fact,
+        tuple(item.fact for item in draft.clause_fact_reviews if item.rule_route == rule_route),
+    )
     if defect is not None:
         raise ValueError(f"clause fact {defect}")
     for cited in fact.node_references:
@@ -2331,6 +2772,12 @@ def record_fact_completion(
 
     The fragment must be the route's own. Completion is what binds a fragment hash to a route, so
     naming any other fragment would bind the route to a document region that does not state it.
+
+    Refused while a known statement of the clause is unauthored (amendment A5): a route whose
+    fragment carries several normative statements could previously be completed with one authored,
+    because nothing compared the authored set against anything. Clearing that guard **permits** this
+    assertion and does not constitute it -- this record stays the maintainer's own statement that no
+    *additional* statement was missed, which is a claim no proposal count can make on their behalf.
     """
 
     if not actor.strip() or not notes.strip():
@@ -2343,6 +2790,12 @@ def record_fact_completion(
     facts = tuple(item.fact for item in draft.clause_fact_reviews if item.rule_route == rule_route)
     if not facts:
         raise ApprovalError("a route with no authored facts cannot be complete")
+    uncovered = uncovered_clause_fact_statements(draft, rule_route)
+    if uncovered:
+        raise ApprovalError(
+            f"{rule_route} cannot be complete while a known statement of its clause is "
+            f"unauthored: {'; '.join(uncovered)}"
+        )
     completion = ClauseFactCompletion(
         rule_route=rule_route,
         fragment_id=fragment_id,
@@ -2406,8 +2859,9 @@ def resolve_confirmed_clause_facts(
         # function the authoring API refuses on: resolution must not accept a fact
         # ``author_clause_fact`` would have rejected, and a fact of the wrong family or one
         # resting entirely on another clause has perfectly current digests.
+        authored = tuple(item.fact for item in reviews)
         for review in reviews:
-            defect = clause_fact_defect(route, review.fact)
+            defect = clause_fact_defect(route, review.fact, authored)
             if defect is not None:
                 raise ClauseFactResolutionError(
                     f"{route} statement {review.statement_index} {defect}"

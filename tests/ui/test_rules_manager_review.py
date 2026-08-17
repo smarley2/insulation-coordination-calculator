@@ -356,6 +356,69 @@ def test_ui_and_approval_share_the_semantic_proposal_blocker_gate(
     assert rules_manager.can_approve is True
 
 
+def _listed(rules_manager: RulesManagerWindow) -> list[str]:
+    return [
+        rules_manager._review_list.item(index).text()
+        for index in range(rules_manager._review_list.count())
+    ]
+
+
+def test_review_list_names_an_unresolved_item_no_dedicated_button_clears(
+    rules_manager, supported_pdfs, injected_recipes
+) -> None:
+    """A blocker without its own button must still say what and where it is."""
+    reviewed = build_reviewed(extract_draft(supported_pdfs), recipe_registry.RECIPES)
+    item = reviewed.review_items[0].model_copy(update={"kind": "clause", "code": "SYNTHETIC_GATE"})
+    orphaned = reviewed.model_copy(update={"review_items": (*reviewed.review_items, item)})
+
+    rules_manager.set_draft(orphaned)
+
+    listed = _listed(rules_manager)
+    assert rules_manager.can_approve is False
+    assert rules_manager.review_approve_enabled is False
+    assert not [row for row in listed if row.startswith("Nothing left to review")]
+    assert [row for row in listed if "SYNTHETIC_GATE" in row and item.semantic_id in row]
+    assert "blocker(s) left" in rules_manager._review_status.text()
+
+
+def test_review_list_names_a_computed_semantic_blocker(
+    rules_manager, supported_pdfs, injected_recipes
+) -> None:
+    reviewed = build_reviewed(extract_draft(supported_pdfs), recipe_registry.RECIPES)
+    first = reviewed.semantic_proposals[0]
+    blocked = reviewed.model_copy(
+        update={
+            "semantic_proposals": (
+                first.model_copy(update={"state": "proposed"}),
+                *reviewed.semantic_proposals[1:],
+            )
+        }
+    )
+
+    rules_manager.set_draft(blocked)
+
+    listed = _listed(rules_manager)
+    assert rules_manager.review_approve_enabled is False
+    assert not [row for row in listed if row.startswith("Nothing left to review")]
+    assert [
+        row for row in listed if "SEMANTIC_PROPOSAL_PROPOSED" in row and first.semantic_id in row
+    ]
+
+
+def test_review_list_says_nothing_left_only_when_approve_is_enabled(
+    rules_manager, supported_pdfs, injected_recipes
+) -> None:
+    reviewed = build_reviewed(extract_draft(supported_pdfs), recipe_registry.RECIPES)
+
+    rules_manager.set_draft(reviewed)
+
+    assert rules_manager.review_approve_enabled is True
+    assert _listed(rules_manager) == [
+        "Nothing left to review. Add approval notes, then approve the draft."
+    ]
+    assert " — ready" in rules_manager._review_status.text()
+
+
 def test_draft_audit_tree_shows_review_state(
     rules_manager, supported_pdfs, injected_recipes
 ) -> None:

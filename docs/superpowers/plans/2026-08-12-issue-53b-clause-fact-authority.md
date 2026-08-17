@@ -7,7 +7,9 @@ constants and into typed facts a maintainer authors from the licensed clause fra
 
 **Architecture:** The importer proposes a clause's node inventory and nothing more. The maintainer
 authors typed `SupplyFact` statements, each citing the nodes it rests on, plus one completion
-record per `(clause, rule route)`. A fact's review binds a digest of exactly the evidence it cites,
+record per `(clause, rule route)`. A private-side grammar may *prefill* a statement's dimensions as
+a suggestion the maintainer reviews and then explicitly authors; the suggestion carries no
+authority and never reaches a projector except through an authored fact (Amendment A1). A fact's review binds a digest of exactly the evidence it cites,
 so changing a cited node re-opens exactly the dependent facts. A resolver turns current reviews
 into `ConfirmedFacts`, and each ported projector builds its rule from those alone. One projector —
 multiple-source propagation — keeps legacy constants, recorded in an assertable set, because
@@ -25,8 +27,13 @@ mypy strict, ruff, uv.
   bounding boxes, and typed model shapes. They may **not** carry statement text, clause or heading
   wording, numeric source content, per-clause normative statement counts, or the mapping from a
   physical node to a statement.
-- Nobody proposes a statement. The importer proposes the node inventory; the maintainer authors
-  every fact. No public grammar may read clause prose to infer a branch.
+- Nobody proposes a statement from public code. The importer proposes the node inventory; the
+  maintainer authors every fact. **No public grammar may read clause prose to infer a branch** — any
+  mapping from source phrasing to typed normative meaning is licensed-derived material and loads
+  only from where the licensed material lives. The public tree carries the generic proposal engine
+  and the generic typed proposal shape, never a rule that names source phrasing. See Amendment A1.
+- One explicit authoring action records exactly one statement. No action may certify several
+  machine-derived facts at once.
 - Completion is asserted per `(clause, rule route)`, never per fragment: a fragment may carry
   statements belonging to rules outside the route.
 - `LEGACY_BRANCH_AUTHORITY_RULE_IDS` contains exactly one member, the multiple-source-propagation
@@ -2066,3 +2073,427 @@ and quoting four bodies I have not read line by line would be worse than naming 
 `LEGACY_BRANCH_AUTHORITY_RULE_IDS` are spelled identically in every task. The clause projector
 signature is `(fragment, identity, draft, confirmed_facts)` in Tasks 4 through 7. Every rule id,
 input name and output name in Tasks 5 and 6 matches the "Contracts the ports must preserve" section.
+
+---
+
+## Amendments (2026-08-14) — approved after live maintainer review of five clause families
+
+The binding decisions live in the design spec as **Amendments A1-A7**
+(`docs/superpowers/specs/2026-08-12-issue-53b-clause-fact-authority-design.md`). The Global
+Constraints above are edited in place where an original line became false. Summary of what changed
+for the remaining #53B work:
+
+| Amendment | Effect on this plan |
+| --- | --- |
+| **A1** | Any grammar mapping source phrasing to typed meaning relocates beside the licensed material. Public keeps the generic engine. The route-level multi-statement authoring action is removed; one explicit action records one fact. |
+| **A2** + **A2-C** | `DimensionScope` replaces per-dimension `any_*` tokens. `exact_one -> equals`, `exact_set -> in`; `unrestricted -> any` **only when the reviewed domain equals the consumer domain**, otherwise `in(reviewed_domain)` — the wildcard alone does not fix the over-match. The combined-designation token for the DVC gate is dropped in favour of `exact_set`. |
+| **A3** + **A3-C** | Five families gain `statement_kind` variants. Structured pairs are one ordered collection, never two sets. Collections need canonical ordering, or the fact hash is order-dependent and the duplicate refusal is defeated. External route/family contract unchanged; **internal family-model validation may be adapted to the union.** |
+| **A4** | Barrier isolation state becomes route-declared structural scope. Context nodes yield no proposal; a statement completing an opener cites both nodes. |
+| **A5** + **A5-C** | Completion is prohibited while a known proposal is uncovered, and still requires the maintainer's assertion — a lower bound, not a redefinition. Coverage binds to **source-statement identity plus cited evidence**, never to proposal-value equality: a corrected fact still covers its statement, and one fact never covers two statements. |
+| **A6** + **A6-C** | Inspection run: a pre-correction package **can** exist and **would** differ, because A2 changes projected rule semantics for two dimensions whose reviewed domain is a strict subset of the consumer domain. **A compatibility bump is required and this branch already carries it** — no second increment; its recorded reason widens to cover projection semantics. The region slice runs its own inspection. |
+| **A7** | Duplicate draft rows disappear through A2/A3, never through presentation-layer deduplication. |
+
+### Remaining slices, in order
+
+- [x] `DimensionScope` + the wildcard over-match fix — `dfa84a3`
+- [x] Per-family `statement_kind` variants, **one commit per family, smallest first**, each green on
+      the full public suite and on the private suite where it moves the licensed path or the
+      placeholders — all five landed:
+  - [x] **1. hf_attenuation** — the gate becomes a scope. This is the commit that teaches the shared
+        machinery; see "Handoff: what family 1 must touch" below.
+  - [x] **2. system_voltage** — measure | applicability. Introduces `statement_kind` and the
+        carried-not-projected variant.
+  - [x] **3. spd_monitoring** — requirement | exemption | compliance. Also converted
+        `any_placement` to a scope, deleting `_placement_matcher`.
+  - [x] **4. spd_reduction** — permission | floor | monitoring. Shipped **with** #53C item 5's
+        contract change for these two routes, which is what unblocked it: option (d). Introduces the
+        ordered source-to-target pair collection and the `pair_sequence` dimension kind.
+  - [x] **5. barrier_transfer** — rating_resolution | combined_requirement |
+        downstream_inheritance. The route-declared isolation scope and the invalid positive-isolation
+        placeholder were pulled forward into this commit: the isolation field leaves the model, so
+        the placeholder could not have been left as it was.
+- [x] Grammar relocation, context-node handling — the set/pair collections landed with family 4.
+      The grammar loads from `ICC_PRIVATE_STANDARDS_DIR` as one recipe-named JSON file, validated on
+      the way in by the public grammar models themselves; a context node yields no draft, and the
+      completion guard's own stem filter is gone with the drafts it used to skip.
+- [x] Variant editor: value-set widgets, repeating pair rows, `statement_kind` switching. The scope
+      multi-selection and the kind combo landed first; `PairSequenceEditor` finished it — one row per
+      stated pair, both members over the one declared vocabulary, add and remove, no reordering
+      affordance and nothing that sorts or deduplicates. Choosing a kind rebuilds the rows with the
+      rest of the dimensions, so a collection cannot survive onto a variant that declares no such
+      field, and Duplicate loads a stated collection back through the same wire form a proposal
+      prefills through.
+- [x] Removal of multi-statement authoring; per-statement suggestion action — `0a7141d`
+- [x] Completion guard — coverage anchored on route + cited-node identity + evidence hash
+- [ ] Private placeholder replacement, including the invalid positive-isolation placeholder —
+      the guard forced part of this early: the private `_placeholder_facts` now returns a tuple per
+      route and the system voltage subclauses author one statement per fragment node, driven off the
+      node count rather than a written number. What remains is replacing the invented readings.
+- [x] **Separate, separately reviewed, mandatory before #53B completes:** clause-region widening,
+      with the private normative-paragraph inventory and the version inspection A6 requires. Three
+      clauses, one commit each: 4.4.7.2.3's region opened below two of its own normative paragraphs
+      and now runs heading-to-heading (still one node, so every existing citation holds); 4.4.7.2.5
+      gained its own `paragraph` region for the stem the lettered alternatives are scoped by;
+      4.4.7.2.4 declared one region on the later of the two pages it spans and now declares eight
+      contiguous regions in reading order across both, extracting thirteen nodes instead of one. The
+      inventory is the declared per-route shape contract rather than a written list — typed root
+      kinds and bboxes only, which is the form the licensing rules allow — and the private
+      placeholders derive what they author from the route's own proposals, so a re-declared region
+      changes the fixture's behaviour instead of breaking it. Row provenance moved to the node the
+      row's own statement cites, which a subclause reaching two pages needs.
+      **The grammar defect it exposed:** a newly reachable sentence made `ClauseSequenceRule`'s
+      positional reading propose a transition running the wrong way up the scale, with both
+      endpoints real values of the dimension — the reading a reviewer is least likely to catch. A
+      sequence rule now declares the terms the relation itself is spelled with and finds no pair in
+      a sentence spelling none of them; required rather than excluded, because naming the relation
+      is one declaration covering every phrasing while excluding each bare-list phrasing would have
+      to enumerate them and would miss the next one. The private grammar declares that term for both
+      reduction routes. Version inspection: no further importer bump — `iec-pdf-8`'s recorded reason
+      under A6-C already covers both changed extracted evidence and changed projected rule
+      semantics, and the stack is unreleased and on no remote ref.
+
+### Handoff: what family 1 (hf_attenuation) must touch
+
+Written from the analysis already done, so a successor does not repeat it. Nothing below is
+implemented; `dfa84a3` is the last code commit and the tree is green there.
+
+`HfAttenuationFact.dvc_gate` is the smallest scope conversion and the one whose reviewed domain is
+already narrower than its consumer input, so it exercises the `in`-not-wildcard path immediately.
+
+**1. The fact model.** `dvc_gate` becomes `DimensionScope[DvcGate]` with
+`DvcGate = Literal["dvc_as", "dvc_b"]`. Nothing else on the family changes; the gate's own union
+reading needs no extra token, which is why the combined-designation token was dropped in A2.
+
+**2. `fact_dimensions` must learn the scope kind — this is the blocker that forces the machinery
+into this commit.** It currently raises `RulePackageError` for any annotation that is not a
+`Literal`, `bool` or `str`, so putting a scope on a fact field without teaching it breaks the editor
+and its vocabulary tests. Add `"scope"` to `DimensionKind`; detect it with
+`get_origin(annotation) is DimensionScope`, and read the vocabulary out of the type argument:
+`get_args(get_args(annotation)[0])`. Annotations resolve to real type objects despite
+`from __future__ import annotations`, so `get_origin`/`get_args` work as written.
+
+**3. The proposal payload needs a wire form for a set.** `ClauseFactProposal.chosen` is
+`dict[str, str]`. Proposed shape: `"*"` for unrestricted, otherwise the sorted tokens joined by
+`"|"`; absent key still means unchosen. One encode point in the proposer and one decode point in
+`proposed_fact`. Deliberately cheap because the grammar relocates to the private side in the next
+slice and this payload will be revisited there — do not build a typed payload model for it now.
+
+**4. `keyword_proposer` must union, not multiply, for a scope dimension.** Today two rules matching
+one dimension produce two drafts; for a scope they must produce **one** draft whose scope carries
+both values. That is the A7 duplicate-expansion fix arriving for this family, and it is why the HF
+sentence stops yielding two rows. The proposer learns which dimensions are scopes from
+`fact_dimensions`.
+
+**5. The projector.** The `shown` rows take `_scope_matcher("circuit_dvc", fact.dvc_gate,
+reviewed_domain, _DVC_DESIGNATIONS)`. The `outstanding` rows are one per distinct concrete
+designation across every fact's scope values, not one per fact. The projection-time expansion of a
+union token discussed before A2 is **not** needed — `in` handles it, and `_require_distinct_branches`
+already compares `in` matchers by value-set intersection.
+
+**6. Call sites that will fail to construct until updated:** the HF fact builders in
+`tests/rules/importer/test_clause_fact_review_api.py` (`_hf_fact`), the UI helper
+`_fill_hf_dimensions` and the vocabulary expectation `_expected_options` in
+`tests/ui/test_clause_fact_review.py`, and the HF placeholder in
+`tests/private/test_iec62477_supply_clause_facts.py`. The private suite is mandatory for this commit
+because that placeholder moves.
+
+**7. The editor widget.** A scope needs a multi-select over its vocabulary plus an explicit
+unrestricted entry. Do not conflate "every value selected" with unrestricted: they project
+differently wherever the reviewed and consumer domains coincide. A multi-select list with a leading
+`(unrestricted)` row is the smallest control that keeps all three modes reachable, and it is the same
+widget the later editor slice needs for ordinary categorical sets, so it is not throwaway.
+
+**8. Regressions this commit owns.** One reviewed statement naming both designations authors as a
+single fact and projects a single row; the unreviewed third designation reaches no row; the sentence
+that previously yielded two drafts now yields one.
+
+For the completion guard slice, the A5 statement anchor should be **route + cited-node identity +
+evidence hash**, never the sentence index, because the region-widening slice renumbers sentences.
+
+### Handoff: what families 3 to 5 inherit
+
+Written after families 1 and 2 landed. The shared machinery is in place; each remaining family is a
+model change plus its projector, and the two corrections below are things the family 1 handoff got
+wrong or could not know.
+
+**1. Scope detection is not `get_origin`.** The family 1 handoff said to detect a scope field with
+`get_origin(annotation) is DimensionScope`. It does not work: pydantic builds `DimensionScope[X]` as
+a concrete model *class*, so `get_origin`/`get_args` return nothing and the type argument lives in
+`__pydantic_generic_metadata__`. `clause_facts.scope_vocabulary` is the one reader for it; call that
+rather than re-deriving it.
+
+**2. The family-to-model map is now family-to-variants.** `FACT_MODELS_BY_KIND` maps a family to its
+declared variants in order, and `fact_model(fact_kind, statement_kind)` / `fact_variants(fact_kind)`
+are how every caller resolves one. `statement_kind` is required exactly when the family declares
+variants and refused when it does not, so a family gaining variants makes its own callers fail loudly
+rather than silently authoring whichever variant is declared first. What a variant family must also
+update:
+
+- its `ClauseFactGrammar` declares `statement_kind` (the grammar's rules are validated against that
+  one variant's model);
+- `propose_clause_facts` and `ClauseFactProposal` carry the kind, and `proposed_fact` reads it;
+- nothing in the editor — it already asks for the statement kind before offering any dimension, and
+  rebuilds the dimension rows when the kind changes.
+
+**3. A carried-not-projected variant costs nothing extra now.** Resolution, the fact-set digest and
+the approval gate need no change for one: they are per route, not per variant. The projector filters
+to the variants it can answer with and refuses when none of them is present, rather than emitting a
+zero-row rule. `spd_monitoring`'s **compliance** variant is the next one of these — this route's
+declared `verification_reference` output carries none of `compliance_evidence`'s tokens, and widening
+it is #53C item 5.
+
+**4. spd_monitoring specifically.** `_spd_monitoring_row` reads `fact.monitoring_required` and
+`fact.participates_in_reduction` as branch values today. With **requirement | exemption**, the
+obligation is what the variant *is*, so the boolean field goes and the row's `monitoring_required`
+comes from the variant — check `_require_distinct_branches` still separates the two, since a
+requirement and an exemption over one placement must not both answer.
+
+**5. Done, as one commit after family 5 — the option this item offered.** The remaining `any_*`
+tokens are gone and no shim is left. `SystemVoltageStatement.input_topology` and `.purpose`,
+`SystemVoltageMeasureFact.phase_system` and `.earthing`, and `HfAttenuationFact.evidence_kind` are
+`DimensionScope` fields; `_dimension_matcher` and `_evidence_matcher` are deleted
+(`_placement_matcher` had already gone with family 3). It was **not** only a modelling tidy-up, as
+this item predicted: a scalar dimension forces `keyword_proposer` to multiply, so a sentence naming
+three earthing arrangements produced three drafts differing in nothing a reviewer could see, and
+three statements of one reading if authored. A2 and A7 are the amendments it answers, and the union
+happens in the proposer rather than in any presentation layer.
+
+`any_supply_kind` was **deleted rather than converted**, and `supply_kind` stays one concrete value.
+The route settles that dimension structurally, so there is no unrestricted reading of it to state
+and no set of values a statement could name — converting it would have made a route-determined
+dimension look like a reviewed scope and reworked the locked-dimension path in the dialog, the
+proposer and `clause_fact_defect` for a reading that cannot be spelled. The token was unauthorable
+anyway, because the dialog prefills that field from the route's declaration and disables it, so
+`clause_fact_defect` no longer carries its exception for it. The reasoning is recorded on
+`SystemVoltageStatement` itself and beside `SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE`, so a successor meets
+it where the field is. A third route-determined dimension should follow `supply_kind` and the
+isolation scope, not the scopes.
+
+`measure` stays scalar too, for a different reason: it is the answer the rule outputs rather than a
+condition, and a statement naming two measures would not say which one a consumer gets.
+
+**5a. How a grammar declares an unrestricted reading now.** A `ClauseFactGrammar` keyword rule may
+name `SCOPE_UNRESTRICTED` (`"*"`) for a scope dimension — the scope's own wire form — rather than a
+member of that dimension's vocabulary, which is what the `any_*` members used to be. Without it the
+reading those tokens carried would have become unproposable and the maintainer would have had to
+state it by hand on every sentence that makes it. `scope_wire_from_tokens` is the single point where
+the unrestricted reading wins over a concrete value matched beside it, shared by the declared rules
+and by the editor's own multi-selection, so the two cannot disagree about what naming both stated.
+
+The private grammar file beside the licensed material was edited to match, and that edit cannot be
+reviewed through git: five rule values that spelled `any_evidence`, `any_purpose` and
+`any_input_topology` now spell `*`. Nothing else in the file changed. It has to be carried to any
+other machine, or those routes lose their unrestricted-reading prefills and the loader raises.
+
+**6. The private placeholders are one statement per route.** `_placeholder_facts` returns a
+`dict[str, SupplyFact]`, so the licensed path exercises one variant per route -- the measure one for
+system voltage. The carried variant is proven in the public suite only. Widening that dict to several
+statements per route belongs to the private placeholder slice, which has to replace the invalid
+positive-isolation placeholder anyway.
+
+### Handoff: families 3, 4 and 5 landed, and why family 4 changed a contract
+
+Written after all three. Every one is on the branch and green on the public and private suites.
+
+Family 4 was reported as blocked first, and the maintainer chose **option (d)**: pull #53C item 5's
+contract change for the two reduction routes into #53B, because the analysis below ruled out both
+alternatives. The analysis is kept: it is the justification for the contract change, and it is why
+these two routes' inputs and outputs look different from their siblings'.
+
+**What families 3 and 5 changed that a successor inherits.**
+
+- A carried-not-projected variant costs nothing new, as family 2's handoff said. Three more of them
+  landed (`spd_monitoring.compliance`, `barrier_transfer.rating_resolution`,
+  `barrier_transfer.downstream_inheritance`) with no change to resolution, the digest or the gate.
+  The pattern is: filter the route's facts to the variants the rule's declared outputs can carry,
+  refuse with `ClauseStructureError` when none is present, and assert in a test that the projected
+  rule is *identical* with and without the carried statement.
+- **Route-declared structural scope has a second member.** `SUPPLY_FACT_ISOLATION_BY_ROUTE` joins
+  `SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE`, with its own import-time symmetric-difference check and its own
+  branch in `clause_fact_defect`. Both halves are live: the projector reads the declared scope for
+  every answer that follows from it, and the defect predicate refuses the one dimension a statement
+  still spells that could contradict it. A third such dimension should follow the same three pieces.
+- `_placement_matcher` is gone. So are `_dimension_matcher` and `_evidence_matcher`, since item 5
+  above landed: **no `any_*` shim remains**, and every reviewed dimension reaches its consumer
+  input through `_scope_matcher` from a scope the model declares.
+- `_placeholder_facts` is now `dict[str, tuple[SupplyFact, ...]]`, widened by family 4 **and** by the
+  completion guard, independently: a reduction route projects two rules and the second exists only if
+  a statement was reviewed for it, so that route needs two placeholders; and the guard refuses a route
+  that leaves a known statement of its clause unauthored, so the system voltage subclauses author one
+  statement per fragment node. Either reason alone justifies the tuple; neither may be removed on the
+  strength of the other having gone away. Completion is recorded once per route *after* all of its
+  statements, because the record binds the route's whole fact-set digest.
+- The two gates are **not** the same gate, and a successor must not conflate them. The guard's
+  coverage anchor is route plus cited-node identity, so it counts one obligation per *source
+  statement*, never one per variant: a reduction route whose permission and monitoring statements
+  rest on the same node is covered by either one of them alone. What forces the monitoring statement
+  to exist is family 4's `projected_rule_ids`, through `inventory_report`. See "The guard and the
+  second projected rule" below.
+
+**What family 4 changed, and the collections it introduced.**
+
+- `spd_reduction` states three readings: `permission` (an ordered `OvercategoryStep` collection plus
+  the insulation classes it applies to, as one `DimensionScope`), `floor` (its own classes, a typed
+  basis and a `must_not_fall_below` relation) and `monitoring` (the degradability, the obligation, the
+  status indication and the reference to the monitoring route). The reference lives on the monitoring
+  statement, never on the permission.
+- **`floor` is carried-not-projected**: it states a comparison against a basis, and both the
+  comparison and a route that evaluates it stay #53C's. A consumer asking about a class only the
+  floor names reaches no row, rather than an answer no permission supports.
+- **Collections and their canonical ordering.** `_canonical_steps` refuses a step collection out of
+  *declared scale* order or naming one transition twice; a step to its own category is refused too.
+  The insulation-class set reuses `DimensionScope`, which already owns canonical order and duplicate
+  rejection — note its canonical order is lexicographic by the deliberate choice recorded on the
+  model, not declared-vocabulary order. Both properties are pinned by tests, including one that a
+  reordered copy hashes identically.
+- **`pair_sequence` is a new `DimensionKind`**, detected by `clause_facts.pair_vocabulary` (the
+  collection counterpart of `scope_vocabulary`). `ClauseSequenceRule` now fills **one** collection
+  dimension rather than two scalars, and `keyword_proposer` emits one reading naming every pair — the
+  A7 duplicate-expansion fix arriving for pairs. The editor offered it as its wire form in a line
+  edit until the variant-editor slice replaced that with `PairSequenceEditor`: one row per stated
+  pair, two combos over the one vocabulary, add and remove, in the reviewer's own order. Repeating
+  rows rather than two multi-selections precisely because two independent value sets would fabricate
+  the cartesian product of the endpoints that the pair member model exists to refuse. A row missing
+  a member leaves the whole dimension unchosen, the model's refusal of the collection is quoted
+  beside the rows rather than left for Author to reveal, and the wire form stays the seam the
+  proposal prefills through.
+- The contract, right-sized for these two routes only: `<route>` keeps the permission with inputs
+  `source_overvoltage_category`, `insulation_class`, `part_of_category_reduction` and outputs
+  `reduction_permitted`, `reduced_category`; `<route>.device_monitoring` is a second projected rule
+  with input `device_degradable` and outputs `monitoring_required`, `status_indication_required`,
+  `monitoring_reference`. **The placement monitoring route's own contract is unchanged** — right-sizing
+  that one is still #53C item 5.
+- Both new rule ids are declared in the clause specs' `projected_rule_ids`, which is what makes the
+  inventory gate require them. That is why the private placeholders had to widen.
+
+**The guard and the second projected rule.** The completion guard and the inventory gate look like
+one rule and are two. Measured on the merged tree, so nobody has to re-derive it:
+
+- The guard's obligations are one per *source statement*, anchored on route plus cited-node identity.
+  Restricting a route's proposals to one variant — `_SPD_REDUCTION_GRAMMAR` proposes `permission`
+  only — changes no obligation, because every sentence yields at least one draft and the anchor
+  ignores which kind of reading that draft is.
+- A statement of **any** variant covers its anchor, carried ones included. That is exactly what lets
+  the private system voltage placeholders cover a list item with the carried applicability variant
+  while the proposer offers a measure draft for it. It also means a reduction route whose permission
+  and monitoring statements rest on the same node is completed by either one alone.
+- So what requires the monitoring statement is `projected_rule_ids`, never the guard. Measured with
+  the monitoring placeholders dropped: `uncovered_clause_fact_statements` is empty, completion is
+  accepted, the route projects its permission rule only, and approval then refuses through
+  `_require_complete_inventory`, naming `iec62477_2022.supply.spd_reduction_requirements`.
+- The gap that leaves, for whoever wants it closed: the refusal names the clause and not the kind of
+  statement nobody authored, and the route table reads `complete` while the package is not. Moving
+  this into the guard needs a per-variant obligation, which needs a grammar that proposes the other
+  variants first — the guard derives its obligations from proposals, so it cannot know about a
+  variant nothing suggests.
+
+**Why family 4 needed that contract change, so nobody re-derives it.**
+`supply.spd_reduction_requirements.{mains,
+non_mains}` declares four inputs -- device placement, insulation class, device degradability,
+participation in a category reduction -- and six outputs, and `DecisionRule` requires **every** row to
+set **exactly** the declared outputs (`_rows_agree_with_declarations`). Today one `SpdReductionFact`
+fills all six because it is a merge of the three statements A3 splits apart. After the split:
+
+1. **The permission cannot fill `reduced_category`.** A `DecisionValue` carries one categorical
+   value, and the permission's reviewed content is an ordered collection of source-to-target steps,
+   which A3 requires and which may hold more than one member. One row per step gives rows whose
+   matchers are identical -- `_require_distinct_branches` refuses them, and it zips facts against
+   rows strictly, so a statement producing several rows is not even the shape that function takes.
+   There is no source-category input to separate them by.
+2. **The permission's row and the monitoring statement's row necessarily overlap.** The permission
+   scopes the insulation class and states no degradability; the monitoring statement states the
+   degradability and no insulation class; both are inside a category reduction. `_rows_overlap`
+   treats a wildcard as never discriminating, so the two rows collide and the projector refuses the
+   pair. Making them disjoint means the projector inventing a dimension one of the statements does
+   not state, which is the defect A3 forbids from the other side.
+3. **Whichever variant is dropped to a carried one takes two of the six outputs with it**, and the
+   surviving row must still assert them. A permission-only projection asserts that monitoring is not
+   required, which for a degradable device is a wrong answer rather than an absent one -- and a row
+   may not omit an output to stay silent.
+
+The floor variant is the one part that is clean: it is carried by instruction, and a consumer asking
+about the double or reinforced classes reaches **no** row rather than a wrong one, because the
+permission's own class scope excludes them.
+
+Three ways out were put to the maintainer, who chose the fourth shape of the first:
+
+- **(a)** Ship the model reshape alone, project the permission only, and accept a deferral token for
+  `reduced_category` plus a wrong monitoring answer for a degradable device. **Rejected**: a wrong
+  answer is worse than an absent one.
+- **(b)** As (a), but let the projector narrow the permission's row to the non-degradable case so the
+  degradable branch is uncovered instead of wrongly answered. **Rejected**: it is the projector adding
+  a matcher no statement states, the defect A3 forbids from the other side.
+- **(c)** Wait for #53C item 5. **Superseded by (d)**, which is (c) pulled forward for these two
+  routes only, leaving the comparison runtime and the placement monitoring route's contract to #53C.
+- **(d), shipped.** A source-category input separates the permission's per-step rows; the monitoring
+  outputs move to the route's own second rule so each variant fills exactly the outputs its statement
+  states; the floor stays carried. All three readings project, with no runtime loss and no wrong
+  answer. `test_one_statements_two_steps_are_not_refused_as_a_collision` is the regression that would
+  have failed before the change, and
+  `test_two_permission_statements_stating_the_same_branch_are_refused` proves the refusal still fires
+  for statements that really do collide.
+
+**Version.** No further importer bump: the stack already carries `iec-pdf-8`, whose recorded reason
+under A6-C covers changed projected rule semantics, and that version is unreleased and branch-only, so
+no package approved under it can exist outside this branch.
+
+### Handoff: the grammar is private, and the one gap that stayed open
+
+Written after the relocation slice. Amendments A1, A4 and A7 are implemented; the residual gap below
+is deliberate and named, not overlooked.
+
+**Where the grammar lives, and why there.** `ICC_PRIVATE_STANDARDS_DIR` -- the existing variable
+naming the folder the licensed documents themselves are found through -- plus one recipe-named JSON
+file inside it, read by `clause_fact_proposals.load_private_grammars`. Chosen over the alternatives
+because it invents no mechanism: the variable is already documented and already set for licensed
+work, the folder is already gitignored, and the grammar models are already the schema, so
+`ClauseFactGrammar`'s validation of declared dimensions and declared values keeps running in public
+code on the way in -- which is precisely the half A1 leaves public. Data rather than importable code,
+so nothing executes out of the maintainer's folder. **Deliberately no default path**: nothing else in
+`src` guesses a repository root, and a default would have the app silently read a folder nobody
+named. The absence of the file is a reported state; a present-but-wrong file raises.
+
+**Honest degradation.** Without the file every route proposes nothing, and the review dialog ends the
+draft list with an unselectable row naming which of three reasons applies -- no grammar installed, no
+grammar declared for this route, or no sentence that states a branch. Only the third is a claim about
+the clause, which is exactly why a bare empty list was not acceptable.
+
+**What stayed public, and the line it was kept on.** The engine's own tests still declare a small
+grammar over invented sentences. Every keyword in it either spells a token the public typed
+vocabulary already declares or is the ISO/IEC drafting convention for modality. What moved is every
+term the typed vocabulary does *not* spell -- and the exclusion lists, which is where a reading of one
+clause's actual wording lived. If a reviewer wants that line drawn tighter, the change is a rename
+inside one test file.
+
+**The residual gap, and why a mechanism would not close it.** Every grammar declares exactly one
+`statement_kind`, so on a multi-node clause a node stating a *different* kind of reading is offered
+only a wrong-kind draft. The blocked-completion remedy used to read "Select each draft below, author
+a statement for it", and following that literally authored a wrong-kind reading -- which *satisfied*
+the guard, because coverage is variant-agnostic on purpose so a corrected fact still covers the
+statement it corrects. **The text is fixed**: it now sends the reviewer to the node, tells them to
+choose the kind of reading that node states, and says explicitly that a draft is a prefill of one
+kind only. `test_a_blocked_completion_names_the_uncovered_statements_and_the_way_out` asserts both
+the new wording and the absence of the old instruction.
+
+Letting a grammar propose several kinds per route was considered and **not** taken. It is a small
+change -- the route-to-grammar map becomes route-to-grammars and `propose_supply_facts` concatenates
+-- but it would ship an empty mechanism and leave the misleading text standing anyway, because the
+declarations that would fill it do not exist: the maintainer's own note on each variant-bearing
+grammar records that no declared term distinguishes the other kinds from the one it proposes. Take
+the mechanism when a private declaration needs it, which is also when per-variant guard obligations
+become derivable -- the guard cannot know about a variant nothing suggests.
+
+**A4's enforcement point is the proposer, and only the proposer.** `propose_clause_facts` skips a
+sentence that is some other sentence's stem, through `context_sentences`. The completion guard's own
+stem filter was deleted rather than kept as a second copy: the guard derives its obligations from
+proposals, so keeping both would let `test_a_context_only_node_is_not_an_outstanding_obligation` pass
+on the guard while the proposer regressed.
+
+**A7 survived the move, and is asserted on both sides of it.** The union of a scope dimension and the
+one-reading-per-pair-collection rule live in `keyword_proposer`, which did not move;
+`test_a_sentence_restricting_a_scope_dimension_to_several_values_yields_one_draft`,
+`test_a_scalar_dimension_naming_several_values_still_yields_a_draft_per_value` and
+`test_a_sequence_rule_states_every_pair_it_finds_as_one_reading` cover it on a grammar built in
+memory, `test_a_loaded_grammar_unions_a_scope_rather_than_multiplying_it` covers it on one loaded from
+the private file, and the private `test_a_floor_sentence_proposes_no_insulation_class` covers it on
+the real declarations.

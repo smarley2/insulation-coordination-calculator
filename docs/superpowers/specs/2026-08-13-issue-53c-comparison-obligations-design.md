@@ -249,13 +249,19 @@ disclosure recorded at review finding F9. `DemonstratedEvidenceRecord` lives in
 
 ### Item 5 — SPD / category reduction
 
+> **Partly landed in #53B — see L6.** The right-sizing half of this item shipped with #53B's
+> `spd_reduction` family split, because the split made the merged rule unprojectable. Start from the
+> shipped contract below rather than from the pre-split one; what remains here is the comparison half.
+
 The consumer proposes the exact pair; the reviewed rule validates it. No ordinal subtraction,
 no inferred target, anywhere.
 
 ```text
-spd_reduction_requirements.mains         inputs gain source_ovc, target_ovc
+spd_reduction_requirements.mains         input source_overvoltage_category landed in #53B;
+                                         this item adds target_ovc and validates the pair
                                          unsupported pair -> no_match
-  outputs   monitoring_requirement_reference   (consumes SpdReductionFact.monitoring_reference)
+  outputs   monitoring_requirement_reference   (consumes SpdReductionMonitoringFact
+                                                .monitoring_reference -- see L2)
             floor_obligation_reference
 
 spd_reduction_requirements.mains.floor   matches supported pair + insulation_class in
@@ -274,14 +280,16 @@ to remember an unrelated route. The two `no_match` meanings are deliberately sep
 on the pair route it is a refusal; on the floor route it means no floor exists for this class.
 
 Each floor route is projected by its own reduction clause spec through `projected_rule_ids`, so
-it is grounded in that clause's fragment with no shared-evidence scope. A new small fact family
-carries the floor reading, and it becomes the **sole** floor authority: the
-`reinforced_floor_applies` output goes with it. (`_FLOORED_INSULATION_CLASSES` is already gone —
-#53B deleted it in `fbe8ab5`.) Two authorities for one reading is the defect class this whole
-issue removes.
+it is grounded in that clause's fragment with no shared-evidence scope. The floor reading is carried
+by #53B's `SpdReductionFloorFact` variant rather than by a new family, and the floor route becomes the
+**sole** floor authority: the `reinforced_floor_applies` output goes with it. (Both
+`_FLOORED_INSULATION_CLASSES` and that output are already gone from the reduction routes — #53B
+deleted the first in `fbe8ab5` and the second with the right-sizing in L6.) Two authorities for one
+reading is the defect class this whole issue removes.
 
 `reduced_category` is dropped as an output: the consumer proposed the target, and echoing it
-back is permission-shaped noise.
+back is permission-shaped noise. It survives on the shipped contract only because nothing proposes a
+target yet.
 
 ## Module ownership
 
@@ -317,10 +325,13 @@ round-trip proves the three contracts project from real facts.
 
 ## Contract impact
 
-```text
-#60 first:  IEC_IMPORTER_VERSION  iec-pdf-6 -> iec-pdf-7   (#60 owns this bump)
+An importer version is **assigned at implementation time, in merge order** — never reserved here.
+See ledger note L5. The settled sequence today is #60 = ``iec-pdf-7``, the #53B stack =
+``iec-pdf-8``, and this spec = ``iec-pdf-9``; that is the current expectation, and this spec's own
+number is decided when it is implemented.
 
-#53C:       IEC_IMPORTER_VERSION  iec-pdf-7 -> iec-pdf-8
+```text
+#53C:       IEC_IMPORTER_VERSION  bumped once, number assigned on implementation
             LEGACY_BRANCH_AUTHORITY_RULE_IDS -> frozenset()
             removed:  working_voltage_basis_permitted, reduced_category,
                       reinforced_floor_applies
@@ -335,3 +346,100 @@ unchanged:  evaluate_decision, DecisionValue, RulePackage archive schema
 
 Archive **schema** unchanged; package **compatibility identity** changed — a package built
 before this slice must be rebuilt and re-reviewed, never served as current.
+
+---
+
+# Amendment ledger (2026-08-14) — carried in from the #53B five-family review
+
+Ledger notes only. **No item is implemented by #53B**; each is a correction or addition to this
+spec's own scope, recorded so the #53C work starts from the reviewed shapes rather than from the
+shapes this document assumed. Decisions and structures only; no source wording, no inventory.
+
+## L1 — Missing acceptance criterion: the unisolated combined circuit
+
+Item 3 defines the more-severe comparison bundle for the **isolated** propagation route, and states
+that the unisolated case answers no match because it belongs to barrier transfer's route. **No item
+of this spec then upgrades that route.** Barrier transfer keeps a semantic token naming the
+selection instead of performing it — the exact shape item 3 exists to eliminate.
+
+Added criterion: after #53C, the unisolated combined circuit must **select the higher of the two
+resolved side ratings** through a real comparison, and must not remain a semantic token. It shares
+item 3's comparison bundle rather than introducing a second mechanism.
+
+The reviewed shape #53B is landing already fits: barrier transfer's `combined_requirement` variant
+carries the candidate roles and the selection, which mirrors item 3's own pairing of candidate roles
+with a comparison.
+
+## L2 — Correction: the monitoring reference moves off the permission statement
+
+This spec's reduction outputs describe the monitoring-requirement reference as consumed from the
+**permission** statement. After #53B's family split (design amendment A3) that reference belongs to
+the reduction family's **monitoring** variant.
+
+The reason is substantive, not cosmetic: the source states a separate normative monitoring
+statement, so the runtime chain must compose from separately reviewed authorities rather than
+reading a reference the permission statement never makes.
+
+## L3 — New item needed: the system-voltage applicability output
+
+#53B's system-voltage family gains an **applicability** variant for a statement that establishes
+which voltages count as system voltages for impulse determination and selects no measure. #53B
+carries such a statement without projecting it: resolution accepts it, the fact-set digest covers
+it so completion and the approval gate know it was reviewed, and it contributes no row and no
+output. The executable output contract is unchanged.
+
+This spec needs an item that **consumes** it — an applicability output alongside the measure
+selection. Until then the gap is explicit rather than papered over, and no projector manufactures a
+measure to fit.
+
+## L4 — Confirmed unaffected: the floor route stays the sole floor authority
+
+This spec's plan for a dedicated floor route, projected from the reduction clause spec and becoming
+the sole floor authority, survives the family split and is helped by it: #53B's reviewed **floor**
+variant is what that route will consume, so the reviewed shape now lands ahead of the runtime route
+rather than after it.
+
+## L5 — Versioning numbers are no longer reserved
+
+This spec assumed a reserved importer-version increment. The #53B branch has consumed one increment
+for a clause-region correction, and a further region-widening slice may consume another after
+inspecting whether any trusted package exists under the affected versions. **This spec's version
+number is decided when it is implemented**, not reserved here.
+
+## L6 — Item 5's contract change has landed in #53B; start from the shipped contract
+
+Item 5 bundled two separable things: **right-sizing** the reduction routes' inputs and outputs, and
+the **comparison** that validates a proposed pair against a floor. #53B's `spd_reduction` family split
+forced the first half forward, because the split made the merged rule unprojectable: with the
+family's three readings separated, the permission's ordered step collection could not fill a
+single-valued `reduced_category`, and the permission's row and the monitoring statement's row
+necessarily overlapped on every degradable device inside a reduction. The maintainer authorized
+pulling the right-sizing in rather than accepting either a wrong runtime answer or a projector-invented
+matcher. The full analysis and the rejected alternatives are in the #53B plan's handoff.
+
+**Shipped in #53B, for `.mains` and `.non_mains` only:**
+
+```text
+spd_reduction_requirements.<supply kind>
+  inputs   source_overvoltage_category, insulation_class, part_of_category_reduction
+  outputs  reduction_permitted, reduced_category
+
+spd_reduction_requirements.<supply kind>.device_monitoring
+  inputs   device_degradable
+  outputs  monitoring_required, status_indication_required, monitoring_reference
+```
+
+`device_placement` and `device_degradable` are gone from the permission rule -- the permission scopes
+neither -- and the monitoring, verification and floor outputs are gone with them. The second rule is
+projected only when a `monitoring` statement is reviewed for the route, and both ids are declared in
+the clause specs' `projected_rule_ids`, so the inventory gate requires them.
+
+**Still this spec's, unchanged:** everything comparison-shaped. The `target_ovc` input and the
+pair validation, the `.floor` route and its `MUST_NOT_FALL_BELOW` bundle, `floor_obligation_reference`,
+and turning `monitoring_reference` from a reference output into a resolved chain step. #53B's floor
+variant is reviewed and carried, projecting nothing, which is exactly the shape the floor route
+consumes.
+
+**Not in scope of the #53B change, and still this item's:** the SPD *placement* monitoring route
+(`spd_reduction_requirements.monitoring`) keeps its four inputs and six outputs, three of which it
+still fills with a fixed uninformative value. Right-sizing that route is unchanged work here.
