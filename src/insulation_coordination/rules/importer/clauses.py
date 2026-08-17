@@ -20,7 +20,7 @@ from insulation_coordination.domain.rules import (
     Identifier,
     SourceReference,
 )
-from insulation_coordination.rules.importer.extract import (
+from insulation_coordination.rules.importer.artifacts import (
     ExtractionError,
     canonical_model_sha256,
 )

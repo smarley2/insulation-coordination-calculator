@@ -42,6 +42,10 @@ from insulation_coordination.domain.rules import (
     Table,
 )
 from insulation_coordination.rules.archive import _canonical_json
+from insulation_coordination.rules.importer.artifacts import (
+    ExtractionError,
+    canonical_model_sha256,
+)
 from insulation_coordination.rules.importer.axis_selectors import (
     AxisSelector,
     AxisSelectorProposal,
@@ -124,10 +128,6 @@ __all__ = [
 ]
 
 
-class ExtractionError(ValueError):
-    """Recognized input could not be extracted without guessing."""
-
-
 ReviewArtifactKind = Literal[
     "table",
     "formula",
@@ -138,13 +138,6 @@ ReviewArtifactKind = Literal[
     "curve",
 ]
 ProposalState = Literal["proposed", "reviewed"]
-
-
-def canonical_model_sha256(value: FrozenModel) -> str:
-    """Hash one typed model through the rule archive's canonical JSON encoding."""
-    return hashlib.sha256(
-        _canonical_json(value.model_dump(mode="json", warnings=False))
-    ).hexdigest()
 
 
 def aggregate_artifact_sha256(pairs: tuple[tuple[str, str], ...]) -> str:

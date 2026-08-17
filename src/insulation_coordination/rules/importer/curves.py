@@ -13,7 +13,7 @@ from pypdf._page import PageObject
 
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import CurvePoint, CurveSegment, SourceReference
-from insulation_coordination.rules.importer.extract import ExtractionError
+from insulation_coordination.rules.importer.artifacts import ExtractionError
 
 if TYPE_CHECKING:
     from insulation_coordination.rules.importer.identify import (
