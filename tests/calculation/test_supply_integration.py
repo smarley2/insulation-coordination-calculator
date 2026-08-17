@@ -398,6 +398,42 @@ def test_the_engine_treats_a_derived_impulse_once_and_the_resolution_reports_tha
     assert len(treatments) == 1
 
 
+def test_the_derived_temporary_overvoltage_and_the_recurring_peak_are_treated_once_each(
+    supply_and_clearance_rules: RulePackage,
+) -> None:
+    """The periodic candidates, which take the other treatment branch.
+
+    The temporary overvoltage one is the case that matters here: its stress is derived rather
+    than entered, so a substitution that handed the engine an already-treated figure would
+    show up as a second application on exactly this candidate.
+    """
+    project = _project(_configuration(), insulation=InsulationType.REINFORCED)
+    pair = _circuit_to_surroundings(project)
+    supply = derive_project_supply(project, supply_and_clearance_rules)
+    assert supply is not None
+    derived_peak = supply.governing.tov_peak_v
+    assert derived_peak is not None
+
+    result = calculate_project_pair(project, pair, supply_and_clearance_rules, supply=supply)
+
+    candidates = {item.candidate_id: item for item in result.trace.clearance_candidates}
+    for candidate_id, stress in (
+        ("temporary_overvoltage_peak", derived_peak),
+        ("recurring_peak", Decimal(400)),
+    ):
+        candidate = candidates[candidate_id]
+        once, _step = apply_reinforced_stress_treatment(
+            stress, kind=InsulationType.REINFORCED, treatment="periodic"
+        )
+        assert candidate.stress.value == stress
+        assert candidate.treated_stress is not None
+        assert candidate.treated_stress.value == once
+        treatments = [
+            step for step in candidate.steps if step.operation == "reinforced_stress_treatment"
+        ]
+        assert len(treatments) == 1
+
+
 def test_a_basic_pair_treats_the_derived_impulse_not_at_all(
     supply_and_clearance_rules: RulePackage,
 ) -> None:
@@ -590,3 +626,31 @@ def test_the_supply_rules_are_read_once_for_the_whole_project(
         if resolution is not None and resolution.source_scenario_impulse_v is not None
     }
     assert impulses == {supply.governing.impulse_v}
+
+
+def test_the_same_project_derives_the_same_result_twice(
+    supply_and_clearance_rules: RulePackage,
+) -> None:
+    """The report rebuilds every result and refuses one that differs from what it was given.
+
+    A derivation that varied between two runs of the same project - on iteration order, on a
+    generated identifier, on anything - would block every report of a project using this
+    feature, so the property is asserted rather than assumed.
+    """
+    project = _project(_configuration())
+    pair = _circuit_to_surroundings(project)
+
+    first = calculate_project_pair(
+        project,
+        pair,
+        supply_and_clearance_rules,
+        supply=derive_project_supply(project, supply_and_clearance_rules),
+    )
+    second = calculate_project_pair(
+        project,
+        pair,
+        supply_and_clearance_rules,
+        supply=derive_project_supply(project, supply_and_clearance_rules),
+    )
+
+    assert first == second
