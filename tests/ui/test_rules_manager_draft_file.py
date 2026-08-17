@@ -82,7 +82,112 @@ def test_saving_needs_a_draft_and_becomes_available_with_one(
     _extracted(rules_manager, monkeypatch, source_pdfs)
 
     assert rules_manager._save_draft_button.isEnabled() is True
-    assert rules_manager.draft_path is None
+
+
+def test_an_extracted_draft_is_already_being_saved(
+    qtbot,
+    rules_manager,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_pdfs: tuple[Path, ...],
+) -> None:
+    """No click, no dialog: a maintainer who never thinks about files still keeps the work."""
+    _extracted(rules_manager, monkeypatch, source_pdfs)
+
+    draft = rules_manager.draft
+    assert draft is not None
+    expected = tmp_path / "drafts" / f"draft-{draft.manifest.package_id}.icdraft"
+    assert rules_manager.draft_path == expected
+    assert expected.exists()
+    assert load_rule_draft(expected).draft == draft
+    assert str(expected) in rules_manager._draft_path_label.text()
+
+    pending = unresolved_table_items(draft)
+    rules_manager.set_draft(
+        accept_raw_table(
+            draft,
+            grid_id=f"raw-{pending[0].semantic_id}",
+            corrections={},
+            actor="Maintainer",
+            notes="Compared the extracted table with the PDF",
+        )
+    )
+
+    assert load_rule_draft(expected).draft == rules_manager.draft
+
+
+def test_choosing_a_location_moves_the_autosave_target(
+    qtbot,
+    rules_manager,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_pdfs: tuple[Path, ...],
+) -> None:
+    _extracted(rules_manager, monkeypatch, source_pdfs)
+    default = rules_manager.draft_path
+    assert default is not None
+    chosen = tmp_path / "chosen" / "under-review.icdraft"
+    _save_to(monkeypatch, chosen)
+
+    qtbot.mouseClick(rules_manager._save_draft_button, Qt.MouseButton.LeftButton)
+
+    assert rules_manager.draft_path == chosen
+    assert chosen.exists()
+    assert str(chosen) in rules_manager._draft_path_label.text()
+    stale = default.read_bytes()
+    draft = rules_manager.draft
+    assert draft is not None
+    pending = unresolved_table_items(draft)
+    rules_manager.set_draft(
+        accept_raw_table(
+            draft,
+            grid_id=f"raw-{pending[0].semantic_id}",
+            corrections={},
+            actor="Maintainer",
+            notes="Compared the extracted table with the PDF",
+        )
+    )
+
+    assert load_rule_draft(chosen).draft == rules_manager.draft
+    assert default.read_bytes() == stale
+
+
+def test_an_unwritable_default_location_warns_once_not_once_per_correction(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_pdfs: tuple[Path, ...],
+) -> None:
+    # A file where the drafts directory belongs: creating it fails, as an unwritable location does.
+    (tmp_path / "drafts").write_text("not a directory", encoding="utf-8")
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "insulation_coordination.ui.rules_manager.QMessageBox.warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+    window = RulesManagerWindow(rules_dir=tmp_path / "rules")
+    qtbot.addWidget(window)
+
+    _extracted(window, monkeypatch, source_pdfs)
+
+    assert len(warnings) == 1
+    assert "not being saved" in warnings[0]
+    assert window.draft_path is None
+    assert "Save draft" in window._draft_path_label.text()
+
+    draft = window.draft
+    assert draft is not None
+    for item in unresolved_table_items(draft)[:2]:
+        draft = accept_raw_table(
+            draft,
+            grid_id=f"raw-{item.semantic_id}",
+            corrections={},
+            actor="Maintainer",
+            notes="Compared the extracted table with the PDF",
+        )
+        window.set_draft(draft)
+
+    assert len(warnings) == 1
 
 
 def test_saved_draft_resumes_in_another_window_with_review_state_intact(
@@ -212,9 +317,11 @@ def test_a_second_extraction_never_autosaves_over_another_drafts_file(
 
     _extracted(rules_manager, monkeypatch, source_pdfs)
 
-    assert rules_manager.draft is not None
-    assert rules_manager.draft.manifest.package_id != first.manifest.package_id
-    assert rules_manager.draft_path is None
+    second = rules_manager.draft
+    assert second is not None
+    assert second.manifest.package_id != first.manifest.package_id
+    # The new draft takes its own default location; the file the first one owns is untouched.
+    assert rules_manager.draft_path == rules_manager.default_draft_path(second)
     assert path.read_bytes() == saved
 
 

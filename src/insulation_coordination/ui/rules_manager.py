@@ -46,7 +46,7 @@ from insulation_coordination.rules.draft_archive import (
 )
 from insulation_coordination.rules.importer.approval import is_fully_resolved
 from insulation_coordination.rules.importer.extract import _REQUIRED_RECIPES, ImportedRuleDraft
-from insulation_coordination.rules.installation import install_rule_package
+from insulation_coordination.rules.installation import default_rules_dir, install_rule_package
 from insulation_coordination.ui.axis_review import AxisReviewDialog, AxisReviewModel
 from insulation_coordination.ui.clause_fact_review import (
     ClauseFactReviewDialog,
@@ -177,6 +177,9 @@ class RulesManagerWindow(QWidget):
         self._resume_draft_button.clicked.connect(self._on_resume_draft_clicked)
         draft_file_row.addWidget(self._resume_draft_button)
         review_layout.addLayout(draft_file_row)
+        self._draft_path_label = QLabel("")
+        self._draft_path_label.setWordWrap(True)
+        review_layout.addWidget(self._draft_path_label)
 
         self._review_approve_button = QPushButton("Approve draft and build package…")
         self._review_approve_button.clicked.connect(self._on_review_approve_clicked)
@@ -199,6 +202,7 @@ class RulesManagerWindow(QWidget):
         self._draft: ImportedRuleDraft | None = None
         self._draft_path: Path | None = None
         self._draft_file_id: UUID | None = None
+        self._autosave_warned = False
         self._draft_pdfs: dict[str, Path] = {}
         self._draft_passwords: dict[Path, str] = {}
 
@@ -346,6 +350,7 @@ class RulesManagerWindow(QWidget):
             self._review_clause_facts_button.setEnabled(False)
             self._review_axis_selectors_button.setEnabled(False)
             self._save_draft_button.setEnabled(False)
+            self._draft_path_label.clear()
             return
         self._save_draft_button.setEnabled(True)
         from insulation_coordination.rules.importer.review import (
@@ -498,24 +503,67 @@ class RulesManagerWindow(QWidget):
 
     @property
     def draft_path(self) -> Path | None:
-        """The file this draft is being saved to, once the maintainer has chosen one."""
+        """The file this draft is being saved to: its default location, or a chosen one."""
         return self._draft_path
+
+    def default_draft_path(self, draft: ImportedRuleDraft) -> Path:
+        """Where a draft autosaves until the maintainer chooses somewhere else.
+
+        Beside the installed rule packages, in the same per-user data directory the window
+        already installs into, so review work is protected without a new setting to configure
+        and without writing into whatever directory the app happened to start in. Named for the
+        draft's own package ID, so two drafts never share a file.
+        """
+        rules_dir = self._rules_dir if self._rules_dir is not None else default_rules_dir()
+        return (
+            Path(rules_dir).parent / "drafts" / f"draft-{draft.manifest.package_id}{DRAFT_SUFFIX}"
+        )
 
     def save_draft(self, path: Path) -> Path:
         """Write the draft under review, and keep saving it there after every correction."""
         if self._draft is None:
             raise RuntimeError("No draft loaded")
         path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
         write_rule_draft(path, self._draft, pdf_paths=self._draft_pdfs)
-        self._draft_path = path
-        self._draft_file_id = self._draft.manifest.package_id
+        self._set_draft_path(path, self._draft.manifest.package_id)
         return path
+
+    def _autosave_to_default(self) -> None:
+        """Start saving a freshly extracted draft before the maintainer thinks about files.
+
+        Waiting for a first explicit save is what loses an afternoon of review: the maintainer
+        who never opens the save dialog is exactly the one this protects. A location that cannot
+        be written is reported once, here, and autosave stays off until a location is chosen --
+        rather than repeating the same failure after every correction.
+        """
+        if self._draft is None:
+            return
+        try:
+            self.save_draft(self.default_draft_path(self._draft))
+        except (RulePackageError, OSError) as error:
+            self._set_draft_path(None)
+            QMessageBox.warning(
+                self,
+                "Save Draft",
+                f"This draft is not being saved: {error}\nUse Save draft… to choose a location.",
+            )
+
+    def _set_draft_path(self, path: Path | None, package_id: UUID | None = None) -> None:
+        """Point autosave at one file, and say so where the maintainer can see it."""
+        self._draft_path = path
+        self._draft_file_id = package_id
+        self._autosave_warned = False
+        self._draft_path_label.setText(
+            f"Autosaving to {path}"
+            if path is not None
+            else "Not saved to a file yet — use Save draft…"
+        )
 
     def resume_draft(self, path: Path) -> None:
         """Continue reviewing a saved draft, with its source PDFs reachable again."""
         resumed = load_rule_draft(Path(path))
-        self._draft_path = Path(path)
-        self._draft_file_id = resumed.draft.manifest.package_id
+        self._set_draft_path(Path(path), resumed.draft.manifest.package_id)
         self._draft_pdfs = dict(resumed.pdf_paths)
         # Not persisted: a PDF password is secret material and never belongs in a draft file.
         self._draft_passwords = {}
@@ -533,13 +581,16 @@ class RulesManagerWindow(QWidget):
         if self._draft is None or self._draft_path is None:
             return
         if self._draft.manifest.package_id != self._draft_file_id:
-            self._draft_path = None
-            self._draft_file_id = None
+            self._set_draft_path(None)
             return
         try:
             write_rule_draft(self._draft_path, self._draft, pdf_paths=self._draft_pdfs)
         except (RulePackageError, OSError) as error:
-            QMessageBox.warning(self, "Save Draft", f"The draft could not be saved: {error}")
+            # Once per target, not once per correction: a location that cannot be written is
+            # one fact about that location, and repeating it every action buries the review.
+            if not self._autosave_warned:
+                self._autosave_warned = True
+                QMessageBox.warning(self, "Save Draft", f"The draft could not be saved: {error}")
 
     def _on_save_draft_clicked(self) -> None:
         if self._draft is None:
@@ -738,6 +789,7 @@ class RulesManagerWindow(QWidget):
         # Keep the sources reachable so table review can show each grid's PDF page.
         self._draft_pdfs = source_pdf_paths(draft, selected_paths)
         self._draft_passwords = dict(passwords)
+        self._autosave_to_default()
 
     def _on_export_approved_clicked(self) -> None:
         if self._package is None:
