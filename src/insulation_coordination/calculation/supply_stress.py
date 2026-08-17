@@ -30,7 +30,7 @@ arrangement resolves to which measure, and what any band contains, stays in the 
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from decimal import Decimal
 from typing import Final, NamedTuple
@@ -489,9 +489,17 @@ class SupplyStressService:
             else:
                 unresolved.append(result)
         derived = tuple(scenarios)
-        impulse = _govern(derived, "rated_impulse_v", "impulse")
-        peak = _govern(derived, "temporary_overvoltage_peak_v", "temporary overvoltage peak")
-        rms = _govern(derived, "temporary_overvoltage_rms_v", "temporary overvoltage rms")
+        impulse = _govern(derived, lambda item: item.rated_impulse_v, "impulse")
+        peak = _govern(
+            derived,
+            lambda item: item.temporary_overvoltage_peak_v,
+            "temporary overvoltage peak",
+        )
+        rms = _govern(
+            derived,
+            lambda item: item.temporary_overvoltage_rms_v,
+            "temporary overvoltage rms",
+        )
         return GoverningSupplyStress(
             impulse_v=impulse.value,
             impulse_configuration_id=impulse.configuration_id,
@@ -515,12 +523,19 @@ class _Governing(NamedTuple):
     step: TraceStep | None
 
 
+#: The trace identifier of the project-level comparison. Not a semantic rule id: choosing the
+#: worst of several derived scenarios is this application's arithmetic, not a reading of any
+#: clause, and labelling it with a package identifier would credit the package with a decision
+#: it did not make.
+GOVERNING_TRACE_ID: Final = "supply.governing_scenario"
+
+
 def _govern(
     scenarios: Sequence[DerivedSupplyScenario],
-    field: str,
+    quantity: Callable[[DerivedSupplyScenario], Decimal | None],
     label: str,
 ) -> _Governing:
-    """The largest value of ``field`` across ``scenarios``, and the trace step that explains it.
+    """The largest value of ``quantity`` across ``scenarios``, and the step that explains it.
 
     Ties are broken by the lowest configuration identifier, which is stable across runs and
     independent of the order a project happens to list its rows in, and every tied scenario is
@@ -528,9 +543,7 @@ def _govern(
     """
 
     candidates = tuple(
-        (scenario, value)
-        for scenario in scenarios
-        if (value := getattr(scenario, field)) is not None
+        (scenario, value) for scenario in scenarios if (value := quantity(scenario)) is not None
     )
     if not candidates:
         return _Governing(None, None, None)
@@ -545,10 +558,10 @@ def _govern(
         names = ", ".join(scenario.configuration_name for scenario in tied[1:])
         reason += f"; it is tied with {names}, and the lowest configuration identifier is selected"
     step = TraceStep(
-        semantic_rule_id="supply.governing_scenario",
+        semantic_rule_id=GOVERNING_TRACE_ID,
         operation="max",
         symbolic=rf"\max({label})",
-        substituted=" , ".join(
+        substituted=", ".join(
             f"{scenario.configuration_name} = {value} {_VOLTAGE_UNIT}"
             for scenario, value in candidates
         ),
@@ -562,6 +575,7 @@ def _govern(
 
 
 __all__ = [
+    "GOVERNING_TRACE_ID",
     "IMPULSE_PURPOSE",
     "TOV_PEAK_COLUMN",
     "TOV_PURPOSE",
