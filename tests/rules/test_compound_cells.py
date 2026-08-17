@@ -26,11 +26,14 @@ from insulation_coordination.rules.importer.review import (
     accept_raw_table,
     correct_component_association,
     correct_raw_component,
+    fill_suggested_compound_associations,
     mark_proposal_reviewed,
     proposal_for,
     record_correction,
     select_component_formula,
+    suggested_compound_associations,
     unresolved_raw_review_items,
+    unresolved_table_items,
 )
 from tests.fixtures.synthetic_rules import synthetic_rule_package
 
@@ -393,21 +396,22 @@ def test_approval_rejects_corrected_formula_route_without_formula() -> None:
         )
 
 
-def _grid_for_cell(cell: RawGridCell) -> RawGrid:
+def _grid_for_cell(cell: RawGridCell, *more_cells: RawGridCell) -> RawGrid:
+    cells = (cell, *more_cells)
     return RawGrid(
         id=f"raw-{synthetic_rule_package().tables[0].id}",
-        rows=1,
-        columns=1,
+        rows=max(item.row for item in cells) + 1,
+        columns=max(item.column for item in cells) + 1,
         target_unit="mm",
         segments=(
             RawGridSegment(
                 page_number=3,
                 row_start=0,
-                row_count=1,
+                row_count=max(item.row for item in cells) + 1,
                 source=SYNTHETIC_SOURCE,
             ),
         ),
-        cells=(cell,),
+        cells=cells,
         source=SYNTHETIC_SOURCE,
     )
 
@@ -415,23 +419,25 @@ def _grid_for_cell(cell: RawGridCell) -> RawGrid:
 def _draft_with_compound_cell(
     cell: RawGridCell,
     review_items: tuple[ImportReviewItem, ...],
+    *more_cells: RawGridCell,
 ) -> ImportedRuleDraft:
     package = synthetic_rule_package()
     table = package.tables[0]
+    cells = (cell, *more_cells)
     grid = RawGrid(
         id=f"raw-{table.id}",
-        rows=1,
-        columns=1,
+        rows=max(item.row for item in cells) + 1,
+        columns=max(item.column for item in cells) + 1,
         target_unit=table.unit,
         segments=(
             RawGridSegment(
                 page_number=SYNTHETIC_SOURCE.page or 1,
                 row_start=0,
-                row_count=1,
+                row_count=max(item.row for item in cells) + 1,
                 source=SYNTHETIC_SOURCE,
             ),
         ),
-        cells=(cell,),
+        cells=cells,
         source=SYNTHETIC_SOURCE,
     )
     proposal = SemanticProposal(
@@ -708,3 +714,119 @@ def test_two_formula_blockers_are_unique_and_independently_resolvable() -> None:
         notes="Reviewed both exact formula associations.",
     )
     assert proposal_for(reviewed, draft.tables[0].id).state == "reviewed"
+
+
+def _unlabelled_compound_cell(
+    text: str,
+    *,
+    row: int = 0,
+    column: int = 0,
+    spec: CompoundQuantitySpec | None = None,
+) -> RawGridCell:
+    parsed = parse_compound_data_cell(
+        text=text,
+        spec=spec or CompoundQuantitySpec(component_ids=("rms", "peak")),
+        source=SYNTHETIC_SOURCE,
+    )
+    return RawGridCell(
+        row=row,
+        column=column,
+        raw_text=text,
+        role="data",
+        logical_row=row,
+        logical_column="compound",
+        components=parsed.components,
+        compound_component_ids=parsed.compound_component_ids,
+        formula_candidates=parsed.formula_candidates,
+        allowed_component_formula_ids=parsed.allowed_component_formula_ids,
+        parse_status=parsed.parse_status,
+        source=SYNTHETIC_SOURCE,
+    )
+
+
+def test_suggestion_reads_declared_component_order_over_the_printed_order() -> None:
+    grid = _grid_for_cell(_unlabelled_compound_cell("11 / 17"))
+
+    assert suggested_compound_associations(grid) == {
+        (0, 0, 0): "rms",
+        (0, 0, 1): "peak",
+    }
+
+
+def test_suggestion_skips_a_cell_whose_occurrence_count_mismatches() -> None:
+    grid = _grid_for_cell(_unlabelled_compound_cell("11 / 13 / 17"))
+
+    assert suggested_compound_associations(grid) == {}
+
+
+def test_suggestion_skips_a_cell_with_an_unparsed_occurrence() -> None:
+    grid = _grid_for_cell(_unlabelled_compound_cell("eleven / 17"))
+
+    assert suggested_compound_associations(grid) == {}
+
+
+def test_suggestion_never_contradicts_a_printed_label() -> None:
+    # Occurrence 0 prints "peak": a positional reading would call it "rms".
+    grid = _grid_for_cell(_unlabelled_compound_cell("17 peak / 11"))
+
+    assert suggested_compound_associations(grid) == {}
+
+
+def test_bulk_fill_resolves_suggested_cells_and_keeps_accept_required() -> None:
+    suggestible = _unlabelled_compound_cell("11 / 17")
+    manual = _unlabelled_compound_cell("eleven / 17", row=1)
+    grid = _grid_for_cell(suggestible, manual)
+    table_item = ImportReviewItem(
+        code="SYNTHETIC_TABLE_REVIEW",
+        semantic_id=synthetic_rule_package().tables[0].id,
+        kind="table",
+        source=SYNTHETIC_SOURCE,
+        expected_contract="synthetic compound table",
+    )
+    review_items = (*compound_review_items(grid), table_item)
+    draft = _draft_with_compound_cell(suggestible, review_items, manual)
+
+    changed, filled, skipped = fill_suggested_compound_associations(
+        draft,
+        grid_id=grid.id,
+        actor="Synthetic Reviewer",
+        notes="Filled the suggested associations.",
+    )
+
+    assert filled == ((0, 0, 0), (0, 0, 1))
+    assert skipped == ((1, 0),)
+    filled_cell = next(
+        cell for cell in changed.raw_grids[0].cells if (cell.row, cell.column) == (0, 0)
+    )
+    assert filled_cell.parse_status == "compound"
+    assert [(part.component_id, part.value) for part in filled_cell.components] == [
+        ("rms", Decimal(11)),
+        ("peak", Decimal(17)),
+    ]
+    manual_cell = next(
+        cell for cell in changed.raw_grids[0].cells if (cell.row, cell.column) == (1, 0)
+    )
+    assert manual_cell.parse_status == "ambiguous_compound"
+    assert {item.semantic_id for item in unresolved_raw_review_items(changed)} == {
+        f"{grid.id}:1:0:0",
+        f"{grid.id}:1:0:1",
+    }
+    assert [item.semantic_id for item in unresolved_table_items(changed)] == [
+        synthetic_rule_package().tables[0].id
+    ]
+    assert changed.manifest.approval_records[-1].actor == "Synthetic Reviewer"
+    assert proposal_for(changed, draft.tables[0].id).state == "proposed"
+
+
+def test_bulk_fill_refuses_a_grid_with_nothing_to_suggest() -> None:
+    manual = _unlabelled_compound_cell("eleven / 17")
+    grid = _grid_for_cell(manual)
+    draft = _draft_with_compound_cell(manual, compound_review_items(grid))
+
+    with pytest.raises(ValueError, match="no suggested compound associations"):
+        fill_suggested_compound_associations(
+            draft,
+            grid_id=grid.id,
+            actor="Synthetic Reviewer",
+            notes="Nothing suggestible here.",
+        )

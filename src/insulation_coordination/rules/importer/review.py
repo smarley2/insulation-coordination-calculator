@@ -1033,6 +1033,111 @@ def _corrected_compound_cells(
     return tuple(by_coordinate[(cell.row, cell.column)] for cell in cells)
 
 
+def suggested_compound_associations(grid: RawGrid) -> dict[tuple[int, int, int], str]:
+    """Positional association suggestions for wholly unlabelled compound cells.
+
+    Extraction associates an occurrence only through the label it prints
+    (``parse_compound_data_cell``), never by position, so a cell printing bare
+    numbers refers every occurrence to the reviewer.  When such a cell holds
+    exactly one parsed occurrence per declared component, the natural reading is
+    the declared component order laid over the cell's own print order: occurrence
+    ``k`` names ``compound_component_ids[k]``, with the already-parsed decimal as
+    its value.  ``compound_component_ids`` preserves the recipe's
+    ``CompoundQuantitySpec.component_ids`` declaration order, which is the order
+    of the per-component data columns the spec declares over the shared source
+    column.  This is a suggestion for the reviewer to confirm against the source
+    page, not an extraction claim -- accepting the table stays the human gate.
+
+    A cell stays manual when its occurrence count does not match the declared
+    components, an occurrence failed to parse, any occurrence already carries a
+    label (a positional reading could contradict the document's own print), or a
+    route-local formula would have to be chosen.
+    """
+    suggestions: dict[tuple[int, int, int], str] = {}
+    for cell in grid.cells:
+        if cell.parse_status != "ambiguous_compound":
+            continue
+        occurrences = sorted(cell.components, key=lambda part: part.source_index)
+        if (
+            len(occurrences) != len(cell.compound_component_ids)
+            or any(part.component_id is not None for part in occurrences)
+            or any(part.value is None for part in occurrences)
+            or cell.allowed_component_formula_ids
+        ):
+            continue
+        for occurrence, component_id in zip(occurrences, cell.compound_component_ids, strict=True):
+            suggestions[(cell.row, cell.column, occurrence.source_index)] = component_id
+    return suggestions
+
+
+def fill_suggested_compound_associations(
+    draft: ImportedRuleDraft,
+    *,
+    grid_id: str,
+    actor: str,
+    notes: str,
+) -> tuple[ImportedRuleDraft, tuple[tuple[int, int, int], ...], tuple[tuple[int, int], ...]]:
+    """Apply every suggested compound association on one grid as one correction.
+
+    Each suggested cell is associated through the same per-occurrence machinery
+    the accept path uses, and the batch is recorded through ``record_correction``,
+    so the digest and audit trail read exactly as the same corrections done by
+    hand.  Returns the changed draft, the ``(row, column, source_index)`` keys it
+    filled, and the ambiguous compound cells it left for manual review.  The
+    table's own review item is untouched: accepting the table remains the
+    reviewer's explicit decision.
+    """
+    grid = next((item for item in draft.raw_grids if item.id == grid_id), None)
+    if grid is None:
+        raise ValueError(f"unknown raw grid: {grid_id}")
+    suggestions = suggested_compound_associations(grid)
+    filled_cells = {(row, column) for row, column, _source_index in suggestions}
+    skipped = tuple(
+        sorted(
+            {
+                (cell.row, cell.column)
+                for cell in grid.cells
+                if cell.parse_status == "ambiguous_compound"
+            }
+            - filled_cells
+        )
+    )
+    if not suggestions:
+        raise ValueError(f"raw grid {grid_id} has no suggested compound associations")
+    changed_grid = grid.model_copy(
+        update={"cells": _corrected_compound_cells(grid.cells, suggestions, {})}
+    )
+    changed = draft.model_copy(
+        update={
+            "raw_grids": tuple(
+                changed_grid if item.id == grid_id else item for item in draft.raw_grids
+            )
+        }
+    )
+    resolved = {resolution.review_item_sha256 for resolution in draft.review_resolutions}
+    prefixes = tuple(f"{grid_id}:{row}:{column}:" for row, column in sorted(filled_cells))
+    resolve = tuple(
+        item
+        for item in draft.review_items
+        if item.code == "AMBIGUOUS_COMPOUND_CELL"
+        and item.semantic_id.startswith(prefixes)
+        and item.sha256 not in resolved
+    )
+    if not resolve:
+        raise ValueError("suggested associations have no unresolved ambiguity")
+    return (
+        record_correction(
+            draft,
+            changed,
+            actor=actor.strip(),
+            notes=notes.strip(),
+            resolve=resolve,
+        ),
+        tuple(sorted(suggestions)),
+        skipped,
+    )
+
+
 def accept_raw_table(
     draft: ImportedRuleDraft,
     *,
