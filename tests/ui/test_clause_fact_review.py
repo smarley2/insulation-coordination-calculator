@@ -24,7 +24,8 @@ from insulation_coordination.rules.importer.clause_facts import (
     BarrierRatingResolutionFact,
     CitedNode,
     DimensionScope,
-    HfAttenuationFact,
+    HfAttenuationPermissionFact,
+    HfAttenuationRequirementFact,
     RouteReference,
     SpdMonitoringComplianceFact,
     SpdMonitoringExemptionFact,
@@ -98,7 +99,7 @@ _FACT_MODELS: dict[str, tuple[type[BaseModel], ...]] = {
         SpdMonitoringExemptionFact,
         SpdMonitoringComplianceFact,
     ),
-    "hf_attenuation": (HfAttenuationFact,),
+    "hf_attenuation": (HfAttenuationPermissionFact, HfAttenuationRequirementFact),
 }
 _UNDIMENSIONED = ("fact_kind", "statement_kind", "statement_index", "node_references")
 
@@ -216,15 +217,29 @@ def _route_position(model: ClauseFactReviewModel, rule_route: str) -> int:
 
 
 def _fill_hf_dimensions(dialog: ClauseFactReviewDialog) -> None:
-    """Choose every dimension of the HF family, leaving only the index and the citation."""
+    """Choose every dimension of the attenuation family's demonstration requirement.
 
+    The requirement rather than the permission because it is the richer of the two -- a scope, a
+    boolean and a route reference -- so it is the one the surfaces are exercised through. Choosing
+    the kind first is part of filling the editor now: a variant family offers no dimension until a
+    reviewer says which kind of reading this is.
+    """
+
+    dialog.choose_statement_kind("requirement")
     dialog.dimension_combo("obligation").setCurrentText("requirement")
-    dialog.choose_scope("dvc_gate", "dvc_as")
     dialog.choose_scope("evidence_kind", "test")
     dialog.dimension_combo("threshold_reference").setCurrentText(
         ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC
     )
     dialog.dimension_combo("comparison_required").setCurrentText("true")
+
+
+def _fill_hf_permission(dialog: ClauseFactReviewDialog) -> None:
+    """Choose every dimension of the attenuation family's permission: the gate, and nothing else."""
+
+    dialog.choose_statement_kind("permission")
+    dialog.dimension_combo("obligation").setCurrentText("permission")
+    dialog.choose_scope("dvc_gate", "dvc_as")
 
 
 def _selected_scope(dialog: ClauseFactReviewDialog, field: str) -> list[str]:
@@ -243,11 +258,11 @@ def _author_hf_through_dialog(model: ClauseFactReviewModel, dialog: ClauseFactRe
 
 
 @pytest.fixture
-def hf_fact(draft_with_supply_fragments) -> HfAttenuationFact:
+def hf_fact(draft_with_supply_fragments) -> HfAttenuationRequirementFact:
     return _hf_fact(draft_with_supply_fragments, statement_index=0)
 
 
-class _DriftedFact(HfAttenuationFact):
+class _DriftedFact(HfAttenuationPermissionFact):
     """A fact family one of whose dimensions is no longer expressible by any editor widget."""
 
     dvc_gate: Literal[1, 2]  # type: ignore[assignment]
@@ -321,7 +336,7 @@ def test_a_later_authoring_makes_a_completed_route_stale(
     # duplicate, so bumping the index alone would test that refusal instead of staleness.
     model.author(
         HF_ROUTE,
-        _hf_fact(draft_with_supply_fragments, statement_index=1, dvc_gate="dvc_b"),
+        _hf_fact(draft_with_supply_fragments, statement_index=1, evidence_kind="simulation"),
         actor="tester",
         notes="one more",
     )
@@ -612,7 +627,7 @@ def test_selecting_a_statement_prefills_the_editor_for_replacement(
     dialog.facts_list.setCurrentRow(0)
 
     assert dialog.statement_index.value() == 0
-    assert _selected_scope(dialog, "dvc_gate") == ["dvc_as"]
+    assert _selected_scope(dialog, "evidence_kind") == ["test"]
     assert dialog.dimension_combo("comparison_required").currentText() == "true"
     assert [item.text() for item in dialog.nodes_list.selectedItems()]
 
@@ -653,8 +668,10 @@ def test_authoring_stays_disabled_while_any_dimension_is_unchosen(
     assert dialog.author_button.isEnabled() is False
     dialog.nodes_list.item(0).setSelected(True)
     assert dialog.author_button.isEnabled() is False
+    # The kind first: a variant family offers no dimension until the reviewer picks one.
+    assert dialog.author_button.isEnabled() is False
+    dialog.choose_statement_kind("requirement")
     dialog.dimension_combo("obligation").setCurrentText("requirement")
-    dialog.choose_scope("dvc_gate", "dvc_as")
     dialog.choose_scope("evidence_kind", "test")
     dialog.dimension_combo("threshold_reference").setCurrentText(
         ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC
@@ -674,8 +691,8 @@ def test_authoring_stays_disabled_while_no_node_is_selected(
     qtbot.addWidget(dialog)
     dialog.table.selectRow(_route_position(model, HF_ROUTE))
 
+    dialog.choose_statement_kind("requirement")
     dialog.dimension_combo("obligation").setCurrentText("requirement")
-    dialog.choose_scope("dvc_gate", "dvc_as")
     dialog.choose_scope("evidence_kind", "test")
     dialog.dimension_combo("threshold_reference").setCurrentText(
         ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC
@@ -892,7 +909,7 @@ def test_a_scope_dimension_offers_its_values_and_an_explicit_unrestricted_entry(
     qtbot.addWidget(dialog)
     dialog.table.selectRow(_route_position(model, HF_ROUTE))
     dialog.nodes_list.item(0).setSelected(True)
-    _fill_hf_dimensions(dialog)
+    _fill_hf_permission(dialog)
 
     widget = dialog.dimension_scope("dvc_gate")
     assert [widget.item(row).text() for row in range(widget.count())] == [
@@ -906,7 +923,7 @@ def test_a_scope_dimension_offers_its_values_and_an_explicit_unrestricted_entry(
 
     # Authoring reloads the route, which puts every dimension back to unchosen.
     dialog.nodes_list.item(0).setSelected(True)
-    _fill_hf_dimensions(dialog)
+    _fill_hf_permission(dialog)
     dialog.choose_scope("dvc_gate", unrestricted=True)
     dialog.author_selected()
 
@@ -925,7 +942,7 @@ def test_one_statement_naming_both_designations_is_authored_once(
     qtbot.addWidget(dialog)
     dialog.table.selectRow(_route_position(model, HF_ROUTE))
     dialog.nodes_list.item(0).setSelected(True)
-    _fill_hf_dimensions(dialog)
+    _fill_hf_permission(dialog)
     dialog.choose_scope("dvc_gate", "dvc_b", "dvc_as")
 
     dialog.author_selected()
@@ -1387,15 +1404,15 @@ def test_duplicate_loads_the_selected_statement_under_the_next_free_index(
     dialog.duplicate_selected()
 
     assert dialog.statement_index.value() == 1
-    assert _selected_scope(dialog, "dvc_gate") == ["dvc_as"]
+    assert _selected_scope(dialog, "evidence_kind") == ["test"]
     assert [item.text() for item in dialog.nodes_list.selectedItems()]
 
-    dialog.choose_scope("dvc_gate", "dvc_b")
+    dialog.choose_scope("evidence_kind", "simulation")
     dialog.author_selected()
 
     facts = model.facts(HF_ROUTE)
     assert [row.statement_index for row in facts] == [0, 1]
-    assert [scope_wire(row.fact.dvc_gate) for row in facts] == ["dvc_as", "dvc_b"]
+    assert [scope_wire(row.fact.evidence_kind) for row in facts] == ["test", "simulation"]
 
 
 def test_duplicate_with_nothing_selected_reports_status_rather_than_raising(
@@ -1593,7 +1610,7 @@ def test_an_authored_row_shows_its_reading_not_just_its_index(
 
     assert "statement 0" in text
     # Every dimension of the family, derived from the model rather than a per-family format.
-    for value in ("requirement", "dvc_as", "test", ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC):
+    for value in ("requirement", "test", ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC):
         assert value in text
     # A boolean reads as the editor's own two values, so a row and the editor agree.
     assert "true" in text
@@ -1662,12 +1679,11 @@ def test_a_draft_whose_unsettled_dimensions_the_reviewer_filled_leaves_the_list(
     (draft,) = model.open_proposals(HF_ROUTE)
 
     assert draft.fully_proposed is False
-    assert set(draft.unchosen) == {"evidence_kind", "comparison_required"}
+    assert set(draft.unchosen) == {"comparison_required"}
 
     dialog.facts_list.setCurrentRow(0)
     dialog.use_suggested_button.click()
-    # Exactly the two the grammar could not settle, read out of the sentence by the reviewer.
-    dialog.choose_scope("evidence_kind", "test")
+    # Exactly the one the grammar could not settle, read out of the sentence by the reviewer.
     dialog.dimension_combo("comparison_required").setCurrentText("true")
     dialog.author_selected()
 
@@ -1695,14 +1711,13 @@ def test_an_authored_statement_disagreeing_with_a_settled_dimension_covers_nothi
     dialog.table.selectRow(_route_position(model, HF_ROUTE))
     (draft,) = model.open_proposals(HF_ROUTE)
 
-    assert draft.chosen["dvc_gate"] == "dvc_as"
+    assert draft.chosen["evidence_kind"] == "test"
 
     dialog.facts_list.setCurrentRow(0)
     dialog.use_suggested_button.click()
-    dialog.choose_scope("evidence_kind", "test")
     dialog.dimension_combo("comparison_required").setCurrentText("true")
-    # The one dimension the grammar settled, read differently by the reviewer.
-    dialog.choose_scope("dvc_gate", "dvc_b")
+    # The one discriminating dimension the grammar settled, read differently by the reviewer.
+    dialog.choose_scope("evidence_kind", "simulation")
     dialog.author_selected()
 
     assert len(model.facts(HF_ROUTE)) == 1
@@ -2187,7 +2202,6 @@ def test_a_blocked_completion_names_the_uncovered_statements_and_the_way_out(
     for index in range(_SEEDED_NODE_COUNT):
         dialog.facts_list.setCurrentRow(len(model.facts(HF_ROUTE)) + index)
         _fill_hf_dimensions(dialog)
-        dialog.choose_scope("dvc_gate", "dvc_as" if index % 2 else "dvc_b")
         dialog.author_selected()
         if index == 0:
             # Part-way through: the row itself names what is still missing, so a reviewer scanning
@@ -2221,7 +2235,7 @@ def test_selecting_a_partly_proposed_draft_names_the_dimensions_still_needed(
     dialog.facts_list.setCurrentRow(0)
 
     assert "unchosen dimension(s)" in dialog.status_text
-    assert "dvc_gate" in dialog.status_text
+    assert "evidence_kind" in dialog.status_text
     assert "Author fact" in dialog.status_text
 
     _fill_hf_dimensions(dialog)
@@ -2292,7 +2306,7 @@ def test_the_routes_table_stretches_the_columns_a_reviewer_picks_a_row_by(
 #: ``synthetic_private_grammars`` and mean nothing outside these tests; the real grammar's own terms
 #: live beside the licensed material (amendment A1) and are not spelled anywhere here.
 _FULLY_PROPOSED_SENTENCES = (
-    "Synthetic reading: synthbind synthgateone synthevidence synthcompare.",
+    "Synthetic reading: synthbind synthgateone synthcompare.",
     "Synthetic reading: synthbind synthgatetwo synthevidence synthcompare.",
     "Synthetic reading naming nothing the grammar looks for.",
 )
@@ -2334,7 +2348,9 @@ def test_the_suggestion_loads_one_drafts_values_and_its_citation(
     assert dialog.use_suggested_button.text() == "Fill with the suggested values"
     dialog.use_suggested_button.click()
 
-    assert _selected_scope(dialog, "dvc_gate") == list(proposal.chosen["dvc_gate"].split("|"))
+    assert _selected_scope(dialog, "evidence_kind") == list(
+        proposal.chosen["evidence_kind"].split("|")
+    )
     assert [item.text() for item in dialog.nodes_list.selectedItems()] == [
         dialog.nodes_list.item(proposal.node_references[0].node_order).text()
     ]
@@ -2345,7 +2361,7 @@ def test_the_suggestion_loads_one_drafts_values_and_its_citation(
 
     reviews = [item for item in model.draft.clause_fact_reviews if item.rule_route == HF_ROUTE]
     assert [item.statement_index for item in reviews] == [0]
-    assert scope_wire(reviews[0].fact.dvc_gate) == proposal.chosen["dvc_gate"]
+    assert scope_wire(reviews[0].fact.evidence_kind) == proposal.chosen["evidence_kind"]
     assert reviews[0].actor == "maintainer"
     assert "proposal" in reviews[0].notes
     # The route's other drafts are still unauthored, which the completion guard names in the row.
@@ -2379,7 +2395,7 @@ def test_the_statement_the_grammar_could_not_settle_is_left_for_the_reviewer(
     # keeping its prefill and its blank fields.
     assert dialog.facts_list.count() == 2 + len(remaining)
     dialog.facts_list.setCurrentRow(2)
-    assert _selected_scope(dialog, "dvc_gate") == []
+    assert _selected_scope(dialog, "evidence_kind") == []
     assert dialog.author_button.isEnabled() is False
 
 

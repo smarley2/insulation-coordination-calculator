@@ -6,8 +6,7 @@ import pytest
 
 from insulation_coordination.rules.importer.clause_facts import (
     CitedNode,
-    DimensionScope,
-    HfAttenuationFact,
+    HfAttenuationRequirementFact,
     SystemVoltageApplicabilityFact,
     SystemVoltageMeasureFact,
 )
@@ -64,12 +63,11 @@ def _cited(draft: ImportedRuleDraft, fragment_id: str, node_order: int = 0) -> C
     )
 
 
-def _hf_fact(draft: ImportedRuleDraft, *, statement_index: int) -> HfAttenuationFact:
-    return HfAttenuationFact(
+def _hf_fact(draft: ImportedRuleDraft, *, statement_index: int) -> HfAttenuationRequirementFact:
+    return HfAttenuationRequirementFact(
         statement_index=statement_index,
         node_references=(_cited(draft, HF_FRAGMENT_ID),),
         obligation="requirement",
-        dvc_gate=DimensionScope.of("dvc_as"),
         evidence_kind=scope_of("test"),
         threshold_reference=ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC,
         comparison_required=True,

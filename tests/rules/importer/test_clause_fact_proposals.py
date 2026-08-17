@@ -79,24 +79,26 @@ def _keyword(dimension: str, value: str, *keywords: str, without: tuple[str, ...
     )
 
 
-#: A grammar over the attenuation family, built from that family's own vocabulary and from terms
-#: invented for this file.
+#: A grammar over the attenuation family's demonstration requirement, built from that variant's own
+#: vocabulary and from terms invented for this file. That variant because it is the richest one the
+#: recipe declares: a scope, a boolean, a scalar choice and a constant filling a route reference, so
+#: one grammar exercises every widget kind but the pair collection.
 #:
 #: Kept in the public tree after amendment A1 moved the *recipe's* grammar out, on this line: every
-#: keyword below either spells a token the public typed vocabulary already declares (``dvc_as`` reads
-#: "DVC As"; ``test``, ``simulation`` and ``calculation`` are their own spellings) or is the
-#: ISO/IEC drafting convention for modality, which no one standard owns. None of it says anything
-#: about a licensed document that the models here do not already say, and the sentences it is
-#: matched against are written for this file. What moved was every term the typed vocabulary does
-#: *not* spell -- and the exclusion lists, which are where a reading of one clause's actual wording
-#: lived.
+#: keyword below either spells a token the public typed vocabulary already declares (``test``,
+#: ``simulation`` and ``calculation`` are their own spellings) or is the ISO/IEC drafting convention
+#: for modality, which no one standard owns. None of it says anything about a licensed document that
+#: the models here do not already say, and the sentences it is matched against are written for this
+#: file. What moved was every term the typed vocabulary does *not* spell -- and the exclusion lists,
+#: which are where a reading of one clause's actual wording lived.
 _GRAMMAR = ClauseFactGrammar(
     fact_kind="hf_attenuation",
+    statement_kind="requirement",
     keyword_rules=(
         _keyword("obligation", "requirement", "shall"),
         _keyword("obligation", "permission", "may"),
-        _keyword("dvc_gate", "dvc_as", "DVC", "As"),
-        _keyword("dvc_gate", "dvc_b", "DVC", "B"),
+        _keyword("evidence_kind", "test", "test"),
+        _keyword("evidence_kind", "simulation", "simulation"),
         # The unrestricted reading of a scope dimension, spelled in the scope's own wire form: a
         # sentence naming every route it accepts restricts the dimension to nothing.
         _keyword("evidence_kind", SCOPE_UNRESTRICTED, "test", "simulation", "calculation"),
@@ -111,6 +113,7 @@ def _propose(texts: tuple[str, ...]):
         fragment_with_sentences(ROUTE, texts),
         rule_route=ROUTE,
         fact_kind="hf_attenuation",
+        statement_kind="requirement",
         propose=keyword_proposer(_GRAMMAR),
     )
 
@@ -141,15 +144,17 @@ def test_a_note_and_everything_after_it_is_skipped() -> None:
     """
 
     node_text = (
-        "Synthetic DVC As reading; may apply. "
-        "NOTE 1 Synthetic aside naming DVC B and shall be shown. "
+        "Synthetic test route reading; may apply. "
+        "NOTE 1 Synthetic aside naming simulation and shall be shown. "
         "NOTE 2 Synthetic second aside."
     )
 
     proposals = _propose((node_text,))
 
-    assert [item.sentence_text for item in proposals] == ["Synthetic DVC As reading; may apply."]
-    assert proposals[0].chosen["dvc_gate"] == "dvc_as"
+    assert [item.sentence_text for item in proposals] == [
+        "Synthetic test route reading; may apply."
+    ]
+    assert proposals[0].chosen["evidence_kind"] == "test"
     assert proposals[0].chosen["obligation"] == "permission"
     assert "comparison_required" in proposals[0].unchosen
 
@@ -235,14 +240,14 @@ def test_sentences_are_numbered_across_the_whole_fragment() -> None:
 def test_a_sentence_restricting_a_scope_dimension_to_several_values_yields_one_draft() -> None:
     """The duplicate-draft defect, fixed at its cause: one statement is one draft.
 
-    A scope dimension carries the set the sentence names, so a sentence naming two designations
-    proposes one reading over both. Expanding it into one draft per value showed a reviewer two
-    drafts for one statement and, once authored, recorded one reading twice.
+    A scope dimension carries the set the sentence names, so a sentence naming two routes proposes
+    one reading over both. Expanding it into one draft per value showed a reviewer two drafts for one
+    statement and, once authored, recorded one reading twice.
     """
 
-    proposals = _propose(("Synthetic gate naming DVC As and DVC B, which shall be shown.",))
+    proposals = _propose(("Synthetic reading naming test and simulation, which shall be shown.",))
 
-    assert [item.chosen["dvc_gate"] for item in proposals] == ["dvc_as|dvc_b"]
+    assert [item.chosen["evidence_kind"] for item in proposals] == ["simulation|test"]
     assert {item.sentence_index for item in proposals} == {0}
 
 
@@ -256,19 +261,20 @@ def test_a_scalar_dimension_naming_several_values_still_yields_a_draft_per_value
     """
 
     fragment = fragment_with_sentences(
-        ROUTE, ("Synthetic DVC As and DVC B gate shall be shown, and may be relied on.",)
+        ROUTE, ("Synthetic test and simulation reading shall be shown, and may be relied on.",)
     )
 
     proposals = propose_clause_facts(
         fragment,
         rule_route=ROUTE,
         fact_kind="hf_attenuation",
+        statement_kind="requirement",
         propose=keyword_proposer(_GRAMMAR),
     )
 
-    assert {(item.chosen["dvc_gate"], item.chosen["obligation"]) for item in proposals} == {
-        ("dvc_as|dvc_b", "requirement"),
-        ("dvc_as|dvc_b", "permission"),
+    assert {(item.chosen["evidence_kind"], item.chosen["obligation"]) for item in proposals} == {
+        ("simulation|test", "requirement"),
+        ("simulation|test", "permission"),
     }
 
 
@@ -286,18 +292,24 @@ def test_a_rule_may_declare_a_scopes_unrestricted_reading() -> None:
     """
 
     grammar = _GRAMMAR.model_copy(
-        update={"keyword_rules": (*_GRAMMAR.keyword_rules, _keyword("dvc_gate", "*", "either"))}
+        update={
+            "keyword_rules": (*_GRAMMAR.keyword_rules, _keyword("evidence_kind", "*", "either"))
+        }
     )
     fragment = fragment_with_sentences(
-        ROUTE, ("Synthetic reading for either gate. Synthetic DVC As reading for either gate.",)
+        ROUTE, ("Synthetic reading for either route. Synthetic test reading for either route.",)
     )
 
     unrestricted, alongside = propose_clause_facts(
-        fragment, rule_route=ROUTE, fact_kind="hf_attenuation", propose=keyword_proposer(grammar)
+        fragment,
+        rule_route=ROUTE,
+        fact_kind="hf_attenuation",
+        statement_kind="requirement",
+        propose=keyword_proposer(grammar),
     )
 
-    assert unrestricted.chosen["dvc_gate"] == SCOPE_UNRESTRICTED
-    assert alongside.chosen["dvc_gate"] == SCOPE_UNRESTRICTED
+    assert unrestricted.chosen["evidence_kind"] == SCOPE_UNRESTRICTED
+    assert alongside.chosen["evidence_kind"] == SCOPE_UNRESTRICTED
 
 
 def test_a_scalar_dimension_may_not_declare_the_unrestricted_reading() -> None:
@@ -305,7 +317,9 @@ def test_a_scalar_dimension_may_not_declare_the_unrestricted_reading() -> None:
 
     with pytest.raises(ValidationError, match="no value"):
         ClauseFactGrammar(
-            fact_kind="hf_attenuation", keyword_rules=(_keyword("obligation", "*", "synthetic"),)
+            fact_kind="hf_attenuation",
+            statement_kind="requirement",
+            keyword_rules=(_keyword("obligation", "*", "synthetic"),),
         )
 
 
@@ -352,17 +366,21 @@ def test_two_rules_naming_one_value_propose_it_once() -> None:
         update={
             "keyword_rules": (
                 *_GRAMMAR.keyword_rules,
-                _keyword("dvc_gate", "dvc_as", "As"),
+                _keyword("evidence_kind", "test", "route"),
             )
         }
     )
-    fragment = fragment_with_sentences(ROUTE, ("Synthetic DVC As gate.",))
+    fragment = fragment_with_sentences(ROUTE, ("Synthetic test route.",))
 
     proposals = propose_clause_facts(
-        fragment, rule_route=ROUTE, fact_kind="hf_attenuation", propose=keyword_proposer(grammar)
+        fragment,
+        rule_route=ROUTE,
+        fact_kind="hf_attenuation",
+        statement_kind="requirement",
+        propose=keyword_proposer(grammar),
     )
 
-    assert [item.chosen["dvc_gate"] for item in proposals] == ["dvc_as"]
+    assert [item.chosen["evidence_kind"] for item in proposals] == ["test"]
 
 
 def _step_grammar(
@@ -533,6 +551,7 @@ def _propose_nodes(texts: tuple[tuple[str, str], ...]):
         _bullet_fragment(texts),
         rule_route=ROUTE,
         fact_kind="hf_attenuation",
+        statement_kind="requirement",
         propose=keyword_proposer(_INHERITING_GRAMMAR),
     )
 
@@ -573,13 +592,13 @@ def test_an_inherited_dimension_is_read_from_the_stem() -> None:
     proposals = _propose_nodes(
         (
             ("paragraph", "Synthetic stem which shall be completed by the items:"),
-            ("bullet", "synthetic item naming DVC As;"),
+            ("bullet", "synthetic item naming the test route;"),
         )
     )
 
     bullet = next(item for item in proposals if item.node_references[0].node_order == 1)
     assert bullet.chosen["obligation"] == "requirement"
-    assert bullet.chosen["dvc_gate"] == "dvc_as"
+    assert bullet.chosen["evidence_kind"] == "test"
 
 
 def test_a_bullet_stating_its_own_value_does_not_also_inherit_one() -> None:
@@ -588,7 +607,7 @@ def test_a_bullet_stating_its_own_value_does_not_also_inherit_one() -> None:
     proposals = _propose_nodes(
         (
             ("paragraph", "Synthetic stem which shall be completed by the items:"),
-            ("bullet", "synthetic item which may apply, naming DVC As;"),
+            ("bullet", "synthetic item which may apply, naming the test route;"),
         )
     )
 
@@ -602,18 +621,19 @@ def test_a_dimension_not_declared_inheritable_is_never_read_from_the_stem() -> N
     proposals = propose_clause_facts(
         _bullet_fragment(
             (
-                ("paragraph", "Synthetic stem naming DVC As, which shall be completed:"),
-                ("bullet", "synthetic item stating no gate;"),
+                ("paragraph", "Synthetic stem naming the test route, which shall be completed:"),
+                ("bullet", "synthetic item stating no route;"),
             )
         ),
         rule_route=ROUTE,
         fact_kind="hf_attenuation",
+        statement_kind="requirement",
         propose=keyword_proposer(_INHERITING_GRAMMAR),
     )
 
     bullet = next(item for item in proposals if item.node_references[0].node_order == 1)
     assert bullet.chosen["obligation"] == "requirement"
-    assert "dvc_gate" in bullet.unchosen
+    assert "evidence_kind" in bullet.unchosen
 
 
 def test_a_stem_carries_across_node_boundaries() -> None:
@@ -645,8 +665,8 @@ def test_a_sentence_that_scopes_the_ones_after_it_yields_no_draft() -> None:
 
     nodes = (
         ("paragraph", "Synthetic stem which shall be completed by the items:"),
-        ("bullet", "synthetic first item naming DVC As;"),
-        ("bullet", "synthetic second item naming DVC B."),
+        ("bullet", "synthetic first item naming test;"),
+        ("bullet", "synthetic second item naming simulation."),
     )
 
     assert {item.node_references[0].node_order for item in _propose_nodes(nodes)} == {1, 2}
@@ -663,8 +683,8 @@ def test_a_paragraph_no_item_completes_still_yields_its_own_draft() -> None:
 
     proposals = _propose_nodes(
         (
-            ("paragraph", "Synthetic standalone reading naming DVC As, listing nothing:"),
-            ("paragraph", "Synthetic second standalone reading naming DVC B."),
+            ("paragraph", "Synthetic standalone reading naming test, listing nothing:"),
+            ("paragraph", "Synthetic second standalone reading naming simulation."),
         )
     )
 
@@ -673,7 +693,11 @@ def test_a_paragraph_no_item_completes_still_yields_its_own_draft() -> None:
 
 def test_a_grammar_declaring_an_unknown_inherited_dimension_is_refused() -> None:
     with pytest.raises(ValidationError, match="no dimension"):
-        ClauseFactGrammar(fact_kind="hf_attenuation", inherited_dimensions=("device_placement",))
+        ClauseFactGrammar(
+            fact_kind="hf_attenuation",
+            statement_kind="requirement",
+            inherited_dimensions=("device_placement",),
+        )
 
 
 # --- what stays unchosen --------------------------------------------------------------
@@ -686,14 +710,14 @@ def test_a_dimension_no_rule_settles_stays_out_of_the_reading() -> None:
 
     assert proposal.chosen == {"threshold_reference": ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC}
     assert set(proposal.unchosen) == {
-        name for name, _kind, _options in fact_dimensions("hf_attenuation")
+        name for name, _kind, _options in fact_dimensions("hf_attenuation", "requirement")
     } - {"threshold_reference"}
     assert proposal.fully_proposed is False
 
 
 def test_a_fully_proposed_draft_builds_its_typed_statement() -> None:
     (proposal,) = _propose(
-        ("Synthetic DVC As gate shall be shown by test, simulation or calculation.",)
+        ("Synthetic reading shall be shown by test, simulation or calculation.",)
     )
 
     fact = proposed_fact(proposal, statement_index=3)
@@ -701,11 +725,12 @@ def test_a_fully_proposed_draft_builds_its_typed_statement() -> None:
     assert proposal.fully_proposed is True
     assert fact.statement_index == 3
     assert fact.fact_kind == "hf_attenuation"
+    assert fact.statement_kind == "requirement"
     # The boolean dimension arrives as text and is converted exactly once.
     assert fact.comparison_required is True
     assert fact.node_references == proposal.node_references
     # The scope dimension arrives as its wire form and is decoded exactly once.
-    assert fact.dvc_gate == DimensionScope.of("dvc_as")
+    assert fact.evidence_kind == DimensionScope[str].unrestricted()
 
 
 def test_a_variant_family_offers_each_kinds_own_dimensions() -> None:
@@ -730,9 +755,9 @@ def test_a_variant_family_offers_each_kinds_own_dimensions() -> None:
 def test_a_one_kind_family_declares_no_variant_and_refuses_one() -> None:
     """Naming a kind for a family that states one would author a variant nobody declared."""
 
-    assert fact_variants("hf_attenuation") == ()
+    assert fact_variants("propagation_step") == ()
     with pytest.raises(RulePackageError, match="one statement kind"):
-        fact_dimensions("hf_attenuation", "measure")
+        fact_dimensions("propagation_step", "measure")
 
 
 def test_a_variant_family_refuses_to_be_read_without_a_kind() -> None:
@@ -803,9 +828,16 @@ def test_a_scope_dimension_is_offered_as_a_scope_over_its_own_vocabulary() -> No
     nothing saying why.
     """
 
-    kinds = {name: (kind, options) for name, kind, options in fact_dimensions("hf_attenuation")}
+    kinds = {
+        name: (kind, options)
+        for name, kind, options in fact_dimensions("hf_attenuation", "requirement")
+    }
+    gate = {
+        name: (kind, options)
+        for name, kind, options in fact_dimensions("hf_attenuation", "permission")
+    }
 
-    assert kinds["dvc_gate"] == ("scope", ("dvc_as", "dvc_b"))
+    assert gate["dvc_gate"] == ("scope", ("dvc_as", "dvc_b"))
     assert kinds["evidence_kind"] == ("scope", ("test", "simulation", "calculation"))
     assert kinds["obligation"][0] == "choice"
 
@@ -828,7 +860,7 @@ def test_a_scope_survives_its_wire_form_in_both_directions(
 
 
 def test_an_unchosen_dimension_cannot_be_turned_into_a_statement() -> None:
-    (proposal,) = _propose(("Synthetic DVC As gate and nothing else.",))
+    (proposal,) = _propose(("Synthetic test route and nothing else.",))
 
     with pytest.raises(ValueError, match="unchosen"):
         proposed_fact(proposal, statement_index=0)
@@ -914,6 +946,7 @@ def test_a_grammar_naming_a_dimension_its_family_lacks_is_refused() -> None:
     with pytest.raises(ValidationError, match="no dimension"):
         ClauseFactGrammar(
             fact_kind="hf_attenuation",
+            statement_kind="requirement",
             keyword_rules=(_keyword("device_placement", "internal_to_pecs", "internal"),),
         )
 
@@ -922,6 +955,7 @@ def test_a_grammar_naming_a_value_outside_its_dimensions_vocabulary_is_refused()
     with pytest.raises(ValidationError, match="no value"):
         ClauseFactGrammar(
             fact_kind="hf_attenuation",
+            statement_kind="permission",
             keyword_rules=(_keyword("dvc_gate", "dvc_c", "synthetic"),),
         )
 

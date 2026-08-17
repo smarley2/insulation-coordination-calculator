@@ -46,7 +46,8 @@ from insulation_coordination.rules.importer.clause_facts import (
     BarrierTransferStatement,
     ConfirmedFacts,
     DimensionScope,
-    HfAttenuationFact,
+    HfAttenuationPermissionFact,
+    HfAttenuationRequirementFact,
     OvercategoryStep,
     SpdMonitoringExemptionFact,
     SpdMonitoringRequirementFact,
@@ -1344,7 +1345,7 @@ _REVIEWED_AND_CONSUMER_DOMAINS: dict[str, tuple[tuple[str, ...], tuple[str, ...]
     #: unrestricted evidence reading projects an ``in`` rather than a wildcard, which
     #: ``_evidence_matcher`` used to arrange by hand.
     "evidence_kind": (
-        _reviewed_domain(HfAttenuationFact, "evidence_kind"),
+        _reviewed_domain(HfAttenuationRequirementFact, "evidence_kind"),
         _ATTENUATION_EVIDENCE_KINDS,
     ),
     #: The reviewed and consumer domains coincide here, so an unrestricted class reading is a
@@ -1355,7 +1356,7 @@ _REVIEWED_AND_CONSUMER_DOMAINS: dict[str, tuple[tuple[str, ...], tuple[str, ...]
         _reviewed_domain(SpdReductionPermissionFact, "insulation_classes"),
         _INSULATION_CLASSES,
     ),
-    "dvc_gate": (_reviewed_domain(HfAttenuationFact, "dvc_gate"), _DVC_DESIGNATIONS),
+    "dvc_gate": (_reviewed_domain(HfAttenuationPermissionFact, "dvc_gate"), _DVC_DESIGNATIONS),
 }
 
 
@@ -1740,23 +1741,37 @@ def project_hf_transformer_attenuation(
 ) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
     """Project the isolating-transformer attenuation clause into a decision.
 
-    Every row comes from one reviewed ``HfAttenuationFact``: it states the DVC gate the clause
-    applies to and the evidence route or routes it accepts. Both are scopes, so a statement naming
-    several designations or several routes is one statement and projects one row over them -- and an
-    unrestricted reading of either projects an ``in`` over the reviewed values rather than a
-    wildcard, because this rule declares a designation no reviewed reading of the clause names and
-    an evidence state -- the absence of any -- that no reviewed reading may be granted for.
-    ``working_voltage_basis_permitted`` is not independently authored content -- an accepted
-    evidence kind is what grants the permission, so it mirrors the fact's presence, the same way
-    a verified barrier's transfer permission mirrors its own presence in
-    ``project_verified_barrier_transfer``. Neither is the outstanding-showing row each gate also
-    gets: it is the same statement read from the other side, the route being an engineering-input
-    requirement until the attenuation is shown, never a permission. It comes first, so no
-    consumer reaches a permission by supplying no evidence.
+    **Both of the clause's readings are projected, and neither alone is the rule.** The permission
+    states the gate the working-voltage basis applies under; the demonstration requirement states
+    the evidence routes the transformer's ability may be shown by. This rule declares an input and
+    an output for each half, so each row's matchers and values trace to the statement that states
+    them, and the composition is the clause's -- which is what a clause projector is for. Reading
+    both halves off one flat fact was what forced the permission to carry an evidence route it never
+    states, and it is what the ``statement_kind`` split ends.
+
+    - The **shown** rows are one per reviewed permission: its own gate scope, against the evidence
+      routes the requirement statements accept. A scope is one condition with one answer, so a
+      permission naming both designations is one row, and the accepted routes are one ``in`` rather
+      than a row per route.
+    - The **outstanding** rows are one per concrete designation the permissions gate, and they exist
+      because a requirement was reviewed: the route is an engineering-input requirement until the
+      attenuation is shown, never a permission. One per designation rather than per statement,
+      because several permissions may gate one designation and the showing is outstanding for it
+      once. They come first, so no consumer reaches a permission by supplying no evidence -- and the
+      shown rows' evidence matcher is an ``in`` over the reviewed routes rather than a wildcard, so
+      the absence of a showing reaches no permission from that side either.
+
+    ``working_voltage_basis_permitted`` is not independently authored content: a permission statement
+    is what grants it, so it mirrors that statement's presence, the same way a verified barrier's
+    transfer permission mirrors its own in ``project_verified_barrier_transfer``.
+
+    A route missing **either** reading refuses rather than projecting half a clause: without a
+    permission there is no gate and nothing granted, and without a requirement there is no accepted
+    showing to condition the grant on -- projecting the permission alone would grant the basis to a
+    circuit that has shown nothing.
 
     The frequency threshold stays read from the fragment's own tokens rather than declared: it is
-    a numeric source value, and an existing test pins that behaviour. A route with no
-    reviewed facts refuses rather than falling back to an inventory nobody reviewed.
+    a numeric source value, and an existing test pins that behaviour.
     """
 
     label = "supply high-frequency transformer attenuation"
@@ -1767,11 +1782,29 @@ def project_hf_transformer_attenuation(
     facts = confirmed_facts.for_route(ids.SUPPLY_HF_TRANSFORMER_ATTENUATION)
     if not facts:
         raise ClauseStructureError(f"{label} needs reviewed clause facts for its route")
-    attenuation_facts = tuple(fact for fact in facts if isinstance(fact, HfAttenuationFact))
-    if len(attenuation_facts) != len(facts):
+    permissions = tuple(fact for fact in facts if isinstance(fact, HfAttenuationPermissionFact))
+    requirements = tuple(fact for fact in facts if isinstance(fact, HfAttenuationRequirementFact))
+    if len(permissions) + len(requirements) != len(facts):
         raise ValueError(f"{label} projection requires HF attenuation facts")
+    if not permissions:
+        raise ClauseStructureError(f"{label} needs a reviewed permission statement for its route")
+    if not requirements:
+        raise ClauseStructureError(f"{label} needs a reviewed demonstration requirement statement")
 
     reviewed_gates, consumer_gates = _REVIEWED_AND_CONSUMER_DOMAINS["dvc_gate"]
+    reviewed_evidence, _consumer_evidence = _REVIEWED_AND_CONSUMER_DOMAINS["evidence_kind"]
+    # The showings this clause's requirement accepts, in the reviewed domain's declared order. The
+    # union across the requirement statements, because each states which showings suffice and a
+    # second statement widens that rather than narrowing it -- and a statement restricting the
+    # routes to nothing accepts every reviewed one, never the absence of a showing.
+    accepted_evidence = tuple(
+        kind
+        for kind in reviewed_evidence
+        if any(
+            not fact.evidence_kind.values or kind in fact.evidence_kind.values
+            for fact in requirements
+        )
+    )
 
     def _row(*, gate: Matcher, evidence: Matcher, permitted: bool, required: str) -> DecisionRow:
         return DecisionRow(
@@ -1788,10 +1821,10 @@ def project_hf_transformer_attenuation(
             source=fragment.nodes[0].source,
         )
 
-    # One outstanding-showing row per concrete designation the facts gate rather than per fact:
-    # several statements may accept different routes through one designation, and they all leave
-    # the same showing outstanding. A statement whose gate restricts nothing leaves it outstanding
-    # for every designation its own reviewed domain names -- never for a designation outside it.
+    # One outstanding-showing row per concrete designation the permissions gate rather than per
+    # statement: several permissions may cover one designation, and the showing is outstanding for
+    # that designation once. A permission whose gate restricts nothing leaves it outstanding for
+    # every designation its own reviewed domain names -- never for a designation outside it.
     outstanding = tuple(
         _row(
             gate=_matcher("circuit_dvc", (designation,)),
@@ -1801,24 +1834,22 @@ def project_hf_transformer_attenuation(
         )
         for designation in dict.fromkeys(
             designation
-            for fact in attenuation_facts
+            for fact in permissions
             for designation in (fact.dvc_gate.values or reviewed_gates)
         )
     )
     shown = tuple(
         _row(
             gate=_scope_matcher("circuit_dvc", fact.dvc_gate, reviewed_gates, consumer_gates),
-            evidence=_reviewed_scope_matcher(
-                "attenuation_evidence_kind", "evidence_kind", fact.evidence_kind
-            ),
+            evidence=_matcher("attenuation_evidence_kind", accepted_evidence),
             permitted=True,
             required="already_provided",
         )
-        for fact in attenuation_facts
+        for fact in permissions
     )
-    # Over the per-statement rows only: the outstanding-showing rows are one per distinct gate
+    # Over the per-permission rows only: the outstanding-showing rows are one per distinct gate
     # and so distinct by construction, and they carry no statement to name in a refusal.
-    _require_distinct_branches(label, attenuation_facts, shown)
+    _require_distinct_branches(label, permissions, shown)
 
     rule = DecisionRule(
         id=ids.SUPPLY_HF_TRANSFORMER_ATTENUATION,

@@ -26,7 +26,8 @@ from insulation_coordination.rules.importer.clause_facts import (
     CitedNode,
     ConfirmedFacts,
     DimensionScope,
-    HfAttenuationFact,
+    HfAttenuationPermissionFact,
+    HfAttenuationRequirementFact,
     OvercategoryStep,
     SpdMonitoringComplianceFact,
     SpdMonitoringExemptionFact,
@@ -544,20 +545,29 @@ def _confirmed_spd_monitoring_facts(*facts: SpdMonitoringFact) -> ConfirmedFacts
     return ConfirmedFacts(by_route={route_id: facts})
 
 
-def _hf_attenuation_fact(
+def _hf_permission_fact(
     fragment: RawClauseFragment,
     *,
     index: int = 0,
     dvc_gate: DimensionScope[str] | None = None,
-    evidence_kind: str,
-) -> HfAttenuationFact:
+) -> HfAttenuationPermissionFact:
     """Invented values only: a synthetic reviewed statement, never real clause content."""
 
-    return HfAttenuationFact(
+    return HfAttenuationPermissionFact(
+        statement_index=index,
+        node_references=(_cited_node(fragment),),
+        obligation="permission",
+        dvc_gate=dvc_gate if dvc_gate is not None else DimensionScope.of("dvc_b"),  # type: ignore[arg-type]
+    )
+
+
+def _hf_requirement_fact(
+    fragment: RawClauseFragment, *, index: int, evidence_kind: str
+) -> HfAttenuationRequirementFact:
+    return HfAttenuationRequirementFact(
         statement_index=index,
         node_references=(_cited_node(fragment),),
         obligation="requirement",
-        dvc_gate=dvc_gate if dvc_gate is not None else DimensionScope.of("dvc_b"),  # type: ignore[arg-type]
         evidence_kind=scope_of(evidence_kind),  # type: ignore[arg-type]
         threshold_reference=ids.SUPPLY_HF_TRANSFORMER_ATTENUATION,
         comparison_required=True,
@@ -567,14 +577,27 @@ def _hf_attenuation_fact(
 def _confirmed_hf_facts(
     *,
     evidence_kinds: tuple[str, ...],
-    dvc_gate: DimensionScope[str] | None = None,
+    dvc_gates: tuple[DimensionScope[str], ...] = (),
     fragment: RawClauseFragment,
 ) -> ConfirmedFacts:
-    facts = tuple(
-        _hf_attenuation_fact(fragment, index=index, dvc_gate=dvc_gate, evidence_kind=kind)
+    """One reviewed statement of each kind the clause states, which is what the route projects.
+
+    A permission per declared gate and a requirement per accepted evidence route: the projector needs
+    both readings, so a fixture offering only one of them would exercise nothing but the refusal.
+    """
+
+    gates = dvc_gates or (None,)
+    permissions = tuple(
+        _hf_permission_fact(fragment, index=index, dvc_gate=gate)
+        for index, gate in enumerate(gates)
+    )
+    requirements = tuple(
+        _hf_requirement_fact(fragment, index=len(permissions) + index, evidence_kind=kind)
         for index, kind in enumerate(evidence_kinds)
     )
-    return ConfirmedFacts(by_route={ids.SUPPLY_HF_TRANSFORMER_ATTENUATION: facts})
+    return ConfirmedFacts(
+        by_route={ids.SUPPLY_HF_TRANSFORMER_ATTENUATION: permissions + requirements}
+    )
 
 
 _EMPTY_FACTS = ConfirmedFacts()
@@ -746,7 +769,7 @@ def test_a_loaded_grammar_unions_a_scope_rather_than_multiplying_it(
 
     (proposal,) = propose_supply_facts(fragment, route)
 
-    assert proposal.chosen["dvc_gate"] == "dvc_as|dvc_b"
+    assert proposal.chosen["evidence_kind"] == "simulation|test"
 
 
 def test_a_route_with_no_declared_grammar_proposes_nothing(
@@ -2093,8 +2116,10 @@ def test_hf_attenuation_follows_the_reviewed_facts() -> None:
         for matcher in row.matchers
         if matcher.input == "attenuation_evidence_kind"
     }
-    # One row per reviewed statement, plus the one outstanding-showing row the gate carries.
-    assert accepted == {("test",), ("simulation",), ("none",)}
+    # One row per reviewed *permission*, over the showings the requirements accept between them,
+    # plus the one outstanding-showing row the gate carries. Two requirement statements widen the
+    # accepted set rather than projecting a row each: which showings suffice is one condition.
+    assert accepted == {("test", "simulation"), ("none",)}
 
 
 def test_a_reviewed_evidence_kind_permits_the_working_voltage_basis() -> None:
@@ -2148,17 +2173,21 @@ def test_one_statement_may_accept_every_evidence_route_it_names() -> None:
     assert _value(outstanding, "working_voltage_basis_permitted") is False
 
 
-def test_an_any_evidence_statement_overlapping_a_specific_one_is_refused() -> None:
-    """Two statements under one gate, sharing one accepted evidence kind between them.
+def test_an_unrestricted_gate_overlapping_a_specific_one_is_refused() -> None:
+    """Two permissions sharing one designation between them, one of them unrestricted.
 
-    Equality alone would miss this: the ``in`` row this ``any_evidence`` statement projects and
-    the ``equals`` row the ``test`` statement projects are never equal and neither is ``any``, so
-    a comparison by equality would call them disjoint even though both answer for ``test`` -- the
-    ``in`` row would then shadow the ``equals`` row over that value permanently.
+    Equality alone would miss this: the ``in`` row the unrestricted reading projects and the
+    ``equals`` row the single-designation reading projects are never equal and neither is ``any``,
+    so a comparison by equality would call them disjoint even though both answer for ``dvc_as`` --
+    the ``in`` row would then shadow the ``equals`` row over that designation permanently.
     """
 
     fragment = _hf_fragment(("42", "kHz"))
-    facts = _confirmed_hf_facts(evidence_kinds=("*", "test"), fragment=fragment)
+    facts = _confirmed_hf_facts(
+        evidence_kinds=("test",),
+        dvc_gates=(DimensionScope[str].unrestricted(), DimensionScope.of("dvc_as")),  # type: ignore[arg-type]
+        fragment=fragment,
+    )
 
     with pytest.raises(ClauseStructureError, match="not disjoint"):
         _project_hf_transformer(fragment, facts)
@@ -2175,7 +2204,9 @@ def test_a_dvc_gate_no_fact_states_is_not_covered() -> None:
 
     fragment = _hf_fragment(("42", "kHz"))
     facts = _confirmed_hf_facts(
-        evidence_kinds=("test",), dvc_gate=DimensionScope.of("dvc_b"), fragment=fragment
+        evidence_kinds=("test",),
+        dvc_gates=(DimensionScope.of("dvc_b"),),  # type: ignore[arg-type]
+        fragment=fragment,
     )
     rule = _project_hf_transformer(fragment, facts)
     assert _lookup(rule, **_hf_inputs(circuit_dvc="dvc_as")) is None
@@ -2192,7 +2223,7 @@ def test_one_statement_naming_both_gates_is_one_statement_and_one_row() -> None:
     fragment = _hf_fragment(("42", "kHz"))
     facts = _confirmed_hf_facts(
         evidence_kinds=("test",),
-        dvc_gate=DimensionScope.of("dvc_b", "dvc_as"),
+        dvc_gates=(DimensionScope.of("dvc_b", "dvc_as"),),  # type: ignore[arg-type]
         fragment=fragment,
     )
     rule = _project_hf_transformer(fragment, facts)
@@ -2225,7 +2256,7 @@ def test_an_unrestricted_gate_reading_stops_at_the_reviewed_designations() -> No
     fragment = _hf_fragment(("42", "kHz"))
     facts = _confirmed_hf_facts(
         evidence_kinds=("test",),
-        dvc_gate=DimensionScope[str].unrestricted(),
+        dvc_gates=(DimensionScope[str].unrestricted(),),
         fragment=fragment,
     )
     rule = _project_hf_transformer(fragment, facts)
@@ -2243,6 +2274,29 @@ def test_hf_attenuation_refuses_to_project_without_facts() -> None:
         project_hf_transformer_attenuation(
             _hf_fragment(("42", "kHz")), IDENTITY, confirmed_facts=ConfirmedFacts()
         )
+
+
+def test_hf_attenuation_refuses_a_route_missing_either_of_its_two_readings() -> None:
+    """Half the clause is not a rule, and the halves fail for different reasons.
+
+    Without a permission there is no gate and nothing granted. Without a demonstration requirement
+    there is no accepted showing to condition the grant on, so projecting the permission alone would
+    grant the working-voltage basis to a circuit that has shown nothing -- a wrong answer where the
+    route refusing gives none.
+    """
+
+    fragment = _hf_fragment(("42", "kHz"))
+    route = ids.SUPPLY_HF_TRANSFORMER_ATTENUATION
+
+    requirement_only = ConfirmedFacts(
+        by_route={route: (_hf_requirement_fact(fragment, index=0, evidence_kind="test"),)}
+    )
+    with pytest.raises(ClauseStructureError, match="permission"):
+        _project_hf_transformer(fragment, requirement_only)
+
+    permission_only = ConfirmedFacts(by_route={route: (_hf_permission_fact(fragment),)})
+    with pytest.raises(ClauseStructureError, match="demonstration requirement"):
+        _project_hf_transformer(fragment, permission_only)
 
 
 def test_hf_attenuation_keeps_its_declared_contract() -> None:

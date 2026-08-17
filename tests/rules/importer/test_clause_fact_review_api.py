@@ -18,7 +18,7 @@ from insulation_coordination.rules.importer.clause_facts import (
     ClauseFactCompletion,
     ClauseFactReview,
     DimensionScope,
-    HfAttenuationFact,
+    HfAttenuationRequirementFact,
     OvercategoryStep,
     SpdReductionPermissionFact,
     SupplyFact,
@@ -76,20 +76,24 @@ def _hf_fact(
     *,
     statement_index: int,
     fragment_id: str = HF_FRAGMENT_ID,
-    dvc_gate: str = "dvc_as",
-) -> HfAttenuationFact:
-    """One authored statement citing the synthetic HF fragment's own first node.
+    evidence_kind: str = "test",
+) -> HfAttenuationRequirementFact:
+    """One authored demonstration requirement citing the synthetic HF fragment's own first node.
 
-    The gate is built through the constructor rather than patched in with ``model_copy``: a scope
-    reaching a fact unvalidated is a fact whose digest covers a value its own family never declared.
+    The family's requirement variant rather than its permission, because it is the one carrying a
+    scope, a boolean and a route reference between them -- so one statement exercises every shape the
+    surfaces under test have to round-trip.
+
+    The evidence scope is built through the constructor rather than patched in with ``model_copy``: a
+    scope reaching a fact unvalidated is a fact whose digest covers a value its own family never
+    declared.
     """
 
-    return HfAttenuationFact(
+    return HfAttenuationRequirementFact(
         statement_index=statement_index,
         node_references=(_cited(draft, fragment_id),),
         obligation="requirement",
-        dvc_gate=DimensionScope.of(dvc_gate),  # type: ignore[arg-type]
-        evidence_kind=scope_of("test"),
+        evidence_kind=scope_of(evidence_kind),  # type: ignore[arg-type]
         threshold_reference=ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC,
         comparison_required=True,
     )
@@ -180,12 +184,12 @@ def _blocked(draft: ImportedRuleDraft) -> set[str]:
 
 
 @pytest.fixture
-def hf_fact(draft_with_supply_fragments: ImportedRuleDraft) -> HfAttenuationFact:
+def hf_fact(draft_with_supply_fragments: ImportedRuleDraft) -> HfAttenuationRequirementFact:
     return _hf_fact(draft_with_supply_fragments, statement_index=0)
 
 
 @pytest.fixture
-def second_hf_fact(draft_with_supply_fragments: ImportedRuleDraft) -> HfAttenuationFact:
+def second_hf_fact(draft_with_supply_fragments: ImportedRuleDraft) -> HfAttenuationRequirementFact:
     """A genuinely second statement: another index *and* another reading.
 
     One dimension differs, because a statement that repeats a reading under a new index is now
@@ -193,7 +197,7 @@ def second_hf_fact(draft_with_supply_fragments: ImportedRuleDraft) -> HfAttenuat
     refusal instead of the staleness it is here for.
     """
 
-    return _hf_fact(draft_with_supply_fragments, statement_index=1, dvc_gate="dvc_b")
+    return _hf_fact(draft_with_supply_fragments, statement_index=1, evidence_kind="simulation")
 
 
 def test_a_route_without_facts_blocks_approval(draft_with_supply_fragments) -> None:
@@ -744,7 +748,7 @@ def _author_hf_citing(
     fact = _hf_fact(
         draft,
         statement_index=statement_index,
-        dvc_gate="dvc_as" if statement_index % 2 else "dvc_b",
+        evidence_kind="test" if statement_index % 2 else "simulation",
     )
     return author_clause_fact(
         draft,

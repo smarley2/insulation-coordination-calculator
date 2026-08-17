@@ -28,7 +28,8 @@ from insulation_coordination.rules.importer.clause_facts import (
     BarrierCombinedRequirementFact,
     CitedNode,
     DimensionScope,
-    HfAttenuationFact,
+    HfAttenuationPermissionFact,
+    HfAttenuationRequirementFact,
     OvercategoryStep,
     SpdMonitoringRequirementFact,
     SpdReductionFloorFact,
@@ -292,12 +293,19 @@ def _placeholder_facts(draft: ImportedRuleDraft) -> dict[str, tuple[SupplyFact, 
                 participates_in_reduction=True,
             ),
         ),
+        # One statement of each kind this clause states: the route projects both readings, so a
+        # placeholder set holding only one of them reaches the projector's refusal instead of a rule.
         ids.SUPPLY_HF_TRANSFORMER_ATTENUATION: (
-            HfAttenuationFact(
+            HfAttenuationPermissionFact(
                 statement_index=0,
                 node_references=_first_cited_node(draft, ids.SUPPLY_HF_TRANSFORMER_ATTENUATION),
                 obligation="permission",
                 dvc_gate=DimensionScope.of("dvc_b"),
+            ),
+            HfAttenuationRequirementFact(
+                statement_index=1,
+                node_references=_first_cited_node(draft, ids.SUPPLY_HF_TRANSFORMER_ATTENUATION),
+                obligation="requirement",
                 evidence_kind=scope_of("simulation"),
                 threshold_reference=ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC,
                 comparison_required=True,

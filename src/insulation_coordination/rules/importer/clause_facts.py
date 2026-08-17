@@ -647,27 +647,79 @@ DvcGate = Literal["dvc_as", "dvc_b"]
 AttenuationEvidence = Literal["test", "simulation", "calculation"]
 
 
-class HfAttenuationFact(_Fact):
+class HfAttenuationStatement(_Fact):
+    """What both attenuation statements share, which is the family and nothing else.
+
+    The clause states two normatively different readings: a **permission** -- under a stated DVC
+    gate and the isolating-transformer condition, the insulation may be determined on the working
+    voltage basis -- and a **demonstration requirement** obliging the transformer's ability to be
+    shown, by one of the evidence routes it names, against the threshold another rule resolves. One
+    flat shape could hold only one of them: the permission states no evidence route, no threshold to
+    compare against and no comparison, so authoring it meant inventing three dimensions it does not
+    state, and authoring the requirement meant inventing the gate.
+
+    So the family discriminates on ``statement_kind`` inside one ``fact_kind``, as the other four
+    variant families do. Amendment A3's own table listed this family as stating one kind; that entry
+    is what this splits, on the maintainer's reading of the clause, and A3's governing rule -- no
+    variant may force a dimension its statements do not state -- is what requires it.
+    """
+
     fact_kind: Literal["hf_attenuation"] = "hf_attenuation"
-    #: A scope rather than one designation, because a statement naming both gates is one
-    #: statement. Authored as a scalar it had to be authored twice, which projected two rows and
-    #: showed as two drafts for one sentence -- a reading duplicated to fit the field's shape.
+
+
+class HfAttenuationPermissionFact(HfAttenuationStatement):
+    """One statement of the gate the working-voltage basis is permitted under.
+
+    A scope rather than one designation, because a statement naming both gates is one statement.
+    Authored as a scalar it had to be authored twice, which projected two rows and showed as two
+    drafts for one sentence -- a reading duplicated to fit the field's shape.
+
+    It states **no evidence route**: what the permission says is which circuits may use the basis,
+    and by which showing is the requirement's own reading. The projector reads the absence as
+    unrestricted *within the reviewed routes* -- never a wildcard, so the permission is never granted
+    to a circuit that has shown nothing, which is the one evidence state the reviewed vocabulary
+    deliberately cannot name.
+    """
+
+    statement_kind: Literal["permission"] = "permission"
     dvc_gate: DimensionScope[DvcGate]
-    #: A scope for the same reason, and the narrower-reviewed-domain case the general projection
-    #: rule already handles: an unrestricted reading accepts every route the statement can name and
-    #: never the absence of one, which is exactly what ``_evidence_matcher`` was written by hand to
-    #: do while this field was a scalar carrying an ``any_evidence`` token.
+
+
+class HfAttenuationRequirementFact(HfAttenuationStatement):
+    """One statement of the showing the transformer's ability is owed by.
+
+    It states **no gate**: the requirement is scoped by the case the permission states, and the
+    designations are named there rather than here, so carrying a gate would be the invented dimension
+    from the other side.
+
+    ``evidence_kind`` is a scope for the reason every reviewed set is one, and it is the
+    narrower-reviewed-domain case the general projection rule already handles: an unrestricted
+    reading accepts every route the statement can name and never the absence of one, which is
+    exactly what ``_evidence_matcher`` was written by hand to do while this field was a scalar
+    carrying an ``any_evidence`` token.
+    """
+
+    statement_kind: Literal["requirement"] = "requirement"
     evidence_kind: DimensionScope[AttenuationEvidence]
-    #: Known gap, disclosed rather than dropped: neither field is read by any projector yet. The
-    #: executable contract this route needs is a verification *result* -- a comparison against the
-    #: requirement the referenced route resolves -- rather than the evidence kind the rule can
-    #: express today. #53C item 4 turns both into it; until then the fact carries a reading the
-    #: rule cannot yet consume, the way ``SpdMonitoringFact.compliance_evidence`` does.
+    #: Known gap, disclosed rather than dropped: neither this nor ``comparison_required`` is read by
+    #: any projector. The executable contract this route needs is a verification *result* -- a
+    #: comparison against the requirement the referenced route resolves -- rather than the evidence
+    #: kind the rule can express today. #53C item 4 turns both into it; until then the statement
+    #: carries a reading the rule cannot yet consume, the way
+    #: ``SpdMonitoringComplianceFact.compliance_evidence`` does.
     threshold_reference: RouteIdentifier
     #: Carried rather than dropped even where every authored reading gives it the same value: it is
     #: part of the reading, and a field is not redundant for being constant across a fact set.
     #: #53C item 4 is where its second value becomes reachable.
     comparison_required: bool
+
+
+#: The family's two variants under one ``fact_kind``, discriminated by ``statement_kind``. The
+#: route-to-family declaration, the family discriminator and the archive schema are unchanged.
+HfAttenuationFact = Annotated[
+    HfAttenuationPermissionFact | HfAttenuationRequirementFact,
+    Field(discriminator="statement_kind"),
+]
 
 
 SupplyFact = Annotated[
@@ -788,6 +840,9 @@ __all__ = [
     "DvcGate",
     "EarthingArrangement",
     "HfAttenuationFact",
+    "HfAttenuationPermissionFact",
+    "HfAttenuationRequirementFact",
+    "HfAttenuationStatement",
     "InputTopology",
     "InsulationClass",
     "MonitoringComplianceEvidence",

@@ -136,11 +136,17 @@ def synthetic_private_grammars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     )
 
     synthetic_rules = {
+        # The attenuation family's proposed kind is its demonstration requirement -- see
+        # ``proposed_kinds`` -- so these rules settle that variant's own dimensions. Its scope, its
+        # boolean and the constant below are between them every widget kind the editor offers except
+        # a pair collection, which is why this is the family the public surfaces run through.
         "hf_attenuation": (
             ClauseKeywordRule(dimension="obligation", value="requirement", keywords=("synthbind",)),
             ClauseKeywordRule(dimension="obligation", value="permission", keywords=("synthallow",)),
-            ClauseKeywordRule(dimension="dvc_gate", value="dvc_as", keywords=("synthgateone",)),
-            ClauseKeywordRule(dimension="dvc_gate", value="dvc_b", keywords=("synthgatetwo",)),
+            ClauseKeywordRule(dimension="evidence_kind", value="test", keywords=("synthgateone",)),
+            ClauseKeywordRule(
+                dimension="evidence_kind", value="simulation", keywords=("synthgatetwo",)
+            ),
             # The unrestricted reading of a scope dimension, spelled in the scope's own wire form.
             ClauseKeywordRule(
                 dimension="evidence_kind", value=SCOPE_UNRESTRICTED, keywords=("synthevidence",)
@@ -206,12 +212,18 @@ def synthetic_private_grammars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             ),
         )
     }
+    #: Which variant a family's synthetic grammar proposes, where it is not the first one declared.
+    #: The attenuation family declares its permission first, in the order the clause reads, but the
+    #: statement a grammar can settle every dimension of is its demonstration requirement -- and one
+    #: grammar declares exactly one kind, so the other is authored by hand. The real declarations
+    #: beside the licensed material make the same choice for the same reason.
+    proposed_kinds = {"hf_attenuation": "requirement"}
     directory = tmp_path / "synthetic-private-material"
     directory.mkdir()
     payload = {
         route: ClauseFactGrammar(
             fact_kind=family,
-            statement_kind=next(iter(fact_variants(family)), ""),
+            statement_kind=proposed_kinds.get(family, next(iter(fact_variants(family)), "")),
             keyword_rules=synthetic_rules.get(family, ()),
             sequence_rules=synthetic_sequences.get(family, ()),
             constants=(

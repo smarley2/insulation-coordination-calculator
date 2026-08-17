@@ -34,7 +34,8 @@ from insulation_coordination.rules.importer.clause_facts import (
     BarrierRatingResolutionFact,
     CitedNode,
     DimensionScope,
-    HfAttenuationFact,
+    HfAttenuationPermissionFact,
+    HfAttenuationRequirementFact,
     OvercategoryStep,
     PropagationStepFact,
     RouteReference,
@@ -66,7 +67,8 @@ FactModel = type[
     | SpdMonitoringRequirementFact
     | SpdMonitoringExemptionFact
     | SpdMonitoringComplianceFact
-    | HfAttenuationFact
+    | HfAttenuationPermissionFact
+    | HfAttenuationRequirementFact
 ]
 
 #: Every statement variant each declared fact family builds, in declaration order. The single
@@ -94,7 +96,7 @@ FACT_MODELS_BY_KIND: dict[str, tuple[FactModel, ...]] = {
         SpdMonitoringExemptionFact,
         SpdMonitoringComplianceFact,
     ),
-    "hf_attenuation": (HfAttenuationFact,),
+    "hf_attenuation": (HfAttenuationPermissionFact, HfAttenuationRequirementFact),
 }
 
 #: ``fact_kind`` is the family itself, fixed per route; ``statement_kind`` is which variant of it,
