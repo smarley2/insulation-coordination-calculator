@@ -38,7 +38,7 @@ from insulation_coordination.domain.project import (
 )
 from insulation_coordination.domain.quantities import DecimalValue
 from insulation_coordination.domain.rules import Maximum, RulePackage, SourceReference, Variable
-from insulation_coordination.domain.trace import Quantity, TraceStep
+from insulation_coordination.domain.trace import CalculationWarning, Quantity, TraceStep
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_formula
 
 CALCULATION_ENGINE_VERSION = "pcb-annex-gh-3"
@@ -63,13 +63,6 @@ __all__ = [
     "VerificationRequirement",
     "calculate_pair",
 ]
-
-
-class CalculationWarning(FrozenModel):
-    code: str
-    message: str
-    semantic_rule_id: str | None = None
-    source_reference: SourceReference | None = None
 
 
 class VerificationRequirement(FrozenModel):

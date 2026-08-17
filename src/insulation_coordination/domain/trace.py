@@ -22,6 +22,22 @@ class Quantity(FrozenModel):
         return value
 
 
+class CalculationWarning(FrozenModel):
+    """Something a reader must be told about a result that was still produced.
+
+    Lives beside :class:`TraceStep` rather than in the clearance engine that first raised
+    one, because a warning is part of what a derivation reports and the derivations that
+    report one are spread across ``domain/`` and ``calculation/``. Keeping it here is what
+    lets a domain model hold its own warnings without importing an engine that will, in
+    turn, come to import that model.
+    """
+
+    code: str
+    message: str
+    semantic_rule_id: str | None = None
+    source_reference: SourceReference | None = None
+
+
 class TraceStep(FrozenModel):
     semantic_rule_id: Identifier
     operation: Identifier
