@@ -48,10 +48,11 @@ from insulation_coordination.ui.galvanic_domains import GalvanicDomainsPanel
 from insulation_coordination.ui.help_indicator import HelpIndicator, labelled
 from insulation_coordination.ui.net_class_classification import NetClassClassificationPanel
 from insulation_coordination.ui.value_options import (
-    IMPULSE_OPTIONS,
+    IMPULSE_UNAVAILABLE_TEXT,
     MATERIAL_OPTIONS,
     POLLUTION_OPTIONS,
     impulse_display,
+    impulse_options,
     populate_combo,
     select_combo_value,
 )
@@ -74,6 +75,9 @@ class ProjectPage(QWidget):
         super().__init__()
         self._project: Project | None = None
         self._dirty = False
+        # Empty until a package arrives: the impulse levels are rule content, so the
+        # field offers nothing at all rather than a built-in list of its own.
+        self._impulse_options: tuple[tuple[str, Decimal], ...] = ()
 
         outer = QVBoxLayout(self)
         scroll = QScrollArea()
@@ -108,7 +112,11 @@ class ProjectPage(QWidget):
         self._freq_help = HelpIndicator(VoltageGuidanceId.FREQUENCY)
         defaults_layout.addRow(labelled("Frequency (Hz):", self._freq_help), self._freq_edit)
         self._impulse_combo = QComboBox()
-        populate_combo(self._impulse_combo, IMPULSE_OPTIONS)
+        populate_combo(
+            self._impulse_combo,
+            self._impulse_options,
+            unavailable_text=IMPULSE_UNAVAILABLE_TEXT,
+        )
         self._impulse_combo.currentIndexChanged.connect(
             lambda index: self._update_combo_default("impulse_v", self._impulse_combo, index)
         )
@@ -224,8 +232,25 @@ class ProjectPage(QWidget):
             f"{package.manifest.package_id} v{package.manifest.version} "
             f"({package.package_sha256 or 'no digest'})"
         )
+        self._impulse_options = impulse_options(package)
+        # A package can arrive after the project, so re-offer the choices around the
+        # value already on show instead of waiting for the next project load.
+        self._impulse_combo.blockSignals(True)
+        self._show_impulse_default()
+        self._impulse_combo.blockSignals(False)
         self._classification_panel.set_rules_package(package)
         self._barriers_panel.set_rules_package(package)
+
+    def _show_impulse_default(self) -> None:
+        """Offer the package's impulse levels around the default currently stored."""
+        value = None if self._project is None else self._project.defaults.impulse_v
+        select_combo_value(
+            self._impulse_combo,
+            self._impulse_options,
+            value,
+            None if value is None else impulse_display(value),
+            unavailable_text=IMPULSE_UNAVAILABLE_TEXT,
+        )
 
     def load_project(self, project: Project) -> None:
         self._project = project
@@ -248,12 +273,7 @@ class ProjectPage(QWidget):
         defaults = project.defaults
         self._freq_edit.setText("" if defaults.frequency_hz is None else str(defaults.frequency_hz))
         self._altitude_edit.setText("" if defaults.altitude_m is None else str(defaults.altitude_m))
-        select_combo_value(
-            self._impulse_combo,
-            IMPULSE_OPTIONS,
-            defaults.impulse_v,
-            None if defaults.impulse_v is None else impulse_display(defaults.impulse_v),
-        )
+        self._show_impulse_default()
         select_combo_value(
             self._pollution_combo,
             POLLUTION_OPTIONS,

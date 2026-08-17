@@ -18,8 +18,10 @@ from insulation_coordination.project.image_attachments import ImageAttachmentErr
 from insulation_coordination.ui.app import create_application
 from insulation_coordination.ui.main_window import MainWindow
 from insulation_coordination.ui.project_pages import ProjectPage
+from insulation_coordination.ui.value_options import IMPULSE_UNAVAILABLE_TEXT
 from tests.fixtures.images import gif_bytes, png_bytes
 from tests.fixtures.synthetic_rules import synthetic_rule_package
+from tests.ui.conftest import with_synthetic_impulse_axis
 
 
 @pytest.fixture
@@ -43,6 +45,13 @@ def qtbot_project(qtbot):
     page.load_project(project)
     qtbot.addWidget(page)
     return page
+
+
+@pytest.fixture
+def qtbot_project_with_rules(qtbot_project):
+    """A ProjectPage whose impulse choices come from a synthetic approved package."""
+    qtbot_project.set_rules_package(with_synthetic_impulse_axis(synthetic_rule_package()))
+    return qtbot_project
 
 
 def test_adding_three_net_classes_creates_three_pairs(qtbot, qtbot_project):
@@ -183,36 +192,14 @@ def test_a_classification_edit_emits_one_project_changed_and_leaves_pairs_untouc
     assert page.project.pairs == pairs_before
 
 
-def test_project_default_dropdown_choices(qtbot, qtbot_project):
-    page = qtbot_project
+def test_project_default_dropdown_choices(qtbot, qtbot_project_with_rules):
+    page = qtbot_project_with_rules
     assert [page._impulse_combo.itemText(i) for i in range(page._impulse_combo.count())] == [
         "",
-        "0.33 kV",
-        "0.40 kV",
-        "0.50 kV",
-        "0.60 kV",
-        "0.80 kV",
-        "1.0 kV",
-        "1.2 kV",
-        "1.5 kV",
-        "2.0 kV",
-        "2.5 kV",
-        "3.0 kV",
-        "4.0 kV",
-        "5.0 kV",
-        "6.0 kV",
-        "8.0 kV",
-        "10 kV",
-        "12 kV",
-        "15 kV",
-        "20 kV",
-        "25 kV",
-        "30 kV",
-        "40 kV",
-        "50 kV",
-        "60 kV",
-        "80 kV",
-        "100 kV",
+        "0.11 kV",
+        "2.2 kV",
+        "7.7 kV",
+        "33 kV",
     ]
     assert [page._pollution_combo.itemText(i) for i in range(page._pollution_combo.count())] == [
         "",
@@ -228,12 +215,12 @@ def test_project_default_dropdown_choices(qtbot, qtbot_project):
     ]
 
 
-def test_project_default_dropdowns_update_existing_model(qtbot, qtbot_project):
-    page = qtbot_project
-    page._impulse_combo.setCurrentText("2.5 kV")
+def test_project_default_dropdowns_update_existing_model(qtbot, qtbot_project_with_rules):
+    page = qtbot_project_with_rules
+    page._impulse_combo.setCurrentText("2.2 kV")
     page._pollution_combo.setCurrentText("2")
     page._cti_combo.setCurrentText("IIIa")
-    assert page.project.defaults.impulse_v == Decimal(2500)
+    assert page.project.defaults.impulse_v == Decimal(2200)
     assert page.project.defaults.pollution_degree == 2
     assert page.project.defaults.cti_or_material_group == "IIIa"
     page._impulse_combo.setCurrentIndex(0)
@@ -590,12 +577,14 @@ def test_bulk_add_rejects_an_empty_base_name(qtbot, qtbot_project):
     assert page.project.net_class_names == ()
 
 
-def test_reloading_a_project_shows_listed_defaults_without_a_legacy_marker(qtbot, qtbot_project):
-    page = qtbot_project
+def test_reloading_a_project_shows_listed_defaults_without_a_legacy_marker(
+    qtbot, qtbot_project_with_rules
+):
+    page = qtbot_project_with_rules
     project = page.project.model_copy(
         update={
             "defaults": ProjectDefaults(
-                impulse_v=Decimal(1200),
+                impulse_v=Decimal(2200),
                 pollution_degree=2,
                 cti_or_material_group="II",
             )
@@ -604,9 +593,38 @@ def test_reloading_a_project_shows_listed_defaults_without_a_legacy_marker(qtbot
 
     page.load_project(project)
 
-    assert page._impulse_combo.currentText() == "1.2 kV"
+    assert page._impulse_combo.currentText() == "2.2 kV"
     assert page._pollution_combo.currentText() == "2"
     assert page._cti_combo.currentText() == "II"
+
+
+def test_impulse_says_it_is_unavailable_until_a_package_supplies_the_levels(qtbot, qtbot_project):
+    page = qtbot_project
+
+    assert page._impulse_combo.currentText() == IMPULSE_UNAVAILABLE_TEXT
+    assert page._impulse_combo.count() == 1
+    assert page.project.defaults.impulse_v is None
+
+
+def test_a_stored_default_survives_a_missing_package_as_a_legacy_entry(qtbot, qtbot_project):
+    """An old project must still open, save, and show its level without a package."""
+    page = qtbot_project
+    project = page.project.model_copy(update={"defaults": ProjectDefaults(impulse_v=Decimal(2200))})
+
+    page.load_project(project)
+
+    assert page._impulse_combo.currentText() == "2.2 kV (legacy)"
+    assert page.project.defaults.impulse_v == Decimal(2200)
+
+
+def test_a_stored_default_off_the_package_axis_stays_marked_legacy(qtbot, qtbot_project_with_rules):
+    page = qtbot_project_with_rules
+    project = page.project.model_copy(update={"defaults": ProjectDefaults(impulse_v=Decimal(4321))})
+
+    page.load_project(project)
+
+    assert page._impulse_combo.currentText() == "4.321 kV (legacy)"
+    assert page.project.defaults.impulse_v == Decimal(4321)
 
 
 def test_voltage_defaults_carry_the_same_help_as_the_pair_editor(qtbot_project):

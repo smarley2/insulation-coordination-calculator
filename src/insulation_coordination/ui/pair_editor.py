@@ -51,10 +51,11 @@ from insulation_coordination.ui.pair_models import (
     PairListModel,
 )
 from insulation_coordination.ui.value_options import (
-    IMPULSE_OPTIONS,
+    IMPULSE_UNAVAILABLE_TEXT,
     MATERIAL_OPTIONS,
     POLLUTION_OPTIONS,
     impulse_display,
+    impulse_options,
     populate_combo,
     select_combo_value,
 )
@@ -220,6 +221,9 @@ class PairEditor(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._pair: PairCase | None = None
         self._defaults: ProjectDefaults | None = None
+        # Empty until a package arrives: an override must offer exactly the levels the
+        # active package approves, so there is no built-in list to start from.
+        self._impulse_options: tuple[tuple[str, Decimal], ...] = ()
 
         layout = QVBoxLayout(self)
 
@@ -325,7 +329,12 @@ class PairEditor(QWidget):
         )
 
         self._impulse_combo = QComboBox()
-        populate_combo(self._impulse_combo, IMPULSE_OPTIONS, blank=False)
+        populate_combo(
+            self._impulse_combo,
+            self._impulse_options,
+            blank=False,
+            unavailable_text=IMPULSE_UNAVAILABLE_TEXT,
+        )
         self._impulse_combo.currentIndexChanged.connect(self._on_impulse_selected)
         self._impulse_source_label = FieldStateBadge(
             VoltageGuidanceId.INHERITED_DEFAULT, _OVERRIDE_STATES
@@ -451,6 +460,16 @@ class PairEditor(QWidget):
     def frequency_source_text(self) -> str:
         return self._freq_source_label.text()
 
+    def set_impulse_options(self, options: tuple[tuple[str, Decimal], ...]) -> None:
+        """Offer the impulse levels the active package approves.
+
+        A package can arrive after a pair is on screen, so the pair is re-shown around
+        the new choices rather than keeping the ones it was opened with.
+        """
+        self._impulse_options = options
+        if self._pair is not None:
+            self.load_pair(self._pair, self._defaults)
+
     def load_pair(self, pair: PairCase, defaults: ProjectDefaults | None = None) -> None:
         self._pair = pair
         self._defaults = defaults
@@ -490,10 +509,11 @@ class PairEditor(QWidget):
         impulse_value = effective.impulse_v.value if effective is not None else pair.impulse_v.value
         select_combo_value(
             self._impulse_combo,
-            IMPULSE_OPTIONS,
+            self._impulse_options,
             impulse_value,
             None if impulse_value is None else impulse_display(impulse_value),
             blank=False,
+            unavailable_text=IMPULSE_UNAVAILABLE_TEXT,
         )
         field_value = (
             effective.field_condition.value if effective is not None else pair.field_condition.value
@@ -1103,6 +1123,7 @@ class PairPage(QWidget):
 
     def load_rules(self, rules: RulePackage) -> None:
         self._rules = rules
+        self.editor.set_impulse_options(impulse_options(rules))
 
     def select_pair_by_id(self, pair_id: str) -> None:
         self._selected_pair_id = pair_id

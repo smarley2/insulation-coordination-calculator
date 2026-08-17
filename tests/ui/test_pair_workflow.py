@@ -24,6 +24,7 @@ from insulation_coordination.domain.rules import RulePackage
 from insulation_coordination.project.pairs import reconcile_pairs
 from insulation_coordination.rules.archive import load_rule_package, write_rule_package
 from tests.fixtures.synthetic_rules import synthetic_part1_rule_package as synthetic_rule_package
+from tests.ui.conftest import with_synthetic_impulse_axis
 
 
 def _uuid(seed: int) -> UUID:
@@ -44,7 +45,7 @@ def _make_project(net_names: tuple[str, ...]) -> Project:
         ),
         defaults=ProjectDefaults(
             frequency_hz=Decimal(50),
-            impulse_v=Decimal(1200),
+            impulse_v=Decimal(2200),
             insulation_type=InsulationType.BASIC,
             field_condition=FieldCondition.INHOMOGENEOUS,
             altitude_m=Decimal(0),
@@ -60,7 +61,7 @@ def _make_project(net_names: tuple[str, ...]) -> Project:
 @pytest.fixture
 def synthetic_rules(tmp_path: Path) -> RulePackage:
     path = tmp_path / "synthetic.icrules"
-    write_rule_package(path, synthetic_rule_package())
+    write_rule_package(path, with_synthetic_impulse_axis(synthetic_rule_package()))
     return load_rule_package(path)
 
 
@@ -83,7 +84,7 @@ def _set_valid_inputs(page) -> None:
         page.editor.set_steady_state_peak("300 V")
         page.editor.set_recurring_peak("400 V")
         page.editor.set_temporary_overvoltage_not_applicable()
-        page.editor.set_impulse_override("800 V")
+        page.editor.set_impulse_override("750 V")
 
 
 def test_matrix_lower_half_references_same_pair(qtbot, pair_page):
@@ -187,7 +188,7 @@ def test_recalculate_reports_missing_frequency_with_pair_label(qtbot, pair_page,
                                 ),
                             }
                         ),
-                        "impulse_v": pair.impulse_v.override(Decimal(800)),
+                        "impulse_v": pair.impulse_v.override(Decimal(750)),
                     }
                 )
                 for pair in pair_page.project.pairs
@@ -227,7 +228,7 @@ def test_grouping_shows_signatures(qtbot, pair_page):
         pair_page.editor.set_steady_state_peak("300 V")
         pair_page.editor.set_recurring_peak("400 V")
         pair_page.editor.set_temporary_overvoltage_not_applicable()
-        pair_page.editor.set_impulse_override("800 V")
+        pair_page.editor.set_impulse_override("750 V")
     pair_page.recalculate()
     groups = pair_page.calculation_review.groups
     assert len(groups) >= 1
@@ -322,7 +323,7 @@ def test_pair_editor_shows_inherited_default_values(qtbot, pair_page):
     pair_page.select_pair_by_id(str(pair_page.project.pairs[0].id))
     assert pair_page.editor._freq_edit.text() == "50"
     assert pair_page.editor._freq_source_label.text() == "Project default"
-    assert pair_page.editor._impulse_combo.currentText() == "1.2 kV"
+    assert pair_page.editor._impulse_combo.currentText() == "2.2 kV"
     assert pair_page.editor._impulse_source_label.text() == "Project default"
 
 
@@ -675,18 +676,20 @@ def test_coverage_matrix_marks_excluded_pairs(qtbot, pair_page):
     assert page.matrix_model.data(page.matrix_model.index(0, 2)) == "✓"
 
 
-def test_pair_editor_offers_the_same_dropdowns_as_the_project_defaults(qtbot, pair_page):
+def test_pair_editor_offers_the_same_dropdowns_as_the_project_defaults(
+    qtbot, pair_page, synthetic_rules
+):
     from insulation_coordination.ui.value_options import (
-        IMPULSE_OPTIONS,
         MATERIAL_OPTIONS,
         POLLUTION_OPTIONS,
+        impulse_options,
     )
 
     page = pair_page
     page.select_pair_by_id(str(page.project.pairs[0].id))
 
     for combo, options in (
-        (page.editor._impulse_combo, IMPULSE_OPTIONS),
+        (page.editor._impulse_combo, impulse_options(synthetic_rules)),
         (page.editor._pollution_combo, POLLUTION_OPTIONS),
         (page.editor._cti_combo, MATERIAL_OPTIONS),
     ):
@@ -701,12 +704,12 @@ def test_choosing_a_dropdown_value_overrides_the_project_default(qtbot, pair_pag
     page.select_pair_by_id(str(pair.id))
     assert page.editor._impulse_source_label.text() == "Project default"
 
-    page.editor._impulse_combo.setCurrentText("2.5 kV")
+    page.editor._impulse_combo.setCurrentText("7.7 kV")
     page.editor._pollution_combo.setCurrentText("1")
     page.editor._cti_combo.setCurrentText("IIIa")
 
     updated = page.project.pair_by_id(pair.id)
-    assert updated.impulse_v.value == Decimal(2500)
+    assert updated.impulse_v.value == Decimal(7700)
     assert updated.pollution_degree.value == 1
     assert updated.cti_or_material_group.value == "IIIa"
     assert page.editor._impulse_source_label.text() == "Manual"
@@ -722,6 +725,35 @@ def test_an_off_list_override_is_offered_back_as_legacy(qtbot, pair_page):
 
     assert page.editor._pollution_combo.currentText() == "3 (legacy)"
     assert page.project.pair_by_id(pair.id).pollution_degree.value == 3
+
+
+def _page_without_rules(qtbot):
+    from insulation_coordination.ui.pair_editor import PairPage
+
+    page = PairPage()
+    page.load_project(_make_project(("HV+", "HV-")))
+    qtbot.addWidget(page)
+    page.select_pair_by_id(str(page.project.pairs[0].id))
+    return page
+
+
+def test_impulse_is_unavailable_without_a_package_but_keeps_the_stored_level(qtbot):
+    """No package means no approved levels - and no quietly invented ones either."""
+    from insulation_coordination.ui.value_options import IMPULSE_UNAVAILABLE_TEXT
+
+    page = _page_without_rules(qtbot)
+
+    assert page.editor._impulse_combo.itemText(0) == IMPULSE_UNAVAILABLE_TEXT
+    assert page.editor._impulse_combo.currentText() == "2.2 kV (legacy)"
+    assert page.editor._impulse_combo.currentData() == Decimal(2200)
+
+
+def test_loading_a_package_re_offers_the_impulse_levels_to_an_open_pair(qtbot, synthetic_rules):
+    page = _page_without_rules(qtbot)
+
+    page.load_rules(synthetic_rules)
+
+    assert page.editor._impulse_combo.currentText() == "2.2 kV"
 
 
 def test_pair_dropdown_is_empty_when_no_value_resolves(qtbot, pair_page, monkeypatch):
@@ -764,19 +796,19 @@ def test_default_button_restores_inheritance_and_shows_the_inherited_value(qtbot
     page = pair_page
     pair = page.project.pairs[0]
     page.select_pair_by_id(str(pair.id))
-    page.editor._impulse_combo.setCurrentText("2.5 kV")
+    page.editor._impulse_combo.setCurrentText("7.7 kV")
     assert page.project.pair_by_id(pair.id).impulse_v.is_override
 
     page.editor.clear_impulse_override()
 
     assert not page.project.pair_by_id(pair.id).impulse_v.is_override
-    assert page.editor._impulse_combo.currentText() == "1.2 kV"
+    assert page.editor._impulse_combo.currentText() == "2.2 kV"
     assert page.editor._impulse_source_label.text() == "Project default"
 
 
 _OVERRIDE_CASES = (
     ("frequency_hz", "set_frequency_override", "100 kHz", Decimal(100_000)),
-    ("impulse_v", "set_impulse_override", "2500 V", Decimal(2500)),
+    ("impulse_v", "set_impulse_override", "4321 V", Decimal(4321)),
     ("electrode_radius_mm", "set_radius_override", "2.5", Decimal("2.5")),
     ("altitude_m", "set_altitude_override", "2000", Decimal(2000)),
     ("pollution_degree", "set_pollution_override", "1", 1),
