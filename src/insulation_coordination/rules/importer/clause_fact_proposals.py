@@ -28,6 +28,7 @@ from pydantic import Field, ValidationError, model_validator
 
 from insulation_coordination.domain.project import FrozenModel
 from insulation_coordination.domain.rules import Identifier, RulePackageError
+from insulation_coordination.rules.importer.artifacts import canonical_model_sha256
 from insulation_coordination.rules.importer.clause_facts import (
     BarrierCombinedRequirementFact,
     BarrierDownstreamInheritanceFact,
@@ -52,7 +53,6 @@ from insulation_coordination.rules.importer.clause_facts import (
     scope_vocabulary,
 )
 from insulation_coordination.rules.importer.clauses import RawClauseFragment
-from insulation_coordination.rules.importer.extract import canonical_model_sha256
 
 FactModel = type[
     SystemVoltageMeasureFact
