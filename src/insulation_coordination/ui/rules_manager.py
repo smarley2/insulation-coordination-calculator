@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from pathlib import Path
+from uuid import UUID
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -37,6 +38,11 @@ from insulation_coordination.rules.audit import (
     build_audit_inventory,
     export_inventory_json,
     export_table_csv,
+)
+from insulation_coordination.rules.draft_archive import (
+    DRAFT_SUFFIX,
+    load_rule_draft,
+    write_rule_draft,
 )
 from insulation_coordination.rules.importer.approval import is_fully_resolved
 from insulation_coordination.rules.importer.extract import _REQUIRED_RECIPES, ImportedRuleDraft
@@ -162,6 +168,16 @@ class RulesManagerWindow(QWidget):
         review_actions.addWidget(self._review_axis_selectors_button)
         review_layout.addLayout(review_actions)
 
+        draft_file_row = QHBoxLayout()
+        self._save_draft_button = QPushButton("Save draft…")
+        self._save_draft_button.setEnabled(False)
+        self._save_draft_button.clicked.connect(self._on_save_draft_clicked)
+        draft_file_row.addWidget(self._save_draft_button)
+        self._resume_draft_button = QPushButton("Resume draft…")
+        self._resume_draft_button.clicked.connect(self._on_resume_draft_clicked)
+        draft_file_row.addWidget(self._resume_draft_button)
+        review_layout.addLayout(draft_file_row)
+
         self._review_approve_button = QPushButton("Approve draft and build package…")
         self._review_approve_button.clicked.connect(self._on_review_approve_clicked)
         self._review_approve_button.setEnabled(False)
@@ -181,6 +197,8 @@ class RulesManagerWindow(QWidget):
         layout.addLayout(export_row)
 
         self._draft: ImportedRuleDraft | None = None
+        self._draft_path: Path | None = None
+        self._draft_file_id: UUID | None = None
         self._draft_pdfs: dict[str, Path] = {}
         self._draft_passwords: dict[Path, str] = {}
 
@@ -327,7 +345,9 @@ class RulesManagerWindow(QWidget):
             self._review_curves_button.setEnabled(False)
             self._review_clause_facts_button.setEnabled(False)
             self._review_axis_selectors_button.setEnabled(False)
+            self._save_draft_button.setEnabled(False)
             return
+        self._save_draft_button.setEnabled(True)
         from insulation_coordination.rules.importer.review import (
             recipe_derived_items,
             unresolved_equation_items,
@@ -472,6 +492,93 @@ class RulesManagerWindow(QWidget):
         self._refresh_review()
         self._populate_draft_tree()
         self._apply_search()
+        self._autosave_draft()
+
+    # -- Draft files -------------------------------------------------------
+
+    @property
+    def draft_path(self) -> Path | None:
+        """The file this draft is being saved to, once the maintainer has chosen one."""
+        return self._draft_path
+
+    def save_draft(self, path: Path) -> Path:
+        """Write the draft under review, and keep saving it there after every correction."""
+        if self._draft is None:
+            raise RuntimeError("No draft loaded")
+        path = Path(path)
+        write_rule_draft(path, self._draft, pdf_paths=self._draft_pdfs)
+        self._draft_path = path
+        self._draft_file_id = self._draft.manifest.package_id
+        return path
+
+    def resume_draft(self, path: Path) -> None:
+        """Continue reviewing a saved draft, with its source PDFs reachable again."""
+        resumed = load_rule_draft(Path(path))
+        self._draft_path = Path(path)
+        self._draft_file_id = resumed.draft.manifest.package_id
+        self._draft_pdfs = dict(resumed.pdf_paths)
+        # Not persisted: a PDF password is secret material and never belongs in a draft file.
+        self._draft_passwords = {}
+        self.set_draft(resumed.draft)
+
+    def _autosave_draft(self) -> None:
+        """Save after every recorded correction, so a crash costs at most one action.
+
+        Every review surface hands its corrected draft to ``set_draft`` -- the table, equation
+        and curve dialogs through ``draft_changed``, the clause fact and axis dialogs through
+        their models -- so one hook here covers all of them, and no dialog has to remember to
+        save. The identity check keeps a freshly extracted draft from being written over the
+        file a different draft owns.
+        """
+        if self._draft is None or self._draft_path is None:
+            return
+        if self._draft.manifest.package_id != self._draft_file_id:
+            self._draft_path = None
+            self._draft_file_id = None
+            return
+        try:
+            write_rule_draft(self._draft_path, self._draft, pdf_paths=self._draft_pdfs)
+        except (RulePackageError, OSError) as error:
+            QMessageBox.warning(self, "Save Draft", f"The draft could not be saved: {error}")
+
+    def _on_save_draft_clicked(self) -> None:
+        if self._draft is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Draft Under Review",
+            f"draft-{self._draft.manifest.package_id}{DRAFT_SUFFIX}",
+            f"Draft Under Review (*{DRAFT_SUFFIX})",
+        )
+        if not path:
+            return
+        try:
+            self.save_draft(Path(path))
+        except (RulePackageError, OSError) as error:
+            QMessageBox.critical(self, "Save Draft", str(error))
+
+    def _on_resume_draft_clicked(self) -> None:
+        if self._draft is not None and (
+            QMessageBox.question(
+                self,
+                "Resume Draft",
+                "Replace the draft under review? Review work it has not saved is lost.",
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Resume Draft Under Review",
+            "",
+            f"Draft Under Review (*{DRAFT_SUFFIX})",
+        )
+        if not path:
+            return
+        try:
+            self.resume_draft(Path(path))
+        except (RulePackageError, OSError) as error:
+            QMessageBox.critical(self, "Resume Draft", str(error))
 
     # -- Audit browser -----------------------------------------------------
 
