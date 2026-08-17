@@ -725,7 +725,10 @@ class ClauseFactReviewDialog(QDialog):
         # A prefill the reviewer asks for by name, beside the drafts it reads from. Selecting a
         # draft already loads it; this makes the suggestion an explicit act rather than a side
         # effect of looking at a row, and it records nothing -- Author still does that.
-        self.use_suggested_button = QPushButton("Use suggested values", facts_box)
+        #
+        # The label says *fills*, because that is all it does: "Use suggested values" reads as
+        # accepting them, and a button that certifies nothing must not be worded like one that does.
+        self.use_suggested_button = QPushButton("Fill with the suggested values", facts_box)
         self.use_suggested_button.setEnabled(False)
         self.use_suggested_button.clicked.connect(self.use_suggested_selected)
         facts_layout.addWidget(self.use_suggested_button)

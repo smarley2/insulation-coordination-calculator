@@ -1865,6 +1865,9 @@ def test_the_suggestion_loads_one_drafts_values_and_its_citation(
     proposal = model.open_proposals(HF_ROUTE)[0]
 
     dialog.facts_list.setCurrentRow(0)
+    # The label says what the press does. "Use suggested values" read as accepting them, and a
+    # button that fills the editor and records nothing must not be worded like one that certifies.
+    assert dialog.use_suggested_button.text() == "Fill with the suggested values"
     dialog.use_suggested_button.click()
 
     assert _selected_scope(dialog, "dvc_gate") == list(proposal.chosen["dvc_gate"].split("|"))
