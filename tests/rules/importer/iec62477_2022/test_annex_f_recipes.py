@@ -88,9 +88,11 @@ def _f1_grid(*, blank_at: tuple[int, int] | None = None) -> RawGrid:
 
 
 def test_the_three_specs_declare_the_measured_shapes() -> None:
+    """Two hang off the applicability item as its evidence; the band grid is its own item."""
+
     assert tuple(spec.semantic_id for spec in ANNEX_F_TABLES) == (
         f"{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f1",
-        f"{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f2",
+        ids.HIGH_FREQUENCY_BAND_FACTOR,
         f"{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f3",
     )
     shapes = {
@@ -157,9 +159,20 @@ def test_no_column_heading_repeats_source_wording() -> None:
             assert digits in ([], [str(column.source_column)])
 
 
-def test_the_annex_grids_are_extracted_for_comparison_only() -> None:
+def test_only_the_two_restated_grids_are_extracted_for_comparison_only() -> None:
+    """The band grid states a requirement no approved rule carries, so it stays a rule.
+
+    That is not a cross-standard claim: Tables F.1 and F.3 still assert nothing of their own
+    and still project no rule, and no comparison names the band grid.
+    """
+
+    for spec in (TABLE_F1, TABLE_F3):
+        restated = next(item for item in ANNEX_F_TABLES if item.semantic_id == spec.semantic_id)
+        assert restated.comparison_only is True
+        assert restated.decision_route_ids == ()
+    assert TABLE_F2.comparison_only is False
+    assert TABLE_F2.decision_route_ids == (ids.HIGH_FREQUENCY_BAND_FACTOR,)
     for spec in ANNEX_F_TABLES:
-        assert spec.decision_route_ids == ()
         assert spec.reference_slots == ()
         assert spec.token_grammar is None
 

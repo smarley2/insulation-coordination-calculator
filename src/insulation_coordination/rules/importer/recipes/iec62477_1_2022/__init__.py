@@ -3,6 +3,7 @@
 from insulation_coordination.rules.importer.identify import StandardRecipe
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
+    annex_f,
     clauses,
     curves,
     high_frequency,
@@ -38,6 +39,7 @@ RECIPE = StandardRecipe(
     grid_projectors={
         ids.DVC_VOLTAGE_LIMITS: projection.project_dvc_voltage_limits,
         ids.DVC_PROTECTION_MATRIX: projection.project_dvc_protection_matrix,
+        **annex_f.GRID_PROJECTORS,
         **verification.GRID_PROJECTORS,
     },
     clause_projectors={

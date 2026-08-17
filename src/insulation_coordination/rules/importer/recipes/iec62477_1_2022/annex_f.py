@@ -1,22 +1,48 @@
-"""IEC 62477-1:2022 Annex F table recipes. Layout facts only.
+"""IEC 62477-1:2022 Annex F table recipes, and the band grid's own projection.
 
-The three annex grids are extracted for comparison, not to add a second copy of numbers
-the approved IEC 60664-4 rules already carry: Tables F.1 and F.3 restate that standard's
-high-frequency clearance and creepage grids, and a comparison either proves the two agree
-or blocks. Table F.2 has no counterpart among the approved IEC 60664-4 rules, so it is
-recorded here with no cross-standard claim rather than being quietly matched to a grid it
-does not correspond to.
+Tables F.1 and F.3 restate the approved IEC 60664-4 high-frequency clearance and creepage
+grids, so they are extracted for comparison rather than as a second copy of numbers the
+package already carries: a comparison either proves the two agree or blocks. Table F.2 has
+no counterpart among those rules and states a requirement of its own, so it is projected
+into a decision that answers which factor a fundamental frequency falls under (#72). That
+adds no cross-standard claim: the table becomes resolvable in its own right, not equivalent
+to another standard's.
 
 Bounding boxes, row and column counts, and header/data/note row indexes are measured from
 the maintained printing. Column headings are neutral descriptions written here. Every axis
-value belongs to the source: the peak-voltage axis is read from its own column, and the
+value belongs to the source: the peak-voltage axis is read from its own column, the
 frequency band values of Table F.3 come from the table's own header row through
-``axis_value_source_row``, never from a literal in this file.
+``axis_value_source_row``, and Table F.2's band bounds are parsed out of its own axis cells
+and confirmed by a reviewer -- never from a literal in this file.
 """
 
+from itertools import pairwise
+from typing import cast
+
+from insulation_coordination.domain.rules import (
+    DecisionInput,
+    DecisionOutput,
+    DecisionRow,
+    DecisionRule,
+    DecisionValue,
+    Matcher,
+    RulePackageError,
+)
+from insulation_coordination.rules.importer.axis_selectors import (
+    ConfirmedAxes,
+    FrequencyBandSelector,
+)
+from insulation_coordination.rules.importer.extract import (
+    RawGrid,
+    SemanticProposal,
+    canonical_model_sha256,
+)
 from insulation_coordination.rules.importer.identify import (
+    AxisSelectorSpec,
     BlankCellSpec,
+    GridProjector,
     MergedCellSpec,
+    StandardIdentity,
     TableAuditSpec,
     TableColumnSpec,
     TableSegmentSpec,
@@ -48,6 +74,12 @@ _TABLE_F2_BBOX = (184.3, 528.2, 411.1, 632.3)
 _TABLE_F2_HEADER_ROWS = (0,)
 _TABLE_F2_DATA_ROWS = tuple(range(1, 5))
 _TABLE_F2_EXPECTED_DATA_ROWS = 4
+#: The two logical columns of the band grid, and the base unit its bands are converted to.
+#: The source states its own SI prefix in the axis column's header, and extraction reads the
+#: scale from there rather than from anything declared in this file.
+_TABLE_F2_BAND_FIELD = "frequency_band"
+_TABLE_F2_FACTOR_FIELD = "band_factor"
+_TABLE_F2_AXIS_UNIT = "Hz"
 
 _TABLE_F3_PAGE = 199
 _TABLE_F3_RAW_ROWS = 21
@@ -105,20 +137,21 @@ def _f1_columns() -> tuple[TableColumnSpec, ...]:
 def _f2_columns() -> tuple[TableColumnSpec, ...]:
     """A frequency band stated as a range, and the factor that band carries.
 
-    The band is prose with two bounds rather than one number, so the generic numeric
-    parser cannot type it; those cells arrive as text and raise a raw-cell review item
-    instead of being guessed into a numeric axis.
+    The band is prose with two bounds rather than one number, so the generic numeric parser
+    still cannot type it and the axis declares no numeric value here. What types it is the
+    band axis selector below: extraction parses the two bounds and the closed end out of this
+    column's own cells, and a reviewer confirms that reading before anything resolves from it.
     """
     return (
         TableColumnSpec(
-            semantic_id="frequency_band",
+            semantic_id=_TABLE_F2_BAND_FIELD,
             heading="frequency band entering this table",
             source_column=0,
             role="axis",
-            unit="Hz",
+            unit=_TABLE_F2_AXIS_UNIT,
         ),
         TableColumnSpec(
-            semantic_id="band_factor",
+            semantic_id=_TABLE_F2_FACTOR_FIELD,
             heading="dimensionless factor for the band on the same row",
             source_column=1,
             role="data",
@@ -197,7 +230,7 @@ TABLE_F1 = TableAuditSpec(
 )
 
 TABLE_F2 = TableAuditSpec(
-    semantic_id=f"{ids.HIGH_FREQUENCY_APPLICABILITY}.annex_f2",
+    semantic_id=ids.HIGH_FREQUENCY_BAND_FACTOR,
     source_table="F.2",
     title_anchor="Table F.2",
     page_number=_TABLE_F2_PAGE,
@@ -213,8 +246,8 @@ TABLE_F2 = TableAuditSpec(
     data_column_start=0,
     expected_data_rows=_TABLE_F2_EXPECTED_DATA_ROWS,
     expected_data_columns=2,
-    row_axis_id="frequency_band",
-    row_axis_unit="Hz",
+    row_axis_id=_TABLE_F2_BAND_FIELD,
+    row_axis_unit=_TABLE_F2_AXIS_UNIT,
     column_axis_id="band_factor_branch",
     column_axis_unit="1",
     # The band column states ranges, so no monotonic axis is claimed for this grid.
@@ -234,6 +267,14 @@ TABLE_F2 = TableAuditSpec(
         ),
     ),
     columns=_f2_columns(),
+    decision_route_ids=(ids.HIGH_FREQUENCY_BAND_FACTOR,),
+    axis_selectors=(
+        AxisSelectorSpec(
+            axis="row",
+            expected_positions=_TABLE_F2_EXPECTED_DATA_ROWS,
+            selector_kind="frequency_band",
+        ),
+    ),
 )
 
 TABLE_F3 = TableAuditSpec(
@@ -278,17 +319,122 @@ TABLE_F3 = TableAuditSpec(
     blank_cells=_TABLE_F3_BLANK_CELLS,
 )
 
-#: Annex F reproduces IEC 60664-4:2005 requirements for the calculator's frequency range,
-#: and those rules are already approved in the package. These grids are therefore extracted
-#: as evidence for the cross-standard comparison rather than as rules of their own, so no
-#: package carries two copies of the same requirement.
-ANNEX_F_TABLES: tuple[TableAuditSpec, ...] = tuple(
-    spec.model_copy(update={"comparison_only": True}) for spec in (TABLE_F1, TABLE_F2, TABLE_F3)
+#: Tables F.1 and F.3 reproduce IEC 60664-4:2005 requirements the package already approves,
+#: so they are extracted as evidence for the cross-standard comparison rather than as rules
+#: of their own and no package carries two copies of one requirement. Table F.2 is not among
+#: them: no approved rule states what it states, so it stays a rule of its own.
+ANNEX_F_TABLES: tuple[TableAuditSpec, ...] = (
+    TABLE_F1.model_copy(update={"comparison_only": True}),
+    TABLE_F2,
+    TABLE_F3.model_copy(update={"comparison_only": True}),
 )
+
+#: The same input name the annex's applicability decision answers, so a consumer asks both
+#: rules the one question it already has an answer for.
+_FREQUENCY_INPUT = "working_voltage_frequency_hz"
+
+
+def _band_rows(grid: RawGrid, axes: ConfirmedAxes) -> tuple[DecisionRow, ...]:
+    """One row per reviewed band: the band's own interval, and the factor beside it.
+
+    The interval comes from the confirmed selector and the factor from the extracted cell on
+    the same physical row, so neither is stated here. Bands are refused where two overlap:
+    ``evaluate_decision`` serves the first row that fits, so an overlap would silently pick a
+    factor by row order rather than by what the source says.
+    """
+
+    factors = {
+        cell.row: cell
+        for cell in grid.cells
+        if cell.role == "data" and cell.logical_column == _TABLE_F2_FACTOR_FIELD
+    }
+    bands = sorted(
+        ((index, cast(FrequencyBandSelector, axes.row(index))) for index in axes.rows),
+        key=lambda item: item[1].lower_hz,
+    )
+    for (_earlier_index, earlier), (_later_index, later) in pairwise(bands):
+        if later.lower_hz < earlier.upper_hz or (
+            later.lower_hz == earlier.upper_hz
+            and earlier.inclusive_bound in {"upper", "both"}
+            and later.inclusive_bound in {"lower", "both"}
+        ):
+            raise RulePackageError("Table F.2 has two overlapping reviewed frequency bands")
+    rows: list[DecisionRow] = []
+    for index, band in bands:
+        cell = factors.get(index)
+        if cell is None or cell.value is None or cell.parse_status != "numeric":
+            raise RulePackageError(f"Table F.2 row {index} has no numeric factor beside its band")
+        rows.append(
+            DecisionRow(
+                matchers=(
+                    Matcher(
+                        input=_FREQUENCY_INPUT,
+                        op="range",
+                        minimum=band.lower_hz,
+                        maximum=band.upper_hz,
+                        minimum_inclusive=band.inclusive_bound in {"lower", "both"},
+                        maximum_inclusive=band.inclusive_bound in {"upper", "both"},
+                    ),
+                ),
+                values=(
+                    DecisionValue(
+                        name=_TABLE_F2_FACTOR_FIELD, numeric=cell.value, unit=grid.target_unit
+                    ),
+                ),
+                source=cell.source,
+            )
+        )
+    return tuple(rows)
+
+
+def project_high_frequency_band_factor(
+    grid: RawGrid,
+    identity: StandardIdentity,
+    confirmed_axes: ConfirmedAxes,
+) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
+    """Project the reviewed band grid into the decision that answers one frequency.
+
+    Not exhaustive on purpose: the source declares bands over part of the frequency range and
+    says nothing about the rest, so a frequency outside every declared band resolves to
+    ``no_match`` and the consumer is told the table settles nothing there, rather than being
+    handed the nearest band's factor.
+    """
+
+    if grid.id != f"raw-{ids.HIGH_FREQUENCY_BAND_FACTOR}":
+        raise ValueError("the band factor projection requires the Annex F band grid")
+    if grid.source.standard != identity.standard or grid.source.edition != identity.edition:
+        raise ValueError("the band grid does not match its identified source")
+    if len(confirmed_axes.rows) != TABLE_F2.expected_data_rows:
+        raise ValueError("the band factor projection needs every reviewed band")
+    rule = DecisionRule(
+        id=ids.HIGH_FREQUENCY_BAND_FACTOR,
+        inputs=(DecisionInput(name=_FREQUENCY_INPUT, kind="numeric", unit=_TABLE_F2_AXIS_UNIT),),
+        outputs=(
+            DecisionOutput(name=_TABLE_F2_FACTOR_FIELD, kind="numeric", unit=TABLE_F2.target_unit),
+        ),
+        rows=_band_rows(grid, confirmed_axes),
+        exhaustive=False,
+        source=grid.source,
+    )
+    proposal = SemanticProposal(
+        semantic_id=rule.id,
+        rule_kind="decision",
+        state="proposed",
+        rule_sha256=canonical_model_sha256(rule),
+        source_artifact_sha256=canonical_model_sha256(grid),
+    )
+    return (rule,), (proposal,)
+
+
+GRID_PROJECTORS: dict[str, GridProjector] = {
+    ids.HIGH_FREQUENCY_BAND_FACTOR: project_high_frequency_band_factor,
+}
 
 __all__ = [
     "ANNEX_F_TABLES",
+    "GRID_PROJECTORS",
     "TABLE_F1",
     "TABLE_F2",
     "TABLE_F3",
+    "project_high_frequency_band_factor",
 ]

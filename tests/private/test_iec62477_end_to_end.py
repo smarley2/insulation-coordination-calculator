@@ -1,8 +1,8 @@
 """Issue #34's Definition of Done, demonstrated on the licensed documents.
 
 Extract all three PDFs, resolve every review item, review every curve variant, approve,
-export a ``.icrules`` archive, re-import it, query all twenty-six required semantic IDs,
-and execute one representative request per consumer issue.
+export a ``.icrules`` archive, re-import it, query every required semantic ID, and execute
+one representative request per consumer issue.
 
 This is the first test to round-trip a package carrying procedures and comparison-only
 grids. Assertions stay on identifiers, counts, and evaluation status: no value, heading, or
@@ -106,11 +106,44 @@ def test_every_required_semantic_id_is_queryable_after_a_round_trip(
     package = _round_trip(reviewed_draft, tmp_path)
     available = _rule_ids(package)
 
-    assert len(REQUIRED_SOURCE_ITEMS) == 26
+    assert len(REQUIRED_SOURCE_ITEMS) == 27
     for item in REQUIRED_SOURCE_ITEMS:
         assert any(_covers(candidate, item.semantic_id) for candidate in available), (
             item.semantic_id
         )
+
+
+def test_the_band_factor_answers_a_frequency_and_refuses_one_it_does_not_cover(
+    reviewed_draft,
+    tmp_path: Path,
+) -> None:
+    """Issue #72's promise on the licensed document: a frequency in, a factor or nothing out.
+
+    Every quantity is read off the reviewed rule, so this file states neither a boundary nor
+    a factor. The frequency that must answer nothing is one hertz, far below any band the
+    annex declares and not a boundary of one.
+    """
+    package = _round_trip(reviewed_draft, tmp_path)
+    rule = next(item for item in package.decisions if item.id == ids.HIGH_FREQUENCY_BAND_FACTOR)
+
+    assert rule.exhaustive is False
+    bands = [matcher for row in rule.rows for matcher in row.matchers if matcher.op == "range"]
+    assert len(bands) == len(rule.rows)
+    assert all(matcher.minimum is not None and matcher.maximum is not None for matcher in bands)
+
+    for index, band in enumerate(bands):
+        assert band.minimum is not None and band.maximum is not None
+        inside = (band.minimum + band.maximum) / 2
+        result = evaluate_decision(rule, {"working_voltage_frequency_hz": inside})
+        assert result.status == "matched"
+        assert result.matched_row == index
+        assert [value.numeric for value in result.values] == [
+            value.numeric for value in rule.rows[index].values
+        ]
+
+    outside = evaluate_decision(rule, {"working_voltage_frequency_hz": Decimal(1)})
+    assert outside.status == "no_match"
+    assert outside.values == ()
 
 
 def test_the_archive_carries_the_procedures_and_the_preconditioning_routes(

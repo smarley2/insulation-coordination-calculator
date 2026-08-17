@@ -22,8 +22,15 @@ RULE_SCHEMA_VERSION = 4
 #: reviewed domain, so the same reviewed facts can produce a different decision rule.
 #:
 #: The number is assigned in merge order at implementation time, never reserved ahead of it: issue
-#: #60 is based on main, merges first and owns ``iec-pdf-7``.
-IEC_IMPORTER_VERSION = "iec-pdf-8"
+#: #60 is based on main, merges first and owns ``iec-pdf-7``, and the clause-fact authoring branch
+#: owns ``iec-pdf-8``.
+#:
+#: ``iec-pdf-9`` is issue #72, which stacks on that branch and merges after it. The annex's band
+#: grid is now a rule rather than comparison evidence, so it is extracted under a different
+#: semantic identifier, its cells carry reviewed typed bands they did not carry before, and the
+#: package gains a decision rule. All three move a package's compatibility identity, and every
+#: draft built by an older importer has to be rebuilt and re-reviewed rather than upgraded.
+IEC_IMPORTER_VERSION = "iec-pdf-9"
 MAX_IDENTIFIER_LENGTH = 160
 MAX_REFERENCE_TEXT_LENGTH = 500
 MAX_NOTES_LENGTH = 2_000

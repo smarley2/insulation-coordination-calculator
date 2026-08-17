@@ -1,8 +1,10 @@
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids
 
 
-def test_catalog_has_twenty_six_unique_ids() -> None:
-    assert len(semantic_ids.REQUIRED_SEMANTIC_IDS) == 26
+def test_catalog_has_twenty_seven_unique_ids() -> None:
+    """Twenty-six from Issue #34, plus the band factor Issue #72 made resolvable."""
+
+    assert len(semantic_ids.REQUIRED_SEMANTIC_IDS) == 27
 
 
 def test_every_id_uses_the_documented_prefix_and_shape() -> None:

@@ -327,8 +327,9 @@ round-trip proves the three contracts project from real facts.
 
 An importer version is **assigned at implementation time, in merge order** — never reserved here.
 See ledger note L5. The settled sequence today is #60 = ``iec-pdf-7``, the #53B stack =
-``iec-pdf-8``, and this spec = ``iec-pdf-9``; that is the current expectation, and this spec's own
-number is decided when it is implemented.
+``iec-pdf-8``, and #72 = ``iec-pdf-9``, which stacks on #53B and merges before this spec is
+written; the current expectation for this spec is therefore ``iec-pdf-10``, and its own number is
+decided when it is implemented.
 
 ```text
 #53C:       IEC_IMPORTER_VERSION  bumped once, number assigned on implementation

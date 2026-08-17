@@ -23,7 +23,7 @@ from insulation_coordination.domain.rules import (
     RuleKind,
     SourceReference,
 )
-from insulation_coordination.rules.importer.axis_selectors import AxisSelector
+from insulation_coordination.rules.importer.axis_selectors import AxisSelector, SelectorKind
 
 LOGGER = logging.getLogger(__name__)
 MAX_STANDARD_PDF_BYTES = 128 * 1024 * 1024
@@ -270,7 +270,7 @@ class AxisSelectorSpec(FrozenModel):
     #: refuses a confirmed selector of any other kind, so a column selector confirmed on a
     #: row position dies at resolution rather than surfacing later as an AttributeError from
     #: a projector's ``cast``.
-    selector_kind: Literal["dvc_designation", "table2_quantity", "protection_target"]
+    selector_kind: SelectorKind
     keyword_rules: tuple[AxisKeywordRule, ...] = ()
     #: This axis has no public grammar, so extraction proposes nothing and the reviewer
     #: supplies every selector. Used where a text grammar would require the source's header
@@ -279,6 +279,13 @@ class AxisSelectorSpec(FrozenModel):
 
     @model_validator(mode="after")
     def _grammar_or_reviewer_but_not_both(self) -> AxisSelectorSpec:
+        if self.selector_kind == "frequency_band":
+            # A band's reading is neither a keyword match nor a reviewer's own words: its two
+            # bounds are parsed out of the position's own cells, so declaring either mode here
+            # would put one of them in front of the extraction it must not override.
+            if self.keyword_rules or self.reviewer_supplied:
+                raise ValueError("a band axis is read from its own cells, not proposed or supplied")
+            return self
         if self.reviewer_supplied and self.keyword_rules:
             raise ValueError("a reviewer-supplied axis declares no keyword rules")
         if not self.reviewer_supplied and not self.keyword_rules:
