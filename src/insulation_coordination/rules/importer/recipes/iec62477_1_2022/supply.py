@@ -454,9 +454,7 @@ def declared_rule_references() -> tuple[str, ...]:
     named.
     """
 
-    projected = {
-        rule_id for spec in SUPPLY_CLAUSES for rule_id in getattr(spec, "projected_rule_ids", ())
-    }
+    projected = {rule_id for spec in SUPPLY_CLAUSES for rule_id in spec.projected_rule_ids}
     return tuple(sorted(ids.REQUIRED_SEMANTIC_IDS | set(SUPPLY_FACT_FAMILY_BY_ROUTE) | projected))
 
 
