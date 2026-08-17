@@ -19,7 +19,7 @@ icc = "insulation_coordination.cli:main"
 
 [dependency-groups]
 dev = [
-  "hypothesis>=6.165.2,<7",
+  "hypothesis>=6.165.6,<7",
   "mypy>=2.3.0,<3",
   "pyinstaller>=6.22.0,<7",
   "pytest>=8,<10",
