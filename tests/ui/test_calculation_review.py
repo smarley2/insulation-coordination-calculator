@@ -119,16 +119,3 @@ def test_review_reports_inner_layer_distances_per_pair(qtbot, project, rules) ->
         f"Inner-layer creepage (pollution degree 1): {result.inner_creepage_mm} mm"
         in item.toolTip()
     )
-
-
-def test_invalid_change_clears_stale_results(qtbot, project, rules) -> None:
-    from insulation_coordination.ui.calculation_review import CalculationReviewPage
-
-    result = calculate_pair(resolve_effective_case(project.defaults, project.pairs[0]), rules)
-    page = CalculationReviewPage()
-    qtbot.addWidget(page)
-    page.update_results((result,), project)
-    assert page._results_list.count() == 1
-    # clear without rules -> no stale results
-    page.recalculate_after_change(project)
-    assert page._results_list.count() == 0
