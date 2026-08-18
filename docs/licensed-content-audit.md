@@ -56,6 +56,12 @@ of any entry against the licensed source happens in private sessions only.
   verification fixture's identity rather than declaring a source of their own.
 - Tracked private artifacts (`.pdf`, `.icrules`, `.icproj`, `.icdraft`,
   `audit-inventory.json`): none, in the current tree and in the full history.
+- Issue #40's Task 11 added no finding. It found three that had never been
+  inventoried -- one each in `test_dvc_clause_projection.py`,
+  `test_raw_grid_review.py` and `test_semantic_review.py` -- and classified them
+  in the table below. The reviewed-finding baseline at the foot of this document
+  is now the complete machine-readable list, and CI fails if the tree stops
+  matching it; the tables' line references are indicative and go stale.
 
 ## Assessment vocabulary
 
@@ -129,6 +135,9 @@ in-flight #53 workstream.
 | `tests/fixtures/verification_topologies.py:271` | synthetic-iec-source | The verification topology fixture's dielectric package claims a real IEC standard identity as its source reference | open, deliberately not forced (issue #37 slice 3). The same gate a fourth time: the package it builds is read through `read_verification_rules`, which refuses any rule whose source is not the expected standard **and** edition, so a fixture that omitted the identity could not reach the accept path at all. Its document id is `synthetic-verification-source` and its note says it carries no IEC numeric values. Resolves with the same policy decision or injectable identity the three entries above need |
 | `tests/fixtures/topology_examples.py:69` | numeric-series | Synthetic project input triples | synthetic-ok |
 | `tests/rules/importer/iec62477_2022/test_annex_f_recipes.py:107-109` | numeric-series | Page numbers and expected grid shapes | allowed-structural |
+| `tests/rules/importer/iec62477_2022/test_dvc_clause_projection.py` | numeric-series | A synthetic clause spec's page number and bounding box | allowed-structural (added in Task 11; the same shape as the recipe clause spec containers, with an invented clause identifier) |
+| `tests/ui/test_raw_grid_review.py` | numeric-series | Invented axis-selector proposal indexes and digest placeholders | synthetic-ok (added in Task 11) |
+| `tests/ui/test_semantic_review.py` | numeric-series | A synthetic clause spec's page number and bounding box | allowed-structural (added in Task 11; the `test_dvc_clause_projection.py` row again) |
 | `tests/rules/test_evaluator.py:616` | numeric-series | Synthetic trace-formatting expectations | synthetic-ok |
 | `tests/rules/test_importer.py:205,811` | numeric-series | Synthetic PDF recipe and compound-cell fixtures | synthetic-ok |
 | `tests/test_end_to_end.py:83` | numeric-series | Synthetic project pair inputs | synthetic-ok |
@@ -167,10 +176,11 @@ here instead of being asserted by `tests/test_content_boundaries.py`:
   left in `ui/value_options.py` is the pollution-degree and material-group
   label tuples, which the scanner no longer flags. The row above still carries
   the original finding-A assessment and needs a private-session review.
-- The scanner running with `--strict` in CI (Task 8 remainder/Task 11; only
-  after the migration above lands).
 
 Done since the first audit:
+
+- The scanner running with `--strict` in CI (Task 11). See the baseline section
+  at the foot of this document.
 
 - Public fixtures free of real table axes/cells (Task 5), except the one
   documented DVC identity exception above.
@@ -200,3 +210,79 @@ introduction (~387 commits; no private binary artifact was ever committed):
   `iec60664_4_2005.py`
 
 See `docs/git-history-treatment.md` for options and recommendation.
+
+## Reviewed-finding baseline (Task 11)
+
+`.github/workflows/ci.yml` runs
+`uv run python scripts/scan_licensed_content.py . --strict` on every push and
+pull request. `--strict` does **not** fail on findings -- every finding below is
+classified in the tables above, and a gate that fires on known-good input gets
+switched off within a week. It fails when the tree stops agreeing with the block
+below, in either direction:
+
+- a **new** finding fails the build, because nobody has classified it yet;
+- a **gone** finding fails the build too, because a reviewed finding that was
+  resolved leaves a row in the tables above saying something untrue. Making that
+  a warning would be quieter and would let the record rot, which is the failure
+  mode this document exists to prevent. It costs the person who fixed the leak
+  one run of `--update-baseline` and one row of prose, at the moment they are the
+  only person who knows what changed.
+
+The key is path plus category, never line number: findings move down a file
+whenever anything above them is edited, and several line references in the tables
+above are already stale for exactly that reason. A count per path and category is
+stable under those moves and still changes the instant a finding appears or
+disappears.
+
+The baseline lives here rather than in a file of its own so that the counts and
+the prose classifying them cannot disagree. Only the fenced block is machine-read,
+one `path category count` per line; the scanner never parses the prose or the
+tables.
+
+**What a green gate does not mean.** The scanner reads `git ls-files`, so an
+untracked or unstaged file is never scanned -- a copy staged into `docs/`
+reported clean until it was committed. It matches numerals, so a licensed value
+written as a word evades it; that is how the reinforced creepage factor sat in
+`report/human_view.py` as a word. And `value-near-table-id` needs a table or
+clause identifier beside the value, so a bare figure in a trace sentence evades
+it; that is how the altitude boundary sat in the same module. All three were
+found by reading, not by the tool, and are deliberately not fixed here: a
+word-detector would be a research project and a false-positive machine. A passing
+build means no new *structural* finding, not a clean tree. The scanner prints the
+same warning on every run, CI included.
+
+<!-- scanner-baseline: regenerate with `uv run python scripts/scan_licensed_content.py . --update-baseline` -->
+
+```text
+docs/superpowers/plans/2026-08-10-iec62477-slice-d.md text-numeric-series 1
+docs/superpowers/specs/2026-08-07-iec62477-foundation-design.md text-numeric-series 1
+src/insulation_coordination/calculation/engine.py inline-threshold 1
+src/insulation_coordination/calculation/high_frequency.py inline-threshold 2
+src/insulation_coordination/rules/importer/recipes/iec60664_1_2020.py numeric-series 2
+src/insulation_coordination/rules/importer/recipes/iec60664_4_2005.py numeric-series 2
+src/insulation_coordination/rules/importer/recipes/iec60664_4_2005.py source-like-text 2
+src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/clauses.py numeric-series 1
+src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/clauses.py source-like-text 2
+src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/high_frequency.py numeric-series 1
+src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/procedures.py numeric-series 2
+src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/reinforced.py numeric-series 1
+src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/spacing.py numeric-series 2
+src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/supply.py numeric-series 1
+src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/supply.py source-like-text 1
+src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/tables.py numeric-series 2
+tests/calculation/conftest.py numeric-series 6
+tests/calculation/test_high_frequency.py numeric-series 4
+tests/calculation/test_part1.py numeric-series 1
+tests/fixtures/synthetic_rules.py numeric-series 6
+tests/fixtures/synthetic_rules.py synthetic-iec-source 6
+tests/fixtures/topology_examples.py numeric-series 1
+tests/fixtures/verification_topologies.py synthetic-iec-source 1
+tests/rules/importer/iec62477_2022/test_annex_f_recipes.py numeric-series 3
+tests/rules/importer/iec62477_2022/test_dvc_clause_projection.py numeric-series 1
+tests/rules/test_evaluator.py numeric-series 1
+tests/rules/test_importer.py numeric-series 2
+tests/test_end_to_end.py numeric-series 1
+tests/ui/test_pair_workflow.py numeric-series 1
+tests/ui/test_raw_grid_review.py numeric-series 1
+tests/ui/test_semantic_review.py numeric-series 1
+```
