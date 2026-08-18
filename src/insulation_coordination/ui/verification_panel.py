@@ -18,7 +18,9 @@ Three properties are why it is shaped this way.
 *Nothing settled looks settled unless it is.* A test the plan could not resolve says
 ``engineering input required`` in its own row and lists what is missing underneath, and an
 exemption that was not granted names the condition that stopped it. There is no row that goes
-quiet when its answer is unknown.
+quiet when its answer is unknown. The requirement row is the sharpest case: it states what the
+package requires and whether the selected construction provides it, and where the package could
+not be asked it says so rather than restating the construction as though it were the demand.
 
 *Every unresolved input is on screen.* The pair's own, its applications' and its exemption's
 are gathered into one list rather than left one click away, because a reader deciding whether
@@ -108,6 +110,7 @@ CLAIM_EXEMPTION_TEXT: Final = "Claimed for this pair"
 #: The stage labels, in the order the issue's pair page lists them.
 ROW_LABELS: Final = (
     "Status",
+    "Protection requirement",
     "Enhanced protection",
     "Working voltage",
     "Impulse",
@@ -247,6 +250,31 @@ def exemption_text(exemption: RoutineExemptionAssessment | None) -> str:
     return "\n".join((headline, *(f"• {line}" for line in conditions)))
 
 
+def requirement_text(assessment: PairVerificationAssessment | None) -> str:
+    """What the package requires here, and whether the selected construction provides it.
+
+    The requirement and the verdict are two sentences rather than one word, because this row
+    is the one place a reader learns that the two are separate things. A requirement nobody
+    could read says so and points at the unresolved inputs; it never borrows the
+    implementation's own level and presents it back as the requirement, which is what this row
+    did before anything was behind it.
+    """
+
+    if assessment is None:
+        return EMPTY_VALUE
+    if assessment.required_protection is None:
+        return (
+            "not established from the active package — see the unresolved inputs below; "
+            "the selected implementation is not evidence of what is required"
+        )
+    stated = f"{_words(assessment.required_protection)}, from {assessment.requirement_columns}"
+    if assessment.protection_satisfied is None:
+        return f"{stated}; whether the selected implementation provides it is outstanding"
+    if assessment.protection_satisfied:
+        return f"{stated}; met by the selected implementation"
+    return f"{stated}; NOT met by the selected implementation"
+
+
 def unresolved_text(
     assessment: PairVerificationAssessment | None,
     applications: Sequence[TestApplication],
@@ -308,6 +336,7 @@ def plan_rows(
     )
     return {
         "Status": EMPTY_VALUE if assessment is None else _words(assessment.status.value),
+        "Protection requirement": requirement_text(assessment),
         "Enhanced protection": (
             EMPTY_VALUE
             if assessment is None
@@ -753,6 +782,7 @@ __all__ = [
     "plan_rows",
     "preparation_text",
     "protection_badge_state",
+    "requirement_text",
     "review_text",
     "spd_monitoring_text",
     "trace_text",
