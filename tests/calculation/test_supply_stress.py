@@ -42,6 +42,14 @@ from tests.fixtures.synthetic_rules import synthetic_supply_rule_package
 #: Inside the fixture's synthetic band axis, which runs 11 V to 33 V in three bands.
 IN_BAND = Decimal(15)
 
+#: The fixture's own impulse cell for the band :data:`IN_BAND` falls in, in the column the
+#: default configuration's overvoltage category selects. Invented in
+#: :func:`synthetic_supply_rule_package` like every other cell there.
+IN_BAND_IMPULSE = Decimal(221)
+
+#: A voltage in the next band up, for declaring against a measure that should never be read.
+DECOY_BAND = Decimal(30)
+
 #: Past every band the fixture's AC axis carries, inside the one band only its DC axis has, and
 #: at that band's midpoint - so the impulse lookup selects the band and the interpolating
 #: temporary-overvoltage lookup answers with an exact figure. The three figures below are that
@@ -174,18 +182,8 @@ def _with_column_labels(
             InputTopology.DIRECT_INPUT,
             ("between_supply_conductors_rms",),
         ),
-        (
-            PhaseSystem.THREE_PHASE,
-            EarthingArrangement.TN_TT_CORNER_EARTHED_DELTA,
-            InputTopology.DIRECT_INPUT,
-            ("phase_to_phase_rms",),
-        ),
-        (
-            PhaseSystem.THREE_PHASE,
-            EarthingArrangement.TN_TT_HIGH_LEG_DELTA,
-            InputTopology.DIRECT_INPUT,
-            ("phase_to_phase_rms",),
-        ),
+        # The two delta arrangements are deliberately absent here: they are one branch, and
+        # the test below covers them together.
         (
             PhaseSystem.THREE_PHASE,
             EarthingArrangement.TN_STAR_POINT_EARTHED,
@@ -220,6 +218,50 @@ def test_every_mains_arrangement_reads_the_measure_the_rule_names(
     assert scenario.system_voltage_for_impulse_v == IN_BAND
     assert scenario.system_voltage_for_tov_v == IN_BAND + (len(measures) - 1)
     assert ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION in scenario.source_rule_ids
+
+
+def test_both_delta_arrangements_resolve_through_the_one_statement_that_covers_them(
+    service: SupplyStressService, rules: SupplyRuleSet
+) -> None:
+    """Corner-earthed and high-leg delta are one branch of the resolution rule, not two.
+
+    IEC 62477-1:2022 4.4.7.1.7.1 states the delta case as a single branch, and 4.4.7.1.5
+    groups the two arrangements the same way, so there is no distinction here to assert: a
+    second fact token for the second arrangement would let the vocabulary express a pair of
+    reviewed statements covering the same values, which is what the projector refuses. The
+    project's two names for what a user actually has stay, and both have to keep arriving at
+    the one measure - which is the property worth protecting.
+
+    :data:`DECOY_BAND` is declared for a measure neither arrangement resolves to, and sits in
+    a different band, so reading it instead of the phase-to-phase measure would move both the
+    system voltage and the impulse rather than pass unnoticed.
+    """
+
+    def at(earthing: EarthingArrangement) -> DerivedSupplyScenario:
+        return _derived(
+            service.derive_scenario(
+                _configuration(
+                    earthing_arrangement=earthing,
+                    declared_system_voltages=(
+                        DeclaredSystemVoltage(measure="phase_to_phase_rms", value_v=IN_BAND),
+                        DeclaredSystemVoltage(measure="phase_to_earth_rms", value_v=DECOY_BAND),
+                    ),
+                ),
+                rules,
+            )
+        )
+
+    corner_earthed = at(EarthingArrangement.TN_TT_CORNER_EARTHED_DELTA)
+    high_leg = at(EarthingArrangement.TN_TT_HIGH_LEG_DELTA)
+
+    for scenario in (corner_earthed, high_leg):
+        assert "phase_to_phase_rms" in scenario.trace_steps[0].reason
+        assert scenario.system_voltage_for_impulse_v == IN_BAND
+        assert scenario.system_voltage_for_tov_v == IN_BAND
+        assert scenario.rated_impulse_v == IN_BAND_IMPULSE
+    # And nothing the derivation produces tells the two apart - the trace included, because
+    # both read the same row of the same rule.
+    assert corner_earthed == high_leg
 
 
 def test_a_non_mains_supply_resolves_its_own_measure(
