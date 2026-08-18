@@ -128,6 +128,28 @@ def test_the_panel_names_the_domain_the_stress_entered_and_the_rules_it_read(pag
     assert "circuit to surroundings" in panel.value_text("Relationship")
 
 
+def test_a_stress_arriving_across_a_barrier_is_shown_as_transferred_and_not_as_local(
+    page,
+) -> None:
+    """Nothing supplies the far side of the barrier, so every volt it sees arrived there.
+
+    The two stages are separate rows because they answer different questions, and a reader
+    who cannot tell them apart cannot tell an isolated circuit from a directly fed one.
+    """
+
+    project = _project()
+    page.load_project(project)
+    across = pair_between(project, circuit_id(1), ENCLOSURE)
+    page.select_pair_by_id(str(across.id))
+    panel = page.editor.supply_panel
+
+    transferred = panel.value_text("Transferred impulse")
+    assert panel.value_text("Local domain impulse") == EMPTY_VALUE
+    assert transferred != EMPTY_VALUE
+    assert panel.value_text("Governing before override") == transferred
+    assert "Secondary" in panel.value_text("Propagation path")
+
+
 def test_a_temporary_overvoltage_reaches_a_circuit_to_surroundings_pair(page) -> None:
     _open(page, _project())
 
