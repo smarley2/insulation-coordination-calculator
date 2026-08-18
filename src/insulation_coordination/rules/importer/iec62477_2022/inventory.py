@@ -72,6 +72,8 @@ REQUIRED_SOURCE_ITEMS: tuple[RequiredSourceItem, ...] = (
     _item(ids.SUPPLY_HF_TRANSFORMER_ATTENUATION, "decision", (36,)),
     _item(ids.CLEARANCE_REQUIREMENTS, "table", (36,), table="Table 8"),
     _item(ids.CREEPAGE_REQUIREMENTS, "table", (36,), table="Table 9"),
+    _item(ids.CLEARANCE_REINFORCED_TREATMENT, "decision", (36,), clause="4.4.7.4.2"),
+    _item(ids.CREEPAGE_REINFORCED_TREATMENT, "decision", (36,), clause="4.4.7.5.2"),
     _item(ids.ALTITUDE_CLEARANCE_CORRECTION, "table", (36,), table="Table E.1"),
     _item(ids.ALTITUDE_TEST_VOLTAGE_CORRECTION, "table", (37,), table="Table E.2"),
     _item(ids.HIGH_FREQUENCY_APPLICABILITY, "decision", (36, 37), clause="Annex F"),
