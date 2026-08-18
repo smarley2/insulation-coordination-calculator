@@ -1,0 +1,386 @@
+"""A project and a rule package shaped for the dielectric verification planning tests.
+
+Every name, identifier, band boundary and cell value here is invented for this repository.
+Nothing reproduces a value, a heading, a note or any wording from any standard; what is
+faithful is the *shape* the real projections produce.
+
+Two things the existing fixtures do not offer are built here.
+
+:func:`verification_topology` puts **two circuits inside one galvanic domain**, which
+``tests.fixtures.supply_topologies`` deliberately does not: it gives one circuit per domain,
+which is enough for a transfer and not enough for a connected live-part group. Grouping is what
+makes deduplication mean anything, so a fixture without it cannot exercise it. It also carries
+an accessible conductive part alongside the PE-bonded enclosure and the insulating cover, so
+all four test topologies are reachable from one project.
+
+:func:`single_column_dielectric_package` narrows the synthetic verification package's
+dielectric routes to **one data column each**, which is what the real recipe projects: each
+route takes the axis column plus one test-voltage column. The shared synthetic fixture states
+two, so a route read from it is correctly refused - the package's column labels name the source
+column they came from and say nothing about which one a test uses. Both shapes are needed: one
+to plan from and one to be refused.
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from pathlib import Path
+from uuid import UUID
+
+from insulation_coordination.domain.enums import (
+    BarrierVerificationStatus,
+    CircuitSourceRelationship,
+    ConnectionExposure,
+    ConstructionType,
+    DecisiveVoltageClass,
+    FieldCondition,
+    InsulationType,
+    NetClassType,
+    ReviewState,
+    VerificationMethod,
+)
+from insulation_coordination.domain.project import (
+    NetClass,
+    PairCase,
+    PairVoltage,
+    PairVoltages,
+    Project,
+    ProjectDefaults,
+    ProjectMetadata,
+)
+from insulation_coordination.domain.rules import (
+    RulePackage,
+    SourceReference,
+    Table,
+    TableAxis,
+    TableCell,
+)
+from insulation_coordination.domain.supply import (
+    DeclaredSystemVoltage,
+    EarthingArrangement,
+    InputTopology,
+    OvervoltageCategory,
+    PhaseSystem,
+    SupplyConfiguration,
+    SupplyKind,
+)
+from insulation_coordination.domain.topology import GalvanicBarrier, GalvanicDomain
+from insulation_coordination.project.pairs import canonical_pair_key, reconcile_pairs
+from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
+from insulation_coordination.rules.importer.iec62477_2022.inventory import EDITION, STANDARD
+from tests.fixtures.synthetic_rules import (
+    merged_rule_package,
+    synthetic_supply_rule_package,
+    synthetic_verification_rule_package,
+)
+
+#: The project's nets. Two circuits share ``PRIMARY``; ``SECONDARY`` holds the third, behind a
+#: verified barrier, so an adjacent-circuit pair crosses isolation.
+PRIMARY = UUID(int=401)
+SECONDARY = UUID(int=402)
+LIVE_A = UUID(int=411)
+LIVE_B = UUID(int=412)
+LIVE_C = UUID(int=413)
+ENCLOSURE = UUID(int=421)
+TOUCHABLE = UUID(int=422)
+COVER = UUID(int=423)
+BARRIER = UUID(int=431)
+SUPPLY = UUID(int=441)
+
+#: The supply's declared system voltage. Inside the synthetic supply fixture's own band axis
+#: and inside the dielectric row axis below, so one package answers both lookups. Both sets of
+#: numbers are this repository's invention and only have to overlap.
+SYSTEM_VOLTAGE_V = Decimal(33)
+
+#: The dielectric routes' row axis. Chosen so ``SYSTEM_VOLTAGE_V`` lands strictly between two
+#: bands, which is what makes a linear route and a banded route give different answers.
+DIELECTRIC_ROW_BANDS: tuple[Decimal, ...] = (Decimal(10), Decimal(20), Decimal(40))
+
+#: One invented cell value per route, so a test can tell which of the eight routes was read
+#: from the number alone. The table family sets the ten-thousands, the purpose and voltage form
+#: set the thousands, and the row index adds a hundred per band.
+FAMILY_OFFSETS: dict[str, Decimal] = {
+    ids.TEST_MAINS_DIELECTRIC_VALUES: Decimal(0),
+    ids.TEST_NON_MAINS_DIELECTRIC_VALUES: Decimal(10000),
+}
+ROUTE_OFFSETS: dict[tuple[str, str], Decimal] = {
+    ("routine_and_basic_type", "ac"): Decimal(1000),
+    ("routine_and_basic_type", "dc"): Decimal(2000),
+    ("enhanced_type", "ac"): Decimal(3000),
+    ("enhanced_type", "dc"): Decimal(4000),
+}
+
+
+def dielectric_cell(base_id: str, purpose: str, form: str, band_index: int) -> Decimal:
+    """The value this fixture puts in one route's band, so a test names it rather than a number."""
+
+    return FAMILY_OFFSETS[base_id] + ROUTE_OFFSETS[purpose, form] + Decimal(100) * (band_index + 1)
+
+
+def verification_topology(
+    *,
+    supply_configurations: tuple[SupplyConfiguration, ...] = (),
+    insulation: InsulationType = InsulationType.BASIC,
+    altitude_m: Decimal = Decimal(0),
+    recurring_peak_v: Decimal | None = Decimal(25),
+) -> Project:
+    """Three circuits over two domains, a PE-bonded part, a touchable part and a cover.
+
+    ``LIVE_A`` and ``LIVE_B`` share ``PRIMARY``, so any test between one of them and a
+    reference part covers both. Every pair carries dimensionable stresses, so nothing is
+    excluded and nothing is blank.
+    """
+
+    domains = (
+        GalvanicDomain(
+            id=PRIMARY,
+            name="Primary",
+            is_direct_source_domain=True,
+            review_state=ReviewState.USER_CONFIRMED,
+        ),
+        GalvanicDomain(id=SECONDARY, name="Secondary", review_state=ReviewState.USER_CONFIRMED),
+    )
+    nets = (
+        _circuit(LIVE_A, "Live A", PRIMARY, CircuitSourceRelationship.MAINS_CONNECTED),
+        _circuit(LIVE_B, "Live B", PRIMARY, CircuitSourceRelationship.INTERNALLY_GENERATED),
+        _circuit(LIVE_C, "Live C", SECONDARY, CircuitSourceRelationship.INTERNALLY_GENERATED),
+        _reference(ENCLOSURE, "Enclosure", NetClassType.PE_BONDED_CONDUCTIVE_PART),
+        _reference(TOUCHABLE, "Handle", NetClassType.ACCESSIBLE_CONDUCTIVE_PART),
+        _reference(COVER, "Cover", NetClassType.ACCESSIBLE_INSULATING_SURFACE),
+    )
+    pairs = tuple(_dimensionable(pair, recurring_peak_v) for pair in reconcile_pairs(nets, ()))
+    return Project(
+        id=UUID(int=400),
+        metadata=ProjectMetadata(title="Verification topology example"),
+        application_version="test",
+        defaults=ProjectDefaults(
+            frequency_hz=Decimal(50),
+            insulation_type=insulation,
+            field_condition=FieldCondition.INHOMOGENEOUS,
+            altitude_m=altitude_m,
+            pollution_degree=2,
+            construction_type=ConstructionType.PRINTED_WIRING,
+            cti_or_material_group="I",
+        ),
+        net_classes=nets,
+        pairs=pairs,
+        galvanic_domains=domains,
+        galvanic_barriers=(
+            GalvanicBarrier(
+                id=BARRIER,
+                domain_a_id=PRIMARY,
+                domain_b_id=SECONDARY,
+                status=BarrierVerificationStatus.VERIFIED_GALVANIC_ISOLATION,
+                description="Primary to secondary",
+                verification_method=VerificationMethod.TEST,
+                evidence_reference="SYN-BARRIER-1",
+            ),
+        ),
+        supply_configurations=supply_configurations,
+    )
+
+
+def mains_configuration(**overrides: object) -> SupplyConfiguration:
+    """One enabled AC mains row, entirely this module's invention."""
+
+    fields: dict[str, object] = {
+        "id": SUPPLY,
+        "enabled": True,
+        "name": "Site supply",
+        "supply_kind": SupplyKind.AC_MAINS,
+        "nominal_voltage_v": SYSTEM_VOLTAGE_V,
+        "phase_system": PhaseSystem.THREE_PHASE,
+        "earthing_arrangement": EarthingArrangement.TN_STAR_POINT_EARTHED,
+        "overvoltage_category": OvervoltageCategory.IV,
+        "input_topology": InputTopology.DIRECT_INPUT,
+        "declared_system_voltages": (
+            DeclaredSystemVoltage(measure="phase_to_earth_rms", value_v=SYSTEM_VOLTAGE_V),
+        ),
+    }
+    fields.update(overrides)
+    return SupplyConfiguration(**fields)
+
+
+def pair_between(project: Project, first: UUID, second: UUID) -> PairCase:
+    key = canonical_pair_key(first, second)
+    return next(pair for pair in project.pairs if pair.key == key)
+
+
+def single_column_dielectric_package(*, interpolation: str = "linear") -> RulePackage:
+    """The synthetic verification package with one-column dielectric routes.
+
+    ``interpolation`` states what the routes permit, so a test can prove that a value between
+    two bands is interpolated where the source allows it and read at the band above where it
+    does not - without this application deciding either.
+    """
+
+    package = synthetic_verification_rule_package()
+    replaced = {table.id: table for table in _dielectric_tables(interpolation)}
+    return package.model_copy(
+        update={
+            "tables": tuple(_located(replaced.get(table.id, table)) for table in package.tables),
+        }
+    )
+
+
+def _located(table: Table) -> Table:
+    """The same table with each cell's locator naming its own row and column.
+
+    A whole-package validation asks every cell where in its source it came from, and the
+    shared synthetic fixture leaves that off because nothing ever wrote it through the
+    archive. Adding the coordinates here keeps the merge writable without touching a fixture
+    three other workstreams read.
+    """
+
+    return table.model_copy(
+        update={
+            "cells": tuple(
+                cell.model_copy(
+                    update={
+                        "source": cell.source.model_copy(
+                            update={
+                                "row": table.row_axis.labels[cell.row],
+                                "column": table.column_axis.labels[cell.column],
+                            }
+                        )
+                    }
+                )
+                for cell in table.cells
+            )
+        }
+    )
+
+
+def verification_and_supply_package(path: Path, *, interpolation: str = "linear") -> RulePackage:
+    """One package answering the verification questions and the supply ones.
+
+    Written and reloaded by ``merged_rule_package``, so it carries the SHA-256 identity a
+    generated test id is derived from.
+    """
+
+    return merged_rule_package(
+        single_column_dielectric_package(interpolation=interpolation),
+        synthetic_supply_rule_package(),
+        path=path,
+    )
+
+
+def _dielectric_tables(interpolation: str) -> tuple[Table, ...]:
+    reference = SourceReference(
+        document_id="synthetic-verification-source",
+        standard=STANDARD,
+        edition=EDITION,
+        clause="synthetic-clause",
+        table="synthetic-verification-table",
+        note="Synthetic fixture only; contains no IEC numeric values.",
+    )
+    tables: list[Table] = []
+    for base_id, row_axis_id in (
+        (ids.TEST_MAINS_DIELECTRIC_VALUES, "system_voltage_v"),
+        (ids.TEST_NON_MAINS_DIELECTRIC_VALUES, "working_voltage_recurring_peak_v"),
+    ):
+        for purpose in ("routine_and_basic_type", "enhanced_type"):
+            for form in ("ac", "dc"):
+                tables.append(
+                    Table(
+                        id=f"{base_id}.{purpose}.{form}",
+                        unit="V",
+                        row_axis=TableAxis(
+                            id=row_axis_id,
+                            unit="V",
+                            values=DIELECTRIC_ROW_BANDS,
+                            labels=tuple(f"band-{value}" for value in DIELECTRIC_ROW_BANDS),
+                        ),
+                        column_axis=TableAxis(
+                            id="dielectric_test_column",
+                            unit="1",
+                            values=(Decimal(1),),
+                            labels=("synthetic-test-voltage",),
+                        ),
+                        cells=tuple(
+                            TableCell(
+                                row=index,
+                                column=0,
+                                value=dielectric_cell(base_id, purpose, form, index),
+                                unit="V",
+                                source=reference,
+                            )
+                            for index in range(len(DIELECTRIC_ROW_BANDS))
+                        ),
+                        interpolation="linear" if interpolation == "linear" else "none",
+                        source=reference,
+                    )
+                )
+    return tuple(tables)
+
+
+def _circuit(
+    net_id: UUID, name: str, domain_id: UUID, source: CircuitSourceRelationship
+) -> NetClass:
+    return NetClass(
+        id=net_id,
+        name=name,
+        net_type=NetClassType.CIRCUIT,
+        source_relationship=source,
+        connection_exposure=ConnectionExposure.INTERNAL_ONLY,
+        decisive_voltage_class=DecisiveVoltageClass.DVC_B,
+        galvanic_domain_id=domain_id,
+        classification_review_state=ReviewState.USER_CONFIRMED,
+    )
+
+
+def _reference(net_id: UUID, name: str, net_type: NetClassType) -> NetClass:
+    return NetClass(
+        id=net_id,
+        name=name,
+        net_type=net_type,
+        source_relationship=None,
+        connection_exposure=None,
+        decisive_voltage_class=None,
+        galvanic_domain_id=None,
+        classification_review_state=ReviewState.USER_CONFIRMED,
+    )
+
+
+def _dimensionable(pair: PairCase, recurring_peak_v: Decimal | None) -> PairCase:
+    """Give every stress a value, so nothing is blank and no pair is excluded."""
+
+    recurring = (
+        PairVoltage.blank()
+        if recurring_peak_v is None
+        else PairVoltage.applicable(recurring_peak_v)
+    )
+    return pair.model_copy(
+        update={
+            "voltages": PairVoltages(
+                long_term_rms_v=PairVoltage.applicable(Decimal(500)),
+                steady_state_peak_v=PairVoltage.applicable(Decimal(300)),
+                recurring_peak_v=recurring,
+                temporary_overvoltage_peak_v=PairVoltage.applicable(Decimal(250)),
+            )
+        }
+    )
+
+
+__all__ = [
+    "BARRIER",
+    "COVER",
+    "DIELECTRIC_ROW_BANDS",
+    "ENCLOSURE",
+    "FAMILY_OFFSETS",
+    "LIVE_A",
+    "LIVE_B",
+    "LIVE_C",
+    "PRIMARY",
+    "ROUTE_OFFSETS",
+    "SECONDARY",
+    "SUPPLY",
+    "SYSTEM_VOLTAGE_V",
+    "TOUCHABLE",
+    "dielectric_cell",
+    "mains_configuration",
+    "pair_between",
+    "single_column_dielectric_package",
+    "verification_and_supply_package",
+    "verification_topology",
+]
