@@ -37,6 +37,7 @@ from typing import Final
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from insulation_coordination.calculation.verification_rules import VerificationRuleSet
+from insulation_coordination.domain.display import pair_label
 from insulation_coordination.domain.enums import NetClassType
 from insulation_coordination.domain.frozen_model import FrozenModel
 from insulation_coordination.domain.project import Project
@@ -445,13 +446,109 @@ def _effective_step(
     )
 
 
+#: What a text column shows where a record states nothing.
+NOT_STATED: Final = "—"
+
+#: The heading of the summary line, so a test can find it without matching a whole sentence.
+GOVERNING_PREFIX: Final = "Governing: "
+
+#: What the summary says when nothing approved was found for the summarised target.
+NOTHING_GOVERNS_TEXT: Final = "no approved figure"
+
+#: The comparison a reader must not miss. A draft above the governing figure is exactly the
+#: entry that would be taken for the answer if the column said only "draft".
+ABOVE_GOVERNING_TEXT: Final = "higher than the governing figure and awaiting a decision"
+
+
+def _words(value: str) -> str:
+    return value.replace("_", " ")
+
+
+def target_label(project: Project, target: EvidenceTarget) -> str:
+    """What a target is called on screen: a net by name, a pair by both of its names."""
+
+    if target.pair_id is not None:
+        pair = project.pair_by_id(target.pair_id)
+        return "unknown pair" if pair is None else f"pair {pair_label(project, pair)}"
+    name = next(
+        (net.name for net in project.net_classes if net.id == target.net_id),
+        None,
+    )
+    return "unknown net" if name is None else f"net {name}"
+
+
+def measurement_text(entry: VoltageEvidence) -> str:
+    """Where the figure was measured and to what uncertainty, for an entry that was."""
+
+    parts = [part for part in (entry.measurement_points, entry.tolerance_or_uncertainty) if part]
+    return " / ".join(parts) if parts else NOT_STATED
+
+
+def comparison_text(entry: VoltageEvidence, result: GoverningEvidenceResult) -> str:
+    """How ``entry`` stands against everything else recorded for its target and quantity.
+
+    Never a bare state name. A reader looking at this column is asking "is this the number",
+    and the answer for an entry that is not is always why not.
+    """
+
+    governing = result.approved_value_v
+    if entry.approval_state is EvidenceApprovalState.SUPERSEDED_WITH_JUSTIFICATION:
+        return f"superseded, does not govern — {entry.approval_justification}"
+    if entry.approval_state is EvidenceApprovalState.DRAFT:
+        if governing is None or entry.value_v > governing:
+            return f"draft, does not govern — {ABOVE_GOVERNING_TEXT}"
+        return "draft, does not govern — awaiting a decision"
+    if governing is not None and entry.value_v == governing:
+        tied = len(result.governing) > 1
+        return "governs, tied with another approved figure" if tied else "governs"
+    return "approved, below the governing figure"
+
+
+def governing_summary(target: str, result: GoverningEvidenceResult) -> str:
+    """One line naming what governs a target's quantity, and what is still outstanding.
+
+    The outstanding half is not a footnote. An approved figure with a higher draft beside it
+    is the case the whole approval gate exists for, and a summary that stopped at the approved
+    number would be the one place in this application where a draft won.
+
+    ``target`` is the caller's name for what the result is about, because the two callers name
+    it from different things: a panel has the project and calls :func:`target_label`, and a
+    report has only its own snapshot. The sentence itself is written once.
+    """
+
+    subject = f"{target}, {_words(result.quantity.value)}"
+    value = (
+        NOTHING_GOVERNS_TEXT if result.approved_value_v is None else f"{result.approved_value_v} V"
+    )
+    line = f"{GOVERNING_PREFIX}{subject} — {value}"
+    drafts = result.awaiting_approval
+    if drafts:
+        highest = max(entry.value_v for entry in drafts)
+        line += (
+            f"; {len(drafts)} awaiting a decision, the highest at {highest} V, "
+            "and none of them governs"
+        )
+    superseded = result.superseded
+    if superseded:
+        line += f"; {len(superseded)} superseded with justification"
+    return line
+
+
 __all__ = [
+    "ABOVE_GOVERNING_TEXT",
     "DETERMINATION_NAMESPACE",
     "EFFECTIVE_VOLTAGE_TRACE_ID",
     "GOVERNING_EVIDENCE_TRACE_ID",
+    "GOVERNING_PREFIX",
+    "NOTHING_GOVERNS_TEXT",
+    "NOT_STATED",
     "OPERATING_CONDITIONS",
     "WORKING_VOLTAGE_QUANTITIES",
     "GoverningEvidenceResult",
     "VoltageEvidenceService",
+    "comparison_text",
+    "governing_summary",
+    "measurement_text",
     "plan_working_voltage",
+    "target_label",
 ]

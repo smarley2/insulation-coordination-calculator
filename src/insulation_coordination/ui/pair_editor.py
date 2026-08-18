@@ -493,6 +493,9 @@ class PairEditor(QWidget):
         self.verification_panel.solid_insulation_changed.connect(
             lambda value: self._update_pair(solid_insulation=value)
         )
+        self.verification_panel.routine_exemption_changed.connect(
+            lambda value: self._update_pair(routine_exemption=value)
+        )
         layout.addWidget(self.verification_panel)
 
     @property

@@ -1984,6 +1984,11 @@ def merged_rule_package(*packages: RulePackage, path: Path) -> RulePackage:
     fixtures are separate only because the slices that built them were. This is a field-wise
     union - no content is added, only the one shape a whole-package validation needs. Written
     to ``path`` and reloaded so the archive recomputes the checksums the engine's gate reads.
+
+    A rule two of the fixtures both declare is kept once, from the **first** package that
+    declares it. Two fixtures naming one rule is how they overlap rather than a conflict, and
+    concatenating both copies fails the unique-id gate before anything can be read; the
+    earlier package wins so a caller orders the argument list by which content it wants.
     """
 
     first = packages[0]
@@ -1992,18 +1997,26 @@ def merged_rule_package(*packages: RulePackage, path: Path) -> RulePackage:
         for package in packages
         for document in package.manifest.source_documents
     }
+
+    def _by_id(field: str) -> tuple[object, ...]:
+        merged: dict[str, object] = {}
+        for package in packages:
+            for item in getattr(package, field):
+                merged.setdefault(item.id, item)
+        return tuple(merged.values())
+
     candidate = first.model_copy(
         update={
             "manifest": first.manifest.model_copy(
                 update={"source_documents": tuple(documents.values())}
             ),
-            "tables": tuple(item for package in packages for item in package.tables),
-            "formulas": tuple(item for package in packages for item in package.formulas),
-            "decisions": tuple(item for package in packages for item in package.decisions),
-            "curves": tuple(item for package in packages for item in package.curves),
-            "procedures": tuple(item for package in packages for item in package.procedures),
-            "guidance": tuple(item for package in packages for item in package.guidance),
-            "mappings": tuple(item for package in packages for item in package.mappings),
+            "tables": _by_id("tables"),
+            "formulas": _by_id("formulas"),
+            "decisions": _by_id("decisions"),
+            "curves": _by_id("curves"),
+            "procedures": _by_id("procedures"),
+            "guidance": _by_id("guidance"),
+            "mappings": _by_id("mappings"),
             "checksums": {},
             "package_sha256": None,
         }

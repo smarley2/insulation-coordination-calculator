@@ -184,6 +184,11 @@ class PairVerificationAssessment(FrozenModel):
     #: shows a schedule, and a reader asking "does this pair need a PD test" should not have
     #: to find the row to be told.
     partial_discharge: TestApplicability | None = None
+    #: The recurring-peak working voltage the partial-discharge gate and the non-mains
+    #: dielectric route were both answered from, or ``None`` where none is established. The
+    #: figure, not just the applicability: a reader shown that a test applies and not the
+    #: voltage behind it has to open the trace to learn what was assessed.
+    recurring_peak_v: Decimal | None = None
     #: The assembled-equipment routine exemption, condition by condition, whether or not it
     #: was granted. Carried even when the project recorded nothing, because "which condition
     #: is missing" is the question a reader has and an absent assessment answers none of it.
@@ -381,6 +386,7 @@ def _plan_pair(
         mains_connected=bool(mains),
         spd_monitoring_dependency=dependency,
         partial_discharge=discharge.applicability,
+        recurring_peak_v=recurring_peak,
         routine_exemption=exemption,
         status=_pair_status(pair, applications),
         unresolved_inputs=tuple(unresolved),

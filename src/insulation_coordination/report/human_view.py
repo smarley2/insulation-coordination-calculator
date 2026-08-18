@@ -12,9 +12,26 @@ from insulation_coordination.calculation.stress_propagation import (
     EffectivePairStressResolution,
     TemporaryOvervoltageSource,
 )
+from insulation_coordination.calculation.verification_plan import (
+    PairVerificationAssessment,
+    VerificationPlan,
+)
+from insulation_coordination.calculation.voltage_evidence import (
+    GoverningEvidenceResult,
+    comparison_text,
+    governing_summary,
+    measurement_text,
+)
 from insulation_coordination.domain.rules import SourceReference
 from insulation_coordination.domain.supply import DerivedSupplyScenario
 from insulation_coordination.domain.topology import GalvanicBarrier
+from insulation_coordination.domain.verification import (
+    EvidenceTarget,
+    TestApplicability,
+    TestApplication,
+    VoltageEvidence,
+    WorkingVoltageDetermination,
+)
 from insulation_coordination.report.model import (
     MatrixRow,
     PairCalculationReport,
@@ -220,6 +237,90 @@ class HumanSupplyView:
 
 
 @dataclass(frozen=True)
+class HumanEvidenceRow:
+    """One recorded voltage figure, and what the evidence service made of it."""
+
+    target: str
+    quantity: str
+    value: str
+    method: str
+    approval: str
+    operating_condition: str
+    source_reference: str
+    measurement: str
+    comparison: str
+
+
+@dataclass(frozen=True)
+class HumanWorkingVoltageRow:
+    target: str
+    quantities: str
+    status: str
+    operating_conditions: str
+    measurement_points: str
+    unresolved: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class HumanPairVerificationRow:
+    pair_label: str
+    protection: str
+    review_state: str
+    protection_level: str
+    status: str
+    partial_discharge: str
+    recurring_peak: str
+    exemption: str
+    test_ids: str
+    unresolved: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class HumanTestRow:
+    """One row of the schedule, in the terms whoever performs it works in.
+
+    Every column is filled for every row. A test whose voltage nobody could resolve says so in
+    the voltage column and lists the reason under ``unresolved``; it never leaves the table.
+    """
+
+    test_id: str
+    test: str
+    classification: str
+    high_side: str
+    low_side: str
+    reference: str
+    voltage: str
+    waveform: str
+    duration: str
+    applicability: str
+    covered_pairs: str
+    preparation: tuple[str, ...]
+    unresolved: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class HumanVerificationView:
+    """The dielectric verification sections, whether or not a plan could be built.
+
+    ``available`` is false where the active package answers no verification question. The
+    section is still rendered and still states what is missing: an empty schedule with no
+    explanation reads as a project that needs no tests.
+    """
+
+    available: bool
+    statement: str
+    notice: str
+    pairs: tuple[HumanPairVerificationRow, ...]
+    evidence: tuple[HumanEvidenceRow, ...]
+    governing: tuple[HumanValue, ...]
+    working_voltage: tuple[HumanWorkingVoltageRow, ...]
+    schedule: tuple[HumanTestRow, ...]
+    unresolved: tuple[str, ...]
+    warnings: tuple[HumanAdvisory, ...]
+    rules: tuple[HumanValue, ...]
+
+
+@dataclass(frozen=True)
 class HumanReportView:
     common_values: tuple[HumanValue, ...]
     comparison_matrices: tuple[HumanMatrix, ...]
@@ -231,6 +332,7 @@ class HumanReportView:
     galvanic_barriers: tuple[HumanGalvanicBarrier, ...]
     topology_status: HumanTopologyStatus
     supply: HumanSupplyView | None
+    verification: HumanVerificationView
     rules: object
 
 
@@ -356,6 +458,7 @@ def build_human_report_view(model: ReportModel) -> HumanReportView:
         galvanic_barriers=_human_galvanic_barriers(model, domain_names),
         topology_status=_human_topology_status(model, domain_names),
         supply=_human_supply(model, domain_names),
+        verification=_human_verification(model),
         rules=model.rules,
     )
 
@@ -1046,8 +1149,13 @@ def _rule_description(step: object) -> str:
     if semantic_rule_id.startswith("part1.creepage.clearance_floor"):
         return "The final clearance is retained as a minimum creepage candidate."
     if operation == "altitude_boundary":
+        # The boundary itself belongs to the A.2 rule this step names, and stating it here
+        # would put a source figure in application code. What this application did - check the
+        # project's altitude against that rule's boundary and find it not exceeded - is its
+        # own to say, with the rule's identifier beside it.
         return (
-            "The altitude boundary is checked; no correction factor is applied at or below 2000 m."
+            f"The altitude is checked against the boundary {semantic_rule_id} states and does "
+            "not exceed it, so no correction factor applies."
         )
     if operation in {"reinforced_stress_treatment", "reinforced_creepage_double"}:
         # Both treatments are resolved from the approved package, so the step's own
@@ -1141,3 +1249,265 @@ def _calculation_explanation(reason: str) -> str:
     if normalized == "calculated creepage governs":
         return "The calculated creepage requirement determined the creepage."
     return _sentence(reason)
+
+
+#: Said whenever the verification sections are anything other than complete. The clearance and
+#: creepage report is not held hostage by an unfinished dielectric plan, and a reader who has
+#: just read an incomplete-verification statement has to be told that in the same breath.
+VERIFICATION_INDEPENDENT_TEXT = (
+    "This does not affect the clearance and creepage results in this report."
+)
+
+#: Said when a plan was built and nothing in it is outstanding.
+VERIFICATION_COMPLETE_TEXT = (
+    "Every dielectric verification this project asks for is planned, and nothing is outstanding."
+)
+
+#: Opens the statement when the active package answers no verification question at all. The
+#: sections are still rendered: an empty schedule with no explanation reads as a project that
+#: needs no tests.
+VERIFICATION_UNAVAILABLE_PREFIX = "No dielectric verification plan could be built: "
+
+#: Opens the statement when a plan exists and something in it is unsettled.
+VERIFICATION_INCOMPLETE_PREFIX = "The dielectric verification is incomplete."
+
+#: What a schedule column says where the plan resolved nothing for it. Never blank: a blank
+#: cell reads as "nothing needed" and every one of these means "nobody knows yet".
+NOT_RESOLVED_TEXT = "not resolved"
+
+#: What the covered-pairs column says for the one row kind that has none. A working voltage
+#: established within a single circuit is about that net rather than about a pair, which is a
+#: different thing from a row whose covered pairs nobody worked out.
+NO_COVERED_PAIR_TEXT = "none - the row establishes one circuit's own working voltage"
+
+
+def _human_verification(model: ReportModel) -> HumanVerificationView:
+    """The verification sections, from the plan the report snapshot already carries.
+
+    Reshapes and never re-decides. Every applicability, status, voltage and exemption here was
+    settled by :class:`~insulation_coordination.calculation.verification_plan.VerificationPlan`;
+    what this adds is the names - a net id is not something a test house can connect a lead to.
+    """
+
+    verification = model.verification
+    net_names = {net.id: net.name for net in model.net_classes}
+    pair_labels = {row.pair_id: f"{row.net_a} ↔ {row.net_b}" for row in model.matrix_rows}
+    pair_labels.update(
+        {pair.pair_id: f"{pair.net_a} ↔ {pair.net_b}" for pair in model.excluded_pairs}
+    )
+    evidence = tuple(
+        _human_evidence_row(entry, result, net_names, pair_labels)
+        for result in verification.evidence
+        for entry in result.applicable
+    )
+    governing = tuple(
+        HumanValue(
+            name=_target_label(result.target, net_names, pair_labels),
+            value=governing_summary(_target_label(result.target, net_names, pair_labels), result),
+            provenance=" ".join(step.reason for step in result.trace_steps),
+        )
+        for result in verification.evidence
+    )
+    plan = verification.plan
+    if plan is None:
+        return HumanVerificationView(
+            available=False,
+            statement=(
+                f"{VERIFICATION_UNAVAILABLE_PREFIX}{verification.unavailable_reason} "
+                f"{VERIFICATION_INDEPENDENT_TEXT}"
+            ),
+            notice=verification.unavailable_reason,
+            pairs=(),
+            evidence=evidence,
+            governing=governing,
+            working_voltage=(),
+            schedule=(),
+            unresolved=(),
+            warnings=(),
+            rules=(),
+        )
+    schedule = tuple(
+        human_test_row(application, net_names, pair_labels)
+        for application in plan.test_applications
+    )
+    return HumanVerificationView(
+        available=True,
+        statement=verification_statement(plan),
+        notice="",
+        pairs=tuple(
+            _human_pair_verification_row(assessment, pair_labels)
+            for assessment in plan.pair_assessments
+        ),
+        evidence=evidence,
+        governing=governing,
+        working_voltage=tuple(
+            _human_working_voltage_row(entry, net_names, pair_labels)
+            for entry in plan.working_voltage
+        ),
+        schedule=schedule,
+        unresolved=plan.unresolved_inputs,
+        warnings=_deduplicate_advisories(plan.warnings),
+        rules=(
+            HumanValue(
+                name="Rules package",
+                value=f"{plan.rule_package.package_id} version {plan.rule_package.version}",
+            ),
+            HumanValue(name="Package SHA-256", value=plan.rule_package.sha256),
+            HumanValue(
+                name="Rule identifiers read",
+                value=", ".join(plan.source_rule_ids) or NOT_RESOLVED_TEXT,
+            ),
+        ),
+    )
+
+
+def verification_statement(plan: VerificationPlan) -> str:
+    """Complete, or exactly how much of it is not.
+
+    Public because the report page states the same thing on screen, and two sentences that
+    counted the same plan differently would be worse than one in the wrong place.
+    """
+
+    if plan.is_complete:
+        return VERIFICATION_COMPLETE_TEXT
+    unsettled = sum(
+        1
+        for application in plan.test_applications
+        if application.applicability is TestApplicability.ENGINEERING_INPUT_REQUIRED
+    )
+    return (
+        f"{VERIFICATION_INCOMPLETE_PREFIX} {unsettled} of {len(plan.test_applications)} planned "
+        f"tests need an "
+        f"engineering input, and {len(plan.unresolved_inputs)} inputs are unresolved. "
+        f"{VERIFICATION_INDEPENDENT_TEXT}"
+    )
+
+
+def _human_evidence_row(
+    entry: VoltageEvidence,
+    result: GoverningEvidenceResult,
+    net_names: dict[UUID, str],
+    pair_labels: dict[str, str],
+) -> HumanEvidenceRow:
+    return HumanEvidenceRow(
+        target=_target_label(entry.target, net_names, pair_labels),
+        quantity=_words(entry.quantity_kind.value),
+        value=f"{entry.value_v} V",
+        method=_words(entry.method.value),
+        approval=_words(entry.approval_state.value),
+        operating_condition=entry.operating_condition,
+        source_reference=entry.source_reference,
+        measurement=measurement_text(entry),
+        comparison=comparison_text(entry, result),
+    )
+
+
+def _human_working_voltage_row(
+    entry: WorkingVoltageDetermination,
+    net_names: dict[UUID, str],
+    pair_labels: dict[str, str],
+) -> HumanWorkingVoltageRow:
+    return HumanWorkingVoltageRow(
+        target=_target_label(entry.target, net_names, pair_labels),
+        quantities=", ".join(_words(item.value) for item in entry.required_quantities),
+        status=_words(entry.status.value),
+        operating_conditions=", ".join(entry.operating_conditions),
+        measurement_points="; ".join(entry.measurement_points) or NOT_RESOLVED_TEXT,
+        unresolved=entry.unresolved_inputs,
+    )
+
+
+def _human_pair_verification_row(
+    assessment: PairVerificationAssessment, pair_labels: dict[str, str]
+) -> HumanPairVerificationRow:
+    implementation = assessment.protection_implementation
+    return HumanPairVerificationRow(
+        pair_label=pair_labels.get(str(assessment.pair_id), assessment.pair_key),
+        protection=("none selected" if implementation is None else _words(implementation.value)),
+        review_state=_words(assessment.protection_review_state.value),
+        protection_level="enhanced" if assessment.enhanced_protection else "basic or functional",
+        status=_words(assessment.status.value),
+        partial_discharge=(
+            NOT_RESOLVED_TEXT
+            if assessment.partial_discharge is None
+            else _words(assessment.partial_discharge.value)
+        ),
+        recurring_peak=(
+            NOT_RESOLVED_TEXT
+            if assessment.recurring_peak_v is None
+            else f"{assessment.recurring_peak_v} V"
+        ),
+        exemption=_exemption_text(assessment),
+        test_ids=", ".join(assessment.test_ids) or NOT_RESOLVED_TEXT,
+        unresolved=assessment.unresolved_inputs,
+    )
+
+
+def _exemption_text(assessment: PairVerificationAssessment) -> str:
+    """Whether the routine test was excused, and on what grounds or for want of what.
+
+    Never a bare "no". The reader's question is which condition is missing, and an exemption
+    nobody claimed is a different answer from one that was claimed and refused.
+    """
+
+    exemption = assessment.routine_exemption
+    if exemption is None:
+        return "not assessed"
+    if exemption.exemption_permitted:
+        grounds = "; ".join(item.detail for item in exemption.conditions)
+        return f"granted, and the routine rows are retained and marked - {grounds}"
+    return "not granted - " + "; ".join(item.detail for item in exemption.missing)
+
+
+def human_test_row(
+    application: TestApplication,
+    net_names: dict[UUID, str],
+    pair_labels: dict[str, str],
+) -> HumanTestRow:
+    """One schedule row in the terms whoever performs it works in."""
+
+    voltage = application.voltage
+    parameters = tuple(
+        item
+        for item in (application.waveform, application.polarity, application.repetitions)
+        if item
+    )
+    return HumanTestRow(
+        test_id=application.test_id,
+        test=_words(application.test_kind.value),
+        classification=(
+            ", ".join(_words(item.value) for item in application.classifications)
+            or NOT_RESOLVED_TEXT
+        ),
+        high_side=_net_side(application.high_side_net_ids, net_names),
+        low_side=_net_side(application.low_side_net_ids, net_names),
+        reference=_words(application.reference_kind.value),
+        voltage=(NOT_RESOLVED_TEXT if voltage is None else f"{voltage.value} {voltage.unit}"),
+        waveform="; ".join(parameters) or NOT_RESOLVED_TEXT,
+        duration=application.duration or NOT_RESOLVED_TEXT,
+        applicability=_words(application.applicability.value),
+        covered_pairs=", ".join(
+            pair_labels.get(str(pair_id), str(pair_id)) for pair_id in application.covered_pair_ids
+        )
+        or NO_COVERED_PAIR_TEXT,
+        preparation=application.preparation_steps,
+        unresolved=application.unresolved_inputs,
+    )
+
+
+def _net_side(net_ids: tuple[UUID, ...], net_names: dict[UUID, str]) -> str:
+    return " + ".join(net_names.get(net_id, str(net_id)) for net_id in net_ids) or "—"
+
+
+def _target_label(
+    target: EvidenceTarget, net_names: dict[UUID, str], pair_labels: dict[str, str]
+) -> str:
+    if target.pair_id is not None:
+        return f"pair {pair_labels.get(str(target.pair_id), str(target.pair_id))}"
+    # A target names exactly one of the two, so a target that is not a pair has a net.
+    assert target.net_id is not None
+    return f"net {net_names.get(target.net_id, str(target.net_id))}"
+
+
+def _words(value: str) -> str:
+    return value.replace("_", " ")

@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 from insulation_coordination.calculation.engine import (
     CalculationError,
     PairResult,
+    SupplyDerivation,
     calculate_project_pair,
     derive_project_supply,
 )
@@ -32,6 +33,10 @@ from insulation_coordination.calculation.grouping import (
     GroupingError,
     group_results,
     split_group,
+)
+from insulation_coordination.calculation.verification_plan import (
+    VerificationPlan,
+    VerificationPlanService,
 )
 from insulation_coordination.domain.display import group_label, pair_label
 from insulation_coordination.domain.project import Project
@@ -49,6 +54,8 @@ from insulation_coordination.report.tectonic import (
     TectonicRuntime,
     resolve_tectonic_runtime,
 )
+from insulation_coordination.ui.pair_editor import format_calculation_error
+from insulation_coordination.ui.test_schedule import TestSchedulePanel
 
 
 @dataclass(frozen=True)
@@ -75,6 +82,8 @@ class ReportPage(QWidget):
         self._blocking: tuple[str, ...] = ()
         self._stale: bool = False
         self._tectonic = tectonic
+        self._plan: VerificationPlan | None = None
+        self._plan_notice = ""
 
         layout = QVBoxLayout(self)
 
@@ -113,6 +122,9 @@ class ReportPage(QWidget):
         self._split_button.clicked.connect(self._on_split_clicked)
         groups_layout.addWidget(self._split_button)
         layout.addWidget(groups_group)
+
+        self.schedule_panel = TestSchedulePanel()
+        layout.addWidget(self.schedule_panel)
         layout.addStretch(1)
 
     @property
@@ -138,6 +150,23 @@ class ReportPage(QWidget):
     def group_count(self) -> int:
         self._ensure_fresh()
         return len(self._groups)
+
+    @property
+    def verification_summary(self) -> str:
+        """How far the dielectric verification has got, stated apart from the calculation.
+
+        Deliberately not part of :attr:`validation_summary`. A pair that cannot be calculated
+        blocks the report; a test nobody has planned yet does not, and folding the two into one
+        line would leave a reader unable to tell which of them they are looking at.
+        """
+
+        self._ensure_fresh()
+        return self.schedule_panel.completeness_text
+
+    @property
+    def verification_plan(self) -> VerificationPlan | None:
+        self._ensure_fresh()
+        return self._plan
 
     def load_project(self, project: Project) -> None:
         self._project = project
@@ -296,6 +325,7 @@ class ReportPage(QWidget):
             self._summary_label.setText("Load a project and an approved rules package")
             self._groups_list.clear()
             self._fit_groups_list()
+            self._refresh_verification()
             return
         results: list[PairResult] = []
         blocking: list[str] = []
@@ -339,6 +369,28 @@ class ReportPage(QWidget):
         for index, group in enumerate(self._groups, start=1):
             self._groups_list.addItem(group_label(self._project, group.pair_ids, index))
         self._fit_groups_list()
+        self._refresh_verification(supply)
+
+    def _refresh_verification(self, supply: SupplyDerivation | None = None) -> None:
+        """Recompute the plan the schedule shows, or record why it could not be built.
+
+        A refusal is kept rather than raised, exactly as the supply derivation's is: a package
+        that cannot answer the verification questions must leave the clearance and creepage
+        report generable and say so where the schedule would be.
+
+        ponytail: rebuilt on every project change, which is every metadata edit that reaches
+        this page. Narrow the trigger to what the plan reads if a large project makes the page
+        feel slow.
+        """
+
+        self._plan = None
+        self._plan_notice = ""
+        if self._project is not None and self._rules is not None:
+            try:
+                self._plan = VerificationPlanService().build(self._project, self._rules, supply)
+            except (CalculationError, ValueError, RuntimeError, TypeError, KeyError) as error:
+                self._plan_notice = format_calculation_error("Dielectric verification", error)
+        self.schedule_panel.set_plan(self._plan, self._project, self._plan_notice)
 
     def _fit_groups_list(self) -> None:
         """Keep the group list tall enough for its rows and no taller."""
