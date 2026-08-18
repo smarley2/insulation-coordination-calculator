@@ -102,30 +102,6 @@ class CalculationReviewPage(QWidget):
             item.setToolTip(f"Internal group: {getattr(group, 'group_id', '?')}")
             self._groups_list.addItem(item)
 
-    def recalculate_after_change(self, project: Project) -> None:
-        """Recalculate from project + stored rules if available; else clear."""
-        rules = getattr(project, "_rules", None)
-        if rules is None:
-            self.update_results((), project)
-            return
-        from insulation_coordination.calculation.engine import calculate_pair
-        from insulation_coordination.project.resolver import resolve_effective_case
-
-        pairs = getattr(project, "pairs", ())
-        from insulation_coordination.domain.project import ProjectDefaults
-
-        defaults = getattr(project, "defaults", None)
-        if not isinstance(defaults, ProjectDefaults):
-            self.update_results((), project)
-            return
-        valid: list[PairResult] = []
-        for pair in pairs:
-            try:
-                valid.append(calculate_pair(resolve_effective_case(defaults, pair), rules))
-            except (ValueError, RuntimeError, TypeError, KeyError):
-                continue
-        self.update_results(tuple(valid), project)
-
     def _summarise(self, result: PairResult, label: str) -> str:
         return (
             f"{label}: clearance={result.clearance_mm} mm, creepage={result.creepage_mm} mm, "
