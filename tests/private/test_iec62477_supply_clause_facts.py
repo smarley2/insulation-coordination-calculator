@@ -18,11 +18,9 @@ or its distribution.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-from insulation_coordination.rules.archive import load_rule_package, write_rule_package
+from insulation_coordination.domain.rules import RulePackage
 from insulation_coordination.rules.importer.approval import approval_blockers
 from insulation_coordination.rules.importer.clause_facts import (
     BarrierCombinedRequirementFact,
@@ -60,7 +58,6 @@ from insulation_coordination.rules.importer.review import (
     resolve_confirmed_clause_facts,
     retract_clause_fact,
 )
-from tests.private.test_iec62477_slice_c_roundtrip import _approved_slice_c
 from tests.rules.importer.test_clause_fact_proposals import scope_of
 
 pytestmark = pytest.mark.private_standard
@@ -505,8 +502,7 @@ def test_both_system_voltage_evidence_scopes_are_required(reviewed_draft) -> Non
 
 
 def test_the_approved_archive_does_not_carry_the_clause_fact_collections(
-    reviewed_draft,
-    tmp_path: Path,
+    licensed_package: RulePackage,
 ) -> None:
     """Reviewed facts are draft-only by design: the package carries the projected rules.
 
@@ -515,10 +511,7 @@ def test_the_approved_archive_does_not_carry_the_clause_fact_collections(
     archive; the review records must not appear in it at all.
     """
 
-    package = _approved_slice_c(reviewed_draft)
-    archive = tmp_path / "supply-clause-facts.icrules"
-    write_rule_package(archive, package)
-    reloaded = load_rule_package(archive)
+    reloaded = licensed_package
 
     assert {SV_ROUTE, ids.SUPPLY_HF_TRANSFORMER_ATTENUATION} <= {
         rule.id for rule in reloaded.decisions

@@ -57,6 +57,7 @@ from insulation_coordination.ui.value_options import (
     populate_combo,
     select_combo_value,
 )
+from insulation_coordination.ui.voltage_evidence import VoltageEvidencePanel
 from insulation_coordination.ui.voltage_guidance import VoltageGuidanceId
 
 #: Upper bound on one bulk net-class add, so a mistyped amount cannot flood the pair set.
@@ -217,6 +218,10 @@ class ProjectPage(QWidget):
         self._supply_panel.project_changed.connect(self._apply_project)
         layout.addWidget(self._supply_panel)
 
+        self.evidence_panel = VoltageEvidencePanel()
+        self.evidence_panel.project_changed.connect(self._apply_project)
+        layout.addWidget(self.evidence_panel)
+
         self._net_list.currentRowChanged.connect(self._on_net_selection_changed)
 
     @property
@@ -327,6 +332,7 @@ class ProjectPage(QWidget):
         self._domains_panel.set_project(project)
         self._barriers_panel.set_project(project)
         self._supply_panel.set_project(project)
+        self.evidence_panel.set_project(project)
         self._refresh_net_list()
 
     def open_project(self, path: Path) -> None:
@@ -446,6 +452,7 @@ class ProjectPage(QWidget):
         self._domains_panel.set_project(project)
         self._barriers_panel.set_project(project)
         self._supply_panel.set_project(project)
+        self.evidence_panel.set_project(project)
         self.project_changed.emit(self._project)
 
     def _refresh_net_list(self) -> None:

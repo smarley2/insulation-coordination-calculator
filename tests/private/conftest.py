@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from insulation_coordination.domain.rules import RulePackage
+from insulation_coordination.rules.archive import load_rule_package, write_rule_package
 from insulation_coordination.rules.importer.extract import (
     _REQUIRED_RECIPES,
     ImportedRuleDraft,
@@ -96,3 +98,40 @@ def reviewed_draft(extracted_draft: ImportedRuleDraft) -> ImportedRuleDraft:
     from tests.private.test_iec62477_dvc_tables import _review_all_c2_proposals
 
     return _review_all_c2_proposals(extracted_draft)
+
+
+@pytest.fixture(scope="session")
+def approved_package(reviewed_draft: ImportedRuleDraft) -> RulePackage:
+    """One approval of the shared review pass, shared by every test that reads the result.
+
+    Approving projects every reviewed proposal into a rule and hashes the whole package, which
+    costs about fifteen seconds, and the private tests used to repeat it once per test. A
+    package is a frozen model and nothing a consumer does to one returns a changed package, so
+    sharing this one cannot leak state between tests. A test whose assertion *is* the approval
+    -- the manual-curve-review lifecycle, the ones that prove an unresolved draft is refused --
+    calls ``approve_draft`` itself.
+
+    The helper is imported here rather than at module scope because it lives beside the tests
+    that assert the Slice C lifecycle, and conftest is imported before them.
+    """
+
+    from tests.private.test_iec62477_slice_c_roundtrip import _approved_slice_c
+
+    return _approved_slice_c(reviewed_draft)
+
+
+@pytest.fixture(scope="session")
+def licensed_package(
+    approved_package: RulePackage,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> RulePackage:
+    """The approved package as a consumer receives it: through the archive and back.
+
+    Most tests want the package *after* the archive rather than the writing of it, so the round
+    trip is shared too. A test whose assertion is the round trip -- one comparing the reloaded
+    package against the one written -- writes its own archive.
+    """
+
+    archive = tmp_path_factory.mktemp("licensed-package") / "licensed.icrules"
+    write_rule_package(archive, approved_package)
+    return load_rule_package(archive)
