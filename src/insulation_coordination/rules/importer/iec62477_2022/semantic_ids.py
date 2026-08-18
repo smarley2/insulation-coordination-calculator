@@ -22,6 +22,13 @@ SUPPLY_HF_TRANSFORMER_ATTENUATION = "iec62477_2022.supply.hf_transformer_attenua
 
 CLEARANCE_REQUIREMENTS = "iec62477_2022.clearance.requirements"
 CREEPAGE_REQUIREMENTS = "iec62477_2022.creepage.requirements"
+#: How a spacing for the stronger insulation is dimensioned from the weaker one's. One
+#: identifier per spacing kind, and siblings rather than routes of the requirement tables
+#: above for the reason the two Annex E identifiers are siblings: a treatment is a separate
+#: normative statement about a requirement, not a route of resolving one. Each names a
+#: treatment rather than its whole subclause, the way two routes already split 4.4.7.2.5.
+CLEARANCE_REINFORCED_TREATMENT = "iec62477_2022.clearance.reinforced_treatment"
+CREEPAGE_REINFORCED_TREATMENT = "iec62477_2022.creepage.reinforced_treatment"
 #: Annex E's two tables do two different jobs and get one identifier each (#52): E.1's factor
 #: corrects clearances for dimensioning, E.2's values correct test voltages for the altitude
 #: of the testing laboratory. Neither is a route of the other, so neither carries a suffix.
@@ -60,6 +67,8 @@ REQUIRED_SEMANTIC_IDS: frozenset[str] = frozenset(
         SUPPLY_HF_TRANSFORMER_ATTENUATION,
         CLEARANCE_REQUIREMENTS,
         CREEPAGE_REQUIREMENTS,
+        CLEARANCE_REINFORCED_TREATMENT,
+        CREEPAGE_REINFORCED_TREATMENT,
         ALTITUDE_CLEARANCE_CORRECTION,
         ALTITUDE_TEST_VOLTAGE_CORRECTION,
         HIGH_FREQUENCY_APPLICABILITY,

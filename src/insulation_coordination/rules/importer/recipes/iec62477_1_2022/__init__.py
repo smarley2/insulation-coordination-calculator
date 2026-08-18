@@ -10,6 +10,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
     identity,
     procedures,
     projection,
+    reinforced,
     spacing,
     supply,
     tables,
@@ -47,6 +48,7 @@ RECIPE = StandardRecipe(
         **supply.CLAUSE_PROJECTORS,
         **high_frequency.CLAUSE_PROJECTORS,
         **procedures.CLAUSE_PROJECTORS,
+        **reinforced.CLAUSE_PROJECTORS,
     },
     cross_standard_checks=spacing.CROSS_STANDARD_CHECKS,
 )

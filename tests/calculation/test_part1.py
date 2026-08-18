@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from insulation_coordination.calculation.clearance import (
+    DistanceCandidate,
     calculate_clearance_candidates,
     select_f2_impulse_clearance,
     select_f8_periodic_clearance,
@@ -24,6 +25,12 @@ from insulation_coordination.calculation.engine import (
     UnsupportedCaseError,
     calculate_pair,
 )
+from insulation_coordination.calculation.high_frequency import (
+    assess_part4_clearance,
+    calculate_high_frequency_candidates,
+    iterate_field_clearance,
+    select_part4_table2_creepage,
+)
 from insulation_coordination.domain.enums import (
     Applicability,
     ConstructionType,
@@ -38,6 +45,7 @@ from insulation_coordination.domain.project import (
     PairVoltages,
 )
 from insulation_coordination.domain.rules import RulePackage
+from insulation_coordination.domain.trace import Quantity
 from insulation_coordination.rules.archive import load_rule_package, write_rule_package
 from insulation_coordination.rules.validation import validate_rule_package
 
@@ -348,6 +356,46 @@ def test_nonfinite_rule_values_are_total_validation_failures_at_all_entries(
         with pytest.raises(RulePackageValidationError) as caught:
             entry()
         assert "package_structure" in caught.value.issue_codes
+
+
+def test_every_calculation_entry_refuses_a_package_that_borrows_a_proven_digest(
+    case_factory, synthetic_rules: RulePackage
+) -> None:
+    """A copy keeps the digest of the archive it came from, and no longer deserves it.
+
+    Validation reuses the answer a package already earned, recognising it by the digest its
+    own content hashes to. Every gate below therefore has to refuse content that carries a
+    proven package's digest without being that package -- which is what a copy of a loaded
+    package is, since ``package_sha256`` survives the copy while the content does not.
+    """
+
+    assert validate_rule_package(synthetic_rules).is_valid is True
+    borrowed = synthetic_rules.model_copy(update={"checksums": {}})
+    assert borrowed.package_sha256 == synthetic_rules.package_sha256
+
+    case = case_factory(frequency_hz="30001")
+    base = DistanceCandidate(
+        candidate_id="base",
+        stress_field="recurring_peak_v",
+        stress=Quantity(value=Decimal(400), unit="V"),
+        distance_mm=Decimal(1),
+        semantic_rule_id="base",
+        reason="a candidate the Part 4 entries need before they can be asked anything",
+    )
+    entries = (
+        lambda: calculate_pair(case, borrowed),
+        lambda: calculate_clearance_candidates(case, borrowed),
+        lambda: calculate_creepage_candidates(case, Decimal(3), borrowed),
+        lambda: select_f5_pcb_creepage(case, borrowed),
+        lambda: select_part4_table2_creepage(case, borrowed),
+        lambda: calculate_high_frequency_candidates(case, base, borrowed),
+        lambda: iterate_field_clearance(case, base, borrowed),
+        lambda: assess_part4_clearance(case, base, borrowed),
+    )
+    for entry in entries:
+        with pytest.raises(RulePackageValidationError) as caught:
+            entry()
+        assert "checksums" in caught.value.issue_codes
 
 
 def test_functional_path_does_not_apply_reinforced_scaling(

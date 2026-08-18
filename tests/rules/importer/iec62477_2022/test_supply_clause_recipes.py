@@ -743,10 +743,49 @@ def test_a_grammar_map_missing_a_route_is_refused(
         supply_fact_proposal_grammars()
 
     synthetic_private_grammars.write_text(
-        json.dumps({dropped: {"fact_kind": "not_a_declared_family"}}), encoding="utf-8"
+        json.dumps(
+            {
+                dropped: {
+                    "fact_kind": "spd_reduction",
+                    "statement_kind": "permission",
+                    "keyword_rules": [
+                        {"dimension": "not_a_dimension", "value": "x", "keywords": ["synthbind"]}
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
     )
     with pytest.raises(RulePackageError, match="nobody could author"):
         supply_fact_proposal_grammars()
+
+
+def test_a_grammar_for_a_family_this_checkout_does_not_declare_is_skipped(
+    synthetic_private_grammars: Path,
+) -> None:
+    """One folder of licensed material serves every checkout, so a newer family must not break it.
+
+    A branch that adds a fact family adds its grammar to the maintainer's own folder, and every
+    other checkout then reads a declaration for a family it has never heard of. Refusing the file
+    over it made that an all-or-nothing failure -- every route lost its grammar and every
+    grammar-dependent private test failed at fixture setup, on branches that had changed nothing.
+    The route such a declaration belongs to does not exist here either, so skipping it leaves the
+    declared inventory agreeing exactly with what loaded.
+    """
+
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.supply import (
+        supply_fact_proposal_grammars,
+    )
+
+    payload = json.loads(synthetic_private_grammars.read_text(encoding="utf-8"))
+    declared = set(payload)
+    payload["iec62477_2022.some.route_from_a_later_branch"] = {
+        "fact_kind": "a_family_added_on_another_branch",
+        "statement_kind": "whatever",
+    }
+    synthetic_private_grammars.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert set(supply_fact_proposal_grammars()) == declared
 
 
 def test_a_loaded_grammar_unions_a_scope_rather_than_multiplying_it(

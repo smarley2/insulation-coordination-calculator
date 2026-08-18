@@ -30,7 +30,12 @@ RULE_SCHEMA_VERSION = 4
 #: semantic identifier, its cells carry reviewed typed bands they did not carry before, and the
 #: package gains a decision rule. All three move a package's compatibility identity, and every
 #: draft built by an older importer has to be rebuilt and re-reviewed rather than upgraded.
-IEC_IMPORTER_VERSION = "iec-pdf-9"
+#: ``iec-pdf-10`` is issue #110. The required inventory gains the two reinforced spacing
+#: treatment identifiers, so a package built before it is incomplete rather than merely older;
+#: two clause fragments the older importer never extracted are what their rules rest on, and a
+#: bullet region holding a list's tail now extracts where it used to fail the shape check. None
+#: of that can be upgraded into an existing draft: it has to be re-extracted and re-reviewed.
+IEC_IMPORTER_VERSION = "iec-pdf-10"
 MAX_IDENTIFIER_LENGTH = 160
 MAX_REFERENCE_TEXT_LENGTH = 500
 MAX_NOTES_LENGTH = 2_000

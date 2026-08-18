@@ -7,22 +7,24 @@ line references, detection classes, and neutral descriptions only. It never
 restates a licensed value, heading, note, or clause wording; classification
 of any entry against the licensed source happens in private sessions only.
 
-- First audited: 2026-08-13. Reconciled: 2026-08-18, after issue #37's Tasks
-  9, 10 and 11.
+- First audited: 2026-08-13. Reconciled: 2026-08-18, after issue #110 and issue #37's Tasks 9, 10 and 11.
 - Command: `uv run python scripts/scan_licensed_content.py .`
 - Scanner totals when first audited: inline-factor=2, inline-threshold=7,
   numeric-series=41, source-like-text=28, synthetic-iec-source=2,
   text-numeric-series=3, value-near-table-id=26 (109 findings).
-- Scanner totals now: inline-factor=2, inline-threshold=3, numeric-series=43,
+- Scanner totals now: inline-factor=2, inline-threshold=3, numeric-series=44,
   source-like-text=5, synthetic-iec-source=7, text-numeric-series=2
-  (62 findings). Every `value-near-table-id` finding is resolved; the
+  (63 findings). Every `value-near-table-id` finding is resolved; the
   `numeric-series` count rose because the fixture rewrite in Task 5 split some
   containers, not because new content was added. The `synthetic-iec-source`
   count rose by two when issue #36's supply fixture joined the DVC fixture in
   the identity exception below, and by two again when issue #37's verification
   fixture joined them for the same reason; the `numeric-series` count rose by
   one with that fixture's invented curve points. No new content came with
-  either.
+  either. It rose by one again with issue #110's reinforced treatment recipe,
+  whose clause specs are one more container of page numbers and bounding
+  boxes -- the same `allowed-structural` shape the four sibling recipe clause
+  spec containers already have, and the only new finding that slice added.
 - The `inline-threshold` count **fell by four** in issue #37's Task 9. The
   Part 4 frequency boundary had been written out as a literal in four
   comparisons across `calculation/high_frequency.py` and
@@ -84,6 +86,7 @@ in-flight #53 workstream.
 | `src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/clauses.py:63,65` | source-like-text | Error-message strings, not source text | false-positive |
 | `src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/high_frequency.py:54` | numeric-series | Structural extraction geometry | allowed-structural |
 | `src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/procedures.py:72,280` | numeric-series | Grid row indexes and segment geometry | allowed-structural |
+| `src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/reinforced.py:55` | numeric-series | Clause bounding boxes and page numbers (issue #110) | allowed-structural |
 | `src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/spacing.py:175,468` | numeric-series | Grid row indexes and segment geometry | allowed-structural |
 | `src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/supply.py:47` | numeric-series | Clause bounding boxes and page numbers | allowed-structural |
 | `src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/supply.py:332` | source-like-text | Project-authored guidance title/summary describing that source notes exist | verify-private (confirm the summary stays descriptive and copies nothing) |

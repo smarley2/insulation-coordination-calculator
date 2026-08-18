@@ -26,6 +26,8 @@ from insulation_coordination.rules.importer.clause_facts import (
     DimensionScope,
     HfAttenuationPermissionFact,
     HfAttenuationRequirementFact,
+    ReinforcedFactorFact,
+    ReinforcedLevelStepFact,
     RouteReference,
     SpdMonitoringComplianceFact,
     SpdMonitoringExemptionFact,
@@ -100,6 +102,7 @@ _FACT_MODELS: dict[str, tuple[type[BaseModel], ...]] = {
         SpdMonitoringComplianceFact,
     ),
     "hf_attenuation": (HfAttenuationPermissionFact, HfAttenuationRequirementFact),
+    "reinforced_treatment": (ReinforcedFactorFact, ReinforcedLevelStepFact),
 }
 _UNDIMENSIONED = ("fact_kind", "statement_kind", "statement_index", "node_references")
 
