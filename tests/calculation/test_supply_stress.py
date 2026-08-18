@@ -42,6 +42,15 @@ from tests.fixtures.synthetic_rules import synthetic_supply_rule_package
 #: Inside the fixture's synthetic band axis, which runs 11 V to 33 V in three bands.
 IN_BAND = Decimal(15)
 
+#: Past every band the fixture's AC axis carries, inside the one band only its DC axis has, and
+#: at that band's midpoint - so the impulse lookup selects the band and the interpolating
+#: temporary-overvoltage lookup answers with an exact figure. The three figures below are that
+#: band's own cells in :func:`synthetic_supply_rule_package`, invented there like every other.
+HIGH_VOLTAGE_DC = Decimal(1500)
+DC_ONLY_BAND_IMPULSE = Decimal(421)
+DC_ONLY_MIDPOINT_TOV_RMS = Decimal(357)
+DC_ONLY_MIDPOINT_TOV_PEAK = Decimal(364)
+
 
 @cache
 def _supply_rules() -> SupplyRuleSet:
@@ -291,6 +300,42 @@ def test_a_non_mains_dc_supply_is_looked_up_on_the_dc_axis(
     )
 
 
+def test_a_high_voltage_dc_supply_resolves_where_the_ac_axis_stops(
+    service: SupplyStressService, rules: SupplyRuleSet
+) -> None:
+    def at(kind: SupplyKind) -> DerivedSupplyScenario | UnresolvedSupplyScenario:
+        return service.derive_scenario(
+            _configuration(
+                supply_kind=kind,
+                # The row's own headline figure is left where it was on purpose: no derivation
+                # reads it, and a test that set it would prove only that a field holds a number.
+                nominal_voltage_v=IN_BAND,
+                phase_system=None if kind is SupplyKind.NON_MAINS_DC else PhaseSystem.SINGLE_PHASE,
+                earthing_arrangement=EarthingArrangement.NOT_APPLICABLE,
+                declared_system_voltages=(
+                    DeclaredSystemVoltage(
+                        measure="between_supply_conductors_rms", value_v=HIGH_VOLTAGE_DC
+                    ),
+                ),
+            ),
+            rules,
+        )
+
+    scenario = _derived(at(SupplyKind.NON_MAINS_DC))
+
+    assert scenario.system_voltage_for_impulse_v == HIGH_VOLTAGE_DC
+    assert scenario.rated_impulse_v == DC_ONLY_BAND_IMPULSE
+    assert scenario.temporary_overvoltage_rms_v == DC_ONLY_MIDPOINT_TOV_RMS
+    assert scenario.temporary_overvoltage_peak_v == DC_ONLY_MIDPOINT_TOV_PEAK
+    assert scenario.source_rule_ids == (
+        ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,
+        f"{ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC}.dc.lookup",
+        f"{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.dc.lookup",
+    )
+    # The same voltage is off the end of the AC axis, which is what makes the band DC-only.
+    assert _codes(at(SupplyKind.NON_MAINS_AC)) == (SupplyDerivationBlockCode.LOOKUP_REFUSED,)
+
+
 def test_a_rectified_mains_supply_stays_on_the_ac_axis(
     service: SupplyStressService, rules: SupplyRuleSet
 ) -> None:
@@ -459,11 +504,51 @@ def test_a_custom_reviewed_topology_blocks_instead_of_borrowing_a_neighbour(
 
 
 def test_an_arrangement_the_rule_states_nothing_for_blocks(
-    service: SupplyStressService, rules: SupplyRuleSet
+    service: SupplyStressService,
 ) -> None:
-    result = service.derive_scenario(_configuration(phase_system=None), rules)
+    package = synthetic_supply_rule_package()
+    original = next(
+        item for item in package.decisions if item.id == ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION
+    )
+    silent = tuple(
+        row
+        for row in original.rows
+        if not any("three_phase_star" in matcher.values for matcher in row.matchers)
+    )
+    rules = _with_rule_rows(package, silent)
+
+    result = service.derive_scenario(_configuration(), rules)
 
     assert _codes(result) == (SupplyDerivationBlockCode.SYSTEM_VOLTAGE_UNRESOLVED,)
+
+
+def test_an_incomplete_row_is_refused_before_any_rule_is_asked_about_it(
+    service: SupplyStressService, rules: SupplyRuleSet
+) -> None:
+    # Without the earthing arrangement the resolution rule asks about, this row would be asked
+    # as "unspecified" and answered - about an arrangement nobody described.
+    incomplete = _configuration(earthing_arrangement=EarthingArrangement.NOT_APPLICABLE)
+
+    result = service.derive_scenario(incomplete, rules)
+
+    assert _codes(result) == (SupplyDerivationBlockCode.CONFIGURATION_INCOMPLETE,)
+    assert isinstance(result, UnresolvedSupplyScenario)
+    assert result.trace_steps == ()
+    # Reported, never raised, and the same refusal the project-wide entry point gives.
+    assert service.derive_all((incomplete,), rules).unresolved == (result,)
+
+
+def test_a_disabled_row_derived_from_directly_is_held_to_the_same_standard(
+    service: SupplyStressService, rules: SupplyRuleSet
+) -> None:
+    # The disabled flag exempts a row from the project's calculation, not from this one.
+    incomplete = _configuration(
+        enabled=False, earthing_arrangement=EarthingArrangement.NOT_APPLICABLE
+    )
+
+    assert _codes(service.derive_scenario(incomplete, rules)) == (
+        SupplyDerivationBlockCode.CONFIGURATION_INCOMPLETE,
+    )
 
 
 def test_a_measure_the_configuration_states_no_voltage_for_blocks(
@@ -479,8 +564,16 @@ def test_a_measure_the_configuration_states_no_voltage_for_blocks(
 def test_every_reason_a_configuration_cannot_derive_is_reported_together(
     service: SupplyStressService, rules: SupplyRuleSet
 ) -> None:
+    # A non-mains row, whose overvoltage category the completeness check does not demand, so
+    # the derivation reaches both refusals instead of stopping at the incomplete row.
     result = service.derive_scenario(
-        _configuration(overvoltage_category=None, declared_system_voltages=()), rules
+        _configuration(
+            supply_kind=SupplyKind.NON_MAINS_AC,
+            earthing_arrangement=EarthingArrangement.NOT_APPLICABLE,
+            overvoltage_category=None,
+            declared_system_voltages=(),
+        ),
+        rules,
     )
 
     assert set(_codes(result)) == {

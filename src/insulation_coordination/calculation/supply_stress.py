@@ -54,6 +54,7 @@ from insulation_coordination.domain.supply import (
     SupplyDerivationBlockCode,
     SupplyKind,
     UnresolvedSupplyScenario,
+    completeness_problems,
     validate_supply_configurations,
 )
 from insulation_coordination.domain.trace import CalculationWarning, Quantity, TraceStep
@@ -490,6 +491,19 @@ class SupplyStressService:
     ) -> DerivedSupplyScenario | UnresolvedSupplyScenario:
         """One configuration's scenario, or the typed reasons it has none.
 
+        An incomplete row is refused before any rule is asked about it. The refusal is here,
+        at the entry point, rather than only in :meth:`derive_all`: a row missing the earthing
+        arrangement the resolution rule asks about would otherwise be asked as *unspecified*
+        and answered, and the answer would be about an arrangement nobody described. Every
+        caller reaches the rules through this method, so guarding it guards all of them, and
+        the completeness question itself stays where it already lived - see
+        :func:`~insulation_coordination.domain.supply.completeness_problems`, which the
+        project-page report calls too, so both refuse the same rows for the same reasons.
+
+        Incompleteness is reported and never raised: what comes back is an
+        :class:`~insulation_coordination.domain.supply.UnresolvedSupplyScenario` carrying its
+        blocks, exactly as every other refusal here does.
+
         The impulse result is what a scenario is: without it there is nothing to compare
         against another configuration, so a configuration that cannot produce one comes back
         unresolved. The temporary overvoltage is resolved independently and may legitimately
@@ -497,6 +511,10 @@ class SupplyStressService:
         """
 
         derivation = _Derivation(configuration, rules)
+        for problem in completeness_problems(configuration):
+            derivation.block(SupplyDerivationBlockCode.CONFIGURATION_INCOMPLETE, problem.message)
+        if derivation.blocks:
+            return derivation.unresolved()
         resolved = _resolve_system_voltage(derivation, IMPULSE_PURPOSE)
         category = configuration.overvoltage_category
         if category is None:
@@ -544,6 +562,11 @@ class SupplyStressService:
         earlier one failed, so the result reports all of the reasons at once instead of the
         first. Impulse, temporary-overvoltage peak and temporary-overvoltage RMS are selected
         independently and may each be governed by a different configuration.
+
+        The set is validated as a set before any row is derived, because a duplicate name is a
+        property of the set that no single row can see. A row's own completeness is refused by
+        :meth:`derive_scenario` as well, and reaching it through here cannot change what a row
+        is refused for: the same question is asked of the same row either way.
         """
 
         problems: dict[UUID, list[str]] = {}
