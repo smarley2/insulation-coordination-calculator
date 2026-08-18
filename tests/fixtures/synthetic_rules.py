@@ -1,6 +1,7 @@
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -49,6 +50,7 @@ from insulation_coordination.domain.rules import (
     TableSelect,
     Variable,
 )
+from insulation_coordination.rules.archive import load_rule_package, write_rule_package
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.iec62477_2022.inventory import EDITION, STANDARD
 
@@ -1773,6 +1775,41 @@ def synthetic_supply_rule_package(*, edition: str = EDITION) -> RulePackage:
             transformer,
         ),
     )
+
+
+def merged_rule_package(*packages: RulePackage, path: Path) -> RulePackage:
+    """One package answering everything ``packages`` answer between them.
+
+    A real installation carries the clearance rules and the supply rules together; the
+    fixtures are separate only because the slices that built them were. This is a field-wise
+    union - no content is added, only the one shape a whole-package validation needs. Written
+    to ``path`` and reloaded so the archive recomputes the checksums the engine's gate reads.
+    """
+
+    first = packages[0]
+    documents = {
+        document.id: document
+        for package in packages
+        for document in package.manifest.source_documents
+    }
+    candidate = first.model_copy(
+        update={
+            "manifest": first.manifest.model_copy(
+                update={"source_documents": tuple(documents.values())}
+            ),
+            "tables": tuple(item for package in packages for item in package.tables),
+            "formulas": tuple(item for package in packages for item in package.formulas),
+            "decisions": tuple(item for package in packages for item in package.decisions),
+            "curves": tuple(item for package in packages for item in package.curves),
+            "procedures": tuple(item for package in packages for item in package.procedures),
+            "guidance": tuple(item for package in packages for item in package.guidance),
+            "mappings": tuple(item for package in packages for item in package.mappings),
+            "checksums": {},
+            "package_sha256": None,
+        }
+    )
+    write_rule_package(path, candidate)
+    return load_rule_package(path)
 
 
 @pytest.fixture

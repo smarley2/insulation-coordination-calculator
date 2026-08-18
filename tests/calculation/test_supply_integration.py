@@ -64,7 +64,6 @@ from insulation_coordination.domain.supply import (
     VerifiedImpulseOverride,
 )
 from insulation_coordination.project.resolver import resolve_effective_case
-from insulation_coordination.rules.archive import load_rule_package, write_rule_package
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from tests.fixtures.supply_topologies import (
     COVER,
@@ -74,7 +73,10 @@ from tests.fixtures.supply_topologies import (
     pair_between,
     supply_topology,
 )
-from tests.fixtures.synthetic_rules import synthetic_supply_rule_package
+from tests.fixtures.synthetic_rules import (
+    merged_rule_package,
+    synthetic_supply_rule_package,
+)
 
 #: The top of the supply fixture's synthetic band axis, which runs 11 V to 33 V in three
 #: bands. The highest band is chosen so the derived stresses land inside the clearance
@@ -108,29 +110,11 @@ def _merged(
     slices that built them were. Written and reloaded so the archive recomputes the checksums
     the engine's whole-package gate compares against.
     """
-    supply = supply if supply is not None else synthetic_supply_rule_package()
-    documents = {
-        document.id: document
-        for document in (
-            *clearance_rules.manifest.source_documents,
-            *supply.manifest.source_documents,
-        )
-    }
-    candidate = clearance_rules.model_copy(
-        update={
-            "manifest": clearance_rules.manifest.model_copy(
-                update={"source_documents": tuple(documents.values())}
-            ),
-            "tables": (*clearance_rules.tables, *supply.tables),
-            "formulas": (*clearance_rules.formulas, *supply.formulas),
-            "decisions": (*clearance_rules.decisions, *supply.decisions),
-            "checksums": {},
-            "package_sha256": None,
-        }
+    return merged_rule_package(
+        clearance_rules,
+        supply if supply is not None else synthetic_supply_rule_package(),
+        path=tmp_path / f"{name}.icrules",
     )
-    path = tmp_path / f"{name}.icrules"
-    write_rule_package(path, candidate)
-    return load_rule_package(path)
 
 
 @pytest.fixture
