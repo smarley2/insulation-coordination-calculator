@@ -24,6 +24,12 @@ from insulation_coordination.domain.frozen_model import FrozenModel
 from insulation_coordination.domain.quantities import DecimalValue, PositiveDecimal
 from insulation_coordination.domain.supply import SupplyConfiguration, VerifiedImpulseOverride
 from insulation_coordination.domain.topology import GalvanicBarrier, GalvanicDomain
+from insulation_coordination.domain.verification import (
+    ProtectionImplementation,
+    RoutineTestExemptionEvidence,
+    SolidInsulationTestData,
+    VoltageEvidence,
+)
 
 # `FrozenModel` used to be defined here; many other modules still import it from this module.
 # Explicitly re-export it (mypy's strict mode does not re-export imported names by default).
@@ -220,6 +226,22 @@ class PairCase(FrozenModel):
     #: entries; the derived and propagated stress it replaces is a runtime result and is
     #: never written back. Clearing this field restores that value with nothing copied out.
     impulse_override: VerifiedImpulseOverride | None = None
+    #: The physical means the engineer selected to meet this pair's protection requirement.
+    #: Separate from ``insulation_type``, which is the spacing path the clearance engine
+    #: dimensions: a pair can be dimensioned on a reinforced path while its protection is
+    #: implemented as double insulation or a protective screen, and the two must not be read
+    #: off each other. ``None`` means nobody has selected one yet.
+    protection_implementation: ProtectionImplementation | None = None
+    #: Whether an engineer has confirmed the selection above. A migrated project starts at
+    #: ``NEEDS_REVIEW`` for every pair, including those whose insulation type mapped cleanly,
+    #: because a mapping this application performed is not a selection anyone made.
+    protection_review_state: ReviewState = ReviewState.NEEDS_REVIEW
+    #: What has been declared about this pair's solid insulation, if anything. ``None`` and a
+    #: record whose fields are all unset mean the same thing to the assessment that reads it:
+    #: an engineering input, never an exemption.
+    solid_insulation: SolidInsulationTestData | None = None
+    #: The engineer's answers to the assembled-equipment routine-exemption conditions.
+    routine_exemption: RoutineTestExemptionEvidence | None = None
     notes: str | None = None
 
     @model_validator(mode="after")
@@ -261,6 +283,13 @@ class Project(FrozenModel):
     #: these is persisted: the scenarios, the propagation and the governing selection are all
     #: recomputed from this tuple and the active rule package.
     supply_configurations: tuple[SupplyConfiguration, ...] = ()
+    #: Every voltage figure anyone has recorded against a pair or a net, design-side and
+    #: measured alike, in the order they were entered. Nothing is ever removed to make room
+    #: for a newer figure: a later measurement joins the library beside the calculation it
+    #: disagrees with, and which of them governs is decided by
+    #: :class:`~insulation_coordination.calculation.voltage_evidence.VoltageEvidenceService`
+    #: at read time rather than by whoever entered the last one.
+    voltage_evidence: tuple[VoltageEvidence, ...] = ()
 
     @model_validator(mode="after")
     def _requires_consistent_pairs(self) -> Self:
@@ -312,6 +341,11 @@ class Project(FrozenModel):
         configuration_ids = [item.id for item in self.supply_configurations]
         if len(configuration_ids) != len(set(configuration_ids)):
             raise ValueError("Supply configuration IDs must be unique")
+        # An evidence id is quoted in reports and is how a reader finds the entry behind a
+        # governing value. Two entries sharing one would make that lookup ambiguous.
+        evidence_ids = [entry.id for entry in self.voltage_evidence]
+        if len(evidence_ids) != len(set(evidence_ids)):
+            raise ValueError("Voltage evidence IDs must be unique")
         # Duplicate *names* are deliberately not refused here. They are reported by
         # ``validate_supply_configurations`` alongside every other incompleteness, so the
         # project page can show them all at once and a user renaming a row can still save.
