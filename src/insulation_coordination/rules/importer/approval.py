@@ -541,14 +541,17 @@ def record_correction(
     # link it writes has to be that same function of that same draft.
     before = draft_content_digest(original)
     # Also what "changed" means here: every content collection, read through the one function,
-    # so a collection nobody remembered to compare cannot pass as unchanged.
-    if before == draft_content_digest(changed) and not resolve and not reopen:
+    # so a collection nobody remembered to compare cannot pass as unchanged. The cheap operands
+    # come first: a correction that resolves or reopens an item is a change whatever the content
+    # digest says, and digesting the whole draft to learn nothing is the same work the audit
+    # chain below already pays for.
+    if not resolve and not reopen and before == draft_content_digest(changed):
         raise ApprovalError("a correction must change rule content")
     corrected_mappings = tuple(
         mapping.model_copy(update={"approved": False}) for mapping in changed.mappings
     )
     semantic_proposals = _sync_semantic_proposals(original, changed)
-    _require_logged_content(original)
+    _require_logged_content(original, content_digest=before)
     recorded_at = datetime.now(UTC)
     resolutions = _require_valid_review_resolutions(
         original,
@@ -657,7 +660,14 @@ def _require_complete_audit(draft: DraftRulePackage) -> None:
         raise ApprovalError("draft has incomplete extraction, table, formula, or mapping audits")
 
 
-def _require_logged_content(draft: DraftRulePackage) -> None:
+def _require_logged_content(draft: DraftRulePackage, *, content_digest: str | None = None) -> None:
+    """Verify the correction chain ends at the draft's own content.
+
+    ``content_digest`` is the caller's already-computed ``draft_content_digest(draft)``. Digesting
+    a draft means serializing every content collection it carries, so a caller that has just done
+    it for the same object passes the value rather than paying for it twice.
+    """
+
     extraction_digests = tuple(
         record.notes.removeprefix("content:")
         for record in draft.manifest.approval_records
@@ -681,7 +691,9 @@ def _require_logged_content(draft: DraftRulePackage) -> None:
         if match.group(1) != expected:
             raise ApprovalError("draft has a broken correction audit chain")
         expected = match.group(2)
-    if draft_content_digest(draft) != expected:
+    if content_digest is None:
+        content_digest = draft_content_digest(draft)
+    if content_digest != expected:
         raise ApprovalError("draft contains an unlogged content change")
 
 
