@@ -21,6 +21,7 @@ from insulation_coordination.calculation.test_topology import (
 )
 from insulation_coordination.calculation.verification_plan import (
     ENHANCED_SPACING_MISMATCH_WARNING,
+    PROTECTION_REQUIREMENT_UNMET_WARNING,
     SPD_MONITORING_OWED_WARNING,
     PairVerificationAssessment,
     VerificationPlan,
@@ -29,7 +30,11 @@ from insulation_coordination.calculation.verification_plan import (
 from insulation_coordination.calculation.verification_rules import (
     VerificationRulesUnavailable,
 )
-from insulation_coordination.domain.enums import InsulationType, ReviewState
+from insulation_coordination.domain.enums import (
+    DecisiveVoltageClass,
+    InsulationType,
+    ReviewState,
+)
 from insulation_coordination.domain.project import PairCase, Project
 from insulation_coordination.domain.rules import RulePackage
 from insulation_coordination.domain.supply import (
@@ -69,6 +74,7 @@ from tests.fixtures.verification_topologies import (
     pair_between,
     verification_and_supply_package,
     verification_topology,
+    with_protection_matrix,
 )
 
 RECORDED_AT = datetime(2026, 5, 6, 7, 8, 9, tzinfo=UTC)
@@ -107,6 +113,23 @@ def with_protection(
                     }
                 )
                 for pair in project.pairs
+            )
+        }
+    )
+
+
+def with_class(
+    project: Project,
+    net_id: UUID,
+    dvc: DecisiveVoltageClass = DecisiveVoltageClass.DVC_C,
+) -> Project:
+    """The same project with one circuit reclassified, which is what moves a Table 3 row."""
+
+    return project.model_copy(
+        update={
+            "net_classes": tuple(
+                net.model_copy(update={"decisive_voltage_class": dvc}) if net.id == net_id else net
+                for net in project.net_classes
             )
         }
     )
@@ -344,6 +367,168 @@ def test_a_project_with_no_supply_arrangement_asks_for_a_stress_rather_than_inve
     assert application.voltage is None
     assert application.applicability is TestApplicability.ENGINEERING_INPUT_REQUIRED
     assert any("No impulse stress is resolved" in item for item in application.unresolved_inputs)
+
+
+# --- the protection requirement -------------------------------------------------------------
+
+
+def test_the_requirement_comes_from_the_package_and_not_from_what_was_selected(
+    package: RulePackage,
+) -> None:
+    """The whole point: change the implementation and the requirement must not follow it.
+
+    A requirement derived from the construction an engineer chose is a requirement that can
+    never be failed, which is what the pair page showed before anything was behind that row.
+    """
+    base = verification_topology(supply_configurations=(mains_configuration(),))
+    stated = {
+        implementation: assessment_for(
+            build(with_protection(base, implementation), package),
+            pair_between(base, LIVE_A, ENCLOSURE),
+        ).required_protection
+        for implementation in (BASIC, REINFORCED, ProtectionImplementation.FUNCTIONAL_INSULATION)
+    }
+    assert set(stated.values()) == {"basic_protection"}
+
+
+def test_a_requirement_the_selected_construction_meets_is_reported_as_met(
+    project: Project, package: RulePackage
+) -> None:
+    assessment = assessment_for(build(project, package), pair_between(project, LIVE_A, ENCLOSURE))
+    assert assessment.required_protection == "basic_protection"
+    assert assessment.protection_satisfied is True
+    assert assessment.requirement_columns
+    assert not assessment.unresolved_inputs
+
+
+def test_a_construction_above_the_required_level_meets_it(package: RulePackage) -> None:
+    project = with_protection(
+        verification_topology(
+            supply_configurations=(mains_configuration(),), insulation=InsulationType.REINFORCED
+        ),
+        REINFORCED,
+    )
+    assessment = assessment_for(build(project, package), pair_between(project, LIVE_A, ENCLOSURE))
+    assert assessment.required_protection == "basic_protection"
+    assert assessment.protection_satisfied is True
+
+
+def test_a_construction_below_the_required_level_is_a_finding_and_not_an_exception(
+    package: RulePackage,
+) -> None:
+    """A wrong implementation is a finding about a project, so the schedule is still built."""
+    project = with_protection(
+        with_class(verification_topology(supply_configurations=(mains_configuration(),)), LIVE_A),
+        BASIC,
+    )
+    plan = build(project, package)
+    assessment = assessment_for(plan, pair_between(project, LIVE_A, ENCLOSURE))
+
+    assert assessment.required_protection == "enhanced_protection"
+    assert assessment.protection_satisfied is False
+    assert assessment.status is VerificationStatus.ENGINEERING_REVIEW_REQUIRED
+    assert any("does not meet the requirement" in item for item in assessment.unresolved_inputs)
+    assert PROTECTION_REQUIREMENT_UNMET_WARNING in {warning.code for warning in plan.warnings}
+    assert plan.test_applications
+
+
+def test_two_circuits_are_asked_in_both_directions_and_the_more_demanding_governs(
+    package: RulePackage,
+) -> None:
+    """Each circuit is protected from the other, and one insulation answers for both."""
+    project = with_protection(
+        with_class(verification_topology(supply_configurations=(mains_configuration(),)), LIVE_C),
+        BASIC,
+    )
+    assessment = assessment_for(build(project, package), pair_between(project, LIVE_A, LIVE_C))
+
+    # The fixture states basic protection reading from the DVC C circuit and enhanced reading
+    # from the DVC B one, so a plan that asked once could report either.
+    assert assessment.required_protection == "enhanced_protection"
+    assert assessment.protection_satisfied is False
+
+
+def test_columns_that_disagree_on_something_the_project_does_not_record_settle_nothing(
+    package: RulePackage,
+) -> None:
+    """An insulating surface is neither bonded nor unbonded, so both columns answer.
+
+    Where they say different things there is no requirement to report: the project records no
+    access context and no person scope either, and picking one column would state a demand the
+    source did not make of this equipment.
+    """
+    project = with_protection(
+        with_class(
+            verification_topology(supply_configurations=(mains_configuration(),)),
+            LIVE_A,
+            DecisiveVoltageClass.DVC_AS,
+        ),
+        BASIC,
+    )
+    assessment = assessment_for(build(project, package), pair_between(project, LIVE_A, COVER))
+
+    assert assessment.required_protection is None
+    assert assessment.protection_satisfied is None
+    assert any("more than one requirement" in item for item in assessment.unresolved_inputs)
+
+
+def test_a_relationship_no_reviewed_column_carries_is_reported_rather_than_assumed(
+    package: RulePackage,
+) -> None:
+    project = with_protection(
+        with_class(
+            verification_topology(supply_configurations=(mains_configuration(),)),
+            LIVE_B,
+            DecisiveVoltageClass.DVC_AS,
+        ),
+        BASIC,
+    )
+    assessment = assessment_for(build(project, package), pair_between(project, LIVE_A, LIVE_B))
+
+    assert assessment.required_protection is None
+    assert assessment.protection_satisfied is None
+    assert any("no reviewed column" in item for item in assessment.unresolved_inputs)
+
+
+def test_a_circuit_with_no_decisive_voltage_class_names_itself(package: RulePackage) -> None:
+    project = with_protection(
+        with_class(
+            verification_topology(supply_configurations=(mains_configuration(),)),
+            LIVE_A,
+            DecisiveVoltageClass.NOT_EVALUATED,
+        ),
+        BASIC,
+    )
+    assessment = assessment_for(build(project, package), pair_between(project, LIVE_A, ENCLOSURE))
+
+    assert assessment.required_protection is None
+    assert any(
+        "No decisive voltage class is assigned to Live A" in item
+        for item in assessment.unresolved_inputs
+    )
+
+
+def test_a_construction_this_application_does_not_rank_is_a_judgement_not_a_pass(
+    package: RulePackage,
+) -> None:
+    """Supplementary insulation alone is added *to* basic insulation, not a level by itself."""
+    project = with_protection(
+        verification_topology(supply_configurations=(mains_configuration(),)),
+        ProtectionImplementation.SUPPLEMENTARY_INSULATION,
+    )
+    plan = build(project, package)
+    assessment = assessment_for(plan, pair_between(project, LIVE_A, ENCLOSURE))
+
+    assert assessment.required_protection == "basic_protection"
+    assert assessment.protection_satisfied is None
+    assert any("engineering judgement" in item for item in assessment.unresolved_inputs)
+    assert PROTECTION_REQUIREMENT_UNMET_WARNING not in {warning.code for warning in plan.warnings}
+
+
+def test_the_plan_names_the_rule_the_requirement_was_read_from(
+    project: Project, package: RulePackage
+) -> None:
+    assert ids.DVC_PROTECTION_MATRIX in build(project, package).source_rule_ids
 
 
 # --- enhanced protection ------------------------------------------------------------------
@@ -600,7 +785,7 @@ def test_a_route_stating_more_than_one_column_is_refused_rather_than_guessed_at(
     """The package labels a column by the source column it came from and nothing more."""
     project = with_protection(verification_topology(), BASIC)
     plan = VerificationPlanService().build(
-        project, _identified(synthetic_verification_rule_package()), None
+        project, _identified(with_protection_matrix(synthetic_verification_rule_package())), None
     )
     application = next(
         item for item in plan.test_applications if item.test_kind is TestKind.AC_DIELECTRIC

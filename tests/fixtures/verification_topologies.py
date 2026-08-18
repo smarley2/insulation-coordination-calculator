@@ -29,7 +29,9 @@ from uuid import UUID
 
 from insulation_coordination.calculation.verification_rules import (
     PRECONDITIONING_APPLICABILITY_ROUTE,
+    PROTECTION_REQUIREMENT_OUTPUT,
 )
+from insulation_coordination.domain.dvc import DVC_INPUT, PROTECTION_TARGET_DIMENSIONS
 from insulation_coordination.domain.enums import (
     BarrierVerificationStatus,
     CircuitSourceRelationship,
@@ -52,7 +54,12 @@ from insulation_coordination.domain.project import (
     ProjectMetadata,
 )
 from insulation_coordination.domain.rules import (
+    DecisionInput,
+    DecisionOutput,
+    DecisionRow,
     DecisionRule,
+    DecisionValue,
+    Matcher,
     RulePackage,
     SourceReference,
     Table,
@@ -251,6 +258,128 @@ def declared_solid_insulation(**overrides: object) -> SolidInsulationTestData:
     return SolidInsulationTestData(**fields)
 
 
+#: The reviewed columns of this fixture's Table 3, as the five selector tokens each carries.
+#: Four of them, because the plan narrows a lookup on the target and on whether an accessible
+#: part is bonded to PE, and a fixture stating one column per target could not tell a narrowed
+#: lookup from an unnarrowed one.
+PROTECTION_COLUMNS: tuple[tuple[str, ...], ...] = (
+    (
+        "accessible_part",
+        "connected_to_pe",
+        "general_access",
+        "ordinary_or_skilled",
+        "not_applicable",
+    ),
+    (
+        "accessible_part",
+        "not_connected_to_pe",
+        "general_access",
+        "ordinary_or_skilled",
+        "not_applicable",
+    ),
+    ("adjacent_circuit", "not_applicable", "not_applicable", "not_applicable", "dvc_b"),
+    ("adjacent_circuit", "not_applicable", "not_applicable", "not_applicable", "dvc_c"),
+)
+
+#: What this fixture's Table 3 states in each cell, by class designation and column index.
+#: Every one is invented here and none is read from anything. Three of them are placed to reach
+#: a branch nothing else would:
+#:
+#: * DVC A-s states two different things about an accessible part depending on whether it is
+#:   bonded, which is what a pair against an *insulating* surface runs into - nothing says
+#:   whether that surface is bonded, both columns answer, and the plan refuses to pick one;
+#: * the two adjacent-circuit columns disagree between a DVC B circuit facing a DVC C one and
+#:   the same pair read the other way round, so the plan has to take the more demanding;
+#: * no column carries an adjacent DVC A-s at all, which is the relationship a package simply
+#:   does not answer for.
+PROTECTION_CELLS: dict[tuple[str, int], str] = {
+    ("dvc_as", 0): "none",
+    ("dvc_as", 1): "basic_protection",
+    ("dvc_as", 2): "none",
+    ("dvc_as", 3): "none",
+    ("dvc_b", 0): "basic_protection",
+    ("dvc_b", 1): "basic_protection",
+    ("dvc_b", 2): "basic_protection",
+    ("dvc_b", 3): "enhanced_protection",
+    ("dvc_c", 0): "enhanced_protection",
+    ("dvc_c", 1): "enhanced_protection",
+    ("dvc_c", 2): "basic_protection",
+    ("dvc_c", 3): "enhanced_protection",
+}
+
+
+def with_protection_matrix(package: RulePackage) -> RulePackage:
+    """The same package with a Table 3 shaped the way the verification adapter resolves it.
+
+    The shared synthetic fixture carries Table 3 in its smallest legal shape, from when the
+    adapter checked it for presence alone. Now that a plan asks it what protection is required,
+    the adapter refuses a rule declaring a different input set - so a package a plan can be
+    built from has to state the real dimensions. Replacing it here keeps that out of a fixture
+    three other workstreams read, exactly as ``_located`` keeps the cell coordinates out of it.
+
+    The replacement takes the placeholder's own source, so a package built for another edition
+    stays in that edition and still blocks for the reason it was built to block for.
+    """
+
+    return package.model_copy(
+        update={
+            "decisions": tuple(
+                _protection_matrix(decision.source)
+                if decision.id == ids.DVC_PROTECTION_MATRIX
+                else decision
+                for decision in package.decisions
+            )
+        }
+    )
+
+
+def _protection_matrix(source: SourceReference) -> DecisionRule:
+    """This fixture's Table 3: three classes against four reviewed protection targets."""
+
+    designations = tuple(sorted({row for row, _ in PROTECTION_CELLS}))
+    return DecisionRule(
+        id=ids.DVC_PROTECTION_MATRIX,
+        inputs=(
+            DecisionInput(name=DVC_INPUT, kind="categorical", allowed_values=designations),
+            *(
+                DecisionInput(
+                    name=name,
+                    kind="categorical",
+                    allowed_values=tuple(sorted({column[index] for column in PROTECTION_COLUMNS})),
+                )
+                for index, name in enumerate(PROTECTION_TARGET_DIMENSIONS)
+            ),
+        ),
+        outputs=(
+            DecisionOutput(
+                name=PROTECTION_REQUIREMENT_OUTPUT,
+                kind="categorical",
+                allowed_values=("none", "basic_protection", "enhanced_protection"),
+            ),
+        ),
+        rows=tuple(
+            DecisionRow(
+                matchers=(
+                    Matcher(input=DVC_INPUT, op="equals", values=(designation,)),
+                    *(
+                        Matcher(input=name, op="equals", values=(PROTECTION_COLUMNS[index][at],))
+                        for at, name in enumerate(PROTECTION_TARGET_DIMENSIONS)
+                    ),
+                ),
+                values=(
+                    DecisionValue(name=PROTECTION_REQUIREMENT_OUTPUT, categorical=requirement),
+                ),
+                source=source,
+            )
+            for (designation, index), requirement in PROTECTION_CELLS.items()
+        ),
+        # Not exhaustive, exactly as the real projection is: five structured target dimensions
+        # multiply out far past the combinations any reviewed column carries.
+        exhaustive=False,
+        source=source,
+    )
+
+
 def single_column_dielectric_package(
     *,
     interpolation: str = "linear",
@@ -269,7 +398,7 @@ def single_column_dielectric_package(
     not know whether a test is a type or a sample test cannot schedule it either way.
     """
 
-    package = synthetic_verification_rule_package()
+    package = with_protection_matrix(synthetic_verification_rule_package())
     replaced = {table.id: table for table in _dielectric_tables(interpolation)}
     # A reinforced pair is planned at the treated stress, so this package has to be able to
     # state the treatment and to carry the requirement whose axis a step would move along.
@@ -484,6 +613,8 @@ __all__ = [
     "LIVE_B",
     "LIVE_C",
     "PRIMARY",
+    "PROTECTION_CELLS",
+    "PROTECTION_COLUMNS",
     "ROUTE_OFFSETS",
     "SECONDARY",
     "SUPPLY",
@@ -497,4 +628,5 @@ __all__ = [
     "verification_and_supply_package",
     "verification_topology",
     "with_pair_fields",
+    "with_protection_matrix",
 ]
