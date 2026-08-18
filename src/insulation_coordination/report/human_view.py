@@ -1327,12 +1327,12 @@ def _human_verification(model: ReportModel) -> HumanVerificationView:
             rules=(),
         )
     schedule = tuple(
-        _human_test_row(application, net_names, pair_labels)
+        human_test_row(application, net_names, pair_labels)
         for application in plan.test_applications
     )
     return HumanVerificationView(
         available=True,
-        statement=_verification_statement(plan, schedule),
+        statement=verification_statement(plan),
         notice="",
         pairs=tuple(
             _human_pair_verification_row(assessment, pair_labels)
@@ -1361,8 +1361,12 @@ def _human_verification(model: ReportModel) -> HumanVerificationView:
     )
 
 
-def _verification_statement(plan: VerificationPlan, schedule: tuple[HumanTestRow, ...]) -> str:
-    """Complete, or exactly how much of it is not."""
+def verification_statement(plan: VerificationPlan) -> str:
+    """Complete, or exactly how much of it is not.
+
+    Public because the report page states the same thing on screen, and two sentences that
+    counted the same plan differently would be worse than one in the wrong place.
+    """
 
     if plan.is_complete:
         return VERIFICATION_COMPLETE_TEXT
@@ -1372,7 +1376,8 @@ def _verification_statement(plan: VerificationPlan, schedule: tuple[HumanTestRow
         if application.applicability is TestApplicability.ENGINEERING_INPUT_REQUIRED
     )
     return (
-        f"{VERIFICATION_INCOMPLETE_PREFIX} {unsettled} of {len(schedule)} planned tests need an "
+        f"{VERIFICATION_INCOMPLETE_PREFIX} {unsettled} of {len(plan.test_applications)} planned "
+        f"tests need an "
         f"engineering input, and {len(plan.unresolved_inputs)} inputs are unresolved. "
         f"{VERIFICATION_INDEPENDENT_TEXT}"
     )
@@ -1454,7 +1459,7 @@ def _exemption_text(assessment: PairVerificationAssessment) -> str:
     return "not granted - " + "; ".join(item.detail for item in exemption.missing)
 
 
-def _human_test_row(
+def human_test_row(
     application: TestApplication,
     net_names: dict[UUID, str],
     pair_labels: dict[str, str],

@@ -31,12 +31,14 @@ far too long to sit in a form, so it opens on demand and closes again.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Final
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QGroupBox,
@@ -59,6 +61,7 @@ from insulation_coordination.domain.trace import TraceStep
 from insulation_coordination.domain.verification import (
     EvidenceTarget,
     ProtectionImplementation,
+    RoutineTestExemptionEvidence,
     SolidInsulationTestData,
     TestApplication,
     TestClassification,
@@ -91,6 +94,16 @@ NOT_PLANNED_TEXT: Final = (
 #: The value a tri-state declaration takes while nobody has answered it. A blank answer is not
 #: a no, and the partial-discharge assessment reads the two differently.
 NOT_DECLARED_OPTION: Final = "not declared"
+
+#: Shown where an exemption record states no review date. A record nobody dated is not one
+#: anybody granted, and the assessment beside this panel says so in the same words.
+NOT_REVIEWED_TEXT: Final = "not reviewed"
+
+#: The label on the control that brings an exemption record into existence. Unticking it
+#: removes the record entirely, which is a different state from a record whose conditions are
+#: all false: the assessment reports the first as "nothing records that" and the second as "it
+#: is not recorded that", and a reviewer chasing them does different things.
+CLAIM_EXEMPTION_TEXT: Final = "Claimed for this pair"
 
 #: The stage labels, in the order the issue's pair page lists them.
 ROW_LABELS: Final = (
@@ -337,6 +350,7 @@ class VerificationPanel(QWidget):
     protection_changed = Signal(object)
     review_state_changed = Signal(object)
     solid_insulation_changed = Signal(object)
+    routine_exemption_changed = Signal(object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -385,6 +399,8 @@ class VerificationPanel(QWidget):
         self._material_edit.editingFinished.connect(self._on_solid_insulation_changed)
         choices.addRow("Material reference:", self._material_edit)
         outer.addLayout(choices)
+
+        outer.addWidget(self._exemption_group())
 
         form = QFormLayout()
         self._values = {label: wrapping_label(EMPTY_VALUE) for label in ROW_LABELS}
@@ -470,6 +486,116 @@ class VerificationPanel(QWidget):
 
     # -- internals ---------------------------------------------------------------------
 
+    def _exemption_group(self) -> QGroupBox:
+        """The controls that let an exemption actually be granted from inside the application.
+
+        Until this existed the panel could show the conditions and collect none of them, so an
+        exemption could not be claimed at all. Every field here is one the assessment beside it
+        already reads; nothing new is invented, and no control decides anything - a ticked
+        condition with an empty reference is still reported as evidence missing.
+
+        The review timestamp is stamped by the application when the record is written, the way
+        an evidence entry's is. The record's date is therefore "when this claim was last
+        edited", which is the only date this application can honestly know.
+        """
+
+        group = QGroupBox("Assembled-equipment routine test exemption")
+        form = QFormLayout(group)
+        self._exemption_claimed = QCheckBox(CLAIM_EXEMPTION_TEXT)
+        form.addRow("", self._exemption_claimed)
+        self._subassemblies_check = QCheckBox("recorded")
+        form.addRow("Subassemblies routine tested:", self._subassemblies_check)
+        self._subassembly_edit = QLineEdit()
+        self._subassembly_edit.setPlaceholderText("The evidence behind it")
+        form.addRow("Subassembly evidence:", self._subassembly_edit)
+        self._assembly_check = QCheckBox("recorded")
+        form.addRow("Assembly cannot compromise it:", self._assembly_check)
+        self._assembly_edit = QLineEdit()
+        self._assembly_edit.setPlaceholderText("The justification behind it")
+        form.addRow("Assembly justification:", self._assembly_edit)
+        self._type_test_check = QCheckBox("recorded")
+        form.addRow("Assembled type test passed:", self._type_test_check)
+        self._type_test_edit = QLineEdit()
+        self._type_test_edit.setPlaceholderText("The report reference")
+        form.addRow("Type test evidence:", self._type_test_edit)
+        self._reviewer_edit = QLineEdit()
+        self._reviewer_edit.setPlaceholderText("Who granted it")
+        form.addRow("Reviewer:", self._reviewer_edit)
+        self._reviewed_label = wrapping_label(NOT_REVIEWED_TEXT)
+        self._reviewed_label.setObjectName("_exemption_reviewed_at")
+        form.addRow("Reviewed at:", self._reviewed_label)
+        for widget in self._exemption_widgets():
+            if isinstance(widget, QCheckBox):
+                widget.toggled.connect(lambda _checked: self._on_exemption_changed())
+            elif isinstance(widget, QLineEdit):
+                widget.editingFinished.connect(self._on_exemption_changed)
+        return group
+
+    def _exemption_widgets(self) -> tuple[QWidget, ...]:
+        return (
+            self._exemption_claimed,
+            self._subassemblies_check,
+            self._subassembly_edit,
+            self._assembly_check,
+            self._assembly_edit,
+            self._type_test_check,
+            self._type_test_edit,
+            self._reviewer_edit,
+        )
+
+    def _on_exemption_changed(self) -> None:
+        """Hand back a whole replacement record, or ``None`` where the claim was withdrawn."""
+
+        if not self._exemption_claimed.isChecked():
+            self.routine_exemption_changed.emit(None)
+            return
+        self.routine_exemption_changed.emit(
+            RoutineTestExemptionEvidence(
+                subassemblies_routine_tested=self._subassemblies_check.isChecked(),
+                subassembly_evidence_reference=self._subassembly_edit.text().strip(),
+                assembly_cannot_compromise_insulation=self._assembly_check.isChecked(),
+                assembly_justification=self._assembly_edit.text().strip(),
+                assembled_type_test_passed=self._type_test_check.isChecked(),
+                assembled_type_test_reference=self._type_test_edit.text().strip(),
+                reviewer=self._reviewer_edit.text().strip(),
+                reviewed_at=datetime.now(UTC),
+            )
+        )
+
+    def _show_exemption(self, pair: PairCase | None) -> None:
+        record = None if pair is None else pair.routine_exemption
+        for widget in self._exemption_widgets():
+            widget.blockSignals(True)
+        self._exemption_claimed.setChecked(record is not None)
+        self._subassemblies_check.setChecked(
+            record is not None and record.subassemblies_routine_tested
+        )
+        self._subassembly_edit.setText(
+            "" if record is None else record.subassembly_evidence_reference
+        )
+        self._assembly_check.setChecked(
+            record is not None and record.assembly_cannot_compromise_insulation
+        )
+        self._assembly_edit.setText("" if record is None else record.assembly_justification)
+        self._type_test_check.setChecked(record is not None and record.assembled_type_test_passed)
+        self._type_test_edit.setText("" if record is None else record.assembled_type_test_reference)
+        self._reviewer_edit.setText("" if record is None else record.reviewer)
+        for widget in self._exemption_widgets():
+            widget.blockSignals(False)
+        self._reviewed_label.setText(
+            NOT_REVIEWED_TEXT
+            if record is None or record.reviewed_at is None
+            else record.reviewed_at.isoformat()
+        )
+
+    @property
+    def exemption_reviewed_text(self) -> str:
+        return self._reviewed_label.text()
+
+    @property
+    def exemption_claimed(self) -> bool:
+        return self._exemption_claimed.isChecked()
+
     def _tristate(self) -> QComboBox:
         """A declaration with three answers, because "not declared" is not "no"."""
 
@@ -532,6 +658,7 @@ class VerificationPanel(QWidget):
             widget.blockSignals(False)
         self._protection_badge.set_state(protection_badge_state(pair))
         self._review_label.setText(review_text(pair))
+        self._show_exemption(pair)
 
     def _on_protection_selected(self, index: int) -> None:
         data = self._protection_combo.itemData(index)
