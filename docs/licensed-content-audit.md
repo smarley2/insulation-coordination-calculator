@@ -7,14 +7,15 @@ line references, detection classes, and neutral descriptions only. It never
 restates a licensed value, heading, note, or clause wording; classification
 of any entry against the licensed source happens in private sessions only.
 
-- First audited: 2026-08-13. Reconciled: 2026-08-17, after Tasks 5, 6 and 7.
+- First audited: 2026-08-13. Reconciled: 2026-08-18, after issue #37's Tasks
+  9, 10 and 11.
 - Command: `uv run python scripts/scan_licensed_content.py .`
 - Scanner totals when first audited: inline-factor=2, inline-threshold=7,
   numeric-series=41, source-like-text=28, synthetic-iec-source=2,
   text-numeric-series=3, value-near-table-id=26 (109 findings).
-- Scanner totals now: inline-factor=2, inline-threshold=7, numeric-series=43,
+- Scanner totals now: inline-factor=2, inline-threshold=3, numeric-series=43,
   source-like-text=5, synthetic-iec-source=7, text-numeric-series=2
-  (66 findings). Every `value-near-table-id` finding is resolved; the
+  (62 findings). Every `value-near-table-id` finding is resolved; the
   `numeric-series` count rose because the fixture rewrite in Task 5 split some
   containers, not because new content was added. The `synthetic-iec-source`
   count rose by two when issue #36's supply fixture joined the DVC fixture in
@@ -22,6 +23,18 @@ of any entry against the licensed source happens in private sessions only.
   fixture joined them for the same reason; the `numeric-series` count rose by
   one with that fixture's invented curve points. No new content came with
   either.
+- The `inline-threshold` count **fell by four** in issue #37's Task 9. The
+  Part 4 frequency boundary had been written out as a literal in four
+  comparisons across `calculation/high_frequency.py` and
+  `calculation/engine.py`; it is now the single named constant
+  `PART4_FREQUENCY_THRESHOLD_HZ`, which those four comparisons and the new
+  partial-discharge review warning all read. Nothing was removed from the
+  tree and nothing was neutralized - the same figure is stated once instead of
+  four times, so the heuristic that fires on a literal in a comparison no
+  longer has one to find. No new finding was introduced by that task or by
+  Tasks 10 and 11, and **no fifth identity exception was added**: the three
+  new calculation modules and their three new test modules read the existing
+  verification fixture rather than declaring a source of their own.
 - Tracked private artifacts (`.pdf`, `.icrules`, `.icproj`, `.icdraft`,
   `audit-inventory.json`): none, in the current tree and in the full history.
 
@@ -46,11 +59,9 @@ of any entry against the licensed source happens in private sessions only.
 | `src/insulation_coordination/calculation/creepage.py:144` | inline-factor | Reinforced creepage multiplier in calculation code | confirmed (finding B class) |
 | `src/insulation_coordination/calculation/engine.py:180` | inline-threshold | High-frequency routing boundary as a literal | confirmed (finding B class) |
 | `src/insulation_coordination/calculation/engine.py:387` | inline-threshold | Partial-discharge advisory trigger as a literal | confirmed (finding B class) |
-| `src/insulation_coordination/calculation/high_frequency.py:104` | inline-threshold | High-frequency applicability boundary as a literal | confirmed (finding B class) |
-| `src/insulation_coordination/calculation/high_frequency.py:257` | inline-threshold | High-frequency applicability boundary as a literal | confirmed (finding B class) |
+| `src/insulation_coordination/calculation/engine.py:386`, `high_frequency.py:104,257,649` | inline-threshold | The Part 4 frequency boundary, stated as a literal in four comparisons | resolved (issue #37 Task 9; the four comparisons now read one named `PART4_FREQUENCY_THRESHOLD_HZ` in `high_frequency.py`, and the value is stated once. Still a finding-B-class boundary in a single place rather than four, and it remains a candidate for a package-supplied figure) |
 | `src/insulation_coordination/calculation/high_frequency.py:462` | inline-threshold | Altitude-correction base boundary as a literal | confirmed (finding B class) |
 | `src/insulation_coordination/calculation/high_frequency.py:601` | inline-threshold | Altitude table boundary validation constant | confirmed (finding B class) |
-| `src/insulation_coordination/calculation/high_frequency.py:649` | inline-threshold | High-frequency applicability boundary as a literal | confirmed (finding B class) |
 
 The `inline-threshold` entries extend finding B: they are comparison
 constants rather than multiplicative factors, but the same migration rule
