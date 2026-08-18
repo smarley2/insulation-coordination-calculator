@@ -29,6 +29,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.procedures i
     CLASSIFICATION_COLUMNS,
     CLASSIFICATION_MATRIX_ID,
     FOIL_APPLICABILITY_ID,
+    IMPULSE_ALTERNATIVE_VARIANTS,
     MATERIAL_PRECONDITIONING_INVOCATIONS,
     PRECONDITIONING_APPLICABILITY_ID,
     PRECONDITIONING_ELECTRICAL_ID,
@@ -39,6 +40,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.procedures i
     TEST_CLAUSE_COLUMN,
     project_accessible_surface_foil,
     project_assembled_routine_exemption,
+    project_impulse_alternative,
     project_internal_spd_monitoring,
     project_preconditioning,
     project_preconditioning_applicability,
@@ -73,6 +75,7 @@ CLAUSE_OF = {
     PRECONDITIONING_APPLICABILITY_ID: "5.2.3.1",
     ids.TEST_ACCESSIBLE_SURFACE_FOIL: "5.2.3.4.4",
     ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION: "5.2.3.4.4",
+    ids.TEST_IMPULSE_ALTERNATIVE: "5.2.3.3",
 }
 
 
@@ -500,3 +503,82 @@ def test_a_projection_refuses_a_fragment_that_is_not_its_own() -> None:
             IDENTITY,
             _draft(_agreeing_matrix()),
         )
+
+
+def _alternative_fragment(node_count: int = 4) -> RawClauseFragment:
+    """The subclause's paragraphs: the permission, one per method, and the ramp allowance."""
+
+    return _fragment(
+        ids.TEST_IMPULSE_ALTERNATIVE,
+        node_count,
+        kind="paragraph",
+        texts=(
+            "the substitute test may be used for the stated verifications only",
+            "the first method's declared modification",
+            "the second method's declared modification",
+            "the declared ramp allowance",
+        )[:node_count],
+    )
+
+
+def test_the_alternative_projects_one_procedure_per_permitted_method() -> None:
+    """The engineer chooses between the methods, so each is a rule the choice can name."""
+    rules, proposals = project_impulse_alternative(_alternative_fragment(), IDENTITY)
+
+    assert [rule.id for rule in rules] == [
+        rule_id for _node, rule_id, _kind, _measure in IMPULSE_ALTERNATIVE_VARIANTS
+    ]
+    assert len({rule.test_kind for rule in rules}) == len(rules)
+    assert [proposal.semantic_id for proposal in proposals] == [rule.id for rule in rules]
+    # Both routes hang off the required inventory item, so completeness finds them by it.
+    assert all(rule.id.startswith(f"{ids.TEST_IMPULSE_ALTERNATIVE}.") for rule in rules)
+
+
+def test_each_alternative_states_the_test_it_replaces_and_the_voltage_it_matches() -> None:
+    """Without both, a plan has a substitute test it can neither justify nor dimension."""
+    rules, _proposals = project_impulse_alternative(_alternative_fragment(), IDENTITY)
+
+    for rule, variant in zip(rules, IMPULSE_ALTERNATIVE_VARIANTS, strict=True):
+        alternative = rule.permitted_alternative
+        assert alternative is not None
+        assert alternative.instead_of_rule_id == ids.TEST_IMPULSE_PROCEDURE
+        assert alternative.equivalent_to_rule_id == ids.TEST_IMPULSE_SELECTION
+        assert alternative.equivalent_measure == variant[3]
+    # The two methods differ by their measure, which is what stops one standing for both.
+    measures = {rule.permitted_alternative.equivalent_measure for rule in rules}  # type: ignore[union-attr]
+    assert len(measures) == len(rules)
+
+
+def test_the_shared_permission_and_ramp_reach_every_method_but_the_modification_does_not() -> None:
+    """One statement covering both methods is carried by both; a per-method one is not."""
+    fragment = _alternative_fragment()
+    rules, _proposals = project_impulse_alternative(fragment, IDENTITY)
+    permission = fragment.nodes[0].raw_text
+    ramp = fragment.nodes[3].raw_text
+
+    assert {rule.applicability for rule in rules} == {permission}
+    assert {rule.permitted_alternative.ramp for rule in rules} == {ramp}  # type: ignore[union-attr]
+    steps = [step.text for rule in rules for step in rule.procedure_steps]
+    assert steps == [fragment.nodes[node].raw_text for node, *_rest in IMPULSE_ALTERNATIVE_VARIANTS]
+    assert permission not in steps
+    assert ramp not in steps
+
+
+def test_the_alternative_leaves_the_application_pattern_in_its_reviewed_step() -> None:
+    """The source states it as one sentence; splitting it would mean parsing that sentence."""
+    rules, _proposals = project_impulse_alternative(_alternative_fragment(), IDENTITY)
+
+    for rule in rules:
+        assert (rule.repetitions, rule.duration, rule.polarity, rule.waveform) == (
+            None,
+            None,
+            None,
+            None,
+        )
+        # The matrix has no row for this subclause, so no route claims a classification.
+        assert rule.classifications == ()
+
+
+def test_the_alternative_blocks_on_a_node_count_the_recipe_does_not_declare() -> None:
+    with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_PROCEDURE_STRUCTURE"):
+        project_impulse_alternative(_alternative_fragment(3), IDENTITY)
