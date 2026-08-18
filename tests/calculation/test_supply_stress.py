@@ -42,6 +42,15 @@ from tests.fixtures.synthetic_rules import synthetic_supply_rule_package
 #: Inside the fixture's synthetic band axis, which runs 11 V to 33 V in three bands.
 IN_BAND = Decimal(15)
 
+#: Past every band the fixture's AC axis carries, inside the one band only its DC axis has, and
+#: at that band's midpoint - so the impulse lookup selects the band and the interpolating
+#: temporary-overvoltage lookup answers with an exact figure. The three figures below are that
+#: band's own cells in :func:`synthetic_supply_rule_package`, invented there like every other.
+HIGH_VOLTAGE_DC = Decimal(1500)
+DC_ONLY_BAND_IMPULSE = Decimal(421)
+DC_ONLY_MIDPOINT_TOV_RMS = Decimal(357)
+DC_ONLY_MIDPOINT_TOV_PEAK = Decimal(364)
+
 
 @cache
 def _supply_rules() -> SupplyRuleSet:
@@ -289,6 +298,42 @@ def test_a_non_mains_dc_supply_is_looked_up_on_the_dc_axis(
         step.semantic_rule_id == f"{ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC}.dc.lookup"
         for step in scenario.trace_steps
     )
+
+
+def test_a_high_voltage_dc_supply_resolves_where_the_ac_axis_stops(
+    service: SupplyStressService, rules: SupplyRuleSet
+) -> None:
+    def at(kind: SupplyKind) -> DerivedSupplyScenario | UnresolvedSupplyScenario:
+        return service.derive_scenario(
+            _configuration(
+                supply_kind=kind,
+                # The row's own headline figure is left where it was on purpose: no derivation
+                # reads it, and a test that set it would prove only that a field holds a number.
+                nominal_voltage_v=IN_BAND,
+                phase_system=None if kind is SupplyKind.NON_MAINS_DC else PhaseSystem.SINGLE_PHASE,
+                earthing_arrangement=EarthingArrangement.NOT_APPLICABLE,
+                declared_system_voltages=(
+                    DeclaredSystemVoltage(
+                        measure="between_supply_conductors_rms", value_v=HIGH_VOLTAGE_DC
+                    ),
+                ),
+            ),
+            rules,
+        )
+
+    scenario = _derived(at(SupplyKind.NON_MAINS_DC))
+
+    assert scenario.system_voltage_for_impulse_v == HIGH_VOLTAGE_DC
+    assert scenario.rated_impulse_v == DC_ONLY_BAND_IMPULSE
+    assert scenario.temporary_overvoltage_rms_v == DC_ONLY_MIDPOINT_TOV_RMS
+    assert scenario.temporary_overvoltage_peak_v == DC_ONLY_MIDPOINT_TOV_PEAK
+    assert scenario.source_rule_ids == (
+        ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION,
+        f"{ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC}.dc.lookup",
+        f"{ids.SUPPLY_TOV_BY_SYSTEM_VOLTAGE}.dc.lookup",
+    )
+    # The same voltage is off the end of the AC axis, which is what makes the band DC-only.
+    assert _codes(at(SupplyKind.NON_MAINS_AC)) == (SupplyDerivationBlockCode.LOOKUP_REFUSED,)
 
 
 def test_a_rectified_mains_supply_stays_on_the_ac_axis(

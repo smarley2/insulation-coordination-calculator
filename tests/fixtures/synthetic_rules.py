@@ -1303,6 +1303,19 @@ SYNTHETIC_IMPULSE_COLUMNS = (
 )
 SYNTHETIC_TOV_COLUMNS = ("temporary_overvoltage_rms_v", "temporary_overvoltage_peak_v")
 
+#: The band edges of the two parallel system-voltage axes. The DC axis reaches past everything
+#: the AC axis carries, because the source's own highest band is DC-only, and a consumer that
+#: never leaves the shared bands would never show that it looks a DC supply up on the DC axis
+#: at all. Every edge here is invented. The DC-only edge is placed so that the band's midpoint
+#: is a round voltage: the temporary-overvoltage lookup interpolates, and a midpoint lookup is
+#: the one a test can assert an exact figure for without repeating the interpolation itself.
+SYNTHETIC_SHARED_SYSTEM_VOLTAGE_BANDS = (Decimal(11), Decimal(22), Decimal(33))
+SYNTHETIC_DC_ONLY_SYSTEM_VOLTAGE_BAND = Decimal(2967)
+SYNTHETIC_SYSTEM_VOLTAGE_BANDS: dict[str, tuple[Decimal, ...]] = {
+    "ac": SYNTHETIC_SHARED_SYSTEM_VOLTAGE_BANDS,
+    "dc": (*SYNTHETIC_SHARED_SYSTEM_VOLTAGE_BANDS, SYNTHETIC_DC_ONLY_SYSTEM_VOLTAGE_BAND),
+}
+
 #: The measure vocabulary the real resolution rule answers with. Reproduced because a
 #: consumer's behaviour depends on the token, not on the reading behind it.
 SYNTHETIC_SYSTEM_VOLTAGE_MEASURES = (
@@ -1375,8 +1388,8 @@ def synthetic_supply_rule_package(*, edition: str = EDITION) -> RulePackage:
     Shape only. Every number here is invented: the band boundaries, the cell values and the
     frequency are this fixture's own, and no reviewed reading of any clause is reproduced. What
     is faithful is the structure the adapter resolves against - the AC and DC lookup pair per
-    quantity, the routes beneath the reduction identifier, and each decision's declared input
-    and output names.
+    quantity, the DC axis reaching past the AC one, the routes beneath the reduction
+    identifier, and each decision's declared input and output names.
 
     The two lookups differ exactly as the source's own treatment of them does: the impulse pair
     selects a band and declares no interpolation, the temporary-overvoltage pair interpolates.
@@ -1416,7 +1429,7 @@ def synthetic_supply_rule_package(*, edition: str = EDITION) -> RulePackage:
         formulas: list[Formula] = []
         for form in ("ac", "dc"):
             row_axis_id = f"system_voltage_{form}_v"
-            row_values = (Decimal(11), Decimal(22), Decimal(33))
+            row_values = SYNTHETIC_SYSTEM_VOLTAGE_BANDS[form]
             column_values = tuple(Decimal(index + 1) for index in range(len(column_labels)))
             table = Table(
                 id=f"{base_id}.{form}",
