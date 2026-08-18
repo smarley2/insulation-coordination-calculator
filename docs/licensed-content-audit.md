@@ -13,8 +13,8 @@ of any entry against the licensed source happens in private sessions only.
   numeric-series=41, source-like-text=28, synthetic-iec-source=2,
   text-numeric-series=3, value-near-table-id=26 (109 findings).
 - Scanner totals now: inline-factor=2, inline-threshold=7, numeric-series=43,
-  source-like-text=5, synthetic-iec-source=6, text-numeric-series=2
-  (65 findings). Every `value-near-table-id` finding is resolved; the
+  source-like-text=5, synthetic-iec-source=7, text-numeric-series=2
+  (66 findings). Every `value-near-table-id` finding is resolved; the
   `numeric-series` count rose because the fixture rewrite in Task 5 split some
   containers, not because new content was added. The `synthetic-iec-source`
   count rose by two when issue #36's supply fixture joined the DVC fixture in
@@ -92,6 +92,7 @@ in-flight #53 workstream.
 | `tests/fixtures/synthetic_rules.py:1311,1644` | synthetic-iec-source | The supply fixture package claims a real IEC standard identity as its source reference | open, deliberately not forced (issue #36 slice 1). Exactly the DVC case, for a second gate: `read_supply_rules` refuses any rule whose source is not the expected standard **and** edition, so the fixture must carry that identity for the accept path — and the wrong-edition refusal — to be testable at all. Values, axes and the frequency are project-invented and the fixture says so. Resolves with the same policy decision or injectable identity the DVC entry needs |
 | `tests/fixtures/synthetic_rules.py:1806,2044` | synthetic-iec-source | The verification fixture package claims a real IEC standard identity as its source reference | open, deliberately not forced (issue #37 slice 1). The DVC and supply case again, for a third gate: `read_verification_rules` refuses any rule whose source is not the expected standard **and** edition, so the fixture must carry that identity for the accept path — and the wrong-edition refusal, which needs a package that is right about everything else — to be testable at all. Every value, step and condition is project-invented and the fixture says so. Resolves with the same policy decision or injectable identity the DVC and supply entries need |
 | `tests/fixtures/synthetic_rules.py:2008` | numeric-series | The verification fixture's invented curve points and axis bounds | synthetic-ok (issue #37 slice 1; the heuristic fires on any numeric container in a file naming an IEC identifier, and the file must keep those identifiers because the adapter resolves rules by exactly those strings) |
+| `tests/fixtures/verification_topologies.py:271` | synthetic-iec-source | The verification topology fixture's dielectric package claims a real IEC standard identity as its source reference | open, deliberately not forced (issue #37 slice 3). The same gate a fourth time: the package it builds is read through `read_verification_rules`, which refuses any rule whose source is not the expected standard **and** edition, so a fixture that omitted the identity could not reach the accept path at all. Its document id is `synthetic-verification-source` and its note says it carries no IEC numeric values. Resolves with the same policy decision or injectable identity the three entries above need |
 | `tests/fixtures/topology_examples.py:69` | numeric-series | Synthetic project input triples | synthetic-ok |
 | `tests/rules/importer/iec62477_2022/test_annex_f_recipes.py:107-109` | numeric-series | Page numbers and expected grid shapes | allowed-structural |
 | `tests/rules/test_evaluator.py:616` | numeric-series | Synthetic trace-formatting expectations | synthetic-ok |
