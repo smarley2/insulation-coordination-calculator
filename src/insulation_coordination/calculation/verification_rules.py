@@ -41,7 +41,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Literal
+from typing import Final, Literal
 
 from insulation_coordination.calculation.clearance import CalculationError
 from insulation_coordination.domain.frozen_model import FrozenModel
@@ -53,7 +53,7 @@ from insulation_coordination.domain.rules import (
     SourceReference,
     Table,
 )
-from insulation_coordination.domain.verification import TestClassification
+from insulation_coordination.domain.verification import TestApplicability, TestClassification
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.iec62477_2022.inventory import EDITION, STANDARD
 
@@ -145,6 +145,47 @@ PACKAGE_CLASSIFICATIONS: Mapping[str, TestClassification] = {
     "sample_test": TestClassification.SAMPLE,
 }
 
+#: The same translation the other way, for the one gate that takes a classification as an
+#: *input* rather than declaring one. Derived rather than written out again, so the two
+#: directions cannot come to disagree about what a classification is called.
+CLASSIFICATION_NAMES: Mapping[TestClassification, str] = {
+    classification: name for name, classification in PACKAGE_CLASSIFICATIONS.items()
+}
+
+# The names each gated decision is asked and read by. Public, unlike the shape sets below,
+# because the assessments that ask them must not carry a package's vocabulary of their own: a
+# name written in two modules is a name one of them can get wrong, and this is the module whose
+# job is knowing it. The shape checks are built from exactly these, so a package that renames
+# one is refused here rather than quietly answering nothing at a call site.
+PARTIAL_DISCHARGE_GATE_INPUT: Final = "partial_discharge_test_voltage_declared"
+PARTIAL_DISCHARGE_GATE_OUTPUT: Final = "partial_discharge_test"
+FOIL_GATE_INPUT: Final = "non_conductive_accessible_surface_present"
+FOIL_WRAP_OUTPUT: Final = "foil_wrap_required"
+FOIL_SUBSTITUTION_OUTPUT: Final = "permitted_classification_substitution"
+PRECONDITIONING_CONTEXT_INPUT: Final = "test_context"
+PRECONDITIONING_PURPOSE_INPUT: Final = "test_purpose"
+PRECONDITIONING_REQUIRED_OUTPUT: Final = "preconditioning_required"
+PRECONDITIONING_ROUTE_OUTPUT: Final = "preconditioning_procedure_rule_id"
+EXEMPTION_OUTPUT: Final = "assembled_routine_test_exempt"
+#: The exemption's conditions in the order the source states them, which is the order a
+#: decision trace reports them in. A set would lose that order, and a reviewer reading which
+#: condition is missing reads it against the sequence the source states.
+EXEMPTION_CONDITION_INPUTS: Final[tuple[str, ...]] = (
+    "sub_assembly_routine_test_performed",
+    "assembly_shown_not_to_compromise_insulation",
+    "assembled_type_test_passed",
+)
+
+#: What the partial-discharge gate's own outcome vocabulary means as an applicability. There is
+#: no "not required" among them on purpose: the source states its exemptions in prose the gate
+#: does not tabulate, so the rule can say a test is required or that an input is missing, and
+#: nothing else. An outcome this mapping does not name is reported unresolved rather than
+#: translated to the nearest thing it resembles.
+PARTIAL_DISCHARGE_OUTCOMES: Mapping[str, TestApplicability] = {
+    "required": TestApplicability.REQUIRED,
+    "engineering_input_required": TestApplicability.ENGINEERING_INPUT_REQUIRED,
+}
+
 # What each procedure says it is. A procedure resolved under one identifier that declares it
 # performs a different test is two readings of the package disagreeing, and there is no
 # precedence rule to apply - it blocks.
@@ -162,25 +203,21 @@ _FOIL_TEST_KIND = "accessible_surface_foil_placement"
 # package declaring one more input than this application knows about cannot be asked anything
 # at all, and saying so is better than every query silently returning nothing. The output set
 # is compared for containment: an output nothing here reads is harmless.
-_PARTIAL_DISCHARGE_GATE_INPUTS = frozenset({"partial_discharge_test_voltage_declared"})
-_PARTIAL_DISCHARGE_GATE_OUTPUTS = frozenset({"partial_discharge_test"})
+_PARTIAL_DISCHARGE_GATE_INPUTS = frozenset({PARTIAL_DISCHARGE_GATE_INPUT})
+_PARTIAL_DISCHARGE_GATE_OUTPUTS = frozenset({PARTIAL_DISCHARGE_GATE_OUTPUT})
 
-_FOIL_GATE_INPUTS = frozenset({"non_conductive_accessible_surface_present"})
-_FOIL_GATE_OUTPUTS = frozenset({"foil_wrap_required", "permitted_classification_substitution"})
+_FOIL_GATE_INPUTS = frozenset({FOIL_GATE_INPUT})
+_FOIL_GATE_OUTPUTS = frozenset({FOIL_WRAP_OUTPUT, FOIL_SUBSTITUTION_OUTPUT})
 
-_PRECONDITIONING_GATE_INPUTS = frozenset({"test_context", "test_purpose"})
+_PRECONDITIONING_GATE_INPUTS = frozenset(
+    {PRECONDITIONING_CONTEXT_INPUT, PRECONDITIONING_PURPOSE_INPUT}
+)
 _PRECONDITIONING_GATE_OUTPUTS = frozenset(
-    {"preconditioning_required", "preconditioning_procedure_rule_id"}
+    {PRECONDITIONING_REQUIRED_OUTPUT, PRECONDITIONING_ROUTE_OUTPUT}
 )
 
-_EXEMPTION_INPUTS = frozenset(
-    {
-        "sub_assembly_routine_test_performed",
-        "assembly_shown_not_to_compromise_insulation",
-        "assembled_type_test_passed",
-    }
-)
-_EXEMPTION_OUTPUTS = frozenset({"assembled_routine_test_exempt"})
+_EXEMPTION_INPUTS = frozenset(EXEMPTION_CONDITION_INPUTS)
+_EXEMPTION_OUTPUTS = frozenset({EXEMPTION_OUTPUT})
 
 # The axes each selection table is keyed by, and the unit every one of them carries. A table
 # read off the wrong axis would resolve a real number to the wrong question.
@@ -670,16 +707,29 @@ class _PackageReader:
 
 
 __all__ = [
+    "CLASSIFICATION_NAMES",
     "DIELECTRIC_PURPOSES",
+    "EXEMPTION_CONDITION_INPUTS",
+    "EXEMPTION_OUTPUT",
     "FOIL_APPLICABILITY_ROUTE",
+    "FOIL_GATE_INPUT",
+    "FOIL_SUBSTITUTION_OUTPUT",
+    "FOIL_WRAP_OUTPUT",
     "IMPULSE_PROCEDURE_VARIANTS",
     "IMPULSE_SELECTION_PAIRS",
     "IMPULSE_SELECTION_ROW_AXES",
     "PACKAGE_CLASSIFICATIONS",
     "PARTIAL_DISCHARGE_APPLICABILITY_ROUTE",
+    "PARTIAL_DISCHARGE_GATE_INPUT",
+    "PARTIAL_DISCHARGE_GATE_OUTPUT",
+    "PARTIAL_DISCHARGE_OUTCOMES",
     "PRECONDITIONING_APPLICABILITY_ROUTE",
+    "PRECONDITIONING_CONTEXT_INPUT",
     "PRECONDITIONING_ELECTRICAL_ROUTE",
     "PRECONDITIONING_MATERIAL_ROUTE",
+    "PRECONDITIONING_PURPOSE_INPUT",
+    "PRECONDITIONING_REQUIRED_OUTPUT",
+    "PRECONDITIONING_ROUTE_OUTPUT",
     "READ_SEMANTIC_IDS",
     "RULES_READ_ELSEWHERE",
     "VOLTAGE_FORMS",

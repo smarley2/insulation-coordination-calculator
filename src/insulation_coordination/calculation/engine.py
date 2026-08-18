@@ -20,6 +20,7 @@ from insulation_coordination.calculation.clearance import (
 )
 from insulation_coordination.calculation.creepage import _calculate_creepage
 from insulation_coordination.calculation.high_frequency import (
+    PART4_FREQUENCY_THRESHOLD_HZ,
     FieldIteration,
     _calculate_high_frequency_candidates,
     apply_a2_altitude_correction,
@@ -383,7 +384,7 @@ def calculate_pair(
             candidate for candidate in clearance.candidates if candidate.candidate_id != "impulse"
         )
     )
-    used_part4 = frequency > Decimal(30000)
+    used_part4 = frequency > PART4_FREQUENCY_THRESHOLD_HZ
     high_frequency = (
         _calculate_high_frequency_candidates(
             effective,
