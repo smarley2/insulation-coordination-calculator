@@ -47,6 +47,10 @@ from insulation_coordination.calculation.partial_discharge import (
     PartialDischargeOutcome,
     assess_partial_discharge,
 )
+from insulation_coordination.calculation.routine_exemption import (
+    RoutineExemptionAssessment,
+    assess_routine_exemption,
+)
 from insulation_coordination.calculation.special_procedures import (
     decorate,
     monitoring_preparation,
@@ -180,6 +184,10 @@ class PairVerificationAssessment(FrozenModel):
     #: shows a schedule, and a reader asking "does this pair need a PD test" should not have
     #: to find the row to be told.
     partial_discharge: TestApplicability | None = None
+    #: The assembled-equipment routine exemption, condition by condition, whether or not it
+    #: was granted. Carried even when the project recorded nothing, because "which condition
+    #: is missing" is the question a reader has and an absent assessment answers none of it.
+    routine_exemption: RoutineExemptionAssessment | None = None
     status: VerificationStatus = VerificationStatus.PLANNED
     unresolved_inputs: tuple[str, ...] = ()
 
@@ -345,12 +353,21 @@ def _plan_pair(
         pair, effective, rules.partial_discharge, recurring_peak_v=recurring_peak
     )
     warnings.extend(discharge.warnings)
+    exemption = assess_routine_exemption(pair, rules.assembled_routine_exemption)
+    unresolved.extend(exemption.unresolved_inputs)
     applications = (
-        *decorate(
-            (impulse, *dielectric, _discharge_application(subject, rules, revision, discharge)),
-            reference_kind=subject.reference_kind,
-            preconditioning=rules.preconditioning,
-            foil=rules.accessible_surface_foil,
+        *_exempted(
+            decorate(
+                (
+                    impulse,
+                    *dielectric,
+                    _discharge_application(subject, rules, revision, discharge),
+                ),
+                reference_kind=subject.reference_kind,
+                preconditioning=rules.preconditioning,
+                foil=rules.accessible_surface_foil,
+            ),
+            exemption,
         ),
         *monitoring,
     )
@@ -364,6 +381,7 @@ def _plan_pair(
         mains_connected=bool(mains),
         spd_monitoring_dependency=dependency,
         partial_discharge=discharge.applicability,
+        routine_exemption=exemption,
         status=_pair_status(pair, applications),
         unresolved_inputs=tuple(unresolved),
     )
@@ -706,6 +724,56 @@ def _route_step(
                 "the package states for it."
             ),
         ),
+    )
+
+
+# --- the assembled-equipment routine exemption -----------------------------------------------
+
+
+def _exempted(
+    applications: Iterable[TestApplication],
+    exemption: RoutineExemptionAssessment,
+) -> tuple[TestApplication, ...]:
+    """The same rows, with the routine ones marked where the exemption was granted.
+
+    Marked, never removed. A schedule that dropped the row would be indistinguishable from one
+    where nobody planned the test in the first place, and this is the only place in the plan
+    where getting it wrong takes work away rather than adding it. The row stays, its
+    applicability becomes not required, and the conditions that carried the exemption are
+    written onto it so whoever signs the schedule reads the grounds beside the row they are
+    not performing.
+
+    Whatever the row still had outstanding stays on it. What is unknown about *performing* a
+    test - a duration no resolved rule states, a table that could not be read - does not become
+    known by not performing it, and deleting those lines because the test was excused would
+    lose the only record that the plan never fully resolved this row.
+
+    Deduplication makes this conservative across a connected group without any help: it keeps
+    the least settled applicability of the rows it folds, so one pair's exemption cannot excuse
+    another pair of the group that has not earned one.
+    """
+
+    if not exemption.exemption_permitted:
+        return tuple(applications)
+    grounds = (
+        f"The assembled-equipment routine test exemption is granted for pair "
+        f"{exemption.pair_key} under {', '.join(exemption.source_rule_ids)}, on these grounds: "
+        + "; ".join(item.detail for item in exemption.conditions)
+        + ". The row is retained and marked; it is not removed from the schedule."
+    )
+    return tuple(
+        application.model_copy(
+            update={
+                "applicability": TestApplicability.NOT_REQUIRED,
+                "preparation_steps": (*application.preparation_steps, grounds),
+                "source_rule_ids": _unique(
+                    (*application.source_rule_ids, *exemption.source_rule_ids)
+                ),
+            }
+        )
+        if TestClassification.ROUTINE in application.classifications
+        else application
+        for application in applications
     )
 
 
