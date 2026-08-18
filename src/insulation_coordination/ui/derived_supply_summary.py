@@ -27,7 +27,6 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -40,7 +39,7 @@ from insulation_coordination.domain.enums import Provenance
 from insulation_coordination.domain.project import EffectiveCase, Project
 from insulation_coordination.domain.supply import DerivedSupplyScenario
 from insulation_coordination.domain.topology import GalvanicBarrier
-from insulation_coordination.ui.help_indicator import FieldStateBadge
+from insulation_coordination.ui.help_indicator import FieldStateBadge, wrapping_label
 from insulation_coordination.ui.voltage_guidance import VoltageGuidanceId
 
 #: Shown for a stage that has no value, so the row stays and reads as "nothing reached here"
@@ -75,22 +74,6 @@ _STATE_BY_PROVENANCE = {
     Provenance.PAIR_OVERRIDE: VoltageGuidanceId.MANUAL_VALUE,
     Provenance.DERIVED_SUPPLY: VoltageGuidanceId.DERIVED_VALUE,
 }
-
-
-def _wrapping_label(text: str) -> QLabel:
-    """A label that wraps, and that never widens the column it sits in.
-
-    An ignored horizontal size policy is the point: these labels carry whole sentences, and a
-    sentence's unwrapped width would otherwise become the pair editor's minimum width and
-    squeeze every input beside it. Height still follows the width it is given.
-    """
-
-    label = QLabel(text)
-    label.setWordWrap(True)
-    policy = QSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
-    policy.setHeightForWidth(True)
-    label.setSizePolicy(policy)
-    return label
 
 
 def _volts(value: object) -> str:
@@ -255,11 +238,11 @@ class DerivedSupplyPanel(QWidget):
         group = QGroupBox("Derived supply stress")
         outer = QVBoxLayout(group)
 
-        self._notice = _wrapping_label(NO_DERIVATION_TEXT)
+        self._notice = wrapping_label(NO_DERIVATION_TEXT)
         outer.addWidget(self._notice)
 
         form = QFormLayout()
-        self._values = {label: _wrapping_label(EMPTY_VALUE) for label in ROW_LABELS}
+        self._values = {label: wrapping_label(EMPTY_VALUE) for label in ROW_LABELS}
         for label, widget in self._values.items():
             form.addRow(f"{label}:", widget)
 
@@ -275,7 +258,7 @@ class DerivedSupplyPanel(QWidget):
         form.addRow(f"{DIMENSIONED_FROM_LABEL}:", container)
         outer.addLayout(form)
 
-        self._warnings = _wrapping_label("")
+        self._warnings = wrapping_label("")
         self._warnings.setObjectName("_supply_warnings")
         outer.addWidget(self._warnings)
 

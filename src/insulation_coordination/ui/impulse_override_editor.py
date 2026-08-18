@@ -27,11 +27,9 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -43,6 +41,7 @@ from insulation_coordination.domain.supply import (
     SpdDevicePlacement,
     VerifiedImpulseOverride,
 )
+from insulation_coordination.ui.help_indicator import wrapping_label
 from insulation_coordination.ui.value_options import populate_combo
 
 #: Shown while no override is recorded against the pair, so an empty form reads as a state
@@ -54,22 +53,6 @@ NO_OVERRIDE_TEXT = "No verified override is recorded for this pair; the derived 
 REFUSED_PREFIX = "Not applied — the derived value stands: "
 
 APPLIED_PREFIX = "Applied: "
-
-
-def _wrapping_label(text: str) -> QLabel:
-    """A label that wraps, and that never widens the column it sits in.
-
-    An ignored horizontal size policy is the point: these labels carry whole sentences, and a
-    sentence's unwrapped width would otherwise become the pair editor's minimum width and
-    squeeze every input beside it. Height still follows the width it is given.
-    """
-
-    label = QLabel(text)
-    label.setWordWrap(True)
-    policy = QSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
-    policy.setHeightForWidth(True)
-    label.setSizePolicy(policy)
-    return label
 
 
 def _words(member: StrEnum) -> str:
@@ -159,7 +142,7 @@ class ImpulseOverrideEditor(QWidget):
         buttons.addStretch(1)
         outer.addLayout(buttons)
 
-        self._status = _wrapping_label(NO_OVERRIDE_TEXT)
+        self._status = wrapping_label(NO_OVERRIDE_TEXT)
         self._status.setObjectName("_override_status")
         outer.addWidget(self._status)
 
