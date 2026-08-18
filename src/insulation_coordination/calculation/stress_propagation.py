@@ -45,14 +45,15 @@ from itertools import combinations
 from typing import Final
 from uuid import UUID
 
-from insulation_coordination.calculation.clearance import (
-    CalculationRangeError,
-    apply_reinforced_stress_treatment,
-)
+from insulation_coordination.calculation.clearance import apply_reinforced_stress_treatment
 from insulation_coordination.calculation.impulse_override import (
     OverrideOutcome,
     PairImpulseOverride,
     resolve_impulse_override,
+)
+from insulation_coordination.calculation.reinforced_rules import (
+    ReinforcedRuleSet,
+    ReinforcedTreatmentUnavailable,
 )
 from insulation_coordination.calculation.supply_rules import SupplyForm, SupplyRuleSet
 from insulation_coordination.calculation.supply_stress import select_impulse
@@ -762,6 +763,7 @@ def resolve_pair_stresses(
     rules: SupplyRuleSet,
     *,
     override: PairImpulseOverride | None = None,
+    reinforced: ReinforcedRuleSet | None = None,
 ) -> EffectivePairStressResolution:
     """What one pair requires, at every stage between the supply and the clearance engine.
 
@@ -770,6 +772,11 @@ def resolve_pair_stresses(
     the thing that decides whether one applies. Passing none is the ordinary case and restores
     the derived and propagated value exactly - nothing is copied into a manual field on the
     way out.
+
+    ``reinforced`` is the resolved reinforced treatment, used only to *report* what the pair's
+    insulation class makes of its effective impulse. ``None`` is what an installation whose
+    package cannot state the treatment gets, and a reinforced pair then reports a warning
+    instead of a treated figure. It is never a licence to report an untreated one as treated.
     """
 
     nets = {net.id: net for net in project.net_classes}
@@ -824,7 +831,9 @@ def resolve_pair_stresses(
     effective = (
         outcome.effective_impulse_v if outcome is not None and outcome.applied else governing
     )
-    treated, treatment_step, treatment_warning = _insulation_treated(effective, insulation)
+    treated, treatment_step, treatment_warning = _insulation_treated(
+        effective, insulation, reinforced
+    )
     if treatment_step is not None:
         steps.append(treatment_step)
     if treatment_warning is not None:
@@ -961,6 +970,7 @@ def _apply_override(
 def _insulation_treated(
     effective_impulse: Decimal | None,
     insulation: InsulationType | None,
+    reinforced: ReinforcedRuleSet | None,
 ) -> tuple[Decimal | None, TraceStep | None, CalculationWarning | None]:
     """What the pair's insulation class makes of the effective impulse, for a reader.
 
@@ -969,15 +979,23 @@ def _insulation_treated(
     function rather than restating the arithmetic is what keeps the reported figure and the
     dimensioned one from drifting apart, and a class that treats nothing simply reports the
     value unchanged with no step to explain.
+
+    Every refusal the adapter can raise arrives here as one warning and no figure: a package
+    that states no treatment, a value the requirement axis does not carry, and a value at the
+    top of it. This stage only *reports* the treated stress, so it says it cannot rather than
+    aborting the resolution - the same pair's clearance calculation blocks on its own.
     """
 
     if effective_impulse is None or insulation is None:
         return None, None, None
     try:
         treated, step = apply_reinforced_stress_treatment(
-            effective_impulse, kind=insulation, treatment="impulse"
+            effective_impulse,
+            kind=insulation,
+            stress_field="impulse_v",
+            reinforced=reinforced,
         )
-    except CalculationRangeError as error:
+    except ReinforcedTreatmentUnavailable as error:
         return (
             None,
             None,

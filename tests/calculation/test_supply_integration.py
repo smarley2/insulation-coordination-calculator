@@ -21,10 +21,7 @@ from uuid import UUID
 
 import pytest
 
-from insulation_coordination.calculation.clearance import (
-    _PREFERRED_IMPULSE_V,
-    apply_reinforced_stress_treatment,
-)
+from insulation_coordination.calculation.clearance import apply_reinforced_stress_treatment
 from insulation_coordination.calculation.engine import (
     ENTRY_EXCEEDS_DERIVED_WARNING,
     SUPERSEDED_ENTRY_WARNING,
@@ -34,7 +31,11 @@ from insulation_coordination.calculation.engine import (
     derive_project_supply,
     resolve_supply_effective_case,
 )
-from insulation_coordination.calculation.stress_propagation import TemporaryOvervoltageSource
+from insulation_coordination.calculation.reinforced_rules import ReinforcedTreatmentUnavailable
+from insulation_coordination.calculation.stress_propagation import (
+    TREATMENT_UNAVAILABLE_WARNING,
+    TemporaryOvervoltageSource,
+)
 from insulation_coordination.calculation.supply_rules import SupplyRulesUnavailable
 from insulation_coordination.domain.enums import (
     CircuitSourceRelationship,
@@ -74,8 +75,10 @@ from tests.fixtures.supply_topologies import (
     supply_topology,
 )
 from tests.fixtures.synthetic_rules import (
+    SYNTHETIC_REQUIREMENT_LEVELS_V,
     merged_rule_package,
     synthetic_supply_rule_package,
+    with_stepped_reinforced_impulse,
 )
 
 #: The top of the supply fixture's synthetic band axis, which runs 11 V to 33 V in three
@@ -431,10 +434,16 @@ def test_the_engine_treats_a_derived_impulse_once_and_the_resolution_reports_tha
     result = calculate_project_pair(project, pair, supply_and_clearance_rules, supply=supply)
 
     once, _step = apply_reinforced_stress_treatment(
-        derived, kind=InsulationType.REINFORCED, treatment="impulse"
+        derived,
+        kind=InsulationType.REINFORCED,
+        stress_field="impulse_v",
+        reinforced=supply.reinforced,
     )
     twice, _again = apply_reinforced_stress_treatment(
-        once, kind=InsulationType.REINFORCED, treatment="impulse"
+        once,
+        kind=InsulationType.REINFORCED,
+        stress_field="impulse_v",
+        reinforced=supply.reinforced,
     )
     candidate = next(
         item for item in result.trace.clearance_candidates if item.candidate_id == "impulse"
@@ -476,7 +485,10 @@ def test_the_derived_temporary_overvoltage_and_the_recurring_peak_are_treated_on
     ):
         candidate = candidates[candidate_id]
         once, _step = apply_reinforced_stress_treatment(
-            stress, kind=InsulationType.REINFORCED, treatment="periodic"
+            stress,
+            kind=InsulationType.REINFORCED,
+            stress_field=f"{candidate_id}_v",
+            reinforced=supply.reinforced,
         )
         assert candidate.stress.value == stress
         assert candidate.treated_stress is not None
@@ -506,18 +518,48 @@ def test_a_basic_pair_treats_the_derived_impulse_not_at_all(
     assert candidate.treated_stress == candidate.stress
 
 
+def test_a_package_stating_no_treatment_reports_a_warning_and_refuses_the_clearance(
+    semantic_annex_g_rules: RulePackage, tmp_path: Path
+) -> None:
+    """Both ends of the blocking path, on one package that cannot state the treatment.
+
+    The resolution only reports the treated stress, so it says it has none and why; the
+    clearance engine dimensions from it, so it refuses outright. Neither reaches for a value.
+    """
+    rules = _merged(
+        semantic_annex_g_rules.model_copy(
+            update={"decisions": (), "checksums": {}, "package_sha256": None}
+        ),
+        tmp_path,
+        name="untreated",
+    )
+    project = _project(_configuration(), insulation=InsulationType.REINFORCED)
+    pair = _circuit_to_surroundings(project)
+    supply = derive_project_supply(project, rules)
+    assert supply is not None
+    assert supply.reinforced is None
+
+    _effective, resolution = resolve_supply_effective_case(project, pair, supply)
+
+    assert resolution is not None
+    assert resolution.insulation_treated_impulse_v is None
+    assert TREATMENT_UNAVAILABLE_WARNING in {warning.code for warning in resolution.warnings}
+    with pytest.raises(ReinforcedTreatmentUnavailable):
+        calculate_project_pair(project, pair, rules, supply=supply)
+
+
 def test_a_derived_impulse_at_a_preferred_level_steps_up_exactly_one_level(
     semantic_annex_g_rules: RulePackage, tmp_path: Path
 ) -> None:
-    """The other reinforced branch: a step along the preferred levels, taken once.
+    """The other reinforced branch: a step along the requirement axis, taken once.
 
-    The impulse cells are shifted so the lookup lands on the first preferred level rather than
-    near it. Only the fixture's own invented cell values move; the level itself is read from
-    the engine's declared sequence rather than written out here.
+    The impulse cells are shifted so the lookup lands on the axis's lowest coordinate rather
+    than near it. Only the fixture's own invented cell values move; the coordinate itself is
+    read off the package's requirement axis rather than written out here.
     """
-    lowest, next_level = _PREFERRED_IMPULSE_V[0], _PREFERRED_IMPULSE_V[1]
+    lowest, next_level = SYNTHETIC_REQUIREMENT_LEVELS_V[:2]
     rules = _merged(
-        semantic_annex_g_rules,
+        with_stepped_reinforced_impulse(semantic_annex_g_rules),
         tmp_path,
         name="preferred",
         supply=_supply_with_impulse_cells(lowest),

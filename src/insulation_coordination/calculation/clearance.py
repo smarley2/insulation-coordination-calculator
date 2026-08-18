@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from pydantic import field_validator
 
@@ -22,6 +23,9 @@ from insulation_coordination.domain.rules import (
 from insulation_coordination.domain.trace import Quantity, TraceStep
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_formula
 from insulation_coordination.rules.validation import ValidationResult, validate_rule_package
+
+if TYPE_CHECKING:
+    from insulation_coordination.calculation.reinforced_rules import ReinforcedRuleSet
 
 
 class CalculationError(ValueError):
@@ -128,44 +132,66 @@ def _calculate_clearance(
     return CandidateCalculation(candidates=candidates, omissions=omissions)
 
 
-_PREFERRED_IMPULSE_V = tuple(
-    Decimal(value) for value in (330, 500, 800, 1500, 2500, 4000, 6000, 8000, 12000)
-)
+#: Which quantity of the treatment rule's own vocabulary each candidate's stress is. Structural:
+#: it says what this application is asking about, never what the answer is.
+TREATED_QUANTITY_BY_STRESS_FIELD: dict[str, str] = {
+    "impulse_v": "impulse_withstand_voltage",
+    "temporary_overvoltage_peak_v": "temporary_overvoltage_peak",
+    "steady_state_peak_v": "working_voltage_peak",
+    "recurring_peak_v": "working_voltage_peak",
+}
+
+#: The operation token the trace and the report key the clearance treatment on.
+REINFORCED_STRESS_OPERATION = "reinforced_stress_treatment"
 
 
 def apply_reinforced_stress_treatment(
     stress_v: Decimal,
     *,
     kind: InsulationType,
-    treatment: str,
+    stress_field: str,
+    reinforced: ReinforcedRuleSet | None,
     source: SourceReference | None = None,
 ) -> tuple[Decimal, TraceStep | None]:
-    """Apply Clause 5.2.5 treatment before selecting F.2 or F.8."""
+    """Dimension one clearance stress for the stronger insulation, if its class calls for one.
+
+    A class this application applies no treatment to is answered unchanged and reads no rule at
+    all, which is what keeps a package carrying no treatment route from blocking every
+    functional and basic pair in an existing project.
+
+    A reinforced pair reads the route. ``reinforced`` is the resolved rule set, and ``None``
+    means no package could supply one - which blocks, because there is nothing here to
+    dimension from instead.
+    """
+
+    # Imported inside the function: ``reinforced_rules`` takes its exception base from this
+    # module, so a module-scope import back would close the cycle. The annotation above is
+    # deferred by ``from __future__ import annotations`` and resolved from the guarded import.
+    from insulation_coordination.calculation.reinforced_rules import (
+        CLEARANCE_ROUTE,
+        apply_reinforced_treatment,
+        read_reinforced_rules,
+    )
+
     if kind is not InsulationType.REINFORCED:
         return stress_v, None
-    if treatment == "impulse" and stress_v in _PREFERRED_IMPULSE_V:
-        index = _PREFERRED_IMPULSE_V.index(stress_v)
-        if index + 1 >= len(_PREFERRED_IMPULSE_V):
-            raise CalculationRangeError(
-                "reinforced impulse stress has no next preferred IEC impulse level"
-            )
-        treated = _PREFERRED_IMPULSE_V[index + 1]
-        reason = "reinforced impulse uses the next preferred impulse withstand level"
-    else:
-        treated = stress_v * Decimal("1.6")
-        reason = f"reinforced {treatment} stress uses 160% of the basic requirement"
-    step = TraceStep(
-        semantic_rule_id=f"iec60664-1:5.2.5:reinforced_stress_treatment:{treatment}",
-        operation="reinforced_stress_treatment",
-        symbolic="U_{treated}=U_{next}; U_{treated}=1.6U",
-        substituted=f"{stress_v} V = {treated} V",
-        inputs=(Quantity(value=stress_v, unit="V"),),
-        source_reference=source,
-        output=Quantity(value=treated, unit="V"),
-        unrounded_value=treated,
-        reason=reason,
+    quantity = TREATED_QUANTITY_BY_STRESS_FIELD.get(stress_field)
+    if quantity is None:
+        raise UnsupportedCaseError(
+            f"{stress_field} is not a quantity the reinforced treatment rule is asked about"
+        )
+    return apply_reinforced_treatment(
+        stress_v,
+        # ``read_reinforced_rules(None)`` raises the no-package block rather than returning
+        # one, which is the whole of what an absent package earns here.
+        rules=reinforced if reinforced is not None else read_reinforced_rules(None),
+        unit="V",
+        route=CLEARANCE_ROUTE,
+        insulation_class=kind.value,
+        treated_quantity=quantity,
+        source=source,
+        operation=REINFORCED_STRESS_OPERATION,
     )
-    return treated, step
 
 
 def select_f2_impulse_clearance(
@@ -248,7 +274,8 @@ def _select_part1_clearance(
     treated, treatment_step = apply_reinforced_stress_treatment(
         stress,
         kind=kind,
-        treatment=treatment,
+        stress_field=stress_field,
+        reinforced=_reinforced_rules(rules, kind),
         source=mapping.source,
     )
     branch_label = _clearance_branch_label(
@@ -311,6 +338,19 @@ def _select_part1_clearance(
         steps=steps,
         reason=steps[-1].reason,
     )
+
+
+def _reinforced_rules(rules: RulePackage, kind: InsulationType) -> ReinforcedRuleSet | None:
+    """The treatment routes of ``rules``, resolved only for a class that reads them.
+
+    A functional or basic pair never asks, so a package that cannot answer never blocks one.
+    """
+
+    from insulation_coordination.calculation.reinforced_rules import read_reinforced_rules
+
+    if kind is not InsulationType.REINFORCED:
+        return None
+    return read_reinforced_rules(rules)
 
 
 def _clearance_branch_label(

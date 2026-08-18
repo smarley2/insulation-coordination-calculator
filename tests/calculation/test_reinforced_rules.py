@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from insulation_coordination.calculation import reinforced_rules
+from insulation_coordination.calculation import clearance, creepage, reinforced_rules
 from insulation_coordination.calculation.reinforced_rules import (
     CLEARANCE_ROUTE,
     CREEPAGE_ROUTE,
@@ -236,7 +236,7 @@ def test_stepping_refuses_the_top_of_the_axis() -> None:
     assert raised.value.codes == (ReinforcedRuleBlockCode.NO_HIGHER_LEVEL,)
 
 
-@pytest.mark.parametrize("module", (reinforced_rules,))
+@pytest.mark.parametrize("module", (clearance, creepage, reinforced_rules))
 def test_no_fallback_constant_survives_in_the_treatment_modules(module: object) -> None:
     """The block is the only answer to a package that cannot state the treatment.
 

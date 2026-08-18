@@ -15,11 +15,19 @@ from insulation_coordination.calculation.clearance import (
     _required,
     _select_formula,
 )
+from insulation_coordination.calculation.reinforced_rules import (
+    CREEPAGE_ROUTE,
+    apply_reinforced_treatment,
+    read_reinforced_rules,
+)
 from insulation_coordination.domain.enums import Applicability, ConstructionType, InsulationType
 from insulation_coordination.domain.project import EffectiveCase
 from insulation_coordination.domain.rules import RulePackage, TableSelect, Variable
 from insulation_coordination.domain.trace import Quantity, TraceStep
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_formula
+
+#: The operation token the trace and the report key the creepage treatment on.
+REINFORCED_CREEPAGE_OPERATION = "reinforced_creepage_double"
 
 
 def calculate_creepage_candidates(
@@ -141,19 +149,20 @@ def select_f5_pcb_creepage(
     distance = evaluated.value
     steps: tuple[TraceStep, ...] = evaluated.steps
     if kind is InsulationType.REINFORCED:
-        distance *= Decimal(2)
-        doubled = TraceStep(
-            semantic_rule_id="iec60664-1:5.3.5:reinforced-creepage-double",
-            operation="reinforced_creepage_double",
-            symbolic="d_{reinforced}=2d_{F5}",
-            substituted=f"2 * {evaluated.value} mm = {distance} mm",
-            inputs=(Quantity(value=evaluated.value, unit="mm"),),
-            source_reference=mapping.source,
-            output=Quantity(value=distance, unit="mm"),
-            unrounded_value=distance,
-            reason="reinforced insulation uses twice the F.5 creepage distance",
+        # The treatment is stated over the selected requirement rather than over the stress,
+        # which is why the quantity asked about is the basic insulation requirement and the
+        # unit is a distance. The factor itself belongs to the approved package.
+        distance, treated = apply_reinforced_treatment(
+            evaluated.value,
+            unit="mm",
+            route=CREEPAGE_ROUTE,
+            insulation_class=kind.value,
+            treated_quantity="basic_insulation_requirement",
+            rules=read_reinforced_rules(rules),
+            source=mapping.source,
+            operation=REINFORCED_CREEPAGE_OPERATION,
         )
-        steps = (*steps, doubled)
+        steps = (*steps, treated)
     return DistanceCandidate(
         candidate_id="long_term_rms_tracking",
         stress_field="long_term_rms_v",
