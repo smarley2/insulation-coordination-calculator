@@ -7,14 +7,15 @@ line references, detection classes, and neutral descriptions only. It never
 restates a licensed value, heading, note, or clause wording; classification
 of any entry against the licensed source happens in private sessions only.
 
-- First audited: 2026-08-13. Reconciled: 2026-08-18, after issue #110 and issue #37's Tasks 9, 10 and 11.
+- First audited: 2026-08-13. Reconciled: 2026-08-18, after issue #110, issue #37's Tasks 9,
+  10 and 11, and issue #40's Task 4 (#117, #119).
 - Command: `uv run python scripts/scan_licensed_content.py .`
 - Scanner totals when first audited: inline-factor=2, inline-threshold=7,
   numeric-series=41, source-like-text=28, synthetic-iec-source=2,
   text-numeric-series=3, value-near-table-id=26 (109 findings).
-- Scanner totals now: inline-factor=2, inline-threshold=3, numeric-series=44,
+- Scanner totals now: inline-threshold=3, numeric-series=43,
   source-like-text=5, synthetic-iec-source=7, text-numeric-series=2
-  (63 findings). Every `value-near-table-id` finding is resolved; the
+  (60 findings). Every `value-near-table-id` finding is resolved; the
   `numeric-series` count rose because the fixture rewrite in Task 5 split some
   containers, not because new content was added. The `synthetic-iec-source`
   count rose by two when issue #36's supply fixture joined the DVC fixture in
@@ -25,6 +26,10 @@ of any entry against the licensed source happens in private sessions only.
   whose clause specs are one more container of page numbers and bounding
   boxes -- the same `allowed-structural` shape the four sibling recipe clause
   spec containers already have, and the only new finding that slice added.
+  Issue #40's Task 4 then took **`inline-factor` to zero**: both findings were
+  the reinforced treatment factors, and both are now resolved from the approved
+  package. The same task dropped `numeric-series` by one, by removing the
+  preferred-level series from `calculation/clearance.py`.
 - The `inline-threshold` count **fell by four** in issue #37's Task 9. The
   Part 4 frequency boundary had been written out as a literal in four
   comparisons across `calculation/high_frequency.py` and
@@ -55,10 +60,11 @@ of any entry against the licensed source happens in private sessions only.
 | Location | Class | Description | Assessment |
 | --- | --- | --- | --- |
 | `src/insulation_coordination/ui/value_options.py:14` | numeric-series | Complete constrained option series with unit labels, offered by the UI | confirmed (finding A) |
-| `src/insulation_coordination/calculation/clearance.py:132` | numeric-series | Preferred-level series used by the reinforced treatment | confirmed (finding B) |
-| `src/insulation_coordination/calculation/clearance.py:155` | inline-factor | Reinforced stress multiplier in calculation code | confirmed (finding B) |
-| `src/insulation_coordination/calculation/clearance.py:146-166` | manual | Treatment trace wording and symbolic text mirror the source procedure rather than neutral application text | confirmed (finding B) |
-| `src/insulation_coordination/calculation/creepage.py:144` | inline-factor | Reinforced creepage multiplier in calculation code | confirmed (finding B class) |
+| `src/insulation_coordination/calculation/clearance.py:132` | numeric-series | Preferred-level series used by the reinforced treatment | resolved (issue #40 Task 4, #117; the series is read off the row axis of the requirement the treatment rule refers to, and no series remains in the module) |
+| `src/insulation_coordination/calculation/clearance.py:155` | inline-factor | Reinforced stress multiplier in calculation code | resolved (issue #40 Task 4, #117; the factor comes from the approved package, and an absent, unapproved or incompatible package blocks instead of falling back) |
+| `src/insulation_coordination/calculation/clearance.py:146-166` | manual | Treatment trace wording and symbolic text mirror the source procedure rather than neutral application text | resolved (issue #40 Task 4, #117; the step now states what this application did and names the rule that decided it) |
+| `src/insulation_coordination/calculation/creepage.py:144` | inline-factor | Reinforced creepage multiplier in calculation code | resolved (issue #40 Task 4, #117; same route, resolved from the same package) |
+| `src/insulation_coordination/report/human_view.py:1054` | manual | Report projection restated the creepage treatment in a sentence written into public source | resolved (issue #40 Task 4, #119; both treatment operations now render the trace step's own rule-backed reason. Found while closing Task 4, so it was never inventoried as a finding) |
 | `src/insulation_coordination/calculation/engine.py:180` | inline-threshold | High-frequency routing boundary as a literal | confirmed (finding B class) |
 | `src/insulation_coordination/calculation/engine.py:387` | inline-threshold | Partial-discharge advisory trigger as a literal | confirmed (finding B class) |
 | `src/insulation_coordination/calculation/engine.py:386`, `high_frequency.py:104,257,649` | inline-threshold | The Part 4 frequency boundary, stated as a literal in four comparisons | resolved (issue #37 Task 9; the four comparisons now read one named `PART4_FREQUENCY_THRESHOLD_HZ` in `high_frequency.py`, and the value is stated once. Still a finding-B-class boundary in a single place rather than four, and it remains a candidate for a package-supplied figure) |
@@ -143,10 +149,12 @@ These belong to issue #40 tasks that are still open; they are inventoried
 here instead of being asserted by `tests/test_content_boundaries.py`:
 
 - UI option lists supplied entirely by a rules package (Task 3; blocked on
-  #34 slice D content).
-- Reinforced policy values supplied entirely by a rules package (Task 4).
+  #34 slice D content). The impulse levels already are, since #92 - what is
+  left in `ui/value_options.py` is the pollution-degree and material-group
+  label tuples, which the scanner no longer flags. The row above still carries
+  the original finding-A assessment and needs a private-session review.
 - The scanner running with `--strict` in CI (Task 8 remainder/Task 11; only
-  after the migrations above land).
+  after the migration above lands).
 
 Done since the first audit:
 
@@ -154,6 +162,11 @@ Done since the first audit:
   documented DVC identity exception above.
 - Public docs/README free of normative statements (Task 6; README
   restructuring stays with issue #41).
+- Reinforced policy values supplied entirely by a rules package (Task 4).
+  `calculation/reinforced_rules.py` resolves both treatment routes from the
+  approved package and raises a typed block naming every reason a package
+  cannot answer; nothing falls back to a constant, and the report renders the
+  resulting step's own reason (#117, #119).
 - Neutralized importer recipe labels (Task 7). Package identity is unchanged:
   `TableColumnSpec.heading` has exactly one consumer, the review dialog, and
   never reaches an extracted rule or a canonical hash — so no importer version
