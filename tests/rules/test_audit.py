@@ -22,6 +22,7 @@ from insulation_coordination.domain.rules import (
     RulePackageError,
     Variable,
 )
+from insulation_coordination.rules import validation
 from insulation_coordination.rules.archive import load_rule_package, write_rule_package
 from insulation_coordination.rules.audit import (
     build_audit_inventory,
@@ -768,6 +769,107 @@ def test_parameter_set_source_is_required(package_dict: dict[str, object]) -> No
 
     with pytest.raises(RulePackageError, match="source"):
         RulePackage.model_validate(package_dict)
+
+
+def _count_validations(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record every package whose content is actually walked, not merely asked about."""
+
+    validation._PROVEN_VALID.clear()
+    walked: list[str] = []
+    original = validation._validate_package_content
+
+    def counting(package: RulePackage) -> ValidationReport:
+        walked.append(str(package.manifest.package_id))
+        return original(package)
+
+    monkeypatch.setattr(validation, "_validate_package_content", counting)
+    return walked
+
+
+def _sealed(package: RulePackage, path: Path) -> RulePackage:
+    write_rule_package(path, package)
+    return load_rule_package(path)
+
+
+def test_a_package_already_proven_valid_is_not_walked_again(
+    synthetic_package: RulePackage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The answer is a function of the content, and the content cannot change."""
+
+    archive = tmp_path / "approved.icrules"
+    loaded = _sealed(synthetic_package, archive)
+    reloaded = load_rule_package(archive)
+    assert loaded is not reloaded
+    walked = _count_validations(monkeypatch)
+
+    first = validate_rule_package(loaded)
+    again = validate_rule_package(loaded)
+    other_load = validate_rule_package(reloaded)
+
+    assert first.is_valid is True
+    # The same report, not an equal one: nothing was recomputed to produce it.
+    assert again is first
+    assert other_load is first
+    assert len(walked) == 1
+
+
+def test_two_packages_are_told_apart_by_content_not_by_the_digest_they_carry(
+    synthetic_package: RulePackage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A digest is a claim until it is checked, and a copy carries its original's claim."""
+
+    proven = _sealed(synthetic_package, tmp_path / "approved.icrules")
+    borrowed = proven.model_copy(update={"curves": ()})
+    assert borrowed.package_sha256 == proven.package_sha256
+    different = _sealed(
+        synthetic_package.model_copy(
+            update={"manifest": synthetic_package.manifest.model_copy(update={"version": "9.9.9"})}
+        ),
+        tmp_path / "other.icrules",
+    )
+    assert different.package_sha256 != proven.package_sha256
+    walked = _count_validations(monkeypatch)
+
+    assert validate_rule_package(proven).is_valid is True
+    assert validate_rule_package(borrowed).is_valid is False
+    assert validate_rule_package(different).is_valid is True
+
+    assert len(walked) == 3
+
+
+def test_a_package_with_no_archive_digest_is_never_remembered(
+    synthetic_package: RulePackage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No digest means no archive identity to be recognised by -- and no valid package either."""
+
+    assert synthetic_package.package_sha256 is None
+    walked = _count_validations(monkeypatch)
+
+    first = validate_rule_package(synthetic_package)
+    again = validate_rule_package(synthetic_package)
+
+    assert _result(first, "package_digest").passed is False
+    assert first.is_valid is False and again.is_valid is False
+    assert len(walked) == 2
+    assert validation._PROVEN_VALID == {}
+
+
+def test_remembering_packages_does_not_grow_without_bound(
+    synthetic_package: RulePackage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A process that loads many packages must not accumulate every one of them."""
+
+    walked = _count_validations(monkeypatch)
+    for index in range(validation._PROVEN_VALID_LIMIT + 2):
+        manifest = synthetic_package.manifest.model_copy(update={"version": f"1.0.{index}"})
+        package = _sealed(
+            synthetic_package.model_copy(update={"manifest": manifest}),
+            tmp_path / f"approved-{index}.icrules",
+        )
+        assert validate_rule_package(package).is_valid is True
+
+    assert len(walked) > validation._PROVEN_VALID_LIMIT
+    assert len(validation._PROVEN_VALID) == validation._PROVEN_VALID_LIMIT
 
 
 def _result(report: ValidationReport, code: str) -> ValidationResult:
