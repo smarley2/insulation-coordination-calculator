@@ -616,3 +616,20 @@ def test_the_lowest_overvoltage_category_keeps_its_standing_warning_in_the_repor
     assert OVERVOLTAGE_CATEGORY_I_WARNING in {
         advisory.code for advisory in build_human_report_view(model).advisories
     }
+
+
+def test_a_project_whose_arrangements_are_all_disabled_still_lists_them(
+    supply_rules: RulePackage,
+) -> None:
+    """Switching every row off derives nothing, and does not erase what was declared."""
+    project = _project(supply_rules, _configuration(enabled=False))
+    model = _report(project, supply_rules)
+    view = build_human_report_view(model)
+
+    assert model.supply is None
+    assert view.supply is not None
+    assert [item.status for item in view.supply.configurations] == ["not enabled"]
+    assert view.supply.scenarios == ()
+    rendered = render_latex(model)
+    assert "Primary mains" in rendered
+    assert "No supply arrangement is enabled" in rendered
