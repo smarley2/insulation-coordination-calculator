@@ -27,6 +27,9 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
 
+from insulation_coordination.calculation.verification_rules import (
+    PRECONDITIONING_APPLICABILITY_ROUTE,
+)
 from insulation_coordination.domain.enums import (
     BarrierVerificationStatus,
     CircuitSourceRelationship,
@@ -49,6 +52,7 @@ from insulation_coordination.domain.project import (
     ProjectMetadata,
 )
 from insulation_coordination.domain.rules import (
+    DecisionRule,
     RulePackage,
     SourceReference,
     Table,
@@ -65,6 +69,7 @@ from insulation_coordination.domain.supply import (
     SupplyKind,
 )
 from insulation_coordination.domain.topology import GalvanicBarrier, GalvanicDomain
+from insulation_coordination.domain.verification import SolidInsulationTestData
 from insulation_coordination.project.pairs import canonical_pair_key, reconcile_pairs
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.iec62477_2022.inventory import EDITION, STANDARD
@@ -123,6 +128,7 @@ def verification_topology(
     insulation: InsulationType = InsulationType.BASIC,
     altitude_m: Decimal = Decimal(0),
     recurring_peak_v: Decimal | None = Decimal(25),
+    frequency_hz: Decimal = Decimal(50),
 ) -> Project:
     """Three circuits over two domains, a PE-bonded part, a touchable part and a cover.
 
@@ -154,7 +160,7 @@ def verification_topology(
         metadata=ProjectMetadata(title="Verification topology example"),
         application_version="test",
         defaults=ProjectDefaults(
-            frequency_hz=Decimal(50),
+            frequency_hz=frequency_hz,
             insulation_type=insulation,
             field_condition=FieldCondition.INHOMOGENEOUS,
             altitude_m=altitude_m,
@@ -206,12 +212,59 @@ def pair_between(project: Project, first: UUID, second: UUID) -> PairCase:
     return next(pair for pair in project.pairs if pair.key == key)
 
 
-def single_column_dielectric_package(*, interpolation: str = "linear") -> RulePackage:
+def with_pair_fields(project: Project, pair_id: UUID | None = None, **fields: object) -> Project:
+    """The same project with ``fields`` set on one pair, or on every pair when none is named.
+
+    Pair ids are drawn per call by ``reconcile_pairs``, so a test that builds a project twice
+    gets two different sets. Naming the pair by id keeps a test honest about which one it
+    changed; leaving it out is how a whole-project state is set up in one line.
+    """
+
+    return project.model_copy(
+        update={
+            "pairs": tuple(
+                pair.model_copy(update=fields) if pair_id in (None, pair.id) else pair
+                for pair in project.pairs
+            )
+        }
+    )
+
+
+def declared_solid_insulation(**overrides: object) -> SolidInsulationTestData:
+    """A fully declared single-layer construction, so a test states only what it is changing.
+
+    Every figure is this module's own. ``present`` and ``material_pd_exempt`` are both
+    answered, because the assessment under test treats an unanswered field and a negative
+    answer as different things and a default that left one blank would hide that.
+    """
+
+    fields: dict[str, object] = {
+        "present": True,
+        "minimum_thickness_mm": Decimal("0.4"),
+        "material_pd_exempt": False,
+        "layer_count": 1,
+        "material_reference": "SYN-MATERIAL-1",
+    }
+    fields.update(overrides)
+    return SolidInsulationTestData(**fields)
+
+
+def single_column_dielectric_package(
+    *,
+    interpolation: str = "linear",
+    partial_discharge_classifications: tuple[str, ...] = (),
+) -> RulePackage:
     """The synthetic verification package with one-column dielectric routes.
 
     ``interpolation`` states what the routes permit, so a test can prove that a value between
     two bands is interpolated where the source allows it and read at the band above where it
     does not - without this application deciding either.
+
+    ``partial_discharge_classifications`` states what the partial-discharge procedure says it
+    is. The default is none, which is what the real projection produces: the classification is
+    stated in a matrix that table does not carry, so the recipe declines to assert one. A test
+    that needs the assessment to reach a settled answer supplies one, because a plan that does
+    not know whether a test is a type or a sample test cannot schedule it either way.
     """
 
     package = synthetic_verification_rule_package()
@@ -219,6 +272,46 @@ def single_column_dielectric_package(*, interpolation: str = "linear") -> RulePa
     return package.model_copy(
         update={
             "tables": tuple(_located(replaced.get(table.id, table)) for table in package.tables),
+            "procedures": tuple(
+                procedure.model_copy(update={"classifications": partial_discharge_classifications})
+                if procedure.id == ids.TEST_PARTIAL_DISCHARGE
+                else procedure
+                for procedure in package.procedures
+            ),
+            "decisions": tuple(
+                _asked_by_purpose(decision)
+                if decision.id == PRECONDITIONING_APPLICABILITY_ROUTE
+                else decision
+                for decision in package.decisions
+            ),
+        }
+    )
+
+
+def _asked_by_purpose(gate: DecisionRule) -> DecisionRule:
+    """The preconditioning gate with the purpose vocabulary the real projection declares.
+
+    The shared synthetic fixture declares one invented purpose, which is enough to prove the
+    adapter resolves the gate and not enough to ask it anything: a consumer supplies the
+    package's name for the classification of the test being preconditioned, and a vocabulary
+    that shares no name with one is a gate no test can reach.
+
+    The three names here are the ones the adapter already translates in
+    ``PACKAGE_CLASSIFICATIONS``, plus the third purpose the real gate carries that is not a
+    classification at all. Nothing else about the gate changes: its rows still discriminate on
+    the context alone, so widening the purpose only makes the electrical row reachable.
+    """
+
+    return gate.model_copy(
+        update={
+            "inputs": tuple(
+                declared.model_copy(
+                    update={"allowed_values": ("type_test", "sample_test", "acceptance_criteria")}
+                )
+                if declared.name == "test_purpose"
+                else declared
+                for declared in gate.inputs
+            )
         }
     )
 
@@ -251,7 +344,12 @@ def _located(table: Table) -> Table:
     )
 
 
-def verification_and_supply_package(path: Path, *, interpolation: str = "linear") -> RulePackage:
+def verification_and_supply_package(
+    path: Path,
+    *,
+    interpolation: str = "linear",
+    partial_discharge_classifications: tuple[str, ...] = (),
+) -> RulePackage:
     """One package answering the verification questions and the supply ones.
 
     Written and reloaded by ``merged_rule_package``, so it carries the SHA-256 identity a
@@ -259,7 +357,10 @@ def verification_and_supply_package(path: Path, *, interpolation: str = "linear"
     """
 
     return merged_rule_package(
-        single_column_dielectric_package(interpolation=interpolation),
+        single_column_dielectric_package(
+            interpolation=interpolation,
+            partial_discharge_classifications=partial_discharge_classifications,
+        ),
         synthetic_supply_rule_package(),
         path=path,
     )
@@ -377,10 +478,12 @@ __all__ = [
     "SUPPLY",
     "SYSTEM_VOLTAGE_V",
     "TOUCHABLE",
+    "declared_solid_insulation",
     "dielectric_cell",
     "mains_configuration",
     "pair_between",
     "single_column_dielectric_package",
     "verification_and_supply_package",
     "verification_topology",
+    "with_pair_fields",
 ]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from itertools import pairwise
+from typing import Final
 
 from insulation_coordination.calculation.clearance import (
     CalculationError,
@@ -29,6 +30,12 @@ from insulation_coordination.domain.rules import (
 )
 from insulation_coordination.domain.trace import EvaluatedValue, Quantity, TraceStep
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_formula
+
+#: The frequency a pair has to exceed before IEC 60664-4 has anything to say about it, and
+#: below which nothing in this module applies. Named once because four places asked the same
+#: question of the same figure, and a boundary written four times is one that three of them
+#: can drift from. Consumers outside this module read it here rather than restating it.
+PART4_FREQUENCY_THRESHOLD_HZ: Final[Decimal] = Decimal(30000)
 
 
 class HighFrequencyCalculationError(CalculationError):
@@ -101,7 +108,7 @@ def select_part4_table2_creepage(
     frequency = effective.frequency_hz.value
     if frequency is None:
         raise RequiredStressError("frequency_hz is required for Part 4 creepage")
-    if frequency <= Decimal(30000):
+    if frequency <= PART4_FREQUENCY_THRESHOLD_HZ:
         return None
     _require_valid_rule_package(rules)
     _validate_pcb_scope(effective)
@@ -254,7 +261,7 @@ def _calculate_high_frequency_candidates(
     frequency = effective.frequency_hz.value
     if frequency is None:
         raise RequiredStressError("frequency_hz is required in canonical Hz")
-    if frequency <= Decimal(30000):
+    if frequency <= PART4_FREQUENCY_THRESHOLD_HZ:
         return HfCandidates()
     kind, applicability_steps = _require_part4_scope(effective, rules)
     periodic_peak = _periodic_peak(effective)
@@ -646,10 +653,11 @@ def _require_part4_scope(
     frequency = effective.frequency_hz.value
     if frequency is None:
         raise RequiredStressError("frequency_hz is required in canonical Hz")
-    if frequency <= Decimal(30000):
+    if frequency <= PART4_FREQUENCY_THRESHOLD_HZ:
         raise HighFrequencyCalculationError(
             "HF_FREQUENCY_NOT_APPLICABLE",
-            f"frequency {frequency} Hz does not exceed the 30000 Hz Part 4 threshold",
+            f"frequency {frequency} Hz does not exceed the "
+            f"{PART4_FREQUENCY_THRESHOLD_HZ} Hz Part 4 threshold",
         )
     kind = effective.insulation_type.value
     if kind is None:

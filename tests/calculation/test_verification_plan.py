@@ -144,6 +144,23 @@ def assessment_for(plan: VerificationPlan, pair: PairCase) -> PairVerificationAs
     return next(item for item in plan.pair_assessments if item.pair_id == pair.id)
 
 
+def dielectric_route(application: TestApplication) -> str:
+    """The one dielectric table a row was read from, out of everything else it cites.
+
+    A row cites the gates it asked as well as the table it read, so a test about which route
+    answered says so rather than pinning the whole list and failing the day a row asks one
+    more question.
+    """
+
+    routes = [
+        item
+        for item in application.source_rule_ids
+        if ids.TEST_MAINS_DIELECTRIC_VALUES in item or ids.TEST_NON_MAINS_DIELECTRIC_VALUES in item
+    ]
+    assert len(routes) == 1, application.source_rule_ids
+    return routes[0]
+
+
 # --- the plan's identity and its shape ------------------------------------------------------
 
 
@@ -251,7 +268,7 @@ def test_a_reinforced_pair_reads_the_reinforced_procedure_variant(
     )
     pair = pair_between(reinforced, LIVE_A, ENCLOSURE)
     application = one(build(reinforced, package), pair, TestKind.IMPULSE_WITHSTAND)
-    assert application.source_rule_ids == (f"{ids.TEST_IMPULSE_PROCEDURE}.insulation_reinforced",)
+    assert f"{ids.TEST_IMPULSE_PROCEDURE}.insulation_reinforced" in application.source_rule_ids
 
 
 def test_a_basic_pair_reads_the_basic_procedure_variant(
@@ -259,7 +276,7 @@ def test_a_basic_pair_reads_the_basic_procedure_variant(
 ) -> None:
     pair = pair_between(project, LIVE_A, ENCLOSURE)
     application = one(build(project, package), pair, TestKind.IMPULSE_WITHSTAND)
-    assert application.source_rule_ids == (f"{ids.TEST_IMPULSE_PROCEDURE}.insulation_basic",)
+    assert f"{ids.TEST_IMPULSE_PROCEDURE}.insulation_basic" in application.source_rule_ids
 
 
 def test_a_pair_with_no_protection_implementation_asks_for_one_rather_than_guessing(
@@ -269,7 +286,7 @@ def test_a_pair_with_no_protection_implementation_asks_for_one_rather_than_guess
     pair = pair_between(project, LIVE_A, ENCLOSURE)
     application = one(build(project, package), pair, TestKind.IMPULSE_WITHSTAND)
     assert application.applicability is TestApplicability.ENGINEERING_INPUT_REQUIRED
-    assert application.source_rule_ids == ()
+    assert all(ids.TEST_IMPULSE_PROCEDURE not in item for item in application.source_rule_ids)
     assert any("no protection implementation" in item for item in application.unresolved_inputs)
 
 
@@ -389,8 +406,8 @@ def test_a_mains_circuit_is_read_from_the_mains_table_on_its_system_voltage(
         TestKind.AC_DIELECTRIC,
         classifications=(TestClassification.ROUTINE,),
     )
-    assert application.source_rule_ids == (
-        f"{ids.TEST_MAINS_DIELECTRIC_VALUES}.routine_and_basic_type.ac",
+    assert dielectric_route(application) == (
+        f"{ids.TEST_MAINS_DIELECTRIC_VALUES}.routine_and_basic_type.ac"
     )
     assert application.voltage is not None
     assert application.voltage.value == _interpolated(
@@ -407,8 +424,8 @@ def test_a_circuit_behind_a_barrier_is_not_a_mains_circuit(
     application = one(
         plan, pair, TestKind.AC_DIELECTRIC, classifications=(TestClassification.ROUTINE,)
     )
-    assert application.source_rule_ids == (
-        f"{ids.TEST_NON_MAINS_DIELECTRIC_VALUES}.routine_and_basic_type.ac",
+    assert dielectric_route(application) == (
+        f"{ids.TEST_NON_MAINS_DIELECTRIC_VALUES}.routine_and_basic_type.ac"
     )
     assert not assessment_for(plan, pair).mains_connected
 
@@ -526,9 +543,9 @@ def test_an_enhanced_type_test_is_read_from_its_own_route_and_not_from_the_routi
     plan = build(project, package)
     type_test = one(plan, pair, TestKind.AC_DIELECTRIC, classifications=(TestClassification.TYPE,))
     routine = one(plan, pair, TestKind.AC_DIELECTRIC, classifications=(TestClassification.ROUTINE,))
-    assert type_test.source_rule_ids == (f"{ids.TEST_MAINS_DIELECTRIC_VALUES}.enhanced_type.ac",)
-    assert routine.source_rule_ids == (
-        f"{ids.TEST_MAINS_DIELECTRIC_VALUES}.routine_and_basic_type.ac",
+    assert dielectric_route(type_test) == f"{ids.TEST_MAINS_DIELECTRIC_VALUES}.enhanced_type.ac"
+    assert dielectric_route(routine) == (
+        f"{ids.TEST_MAINS_DIELECTRIC_VALUES}.routine_and_basic_type.ac"
     )
     assert type_test.voltage != routine.voltage
 
@@ -538,8 +555,10 @@ def test_a_basic_pair_takes_both_from_the_route_whose_own_name_covers_both(
 ) -> None:
     pair = pair_between(project, LIVE_A, ENCLOSURE)
     plan = build(project, package)
-    routes = {item.source_rule_ids for item in applications_for(plan, pair, TestKind.AC_DIELECTRIC)}
-    assert routes == {(f"{ids.TEST_MAINS_DIELECTRIC_VALUES}.routine_and_basic_type.ac",)}
+    routes = {
+        dielectric_route(item) for item in applications_for(plan, pair, TestKind.AC_DIELECTRIC)
+    }
+    assert routes == {f"{ids.TEST_MAINS_DIELECTRIC_VALUES}.routine_and_basic_type.ac"}
 
 
 def test_a_route_that_states_no_duration_says_so_rather_than_leaving_it_blank(

@@ -43,6 +43,18 @@ from insulation_coordination.calculation.engine import (
     resolve_supply_effective_case,
 )
 from insulation_coordination.calculation.impulse_override import SpdMonitoringDependency
+from insulation_coordination.calculation.partial_discharge import (
+    PartialDischargeOutcome,
+    assess_partial_discharge,
+)
+from insulation_coordination.calculation.routine_exemption import (
+    RoutineExemptionAssessment,
+    assess_routine_exemption,
+)
+from insulation_coordination.calculation.special_procedures import (
+    decorate,
+    monitoring_preparation,
+)
 from insulation_coordination.calculation.stress_propagation import (
     EffectivePairStressResolution,
 )
@@ -167,6 +179,15 @@ class PairVerificationAssessment(FrozenModel):
     #: equipment owes monitoring is a question the override resolution already asked the
     #: package, and asking it again here would let two answers exist.
     spd_monitoring_dependency: SpdMonitoringDependency | None = None
+    #: What the partial-discharge assessment concluded for this pair. Carried on the
+    #: assessment as well as on its schedule row because a pair page shows a status before it
+    #: shows a schedule, and a reader asking "does this pair need a PD test" should not have
+    #: to find the row to be told.
+    partial_discharge: TestApplicability | None = None
+    #: The assembled-equipment routine exemption, condition by condition, whether or not it
+    #: was granted. Carried even when the project recorded nothing, because "which condition
+    #: is missing" is the question a reader has and an absent assessment answers none of it.
+    routine_exemption: RoutineExemptionAssessment | None = None
     status: VerificationStatus = VerificationStatus.PLANNED
     unresolved_inputs: tuple[str, ...] = ()
 
@@ -303,12 +324,13 @@ def _plan_pair(
             "say which construction its tests verify."
         )
     dependency = _spd_dependency(resolution)
+    monitoring: tuple[TestApplication, ...] = ()
     if dependency is not None:
         message = (
             f"The impulse reduction recorded at {dependency.affected_location!r} depends on the "
             f"dedicated internal SPD monitoring type test "
-            f"({dependency.required_type_test_semantic_id}), which this plan records as owed "
-            "and does not yet schedule."
+            f"({dependency.required_type_test_semantic_id}). It is scheduled here and nothing "
+            "records that it has been acknowledged, so the plan stays incomplete until it is."
         )
         unresolved.append(message)
         warnings.append(
@@ -318,14 +340,37 @@ def _plan_pair(
                 semantic_rule_id=dependency.required_type_test_semantic_id,
             )
         )
+        monitoring = (_monitoring_application(subject, rules, revision, dependency, message),)
 
     impulse = _impulse_application(
         pair, subject, effective, resolution, rules, revision, implementation, enhanced, warnings
     )
+    recurring_peak = _recurring_peak(project, pair, effective)
     dielectric = _dielectric_applications(
-        project, pair, subject, effective, resolution, rules, revision, enhanced, mains
+        pair, subject, rules, revision, enhanced, mains, recurring_peak
     )
-    applications = (impulse, *dielectric)
+    discharge = assess_partial_discharge(
+        pair, effective, rules.partial_discharge, recurring_peak_v=recurring_peak
+    )
+    warnings.extend(discharge.warnings)
+    exemption = assess_routine_exemption(pair, rules.assembled_routine_exemption)
+    unresolved.extend(exemption.unresolved_inputs)
+    applications = (
+        *_exempted(
+            decorate(
+                (
+                    impulse,
+                    *dielectric,
+                    _discharge_application(subject, rules, revision, discharge),
+                ),
+                reference_kind=subject.reference_kind,
+                preconditioning=rules.preconditioning,
+                foil=rules.accessible_surface_foil,
+            ),
+            exemption,
+        ),
+        *monitoring,
+    )
     return applications, PairVerificationAssessment(
         pair_id=pair.id,
         pair_key=pair.key,
@@ -335,6 +380,8 @@ def _plan_pair(
         enhanced_protection=enhanced,
         mains_connected=bool(mains),
         spd_monitoring_dependency=dependency,
+        partial_discharge=discharge.applicability,
+        routine_exemption=exemption,
         status=_pair_status(pair, applications),
         unresolved_inputs=tuple(unresolved),
     )
@@ -476,15 +523,13 @@ def _altitude_inputs(pair: PairCase, effective: EffectiveCase) -> tuple[str, ...
 
 
 def _dielectric_applications(
-    project: Project,
     pair: PairCase,
     subject: TestSubject,
-    effective: EffectiveCase,
-    resolution: EffectivePairStressResolution | None,
     rules: VerificationRuleSet,
     revision: str,
     enhanced: bool,
     mains: Sequence[DerivedSupplyScenario],
+    recurring_peak_v: Decimal | None,
 ) -> tuple[TestApplication, ...]:
     """The routine and type dielectric applications, in both voltage forms the package states.
 
@@ -500,7 +545,7 @@ def _dielectric_applications(
     """
 
     tables = rules.mains_dielectric_values if mains else rules.non_mains_dielectric_values
-    row, row_reason, row_unresolved = _row_value(project, pair, effective, mains)
+    row, row_reason, row_unresolved = _row_value(pair, mains, recurring_peak_v)
     routes: tuple[tuple[TestClassification, VoltageTablePair], ...] = (
         (TestClassification.ROUTINE, tables.routine_and_basic_type),
         (
@@ -540,26 +585,19 @@ def _dielectric_applications(
     return tuple(applications)
 
 
-def _row_value(
-    project: Project,
-    pair: PairCase,
-    effective: EffectiveCase,
-    mains: Sequence[DerivedSupplyScenario],
-) -> tuple[Decimal | None, str, tuple[str, ...]]:
-    """The voltage that keys the dielectric table's row axis, and where it came from.
+def _recurring_peak(project: Project, pair: PairCase, effective: EffectiveCase) -> Decimal | None:
+    """The recurring-peak working voltage established for one pair, or nothing.
 
-    For a mains circuit that is the system voltage of the supply, which the derivation already
-    resolved to the measure the package named for that arrangement. For every other circuit it
-    is the recurring-peak working voltage: whichever is more severe of the entries approved in
-    the evidence library and the figure recorded on the pair itself. The pair's own entry is
-    offered for comparison rather than turned into evidence - it is a dimensioning input
-    somebody typed, not a figure anybody signed for.
+    Whichever is more severe of the entries approved in the evidence library and the figure
+    recorded on the pair itself. The pair's own entry is offered for comparison rather than
+    turned into evidence - it is a dimensioning input somebody typed, not a figure anybody
+    signed for.
+
+    Resolved once per pair and handed to everything that reads it, so a dielectric row and a
+    partial-discharge assessment of the same pair can never be looking at two different
+    working voltages.
     """
 
-    if mains:
-        highest = max(scenario.system_voltage_for_impulse_v for scenario in mains)
-        names = ", ".join(sorted({scenario.configuration_name for scenario in mains}))
-        return highest, f"system voltage {highest} V from {names}", ()
     entry = effective.voltages.recurring_peak_v
     stated = entry.value if entry.applicability is Applicability.APPLICABLE else None
     governing = VoltageEvidenceService().governing(
@@ -569,8 +607,26 @@ def _row_value(
         derived_v=stated,
         derived_source=f"the recurring peak recorded on pair {pair.key}",
     )
-    value = governing.effective_value_v
-    if value is None:
+    return governing.effective_value_v
+
+
+def _row_value(
+    pair: PairCase,
+    mains: Sequence[DerivedSupplyScenario],
+    recurring_peak_v: Decimal | None,
+) -> tuple[Decimal | None, str, tuple[str, ...]]:
+    """The voltage that keys the dielectric table's row axis, and where it came from.
+
+    For a mains circuit that is the system voltage of the supply, which the derivation already
+    resolved to the measure the package named for that arrangement. For every other circuit it
+    is the recurring-peak working voltage.
+    """
+
+    if mains:
+        highest = max(scenario.system_voltage_for_impulse_v for scenario in mains)
+        names = ", ".join(sorted({scenario.configuration_name for scenario in mains}))
+        return highest, f"system voltage {highest} V from {names}", ()
+    if recurring_peak_v is None:
         return (
             None,
             "no recurring-peak working voltage",
@@ -581,7 +637,11 @@ def _row_value(
                 ),
             ),
         )
-    return value, f"recurring-peak working voltage {value} V", ()
+    return (
+        recurring_peak_v,
+        f"recurring-peak working voltage {recurring_peak_v} V",
+        (),
+    )
 
 
 def _dielectric_value(
@@ -664,6 +724,144 @@ def _route_step(
                 "the package states for it."
             ),
         ),
+    )
+
+
+# --- the assembled-equipment routine exemption -----------------------------------------------
+
+
+def _exempted(
+    applications: Iterable[TestApplication],
+    exemption: RoutineExemptionAssessment,
+) -> tuple[TestApplication, ...]:
+    """The same rows, with the routine ones marked where the exemption was granted.
+
+    Marked, never removed. A schedule that dropped the row would be indistinguishable from one
+    where nobody planned the test in the first place, and this is the only place in the plan
+    where getting it wrong takes work away rather than adding it. The row stays, its
+    applicability becomes not required, and the conditions that carried the exemption are
+    written onto it so whoever signs the schedule reads the grounds beside the row they are
+    not performing.
+
+    Whatever the row still had outstanding stays on it. What is unknown about *performing* a
+    test - a duration no resolved rule states, a table that could not be read - does not become
+    known by not performing it, and deleting those lines because the test was excused would
+    lose the only record that the plan never fully resolved this row.
+
+    Deduplication makes this conservative across a connected group without any help: it keeps
+    the least settled applicability of the rows it folds, so one pair's exemption cannot excuse
+    another pair of the group that has not earned one.
+    """
+
+    if not exemption.exemption_permitted:
+        return tuple(applications)
+    grounds = (
+        f"The assembled-equipment routine test exemption is granted for pair "
+        f"{exemption.pair_key} under {', '.join(exemption.source_rule_ids)}, on these grounds: "
+        + "; ".join(item.detail for item in exemption.conditions)
+        + ". The row is retained and marked; it is not removed from the schedule."
+    )
+    return tuple(
+        application.model_copy(
+            update={
+                "applicability": TestApplicability.NOT_REQUIRED,
+                "preparation_steps": (*application.preparation_steps, grounds),
+                "source_rule_ids": _unique(
+                    (*application.source_rule_ids, *exemption.source_rule_ids)
+                ),
+            }
+        )
+        if TestClassification.ROUTINE in application.classifications
+        else application
+        for application in applications
+    )
+
+
+# --- internal SPD monitoring ---------------------------------------------------------------
+
+
+def _monitoring_application(
+    subject: TestSubject,
+    rules: VerificationRuleSet,
+    revision: str,
+    dependency: SpdMonitoringDependency,
+    owed: str,
+) -> TestApplication:
+    """The dedicated monitoring type test one recorded impulse reduction depends on.
+
+    Generated only where the resolution recorded a dependency, which it does only for a
+    reduction a device inside the equipment justifies. A device that reduces nothing is not a
+    device this schedule tests.
+
+    The row stands between the pair's own electrodes. That is not where the monitoring is
+    measured - it is a function of the device, not of the insulation - but it is what ties the
+    test to the reduction it underwrites, and it means two pairs of one connected group
+    carrying the same reduction produce one row rather than two.
+
+    ``owed`` is carried as the row's unresolved input, so the schedule stays incomplete until
+    somebody acknowledges the test. There is nowhere in the project to record that
+    acknowledgement yet, which is exactly why the row says so rather than reading as done.
+    """
+
+    procedure = rules.internal_spd_monitoring
+    steps, rule_ids = monitoring_preparation(dependency, procedure)
+    return _application(
+        subject=subject,
+        test_kind=TestKind.INTERNAL_SPD_MONITORING,
+        classifications=classifications_of(procedure),
+        revision=revision,
+        voltage=None,
+        waveform=procedure.waveform,
+        polarity=procedure.polarity,
+        duration=procedure.duration,
+        repetitions=procedure.repetitions,
+        preparation_steps=steps,
+        unresolved=(owed,),
+        source_rule_ids=rule_ids,
+        trace_steps=(),
+    )
+
+
+# --- partial discharge -------------------------------------------------------------------
+
+
+def _discharge_application(
+    subject: TestSubject,
+    rules: VerificationRuleSet,
+    revision: str,
+    outcome: PartialDischargeOutcome,
+) -> TestApplication:
+    """One schedule row for the partial-discharge test, whatever the assessment concluded.
+
+    The row exists even where the test does not apply. A pair whose solid insulation was
+    assessed and found to need nothing is a different thing from a pair nobody assessed, and a
+    schedule that showed only the required tests could not tell them apart.
+
+    Its applicability comes from the assessment rather than from whether anything is
+    unresolved, because this is the one test whose rule can settle "not required" - and the
+    settled answers carry no unresolved inputs, so the two never contradict each other.
+    """
+
+    procedure = rules.partial_discharge.procedure
+    return _application(
+        subject=subject,
+        test_kind=TestKind.PARTIAL_DISCHARGE,
+        classifications=classifications_of(procedure),
+        revision=revision,
+        voltage=None,
+        waveform=procedure.waveform,
+        polarity=procedure.polarity,
+        duration=procedure.duration,
+        repetitions=procedure.repetitions,
+        preparation_steps=(
+            *subject.preparation_steps,
+            *(step.text for step in procedure.preparation_steps),
+            *outcome.preparation_steps,
+        ),
+        unresolved=outcome.unresolved_inputs,
+        source_rule_ids=outcome.source_rule_ids,
+        trace_steps=outcome.trace_steps,
+        applicability=outcome.applicability,
     )
 
 
@@ -757,12 +955,18 @@ def _application(
     high_side_net_ids: tuple[UUID, ...] = (),
     low_side_net_ids: tuple[UUID, ...] = (),
     covered_pair_ids: tuple[UUID, ...] | None = None,
+    applicability: TestApplicability | None = None,
 ) -> TestApplication:
     """One application, with the only identity a generated test is allowed to have.
 
     Applicability is decided by whether anything is missing: an application with an unresolved
     input is an engineering input, never a ``NOT_REQUIRED`` that reads the same in a schedule
     and means the opposite to whoever signs it.
+
+    ``applicability`` overrides that for the one test whose own rule can settle the question
+    both ways. It still cannot state a settled answer over an unresolved input: anything
+    outstanding makes the application an engineering input whatever the caller passed, so the
+    two halves of a row can never say different things.
     """
 
     if subject is not None:
@@ -795,7 +999,7 @@ def _application(
         applicability=(
             TestApplicability.ENGINEERING_INPUT_REQUIRED
             if unresolved
-            else TestApplicability.REQUIRED
+            else applicability or TestApplicability.REQUIRED
         ),
         unresolved_inputs=_unique(unresolved),
         source_rule_ids=source_rule_ids,
