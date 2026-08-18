@@ -180,7 +180,48 @@ def _table_range_linked(table: Table, supported_range: SupportedRange) -> bool:
     )
 
 
+#: Packages already proven valid, keyed by the digest their own content hashes to, each held
+#: beside the report it earned. Small and bounded on purpose: a process works with one package
+#: at a time, and a miss costs no more than validation always cost.
+_PROVEN_VALID: dict[str, tuple[RulePackage, ValidationReport]] = {}
+_PROVEN_VALID_LIMIT = 4
+
+
 def validate_rule_package(package: RulePackage) -> ValidationReport:
+    """Report on ``package``, reusing the answer when this exact content already earned one.
+
+    Validation re-serialises and re-hashes the whole package, so it costs what the package
+    costs and not what the caller's question costs. A calculation asks once per pair, which
+    made an N-pair project pay N times over for an answer that cannot change: a rule package
+    is immutable, so a second identical question has a second identical answer.
+
+    Only a *valid* report is remembered, and only under ``package_sha256``. That pairing is
+    what makes the key trustworthy: a report is valid only when ``package_digest`` passed,
+    which proves the digest is this content's own hash rather than a label attached to it. A
+    package whose digest is ``None`` has no archive identity to be recognised by -- and cannot
+    be valid either, since ``package_digest`` refuses it -- so it is neither looked up nor
+    remembered, and pays full validation every time.
+
+    A digest is a claim until it is checked, so the entry has to match the package field for
+    field before its report is handed back. A copy that carries a validated package's digest
+    over altered content is exactly what the cache must not confuse for the original, and the
+    comparison costs a small fraction of the validation it replaces.
+    """
+
+    digest = package.package_sha256
+    remembered = _PROVEN_VALID.get(digest) if digest is not None else None
+    if remembered is not None and remembered[0] == package:
+        return remembered[1]
+    report = _validate_package_content(package)
+    if digest is not None and report.is_valid:
+        oldest = next(iter(_PROVEN_VALID), None)
+        if oldest is not None and len(_PROVEN_VALID) >= _PROVEN_VALID_LIMIT:
+            _PROVEN_VALID.pop(oldest, None)
+        _PROVEN_VALID[digest] = (package, report)
+    return report
+
+
+def _validate_package_content(package: RulePackage) -> ValidationReport:
     try:
         package = _revalidate_package(package)
         if not _finite_decimals(package.model_dump(mode="python", warnings=False)):
