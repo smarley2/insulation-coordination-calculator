@@ -459,11 +459,51 @@ def test_a_custom_reviewed_topology_blocks_instead_of_borrowing_a_neighbour(
 
 
 def test_an_arrangement_the_rule_states_nothing_for_blocks(
-    service: SupplyStressService, rules: SupplyRuleSet
+    service: SupplyStressService,
 ) -> None:
-    result = service.derive_scenario(_configuration(phase_system=None), rules)
+    package = synthetic_supply_rule_package()
+    original = next(
+        item for item in package.decisions if item.id == ids.SUPPLY_SYSTEM_VOLTAGE_RESOLUTION
+    )
+    silent = tuple(
+        row
+        for row in original.rows
+        if not any("three_phase_star" in matcher.values for matcher in row.matchers)
+    )
+    rules = _with_rule_rows(package, silent)
+
+    result = service.derive_scenario(_configuration(), rules)
 
     assert _codes(result) == (SupplyDerivationBlockCode.SYSTEM_VOLTAGE_UNRESOLVED,)
+
+
+def test_an_incomplete_row_is_refused_before_any_rule_is_asked_about_it(
+    service: SupplyStressService, rules: SupplyRuleSet
+) -> None:
+    # Without the earthing arrangement the resolution rule asks about, this row would be asked
+    # as "unspecified" and answered - about an arrangement nobody described.
+    incomplete = _configuration(earthing_arrangement=EarthingArrangement.NOT_APPLICABLE)
+
+    result = service.derive_scenario(incomplete, rules)
+
+    assert _codes(result) == (SupplyDerivationBlockCode.CONFIGURATION_INCOMPLETE,)
+    assert isinstance(result, UnresolvedSupplyScenario)
+    assert result.trace_steps == ()
+    # Reported, never raised, and the same refusal the project-wide entry point gives.
+    assert service.derive_all((incomplete,), rules).unresolved == (result,)
+
+
+def test_a_disabled_row_derived_from_directly_is_held_to_the_same_standard(
+    service: SupplyStressService, rules: SupplyRuleSet
+) -> None:
+    # The disabled flag exempts a row from the project's calculation, not from this one.
+    incomplete = _configuration(
+        enabled=False, earthing_arrangement=EarthingArrangement.NOT_APPLICABLE
+    )
+
+    assert _codes(service.derive_scenario(incomplete, rules)) == (
+        SupplyDerivationBlockCode.CONFIGURATION_INCOMPLETE,
+    )
 
 
 def test_a_measure_the_configuration_states_no_voltage_for_blocks(
@@ -479,8 +519,16 @@ def test_a_measure_the_configuration_states_no_voltage_for_blocks(
 def test_every_reason_a_configuration_cannot_derive_is_reported_together(
     service: SupplyStressService, rules: SupplyRuleSet
 ) -> None:
+    # A non-mains row, whose overvoltage category the completeness check does not demand, so
+    # the derivation reaches both refusals instead of stopping at the incomplete row.
     result = service.derive_scenario(
-        _configuration(overvoltage_category=None, declared_system_voltages=()), rules
+        _configuration(
+            supply_kind=SupplyKind.NON_MAINS_AC,
+            earthing_arrangement=EarthingArrangement.NOT_APPLICABLE,
+            overvoltage_category=None,
+            declared_system_voltages=(),
+        ),
+        rules,
     )
 
     assert set(_codes(result)) == {

@@ -219,6 +219,11 @@ def validate_supply_configurations(
     rename cannot make an untouched row change status. Names are compared across the whole
     set, disabled rows included: a disabled row is persisted and can be enabled again, and two
     rows that would then collide are a collision now.
+
+    A disabled row's own completeness is not reported. It takes no part in any calculation, so
+    there is nothing about it to be incomplete for here - which is a statement about this
+    project-wide report and not about the row: anything that goes on to derive from a row asks
+    :func:`completeness_problems` about it directly.
     """
 
     problems: list[SupplyConfigurationProblem] = []
@@ -234,26 +239,28 @@ def validate_supply_configurations(
                 )
             )
         seen.add(name)
-        problems.extend(_completeness_problems(configuration))
+        if configuration.enabled:
+            problems.extend(completeness_problems(configuration))
     return tuple(problems)
 
 
-def _completeness_problems(
+def completeness_problems(
     configuration: SupplyConfiguration,
 ) -> tuple[SupplyConfigurationProblem, ...]:
-    """What one enabled row is still missing.
+    """What one row is still missing, whether or not it is enabled.
 
-    A disabled row is skipped entirely rather than reported as complete: it takes no part in
-    any calculation, so there is nothing about it to be incomplete for.
+    The single implementation of the completeness question, so that the project page's report
+    and any derivation refuse the same rows for the same reasons. Whether a disabled row is
+    worth reporting on is the caller's decision: the project page skips it, and a derivation
+    asked about it anyway holds it to the same standard, because deriving from a row is the
+    calculation the disabled flag exempts it from.
 
-    A non-mains row is not checked here because the model already requires everything it
-    needs: the AC or DC kind and the nominal voltage are non-optional fields. Whether its
-    overvoltage category may be resolved by the rule package or must be chosen by hand is a
-    question for the package, not for this function.
+    A non-mains row is barely checked because the model already requires everything it needs:
+    the AC or DC kind and the nominal voltage are non-optional fields. Whether its overvoltage
+    category may be resolved by the rule package or must be chosen by hand is a question for
+    the package, not for this function.
     """
 
-    if not configuration.enabled:
-        return ()
     problems: list[SupplyConfigurationProblem] = []
 
     def add(code: SupplyConfigurationProblemCode, message: str) -> None:
@@ -568,6 +575,7 @@ __all__ = [
     "SupplyKind",
     "UnresolvedSupplyScenario",
     "VerifiedImpulseOverride",
+    "completeness_problems",
     "normalized_configuration_name",
     "pair_relationship",
     "validate_supply_configurations",
