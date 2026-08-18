@@ -63,10 +63,14 @@ INNER_LAYER_POLLUTION_DEGREE = 1
 """Inner printed-wiring layers are dimensioned in pollution degree 1."""
 
 SUPERSEDED_ENTRY_WARNING = "supply_derived_stress_supersedes_entry"
-"""A derived stress replaced a value somebody entered. Never silently: this says so."""
+"""A derived stress replaced a lower value somebody entered. Never silently: this says so."""
+
+ENTRY_EXCEEDS_DERIVED_WARNING = "supply_entry_exceeds_derived_stress"
+"""An entered stress is more severe than the derived one, so the entry is what governs."""
 
 __all__ = [
     "CALCULATION_ENGINE_VERSION",
+    "ENTRY_EXCEEDS_DERIVED_WARNING",
     "INNER_LAYER_POLLUTION_DEGREE",
     "SUPERSEDED_ENTRY_WARNING",
     "CalculationError",
@@ -262,17 +266,26 @@ def _with_supply_stresses(
     effective: EffectiveCase,
     resolution: EffectivePairStressResolution,
 ) -> tuple[EffectiveCase, EffectivePairStressResolution]:
-    """Substitute the resolved supply stresses into one pair's inputs, saying what they replace.
+    """Combine the resolved supply stresses with one pair's entered inputs, most severe first.
+
+    A derived stress and an entered one are two answers to the same question, and the pair is
+    dimensioned from whichever is worse - the arithmetic IEC 62477-1:2022 4.4.7.1.6, 4.4.7.2.1,
+    4.4.7.2.3, 4.4.7.2.4 and 4.4.7.2.5 b) each ask for. So the derived figure governs only
+    where it is the more severe of the two, and an entry above it stands: nothing here may
+    lower a pair below what the engineer asked for. The pipeline determines the derived
+    stresses after the entered ones, which is an order of processing and not of precedence.
 
     The impulse handed over is :attr:`verified_effective_impulse_v`, which is untreated: the
     reinforced treatment is the clearance engine's and is applied there, once, immediately
-    before the table is read. The temporary overvoltage is substituted only where the
-    derivation is what governs it - where the pair's own entry does, the entry is already in
-    these inputs and nothing needs replacing.
+    before the table is read. It also already carries any reduction recorded as a verified
+    override, which is why an engineer who wants that benefit has to clear a stale entry
+    sitting above it - and why the warning below says so. The temporary overvoltage is
+    considered only where the derivation is what governs it; where the pair's own entry does,
+    the entry is already in these inputs and nothing needs combining.
 
-    Every replacement of an entered value is reported. A derived figure quietly displacing
-    something a user typed is indistinguishable, from the outside, from the application
-    losing it.
+    Either outcome is reported whenever the two disagree. A derived figure quietly displacing
+    something a user typed is indistinguishable, from the outside, from the application losing
+    it, and an entry quietly holding a derived figure down is no better.
     """
 
     updates: dict[str, object] = {}
@@ -280,13 +293,13 @@ def _with_supply_stresses(
     impulse = resolution.verified_effective_impulse_v
     if impulse is not None:
         entered = effective.impulse_v
-        if entered.value is not None and entered.value != impulse:
-            warnings.append(
-                _superseded(entered.provenance.value, "impulse", entered.value, impulse)
+        warning = _disagreement(entered.provenance.value, "impulse", entered.value, impulse)
+        if warning is not None:
+            warnings.append(warning)
+        if entered.value is None or entered.value < impulse:
+            updates["impulse_v"] = EffectiveValue[PositiveDecimal | None](
+                value=impulse, provenance=Provenance.DERIVED_SUPPLY
             )
-        updates["impulse_v"] = EffectiveValue[PositiveDecimal | None](
-            value=impulse, provenance=Provenance.DERIVED_SUPPLY
-        )
 
     temporary = resolution.temporary_overvoltage
     if (
@@ -294,21 +307,18 @@ def _with_supply_stresses(
         and temporary.peak_v is not None
     ):
         entry = effective.voltages.temporary_overvoltage_peak_v
-        if entry.applicability is Applicability.APPLICABLE and entry.value != temporary.peak_v:
-            assert entry.value is not None
-            warnings.append(
-                _superseded(
-                    "pair entry",
-                    "temporary overvoltage peak",
-                    entry.value,
-                    temporary.peak_v,
-                )
-            )
-        updates["voltages"] = effective.voltages.model_copy(
-            update={"temporary_overvoltage_peak_v": PairVoltage.applicable(temporary.peak_v)}
+        stated = entry.value if entry.applicability is Applicability.APPLICABLE else None
+        warning = _disagreement(
+            "pair entry", "temporary overvoltage peak", stated, temporary.peak_v
         )
+        if warning is not None:
+            warnings.append(warning)
+        if stated is None or stated < temporary.peak_v:
+            updates["voltages"] = effective.voltages.model_copy(
+                update={"temporary_overvoltage_peak_v": PairVoltage.applicable(temporary.peak_v)}
+            )
 
-    if not updates:
+    if not updates and not warnings:
         return effective, resolution
     return (
         effective.model_copy(update=updates),
@@ -316,15 +326,33 @@ def _with_supply_stresses(
     )
 
 
-def _superseded(
-    source: str, quantity: str, entered: Decimal, derived: Decimal
-) -> CalculationWarning:
+def _disagreement(
+    source: str, quantity: str, entered: Decimal | None, derived: Decimal
+) -> CalculationWarning | None:
+    """What to say about the two figures, or ``None`` where there is nothing to say.
+
+    An absent entry and an agreeing one both leave the derived value governing unremarked.
+    """
+
+    if entered is None or entered == derived:
+        return None
+    if entered < derived:
+        return CalculationWarning(
+            code=SUPERSEDED_ENTRY_WARNING,
+            message=(
+                f"The {source} {quantity} of {entered} V is superseded by the {derived} V "
+                "this project's supply configurations derive for this pair. A different value "
+                "belongs in a verified override, where its evidence is recorded with it."
+            ),
+        )
     return CalculationWarning(
-        code=SUPERSEDED_ENTRY_WARNING,
+        code=ENTRY_EXCEEDS_DERIVED_WARNING,
         message=(
-            f"The {source} {quantity} of {entered} V is superseded by the {derived} V "
-            "this project's supply configurations derive for this pair. A different value "
-            "belongs in a verified override, where its evidence is recorded with it."
+            f"The {source} {quantity} of {entered} V exceeds the {derived} V this project's "
+            "supply configurations derive for this pair, so the entered value is what this "
+            "pair is dimensioned from: the more severe of the two governs. Clear the entry to "
+            "be dimensioned from the derived figure instead, including any reduction recorded "
+            "against it as a verified override."
         ),
     )
 
