@@ -1008,6 +1008,22 @@ def test_an_ambiguous_or_inherited_insulation_selection_migrates_to_nothing(
     assert migrated["pairs"][0]["protection_implementation"] is None  # type: ignore[index]
 
 
+@pytest.mark.parametrize(
+    "selection",
+    ["not an object", {"is_override": True, "value": "gold plated"}, {"is_override": True}],
+)
+def test_a_hand_edited_insulation_selection_migrates_to_nothing_rather_than_crashing(
+    sample_project: Project, selection: object
+) -> None:
+    """The migration reads raw JSON, so it must survive a value no enum has."""
+    document = _as_schema_v5_document(sample_project)
+    document["pairs"][0]["insulation_type"] = selection  # type: ignore[index]
+
+    migrated = migrate_project_document(document)
+
+    assert migrated["pairs"][0]["protection_implementation"] is None  # type: ignore[index]
+
+
 def test_every_migrated_protective_means_needs_review(
     sample_project: Project, tmp_path: Path
 ) -> None:
