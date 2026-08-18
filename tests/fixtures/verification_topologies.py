@@ -27,6 +27,9 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
 
+from insulation_coordination.calculation.verification_rules import (
+    PRECONDITIONING_APPLICABILITY_ROUTE,
+)
 from insulation_coordination.domain.enums import (
     BarrierVerificationStatus,
     CircuitSourceRelationship,
@@ -49,6 +52,7 @@ from insulation_coordination.domain.project import (
     ProjectMetadata,
 )
 from insulation_coordination.domain.rules import (
+    DecisionRule,
     RulePackage,
     SourceReference,
     Table,
@@ -274,6 +278,40 @@ def single_column_dielectric_package(
                 else procedure
                 for procedure in package.procedures
             ),
+            "decisions": tuple(
+                _asked_by_purpose(decision)
+                if decision.id == PRECONDITIONING_APPLICABILITY_ROUTE
+                else decision
+                for decision in package.decisions
+            ),
+        }
+    )
+
+
+def _asked_by_purpose(gate: DecisionRule) -> DecisionRule:
+    """The preconditioning gate with the purpose vocabulary the real projection declares.
+
+    The shared synthetic fixture declares one invented purpose, which is enough to prove the
+    adapter resolves the gate and not enough to ask it anything: a consumer supplies the
+    package's name for the classification of the test being preconditioned, and a vocabulary
+    that shares no name with one is a gate no test can reach.
+
+    The three names here are the ones the adapter already translates in
+    ``PACKAGE_CLASSIFICATIONS``, plus the third purpose the real gate carries that is not a
+    classification at all. Nothing else about the gate changes: its rows still discriminate on
+    the context alone, so widening the purpose only makes the electrical row reachable.
+    """
+
+    return gate.model_copy(
+        update={
+            "inputs": tuple(
+                declared.model_copy(
+                    update={"allowed_values": ("type_test", "sample_test", "acceptance_criteria")}
+                )
+                if declared.name == "test_purpose"
+                else declared
+                for declared in gate.inputs
+            )
         }
     )
 

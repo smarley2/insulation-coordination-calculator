@@ -47,6 +47,10 @@ from insulation_coordination.calculation.partial_discharge import (
     PartialDischargeOutcome,
     assess_partial_discharge,
 )
+from insulation_coordination.calculation.special_procedures import (
+    decorate,
+    monitoring_preparation,
+)
 from insulation_coordination.calculation.stress_propagation import (
     EffectivePairStressResolution,
 )
@@ -312,12 +316,13 @@ def _plan_pair(
             "say which construction its tests verify."
         )
     dependency = _spd_dependency(resolution)
+    monitoring: tuple[TestApplication, ...] = ()
     if dependency is not None:
         message = (
             f"The impulse reduction recorded at {dependency.affected_location!r} depends on the "
             f"dedicated internal SPD monitoring type test "
-            f"({dependency.required_type_test_semantic_id}), which this plan records as owed "
-            "and does not yet schedule."
+            f"({dependency.required_type_test_semantic_id}). It is scheduled here and nothing "
+            "records that it has been acknowledged, so the plan stays incomplete until it is."
         )
         unresolved.append(message)
         warnings.append(
@@ -327,6 +332,7 @@ def _plan_pair(
                 semantic_rule_id=dependency.required_type_test_semantic_id,
             )
         )
+        monitoring = (_monitoring_application(subject, rules, revision, dependency, message),)
 
     impulse = _impulse_application(
         pair, subject, effective, resolution, rules, revision, implementation, enhanced, warnings
@@ -340,9 +346,13 @@ def _plan_pair(
     )
     warnings.extend(discharge.warnings)
     applications = (
-        impulse,
-        *dielectric,
-        _discharge_application(subject, rules, revision, discharge),
+        *decorate(
+            (impulse, *dielectric, _discharge_application(subject, rules, revision, discharge)),
+            reference_kind=subject.reference_kind,
+            preconditioning=rules.preconditioning,
+            foil=rules.accessible_surface_foil,
+        ),
+        *monitoring,
     )
     return applications, PairVerificationAssessment(
         pair_id=pair.id,
@@ -696,6 +706,51 @@ def _route_step(
                 "the package states for it."
             ),
         ),
+    )
+
+
+# --- internal SPD monitoring ---------------------------------------------------------------
+
+
+def _monitoring_application(
+    subject: TestSubject,
+    rules: VerificationRuleSet,
+    revision: str,
+    dependency: SpdMonitoringDependency,
+    owed: str,
+) -> TestApplication:
+    """The dedicated monitoring type test one recorded impulse reduction depends on.
+
+    Generated only where the resolution recorded a dependency, which it does only for a
+    reduction a device inside the equipment justifies. A device that reduces nothing is not a
+    device this schedule tests.
+
+    The row stands between the pair's own electrodes. That is not where the monitoring is
+    measured - it is a function of the device, not of the insulation - but it is what ties the
+    test to the reduction it underwrites, and it means two pairs of one connected group
+    carrying the same reduction produce one row rather than two.
+
+    ``owed`` is carried as the row's unresolved input, so the schedule stays incomplete until
+    somebody acknowledges the test. There is nowhere in the project to record that
+    acknowledgement yet, which is exactly why the row says so rather than reading as done.
+    """
+
+    procedure = rules.internal_spd_monitoring
+    steps, rule_ids = monitoring_preparation(dependency, procedure)
+    return _application(
+        subject=subject,
+        test_kind=TestKind.INTERNAL_SPD_MONITORING,
+        classifications=classifications_of(procedure),
+        revision=revision,
+        voltage=None,
+        waveform=procedure.waveform,
+        polarity=procedure.polarity,
+        duration=procedure.duration,
+        repetitions=procedure.repetitions,
+        preparation_steps=steps,
+        unresolved=(owed,),
+        source_rule_ids=rule_ids,
+        trace_steps=(),
     )
 
 
