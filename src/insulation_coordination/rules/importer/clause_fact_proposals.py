@@ -39,6 +39,8 @@ from insulation_coordination.rules.importer.clause_facts import (
     HfAttenuationRequirementFact,
     OvercategoryStep,
     PropagationStepFact,
+    ReinforcedFactorFact,
+    ReinforcedLevelStepFact,
     RouteReference,
     SpdMonitoringComplianceFact,
     SpdMonitoringExemptionFact,
@@ -69,6 +71,8 @@ FactModel = type[
     | SpdMonitoringComplianceFact
     | HfAttenuationPermissionFact
     | HfAttenuationRequirementFact
+    | ReinforcedFactorFact
+    | ReinforcedLevelStepFact
 ]
 
 #: Every statement variant each declared fact family builds, in declaration order. The single
@@ -97,6 +101,7 @@ FACT_MODELS_BY_KIND: dict[str, tuple[FactModel, ...]] = {
         SpdMonitoringComplianceFact,
     ),
     "hf_attenuation": (HfAttenuationPermissionFact, HfAttenuationRequirementFact),
+    "reinforced_treatment": (ReinforcedFactorFact, ReinforcedLevelStepFact),
 }
 
 #: ``fact_kind`` is the family itself, fixed per route; ``statement_kind`` is which variant of it,
@@ -597,6 +602,17 @@ def load_private_grammars(file_name: str) -> dict[str, ClauseFactGrammar]:
     A malformed or unauthorable declaration raises rather than degrading to no proposals: the
     absence of the file is a state to report, but a file that is present and wrong is a defect the
     maintainer has to see.
+
+    **A declaration naming a fact family this checkout does not declare is skipped, not refused.**
+    One folder of licensed material serves every checkout of this repository at once, so a family
+    added on one branch appears in that folder while every other branch is still a checkout that
+    has never heard of it. Raising there made adding a family a breaking change to the private
+    material: the whole file failed to load, so *every* route lost its grammar and every
+    grammar-dependent private test failed at fixture setup, on branches that had changed nothing.
+    Skipping is the honest reading -- the route that declaration belongs to does not exist here
+    either, so it is a grammar for nothing, and the route inventory this checkout does declare
+    still agrees exactly with what loads. A declaration whose family *is* declared here and which
+    is wrong in any other way still raises, which is the defect this refusal exists for.
     """
 
     directory = private_material_directory()
@@ -611,10 +627,15 @@ def load_private_grammars(file_name: str) -> dict[str, ClauseFactGrammar]:
         )
     if not isinstance(payload, dict):
         raise RulePackageError(f"{file_name} must declare one grammar per rule route")
+    known = {
+        route: declaration
+        for route, declaration in payload.items()
+        if not isinstance(declaration, dict) or declaration.get("fact_kind") in FACT_MODELS_BY_KIND
+    }
     try:
         return {
             str(route): ClauseFactGrammar.model_validate(declaration)
-            for route, declaration in payload.items()
+            for route, declaration in known.items()
         }
     except ValidationError as error:
         raise RulePackageError(

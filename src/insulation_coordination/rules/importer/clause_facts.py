@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
+from decimal import Decimal
 from typing import Annotated, Literal, get_args, get_origin
 
 from pydantic import AfterValidator, Field, model_validator
@@ -722,13 +723,115 @@ HfAttenuationFact = Annotated[
 ]
 
 
+#: What a reinforced treatment is applied to. Three of them are the stress a spacing is
+#: dimensioned from, and the fourth is the requirement resolved for basic insulation -- a
+#: distance rather than a voltage, because one of the two clauses states its treatment over the
+#: result rather than over the stress. One vocabulary for both, since it is the same dimension:
+#: which quantity the treatment operates on. Its own alias because a reviewed scope's vocabulary
+#: is read back out of the annotation -- see ``scope_vocabulary``.
+TreatedQuantity = Literal[
+    "impulse_withstand_voltage",
+    "temporary_overvoltage_peak",
+    "working_voltage_peak",
+    "basic_insulation_requirement",
+]
+
+
+def _positive_factor(value: str) -> str:
+    if Decimal(value) <= 0:
+        raise ValueError("a reviewed multiplicative factor is greater than zero")
+    return value
+
+
+#: One reviewed multiplicative factor, as the maintainer reads it off the clause.
+#:
+#: Text rather than ``Decimal``, and deliberately. ``fact_dimensions`` reports a plain string
+#: dimension as one the editor offers as a line edit, which is the widget a free value needs;
+#: every other annotation it understands is a vocabulary of tokens, and a numeric widget kind
+#: would be a ``DimensionKind`` the fact editor has no branch for -- so the dimension would be
+#: offered as an empty combo and the statement would be unauthorable.
+#:
+#: The value is licensed source content and is therefore *never* declared in this repository: it
+#: is authored into the maintainer's private draft and converted at projection. That is the same
+#: rule the frequency thresholds follow, which are read from the private fragment rather than
+#: written down beside the recipe.
+MultiplicativeFactor = Annotated[
+    str,
+    Field(pattern=r"^[0-9]+(?:\.[0-9]+)?$"),
+    AfterValidator(_positive_factor),
+]
+
+
+class ReinforcedTreatmentStatement(_Fact):
+    """What every reinforced treatment statement states, whichever kind of reading it is.
+
+    Two clauses state how a spacing for the stronger insulation is dimensioned from the weaker
+    one's, and they state it in two normatively different shapes: one moves the design a step
+    along another rule's own axis, the other scales a quantity by a stated factor. Neither shape
+    can hold the other -- a step names no factor and a factor names no axis to step along -- so
+    the family discriminates on ``statement_kind`` inside one ``fact_kind``, as the other variant
+    families do, and this base carries only the dimensions both kinds state.
+
+    ``insulation_classes`` and ``treated_quantity`` are scopes for the reason every reviewed set
+    is one: a sentence naming several classes, or several quantities, is one statement. They are
+    also what keeps two statements of one clause on disjoint branches -- a clause stating a step
+    for one quantity and a factor for two others states three readings, and the quantity is what
+    separates them; without it ``_require_distinct_branches`` would refuse the set rather than
+    let a consumer be served whichever row came first.
+
+    ``requirement_reference`` names the rule the treated design is resolved against instead of
+    restating it, the same deferral ``SpdReductionMonitoringFact.monitoring_reference`` carries.
+    It is on the base rather than on the step variant because both kinds of statement name it:
+    a step is a step *along that rule's* axis, and a factor scales what that rule resolves.
+    """
+
+    fact_kind: Literal["reinforced_treatment"] = "reinforced_treatment"
+    insulation_classes: DimensionScope[InsulationClass]
+    treated_quantity: DimensionScope[TreatedQuantity]
+    #: The requirement the treatment is stated against: the rule whose axis a step moves along,
+    #: and whose result a factor scales. Never restated here.
+    requirement_reference: RouteIdentifier
+
+
+class ReinforcedFactorFact(ReinforcedTreatmentStatement):
+    """One statement that the treatment is a multiplication by a stated factor.
+
+    ``factor`` is the answer rather than a condition, so it stays one value while the dimensions
+    above are scopes: a statement naming two factors would not say which of them a consumer gets.
+    """
+
+    statement_kind: Literal["factor"] = "factor"
+    factor: MultiplicativeFactor
+
+
+class ReinforcedLevelStepFact(ReinforcedTreatmentStatement):
+    """One statement that the treatment is the next step along the referenced rule's axis.
+
+    It carries **no factor**, because a statement of this kind states none; which axis is stepped
+    along is ``requirement_reference``, and that the step is upward is what the variant *is* --
+    the same reasoning that keeps ``SpdMonitoringRequirementFact`` and its exemption apart rather
+    than giving one shape a boolean that could contradict its own variant. A downward step would
+    be its own variant, authored when a source states one.
+    """
+
+    statement_kind: Literal["level_step"] = "level_step"
+
+
+#: The family's two variants under one ``fact_kind``, discriminated by ``statement_kind``.
+ReinforcedTreatmentFact = Annotated[
+    ReinforcedFactorFact | ReinforcedLevelStepFact,
+    Field(discriminator="statement_kind"),
+]
+
+
 SupplyFact = Annotated[
     SystemVoltageFact
     | PropagationStepFact
     | BarrierTransferFact
     | SpdReductionFact
     | SpdMonitoringFact
-    | HfAttenuationFact,
+    | HfAttenuationFact
+    | ReinforcedTreatmentFact,
     Field(discriminator="fact_kind"),
 ]
 
@@ -878,12 +981,17 @@ __all__ = [
     "InputTopology",
     "InsulationClass",
     "MonitoringComplianceEvidence",
+    "MultiplicativeFactor",
     "Obligation",
     "OvercategoryDesignation",
     "OvercategoryStep",
     "OvercategoryStepSequence",
     "PhaseSystem",
     "PropagationStepFact",
+    "ReinforcedFactorFact",
+    "ReinforcedLevelStepFact",
+    "ReinforcedTreatmentFact",
+    "ReinforcedTreatmentStatement",
     "RouteIdentifier",
     "RouteReference",
     "ScopeMode",
@@ -903,6 +1011,7 @@ __all__ = [
     "SystemVoltageFact",
     "SystemVoltageMeasureFact",
     "SystemVoltageStatement",
+    "TreatedQuantity",
     "evidence_sha256",
     "pair_vocabulary",
     "same_clause_fact_reading",
