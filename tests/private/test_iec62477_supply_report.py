@@ -118,6 +118,8 @@ def _project(rules: RulePackage) -> Project:
                 version=rules.manifest.version,
                 sha256=rules.package_sha256,
             ),
+            # Every figure below is an input this fixture chooses, picked only to sit inside
+            # the ranges the package supports. None of them is read from a source table.
             "defaults": ProjectDefaults(
                 frequency_hz=Decimal(50),
                 impulse_v=Decimal(2500),
