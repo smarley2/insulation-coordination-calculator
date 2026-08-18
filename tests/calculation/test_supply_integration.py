@@ -26,7 +26,9 @@ from insulation_coordination.calculation.clearance import (
     apply_reinforced_stress_treatment,
 )
 from insulation_coordination.calculation.engine import (
+    ENTRY_EXCEEDS_DERIVED_WARNING,
     SUPERSEDED_ENTRY_WARNING,
+    _with_supply_stresses,
     calculate_pair,
     calculate_project_pair,
     derive_project_supply,
@@ -83,6 +85,14 @@ IN_BAND = Decimal(33)
 #: The pair's own entered temporary overvoltage. Below what the fixture derives, so a
 #: circuit-to-surroundings pair is a case of the derivation governing rather than a tie.
 ENTERED_TOV_PEAK_V = Decimal(250)
+
+#: An entered impulse below what the fixture derives, so the derivation is the more severe of
+#: the two. Every test using it asserts that ordering against the derivation rather than
+#: trusting it, so a fixture whose bands move fails loudly instead of quietly testing nothing.
+ENTERED_IMPULSE_BELOW_V = Decimal(200)
+
+#: An entered impulse above what the fixture derives, so the entry is the more severe of the two.
+ENTERED_IMPULSE_ABOVE_V = Decimal(600)
 
 
 def _merged(
@@ -274,12 +284,15 @@ def test_the_derived_impulse_becomes_the_pair_input_and_says_where_it_came_from(
     assert resolution.verified_effective_impulse_v == supply.governing.impulse_v
 
 
-def test_a_derived_impulse_replacing_an_entered_one_says_so(
+def test_a_more_severe_derived_impulse_supersedes_the_entered_one_and_says_so(
     supply_and_clearance_rules: RulePackage,
 ) -> None:
-    project = _project(_configuration(), entered_impulse_v=Decimal(600))
+    project = _project(_configuration(), entered_impulse_v=ENTERED_IMPULSE_BELOW_V)
     pair = _circuit_to_surroundings(project)
     supply = derive_project_supply(project, supply_and_clearance_rules)
+    assert supply is not None
+    assert supply.governing.impulse_v is not None
+    assert supply.governing.impulse_v > ENTERED_IMPULSE_BELOW_V
 
     result = calculate_project_pair(project, pair, supply_and_clearance_rules, supply=supply)
 
@@ -289,7 +302,36 @@ def test_a_derived_impulse_replacing_an_entered_one_says_so(
         if warning.code == SUPERSEDED_ENTRY_WARNING and "impulse" in warning.message
     ]
     assert len(superseded) == 1
-    assert "600" in superseded[0].message
+    assert str(ENTERED_IMPULSE_BELOW_V) in superseded[0].message
+    assert result.effective_inputs.impulse_v.value == supply.governing.impulse_v
+    assert result.effective_inputs.impulse_v.provenance is Provenance.DERIVED_SUPPLY
+    assert result.warnings == result.trace.warnings
+
+
+def test_an_entered_impulse_above_the_derived_one_is_what_the_pair_is_dimensioned_from(
+    supply_and_clearance_rules: RulePackage,
+) -> None:
+    """The unsafe direction, pinned: a derivation may raise a pair's stress and never lower it.
+
+    Both figures answer the same question and the more severe one governs it, per
+    IEC 62477-1:2022 4.4.7.2.1 and 4.4.7.2.5 b). The order the pipeline determines them in says
+    nothing about which wins.
+    """
+    project = _project(_configuration(), entered_impulse_v=ENTERED_IMPULSE_ABOVE_V)
+    pair = _circuit_to_surroundings(project)
+    supply = derive_project_supply(project, supply_and_clearance_rules)
+    assert supply is not None
+    assert supply.governing.impulse_v is not None
+    assert supply.governing.impulse_v < ENTERED_IMPULSE_ABOVE_V
+
+    result = calculate_project_pair(project, pair, supply_and_clearance_rules, supply=supply)
+
+    about_the_impulse = [warning for warning in result.warnings if "impulse" in warning.message]
+    assert [warning.code for warning in about_the_impulse] == [ENTRY_EXCEEDS_DERIVED_WARNING]
+    assert str(ENTERED_IMPULSE_ABOVE_V) in about_the_impulse[0].message
+    assert "Clear the entry" in about_the_impulse[0].message
+    assert result.effective_inputs.impulse_v.value == ENTERED_IMPULSE_ABOVE_V
+    assert result.effective_inputs.impulse_v.provenance is Provenance.PROJECT_DEFAULT
     assert result.warnings == result.trace.warnings
 
 
@@ -339,6 +381,33 @@ def test_a_mains_temporary_overvoltage_reaches_circuit_to_surroundings_and_not_t
     assert between_circuits.voltages.temporary_overvoltage_peak_v.value == ENTERED_TOV_PEAK_V
     assert resolution is not None
     assert resolution.temporary_overvoltage.source is not TemporaryOvervoltageSource.DERIVED_MAINS
+
+
+def test_a_temporary_overvoltage_entry_above_the_derived_one_is_never_substituted_away(
+    supply_and_clearance_rules: RulePackage,
+) -> None:
+    """The engine's own most-severe guarantee for the temporary overvoltage, held locally.
+
+    The resolution already answers ``DERIVED_MAINS`` only where the derived peak is the worse
+    of the two, so no project reaches the substitution with a higher entry. The two figures are
+    handed over separately, though, and asserting the combination directly is what keeps this
+    file's guarantee from resting on the other module continuing to order them.
+    """
+    project = _project(_configuration())
+    pair = _circuit_to_surroundings(project)
+    supply = derive_project_supply(project, supply_and_clearance_rules)
+    _substituted, resolution = resolve_supply_effective_case(project, pair, supply)
+    assert resolution is not None
+    assert resolution.temporary_overvoltage.source is TemporaryOvervoltageSource.DERIVED_MAINS
+    derived_peak = resolution.temporary_overvoltage.peak_v
+    assert derived_peak is not None
+    higher = derived_peak + Decimal(100)
+
+    entered = resolve_effective_case(project.defaults, _dimensionable(pair, higher))
+    effective, combined = _with_supply_stresses(entered, resolution)
+
+    assert effective.voltages.temporary_overvoltage_peak_v.value == higher
+    assert ENTRY_EXCEEDS_DERIVED_WARNING in {warning.code for warning in combined.warnings}
 
 
 def test_the_supply_trace_leads_the_pair_trace_and_carries_no_pair_identity(
@@ -566,6 +635,45 @@ def test_a_verified_override_recorded_on_the_pair_is_what_the_engine_dimensions_
     assert resolution.override_outcome.applied
     assert resolution.verified_effective_impulse_v == Decimal(900)
     assert effective.impulse_v.value == Decimal(900)
+    assert effective.impulse_v.provenance is Provenance.DERIVED_SUPPLY
+
+
+def test_a_verified_reduction_still_governs_a_pair_that_enters_no_impulse_of_its_own(
+    supply_and_clearance_rules: RulePackage,
+) -> None:
+    """Taking the more severe of two figures must not cost a recorded reduction its effect.
+
+    The reduction is already folded into the resolution before the two figures meet, so the
+    only thing that can hold it up is a stale entry sitting above it - and the warning for that
+    case says which entry and what clearing it would buy.
+    """
+    project = _project(_configuration())
+    pair = _circuit_to_surroundings(project)
+    supply = derive_project_supply(project, supply_and_clearance_rules)
+    assert supply is not None
+    assert supply.governing.impulse_v is not None
+    reduced = supply.governing.impulse_v - Decimal(100)
+    lowered = pair.model_copy(
+        update={
+            "impulse_override": VerifiedImpulseOverride(
+                value_v=reduced,
+                basis=ImpulseOverrideBasis.VERIFIED_CIRCUIT_CHARACTERISTIC,
+                verification_method=ReductionVerificationMethod.SIMULATION,
+                justification="Synthetic circuit characteristic",
+                evidence_reference="SYN-CIRC-1",
+                affected_location="Primary circuit to enclosure",
+            )
+        }
+    )
+    with_override = project.model_copy(
+        update={"pairs": tuple(lowered if item.id == pair.id else item for item in project.pairs)}
+    )
+
+    effective, resolution = resolve_supply_effective_case(with_override, lowered, supply)
+
+    assert resolution is not None
+    assert resolution.verified_effective_impulse_v == reduced
+    assert effective.impulse_v.value == reduced
     assert effective.impulse_v.provenance is Provenance.DERIVED_SUPPLY
 
 
