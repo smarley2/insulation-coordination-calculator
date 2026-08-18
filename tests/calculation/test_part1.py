@@ -31,6 +31,10 @@ from insulation_coordination.calculation.high_frequency import (
     iterate_field_clearance,
     select_part4_table2_creepage,
 )
+from insulation_coordination.calculation.reinforced_rules import (
+    ReinforcedRuleBlockCode,
+    ReinforcedTreatmentUnavailable,
+)
 from insulation_coordination.domain.enums import (
     Applicability,
     ConstructionType,
@@ -47,7 +51,13 @@ from insulation_coordination.domain.project import (
 from insulation_coordination.domain.rules import RulePackage
 from insulation_coordination.domain.trace import Quantity
 from insulation_coordination.rules.archive import load_rule_package, write_rule_package
+from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.validation import validate_rule_package
+from tests.fixtures.synthetic_rules import (
+    SYNTHETIC_REINFORCED_FACTOR,
+    SYNTHETIC_REQUIREMENT_LEVELS_V,
+    with_stepped_reinforced_impulse,
+)
 
 
 def _seal_rules(rules: RulePackage, path: Path) -> RulePackage:
@@ -471,31 +481,105 @@ def test_reinforced_stress_is_treated_before_f2_and_f8_selection(
     case_factory,
     semantic_annex_g_rules: RulePackage,
 ) -> None:
+    """Every candidate is scaled by the factor the package states, and by nothing else."""
     case = case_factory(kind=InsulationType.REINFORCED, impulse_v="800")
     candidates = calculate_clearance_candidates(case, semantic_annex_g_rules)
     by_id = {candidate.candidate_id: candidate for candidate in candidates}
 
     assert by_id["impulse"].stress.value == Decimal(800)
-    assert by_id["impulse"].treated_stress.value == Decimal(1500)
-    assert by_id["steady_state_peak"].stress.value == Decimal(300)
-    assert by_id["steady_state_peak"].treated_stress.value == Decimal(480)
-    assert by_id["temporary_overvoltage_peak"].treated_stress.value == Decimal(960)
-    assert by_id["recurring_peak"].treated_stress.value == Decimal(640)
+    for candidate in candidates:
+        assert candidate.treated_stress is not None
+        assert (
+            candidate.treated_stress.value == candidate.stress.value * SYNTHETIC_REINFORCED_FACTOR
+        )
     assert all(
         candidate.steps[0].operation == "reinforced_stress_treatment" for candidate in candidates
     )
+    assert all(
+        candidate.steps[0].semantic_rule_id == ids.CLEARANCE_REINFORCED_TREATMENT
+        for candidate in candidates
+    )
 
 
-def test_nonpreferred_reinforced_impulse_uses_160_percent(
+def test_a_stepping_treatment_refuses_a_stress_the_requirement_axis_does_not_carry(
     case_factory,
     semantic_annex_g_rules: RulePackage,
 ) -> None:
+    """The silent fall-through is gone: an off-axis stress blocks with its own code.
+
+    It used to reach the multiplying branch, which meant a stress the stated procedure has no
+    answer for was dimensioned anyway - and looked exactly like one that did.
+    """
+    rules = with_stepped_reinforced_impulse(semantic_annex_g_rules)
+    off_axis = SYNTHETIC_REQUIREMENT_LEVELS_V[0] + Decimal(1)
+
+    with pytest.raises(ReinforcedTreatmentUnavailable) as caught:
+        select_f2_impulse_clearance(
+            case_factory(kind=InsulationType.REINFORCED, impulse_v=str(off_axis)),
+            rules,
+        )
+
+    assert caught.value.codes == (ReinforcedRuleBlockCode.VALUE_OFF_AXIS,)
+
+
+def test_a_stepping_treatment_steps_one_coordinate_up_the_requirement_axis(
+    case_factory,
+    semantic_annex_g_rules: RulePackage,
+) -> None:
+    rules = with_stepped_reinforced_impulse(semantic_annex_g_rules)
+    level, next_level = SYNTHETIC_REQUIREMENT_LEVELS_V[:2]
+
     candidate = select_f2_impulse_clearance(
-        case_factory(kind=InsulationType.REINFORCED, impulse_v="900"),
-        semantic_annex_g_rules,
+        case_factory(kind=InsulationType.REINFORCED, impulse_v=str(level)),
+        rules,
     )
 
-    assert candidate.treated_stress.value == Decimal(1440)
+    assert candidate.treated_stress is not None
+    assert candidate.treated_stress.value == next_level
+
+
+def test_a_stepping_treatment_refuses_the_top_of_the_requirement_axis(
+    case_factory,
+    semantic_annex_g_rules: RulePackage,
+) -> None:
+    """The former range error, now the adapter's own block rather than a lookup failure."""
+    rules = with_stepped_reinforced_impulse(semantic_annex_g_rules)
+
+    with pytest.raises(ReinforcedTreatmentUnavailable) as caught:
+        select_f2_impulse_clearance(
+            case_factory(
+                kind=InsulationType.REINFORCED,
+                impulse_v=str(SYNTHETIC_REQUIREMENT_LEVELS_V[-1]),
+            ),
+            rules,
+        )
+
+    assert caught.value.codes == (ReinforcedRuleBlockCode.NO_HIGHER_LEVEL,)
+
+
+def test_a_package_without_the_treatment_route_blocks_a_reinforced_pair(
+    case_factory,
+    semantic_annex_g_rules: RulePackage,
+) -> None:
+    """No fallback constant survives: the treatment is refused, never guessed."""
+    without = semantic_annex_g_rules.model_copy(
+        update={"decisions": (), "checksums": {}, "package_sha256": None}
+    )
+
+    with pytest.raises(ReinforcedTreatmentUnavailable) as caught:
+        select_f2_impulse_clearance(
+            case_factory(kind=InsulationType.REINFORCED, impulse_v="800"), without
+        )
+
+    # Both routes are named at once, not just the first one missing.
+    assert caught.value.codes == (
+        ReinforcedRuleBlockCode.RULE_MISSING,
+        ReinforcedRuleBlockCode.RULE_MISSING,
+    )
+    assert {block.semantic_rule_id for block in caught.value.blocks} == {
+        ids.CLEARANCE_REINFORCED_TREATMENT,
+        ids.CREEPAGE_REINFORCED_TREATMENT,
+    }
 
 
 def test_functional_clearance_has_no_reinforced_stress_treatment(
@@ -843,20 +927,24 @@ def test_f5_interpolates_across_joined_page_boundary(
 
 
 @pytest.mark.parametrize(
-    ("kind", "expected"),
+    "kind",
     (
-        (InsulationType.FUNCTIONAL, "6.6"),
-        (InsulationType.BASIC, "6.6"),
-        (InsulationType.SUPPLEMENTARY, "6.6"),
-        (InsulationType.REINFORCED, "13.2"),
+        InsulationType.FUNCTIONAL,
+        InsulationType.BASIC,
+        InsulationType.SUPPLEMENTARY,
+        InsulationType.REINFORCED,
     ),
 )
-def test_f5_reinforced_doubles_after_table_selection(
+def test_f5_reinforced_scales_the_selected_distance_by_the_stated_factor(
     kind: InsulationType,
-    expected: str,
     case_factory,
     semantic_annex_g_rules: RulePackage,
 ) -> None:
+    """The treatment is stated over the selected requirement, so the factor scales a distance."""
+    selected = Decimal("6.6")
+    expected = (
+        selected * SYNTHETIC_REINFORCED_FACTOR if kind is InsulationType.REINFORCED else selected
+    )
     candidate = select_f5_pcb_creepage(
         case_factory(
             kind=kind,
@@ -866,7 +954,7 @@ def test_f5_reinforced_doubles_after_table_selection(
         semantic_annex_g_rules,
     )
 
-    assert candidate.distance_mm == Decimal(expected)
+    assert candidate.distance_mm == expected
     assert (candidate.steps[-1].operation == "reinforced_creepage_double") is (
         kind is InsulationType.REINFORCED
     )

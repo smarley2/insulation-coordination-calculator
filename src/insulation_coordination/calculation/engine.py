@@ -26,6 +26,11 @@ from insulation_coordination.calculation.high_frequency import (
     apply_a2_altitude_correction,
 )
 from insulation_coordination.calculation.impulse_override import PairImpulseOverride
+from insulation_coordination.calculation.reinforced_rules import (
+    ReinforcedRuleSet,
+    read_reinforced_rules,
+    reinforced_rule_blocks,
+)
 from insulation_coordination.calculation.stress_propagation import (
     DomainStressMap,
     EffectivePairStressResolution,
@@ -198,6 +203,11 @@ class SupplyDerivation(FrozenModel):
     rules: SupplyRuleSet
     governing: GoverningSupplyStress
     domain_stresses: DomainStressMap
+    #: The reinforced treatment, where the package states it. Optional because only a
+    #: reinforced pair reads it: a project of functional and basic pairs must not be blocked
+    #: by a route none of them asks about. A reinforced pair that finds ``None`` here reports
+    #: no treated stress, and its clearance calculation refuses on its own.
+    reinforced: ReinforcedRuleSet | None = None
 
 
 def derive_project_supply(project: Project, rules: RulePackage) -> SupplyDerivation | None:
@@ -218,10 +228,12 @@ def derive_project_supply(project: Project, rules: RulePackage) -> SupplyDerivat
         return None
     supply_rules = read_supply_rules(rules)
     governing = SupplyStressService().derive_all(project.supply_configurations, supply_rules)
+    blocks = reinforced_rule_blocks(rules)
     return SupplyDerivation(
         rules=supply_rules,
         governing=governing,
         domain_stresses=propagate_impulse_to_domains(project, governing.scenarios, supply_rules),
+        reinforced=None if blocks else read_reinforced_rules(rules),
     )
 
 
@@ -245,7 +257,12 @@ def resolve_supply_effective_case(
         else PairImpulseOverride(pair_id=pair.id, override=pair.impulse_override)
     )
     resolution = resolve_pair_stresses(
-        project, pair, supply.domain_stresses, supply.rules, override=override
+        project,
+        pair,
+        supply.domain_stresses,
+        supply.rules,
+        override=override,
+        reinforced=supply.reinforced,
     )
     return _with_supply_stresses(effective, resolution)
 
