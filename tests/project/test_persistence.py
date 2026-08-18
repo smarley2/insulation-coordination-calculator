@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from copy import deepcopy
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Self
@@ -12,7 +13,7 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-from insulation_coordination.domain.enums import ReviewState
+from insulation_coordination.domain.enums import InsulationType, ReviewState
 from insulation_coordination.domain.project import (
     GroupSplit,
     NetClass,
@@ -39,8 +40,18 @@ from insulation_coordination.domain.supply import (
     VerifiedImpulseOverride,
     validate_supply_configurations,
 )
+from insulation_coordination.domain.verification import (
+    EvidenceApprovalState,
+    ProtectionImplementation,
+    RoutineTestExemptionEvidence,
+    SolidInsulationTestData,
+    VoltageEvidence,
+    VoltageEvidenceMethod,
+    VoltageQuantityKind,
+)
 from insulation_coordination.project.persistence import (
     NET_TOPOLOGY_KEYS,
+    PAIR_VERIFICATION_KEYS,
     PROJECT_SCHEMA_VERSION,
     ProjectLoadError,
     ProjectSaveError,
@@ -119,8 +130,18 @@ def topology_migration_project() -> Project:
     )
 
 
+def _without_fields_added_since_v5(document: dict[str, object]) -> dict[str, object]:
+    """Strip everything the version 5 -> 6 migration introduces, in place."""
+    document.pop("voltage_evidence", None)
+    for pair in document["pairs"]:  # type: ignore[union-attr]
+        for key in PAIR_VERIFICATION_KEYS:
+            pair.pop(key, None)
+    return document
+
+
 def _without_fields_added_since_v3(document: dict[str, object]) -> dict[str, object]:
     """Strip everything the migrations after version 3 introduce, in place."""
+    _without_fields_added_since_v5(document)
     document.pop("galvanic_domains", None)
     document.pop("galvanic_barriers", None)
     document.pop("supply_configurations", None)
@@ -134,6 +155,17 @@ def _as_schema_v3_document(project: Project) -> dict[str, object]:
     return _without_fields_added_since_v3({"schema_version": 3, **project.model_dump(mode="json")})
 
 
+def _as_schema_v5_document(project: Project) -> dict[str, object]:
+    return _without_fields_added_since_v5({"schema_version": 5, **project.model_dump(mode="json")})
+
+
+def _pairs_without_verification_keys(document: dict[str, object]) -> list[dict[str, object]]:
+    return [
+        {key: value for key, value in pair.items() if key not in PAIR_VERIFICATION_KEYS}
+        for pair in document["pairs"]  # type: ignore[union-attr]
+    ]
+
+
 def test_migration_v3_to_v4_adds_direct_domain_and_classifies_every_net(
     topology_migration_project: Project,
 ) -> None:
@@ -144,7 +176,7 @@ def test_migration_v3_to_v4_adds_direct_domain_and_classifies_every_net(
     migrated = migrate_project_document(raw)
 
     assert migrated["schema_version"] == PROJECT_SCHEMA_VERSION
-    assert migrated["pairs"] == original_pairs
+    assert _pairs_without_verification_keys(migrated) == original_pairs
     assert migrated["galvanic_barriers"] == []
 
     domains = migrated["galvanic_domains"]
@@ -190,9 +222,11 @@ def test_migration_v3_to_v4_changes_nothing_outside_the_topology_fields_it_intro
         "galvanic_domains",
         "galvanic_barriers",
         "supply_configurations",
+        "voltage_evidence",
         "net_classes",
+        "pairs",
     }
-    assert set(migrated) - set(original) == introduced - {"schema_version", "net_classes"}
+    assert set(migrated) - set(original) == introduced - {"schema_version", "net_classes", "pairs"}
     for key, value in original.items():
         if key in introduced:
             continue
@@ -356,6 +390,7 @@ def test_migration_chains_every_step_from_v1_without_mutating_source() -> None:
         "galvanic_domains": [domain],
         "galvanic_barriers": [],
         "supply_configurations": [],
+        "voltage_evidence": [],
     }
     assert domain["is_direct_source_domain"] is True  # type: ignore[index]
     assert domain["review_state"] == "needs_review"  # type: ignore[index]
@@ -388,15 +423,11 @@ def test_load_rejects_future_schema_without_changing_file(tmp_path: Path) -> Non
 def test_schema_v1_loads_with_empty_group_splits_and_save_writes_the_current_schema(
     sample_project: Project, tmp_path: Path
 ) -> None:
-    old_document = {"schema_version": 1, **sample_project.model_dump(mode="json")}
+    old_document = _without_fields_added_since_v3(
+        {"schema_version": 1, **sample_project.model_dump(mode="json")}
+    )
     old_document.pop("group_splits", None)
     old_document.pop("circuit_diagram", None)
-    old_document.pop("galvanic_domains", None)
-    old_document.pop("galvanic_barriers", None)
-    old_document.pop("supply_configurations", None)
-    for net in old_document["net_classes"]:
-        for key in NET_TOPOLOGY_KEYS:
-            net.pop(key, None)
     path = tmp_path / "old.icproj"
     path.write_text(json.dumps(old_document), encoding="utf-8")
 
@@ -682,7 +713,9 @@ def _supply_project(sample_project: Project) -> Project:
 def test_schema_v4_loads_with_no_supply_configurations_and_no_pair_overrides(
     topology_migration_project: Project, tmp_path: Path
 ) -> None:
-    document = {"schema_version": 4, **topology_migration_project.model_dump(mode="json")}
+    document = _without_fields_added_since_v5(
+        {"schema_version": 4, **topology_migration_project.model_dump(mode="json")}
+    )
     document.pop("supply_configurations", None)
     path = tmp_path / "v4.icproj"
     path.write_text(json.dumps(document), encoding="utf-8")
@@ -826,3 +859,238 @@ def test_two_configurations_sharing_a_name_are_reported_rather_than_refused(
         problem.code is SupplyConfigurationProblemCode.DUPLICATE_NAME
         for problem in validate_supply_configurations(renamed.supply_configurations)
     )
+
+
+# --- verification state and protective means (schema 5 -> 6) ------------------------------
+
+
+def _evidence(value: str, *, entry_id: int, pair_id: UUID) -> VoltageEvidence:
+    """One approved entry. Every figure and string is this module's own."""
+    return VoltageEvidence(
+        id=UUID(int=entry_id),
+        pair_id=pair_id,
+        quantity_kind=VoltageQuantityKind.AC_RMS,
+        value_v=Decimal(value),
+        method=VoltageEvidenceMethod.SIMULATION,
+        operating_condition="normal operation",
+        source_reference="SIM-1",
+        recorded_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
+        approval_state=EvidenceApprovalState.APPROVED_FOR_DESIGN,
+    )
+
+
+@pytest.fixture
+def verification_project(sample_project: Project) -> Project:
+    """``sample_project`` with one evidence entry and a fully declared pair."""
+    pair = sample_project.pairs[0]
+    return sample_project.model_copy(
+        update={
+            "voltage_evidence": (_evidence("41", entry_id=51, pair_id=pair.id),),
+            "pairs": (
+                pair.model_copy(
+                    update={
+                        "protection_implementation": (
+                            ProtectionImplementation.PROTECTIVE_SCREEN_PLUS_BASIC
+                        ),
+                        "protection_review_state": ReviewState.USER_CONFIRMED,
+                        "solid_insulation": SolidInsulationTestData(
+                            present=True,
+                            minimum_thickness_mm=Decimal("0.7"),
+                            layer_count=3,
+                            material_reference="MAT-9",
+                        ),
+                        "routine_exemption": RoutineTestExemptionEvidence(
+                            subassemblies_routine_tested=True,
+                            subassembly_evidence_reference="SUB-4",
+                            reviewer="A. Reviewer",
+                        ),
+                    }
+                ),
+            ),
+        }
+    )
+
+
+def test_schema_v5_with_supply_configurations_opens_and_keeps_everything(
+    sample_project: Project, tmp_path: Path
+) -> None:
+    """#36's arrangements survive the bump, and nothing the project had is rewritten."""
+    project = _supply_project(sample_project)
+    document = _as_schema_v5_document(project)
+    original = deepcopy(document)
+    path = tmp_path / "v5.icproj"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    loaded = load_project(path)
+
+    assert loaded == project
+    assert loaded.voltage_evidence == ()
+    migrated = migrate_project_document(original)
+    assert migrated["supply_configurations"] == original["supply_configurations"]
+    for key, value in original.items():
+        if key in {"schema_version", "voltage_evidence", "pairs"}:
+            continue
+        assert migrated[key] == value, f"migration changed the pre-existing key {key!r}"
+    assert _pairs_without_verification_keys(migrated) == original["pairs"]
+
+
+def test_schema_v5_carrying_voltage_evidence_is_rejected(
+    sample_project: Project, tmp_path: Path
+) -> None:
+    document = _as_schema_v5_document(sample_project)
+    document["voltage_evidence"] = []
+    original = json.dumps(document)
+    path = tmp_path / "mislabeled-v5.icproj"
+    path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ProjectVersionError, match="voltage_evidence"):
+        load_project(path)
+
+    assert path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize("key", sorted(PAIR_VERIFICATION_KEYS))
+def test_schema_v5_pair_already_carrying_a_verification_key_is_rejected(
+    sample_project: Project, tmp_path: Path, key: str
+) -> None:
+    document = _as_schema_v5_document(sample_project)
+    document["pairs"][0][key] = None  # type: ignore[index]
+    original = json.dumps(document)
+    path = tmp_path / "mislabeled-v5-pair.icproj"
+    path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ProjectVersionError, match=key):
+        load_project(path)
+
+    assert path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize(
+    ("insulation", "expected"),
+    [
+        (InsulationType.FUNCTIONAL, ProtectionImplementation.FUNCTIONAL_INSULATION),
+        (InsulationType.BASIC, ProtectionImplementation.BASIC_INSULATION),
+        (InsulationType.REINFORCED, ProtectionImplementation.REINFORCED_INSULATION),
+    ],
+)
+def test_an_explicit_pair_insulation_selection_migrates_to_its_protective_means(
+    sample_project: Project,
+    insulation: InsulationType,
+    expected: ProtectionImplementation,
+) -> None:
+    project = _with_insulation(sample_project, OverrideValue.override(insulation))
+
+    migrated = migrate_project_document(_as_schema_v5_document(project))
+
+    assert migrated["pairs"][0]["protection_implementation"] == expected.value  # type: ignore[index]
+
+
+@pytest.mark.parametrize("insulation", [InsulationType.SUPPLEMENTARY, None])
+def test_an_ambiguous_or_inherited_insulation_selection_migrates_to_nothing(
+    sample_project: Project, insulation: InsulationType | None
+) -> None:
+    """Supplementary insulation may be one half of a double-insulation construction.
+
+    Which it is cannot be read off the pair, and the protective means keep those two apart
+    on purpose, so the migration records no selection at all rather than one that happens
+    to share a name. A pair that inherited the project default never made a selection of
+    its own either, and gets the same answer.
+    """
+    selection: OverrideValue[InsulationType] = (
+        OverrideValue[InsulationType].inherit()
+        if insulation is None
+        else OverrideValue.override(insulation)
+    )
+    project = _with_insulation(sample_project, selection)
+
+    migrated = migrate_project_document(_as_schema_v5_document(project))
+
+    assert migrated["pairs"][0]["protection_implementation"] is None  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    "selection",
+    ["not an object", {"is_override": True, "value": "gold plated"}, {"is_override": True}],
+)
+def test_a_hand_edited_insulation_selection_migrates_to_nothing_rather_than_crashing(
+    sample_project: Project, selection: object
+) -> None:
+    """The migration reads raw JSON, so it must survive a value no enum has."""
+    document = _as_schema_v5_document(sample_project)
+    document["pairs"][0]["insulation_type"] = selection  # type: ignore[index]
+
+    migrated = migrate_project_document(document)
+
+    assert migrated["pairs"][0]["protection_implementation"] is None  # type: ignore[index]
+
+
+def test_every_migrated_protective_means_needs_review(
+    sample_project: Project, tmp_path: Path
+) -> None:
+    project = _with_insulation(sample_project, OverrideValue.override(InsulationType.BASIC))
+    path = tmp_path / "v5-review.icproj"
+    path.write_text(json.dumps(_as_schema_v5_document(project)), encoding="utf-8")
+
+    loaded = load_project(path)
+
+    assert loaded.pairs[0].protection_implementation is ProtectionImplementation.BASIC_INSULATION
+    assert loaded.pairs[0].protection_review_state is ReviewState.NEEDS_REVIEW
+
+
+def _with_insulation(project: Project, selection: OverrideValue[InsulationType]) -> Project:
+    return project.model_copy(
+        update={
+            "pairs": (project.pairs[0].model_copy(update={"insulation_type": selection}),),
+        }
+    )
+
+
+def test_a_legacy_project_keeps_its_pair_ids_and_calculation_inputs(
+    topology_migration_project: Project, tmp_path: Path
+) -> None:
+    """Every step from version 1 runs, and nothing a pair was dimensioned from moves."""
+    raw = _as_schema_v3_document(topology_migration_project)
+    raw["schema_version"] = 1
+    raw.pop("group_splits", None)
+    raw.pop("circuit_diagram", None)
+    original_pairs = deepcopy(raw["pairs"])
+    path = tmp_path / "legacy.icproj"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    loaded = load_project(path)
+    save_project_atomic(path, loaded)
+    saved = json.loads(path.read_text(encoding="utf-8"))
+
+    assert saved["schema_version"] == PROJECT_SCHEMA_VERSION
+    assert saved["voltage_evidence"] == []
+    for saved_pair, original_pair in zip(saved["pairs"], original_pairs, strict=True):  # type: ignore[arg-type]
+        assert saved_pair["id"] == original_pair["id"]
+        assert saved_pair["key"] == original_pair["key"]
+        assert saved_pair["voltages"] == original_pair["voltages"]
+        assert saved_pair["frequency_hz"] == original_pair["frequency_hz"]
+        assert saved_pair["notes"] == original_pair["notes"]
+        assert saved_pair["solid_insulation"] is None
+        assert saved_pair["routine_exemption"] is None
+    assert load_project(path) == loaded
+
+
+def test_verification_state_round_trips_unchanged(
+    verification_project: Project, tmp_path: Path
+) -> None:
+    path = tmp_path / "verification.icproj"
+
+    save_project_atomic(path, verification_project)
+    reloaded = load_project(path)
+
+    assert reloaded == verification_project
+    save_project_atomic(path, reloaded)
+    assert load_project(path) == verification_project
+
+
+def test_voltage_evidence_ids_must_be_unique(verification_project: Project) -> None:
+    entry = verification_project.voltage_evidence[0]
+    with pytest.raises(ValidationError, match="unique"):
+        Project(
+            **verification_project.model_dump(exclude={"voltage_evidence"}),
+            voltage_evidence=(entry, entry.model_copy(update={"notes": "a second entry"})),
+        )

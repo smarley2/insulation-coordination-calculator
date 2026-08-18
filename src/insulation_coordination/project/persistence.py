@@ -13,12 +13,14 @@ from insulation_coordination.domain.enums import (
     CircuitSourceRelationship,
     ConnectionExposure,
     DecisiveVoltageClass,
+    InsulationType,
     NetClassType,
     ReviewState,
 )
 from insulation_coordination.domain.project import Project
+from insulation_coordination.domain.verification import ProtectionImplementation
 
-PROJECT_SCHEMA_VERSION = 5
+PROJECT_SCHEMA_VERSION = 6
 
 # Net-level keys the version 3 -> 4 migration adds. A version-3 document must not carry any of
 # these yet - their presence means the document was already migrated (or hand-edited), and the
@@ -33,6 +35,33 @@ NET_TOPOLOGY_KEYS = frozenset(
         "classification_review_state",
     }
 )
+
+# Pair-level keys the version 5 -> 6 migration introduces. Same guard as above: a version-5
+# document carrying any of them was already migrated or hand-edited, and overwriting a real
+# protective-means selection with a mapped guess is exactly what must not happen silently.
+PAIR_VERIFICATION_KEYS = frozenset(
+    {
+        "protection_implementation",
+        "protection_review_state",
+        "solid_insulation",
+        "routine_exemption",
+    }
+)
+
+# How an existing pair-level insulation selection reads as a protective means.
+#
+# Only the three the selection names unambiguously. ``SUPPLEMENTARY`` is deliberately absent:
+# supplementary insulation is one half of a double-insulation construction as often as it is a
+# protective means in its own right, and nothing on the pair says which, so the migration
+# records no selection rather than one that merely shares a name. Everything a pair did not
+# select for itself is left unset the same way - a project default is not a selection, and
+# copying it into every pair would both invent a decision and de-link the pair from the
+# default it was following.
+MIGRATED_PROTECTION: dict[InsulationType, ProtectionImplementation] = {
+    InsulationType.FUNCTIONAL: ProtectionImplementation.FUNCTIONAL_INSULATION,
+    InsulationType.BASIC: ProtectionImplementation.BASIC_INSULATION,
+    InsulationType.REINFORCED: ProtectionImplementation.REINFORCED_INSULATION,
+}
 
 _DIRECT_DOMAIN_NAME = "Direct / source-side domain"
 
@@ -120,10 +149,59 @@ def migrate_project_document(raw: dict[str, object]) -> dict[str, object]:
         # every pair could only ever overwrite something.
         document["supply_configurations"] = []
         version = 5
+    if version == 5:
+        if "voltage_evidence" in document:
+            raise ProjectVersionError(
+                f"Project schema {declared} must not contain voltage_evidence"
+            )
+        # Same defensive shape as the version 3 step: a corrupt ``pairs`` is left for
+        # ``Project.model_validate`` to reject with a proper load error.
+        pairs_field = document.get("pairs", [])
+        pairs: list[object] = pairs_field if isinstance(pairs_field, list) else []
+        dict_pairs = [pair for pair in pairs if isinstance(pair, dict)]
+        present = sorted(
+            {key for pair in dict_pairs for key in PAIR_VERIFICATION_KEYS & pair.keys()}
+        )
+        if present:
+            raise ProjectVersionError(
+                f"Project schema {declared} pairs must not contain {', '.join(present)}"
+            )
+        # An existing project has recorded no voltage evidence, so the library starts empty.
+        # Solid-insulation and routine-exemption records are left absent rather than written
+        # as nulls, exactly as the pair-level impulse override is: the fields default to none,
+        # and writing into every pair could only ever overwrite something.
+        document["voltage_evidence"] = []
+        for pair in dict_pairs:
+            pair["protection_implementation"] = _migrated_protection(pair)
+            pair["protection_review_state"] = ReviewState.NEEDS_REVIEW.value
+        version = 6
     if version != PROJECT_SCHEMA_VERSION:
         raise ProjectVersionError(f"Project schema {declared} is unsupported")
     document["schema_version"] = PROJECT_SCHEMA_VERSION
     return document
+
+
+def _migrated_protection(pair: dict[str, object]) -> str | None:
+    """The protective means ``pair``'s own insulation selection reads as, if any.
+
+    Conservative on every axis: a pair that inherited the project default made no selection,
+    an unrecognised or ambiguous value maps to nothing, and a mapped value still arrives
+    needing review. The answer is always either the pair's own unambiguous selection or
+    nothing at all.
+    """
+
+    selection = pair.get("insulation_type")
+    if not isinstance(selection, dict) or not selection.get("is_override"):
+        return None
+    value = selection.get("value")
+    if not isinstance(value, str):
+        return None
+    try:
+        insulation = InsulationType(value)
+    except ValueError:
+        return None
+    mapped = MIGRATED_PROTECTION.get(insulation)
+    return None if mapped is None else mapped.value
 
 
 def load_project(path: Path) -> Project:
