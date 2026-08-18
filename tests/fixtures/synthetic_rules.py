@@ -54,6 +54,192 @@ from insulation_coordination.rules.archive import load_rule_package, write_rule_
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.iec62477_2022.inventory import EDITION, STANDARD
 
+#: Coordinates of the invented requirement axis a reinforced impulse steps along, in volts.
+#: Repeated digits, chosen so no source series can be read out of them.
+SYNTHETIC_REQUIREMENT_LEVELS_V: tuple[Decimal, ...] = tuple(
+    map(Decimal, ("110", "220", "1100", "2200"))
+)
+
+#: An obviously invented treatment factor: a whole number nothing any document states. What the
+#: licensed clauses state reaches the runtime from the approved package, never from here.
+SYNTHETIC_REINFORCED_FACTOR = Decimal(3)
+
+#: The vocabularies the reinforced treatment routes declare, mirroring the projector's.
+_INSULATION_CLASSES = ("functional", "basic", "supplementary", "double", "reinforced")
+_TREATED_QUANTITIES = (
+    "impulse_withstand_voltage",
+    "temporary_overvoltage_peak",
+    "working_voltage_peak",
+    "basic_insulation_requirement",
+)
+
+
+def synthetic_requirement_table(source: SourceReference) -> Table:
+    """The requirement a reinforced clearance treatment defers to, as an axis to step along.
+
+    Only its row axis is load bearing for the treatment: the cells exist because a table has
+    to have some, and are invented like every other number in this module.
+    """
+
+    return Table(
+        id=ids.CLEARANCE_REQUIREMENTS,
+        unit="mm",
+        row_axis=TableAxis(
+            id="impulse_withstand_voltage_v",
+            unit="V",
+            values=SYNTHETIC_REQUIREMENT_LEVELS_V,
+            labels=tuple(str(value) for value in SYNTHETIC_REQUIREMENT_LEVELS_V),
+        ),
+        column_axis=TableAxis(
+            id="pollution_degree",
+            unit="1",
+            values=(Decimal(1), Decimal(2)),
+            labels=("pollution_degree_1", "pollution_degree_2"),
+        ),
+        cells=tuple(
+            TableCell(
+                row=row,
+                column=column,
+                value=Decimal(row + 1) + Decimal(column + 1) / Decimal(10),
+                unit="mm",
+                source=source,
+            )
+            for row in range(len(SYNTHETIC_REQUIREMENT_LEVELS_V))
+            for column in range(2)
+        ),
+        interpolation="none",
+        source=source,
+    )
+
+
+def synthetic_reinforced_treatments(source: SourceReference) -> tuple[DecisionRule, ...]:
+    """The two reinforced treatment routes, in the shape the real projector emits.
+
+    Shape only. Every row here states a multiplication by the invented factor above, including
+    the impulse one: the mode a source states is not this module's to reproduce, and a suite
+    that wanted the stepping branch asks for it explicitly through
+    :func:`with_stepped_reinforced_impulse`.
+
+    The clearance route states the axis its treatment defers to and the creepage route does
+    not, which is the one structural difference between them and the reason a consumer can
+    follow a step without naming an axis itself.
+    """
+
+    def rule(rule_id: str, *, states_axis: bool, quantities: tuple[str, ...]) -> DecisionRule:
+        return DecisionRule(
+            id=rule_id,
+            inputs=(
+                DecisionInput(
+                    name="insulation_class",
+                    kind="categorical",
+                    allowed_values=_INSULATION_CLASSES,
+                ),
+                DecisionInput(
+                    name="treated_quantity",
+                    kind="categorical",
+                    allowed_values=_TREATED_QUANTITIES,
+                ),
+            ),
+            outputs=(
+                DecisionOutput(
+                    name="treatment_mode",
+                    kind="categorical",
+                    allowed_values=("multiply", "next_level_in_requirement_axis"),
+                ),
+                DecisionOutput(name="treatment_multiplier", kind="numeric"),
+                *(
+                    (DecisionOutput(name="preferred_level_axis", kind="reference"),)
+                    if states_axis
+                    else ()
+                ),
+            ),
+            rows=tuple(
+                DecisionRow(
+                    matchers=(
+                        Matcher(input="insulation_class", op="equals", values=("reinforced",)),
+                        Matcher(input="treated_quantity", op="equals", values=(quantity,)),
+                    ),
+                    values=(
+                        DecisionValue(name="treatment_mode", categorical="multiply"),
+                        DecisionValue(
+                            name="treatment_multiplier", numeric=SYNTHETIC_REINFORCED_FACTOR
+                        ),
+                        *(
+                            (
+                                DecisionValue(
+                                    name="preferred_level_axis",
+                                    reference=ids.CLEARANCE_REQUIREMENTS,
+                                ),
+                            )
+                            if states_axis
+                            else ()
+                        ),
+                    ),
+                    source=source,
+                )
+                for quantity in quantities
+            ),
+            # A class or a quantity no row covers reaches none, rather than being told that
+            # nothing needs doing to it.
+            exhaustive=False,
+            source=source,
+        )
+
+    return (
+        rule(
+            ids.CLEARANCE_REINFORCED_TREATMENT,
+            states_axis=True,
+            quantities=_TREATED_QUANTITIES[:3],
+        ),
+        rule(
+            ids.CREEPAGE_REINFORCED_TREATMENT,
+            states_axis=False,
+            quantities=_TREATED_QUANTITIES[3:],
+        ),
+    )
+
+
+def with_stepped_reinforced_impulse(package: RulePackage) -> RulePackage:
+    """``package`` with its reinforced impulse treatment restated as a step along the axis.
+
+    The other branch of the family, for the tests that are about it. Nothing else changes, so
+    a test can compare the two readings of one package.
+    """
+
+    def stepped(rule: DecisionRule) -> DecisionRule:
+        if rule.id != ids.CLEARANCE_REINFORCED_TREATMENT:
+            return rule
+        rows = tuple(
+            row.model_copy(
+                update={
+                    "values": tuple(
+                        value.model_copy(update={"categorical": "next_level_in_requirement_axis"})
+                        if value.name == "treatment_mode"
+                        else value.model_copy(update={"numeric": Decimal(1)})
+                        if value.name == "treatment_multiplier"
+                        else value
+                        for value in row.values
+                    )
+                }
+            )
+            if any(
+                matcher.input == "treated_quantity"
+                and matcher.values == ("impulse_withstand_voltage",)
+                for matcher in row.matchers
+            )
+            else row
+            for row in rule.rows
+        )
+        return rule.model_copy(update={"rows": rows})
+
+    return package.model_copy(
+        update={
+            "decisions": tuple(stepped(rule) for rule in package.decisions),
+            "checksums": {},
+            "package_sha256": None,
+        }
+    )
+
 
 def claimed_standards(package: RulePackage) -> set[str]:
     """Every standard identity a package attributes its content to."""
@@ -577,7 +763,7 @@ def synthetic_part1_rule_package() -> RulePackage:
                 ),
             ),
         ),
-        tables=tables,
+        tables=(*tables, synthetic_requirement_table(reference)),
         formulas=formulas,
         mappings=tuple(
             CompatibilityMapping(
@@ -589,6 +775,7 @@ def synthetic_part1_rule_package() -> RulePackage:
             )
             for mapping_id, source_rule_id, target_rule_id in mapping_specs
         ),
+        decisions=synthetic_reinforced_treatments(reference),
     )
 
 

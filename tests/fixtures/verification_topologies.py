@@ -75,6 +75,8 @@ from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as
 from insulation_coordination.rules.importer.iec62477_2022.inventory import EDITION, STANDARD
 from tests.fixtures.synthetic_rules import (
     merged_rule_package,
+    synthetic_reinforced_treatments,
+    synthetic_requirement_table,
     synthetic_supply_rule_package,
     synthetic_verification_rule_package,
 )
@@ -269,20 +271,29 @@ def single_column_dielectric_package(
 
     package = synthetic_verification_rule_package()
     replaced = {table.id: table for table in _dielectric_tables(interpolation)}
+    # A reinforced pair is planned at the treated stress, so this package has to be able to
+    # state the treatment and to carry the requirement whose axis a step would move along.
+    source = package.tables[0].source
     return package.model_copy(
         update={
-            "tables": tuple(_located(replaced.get(table.id, table)) for table in package.tables),
+            "tables": (
+                *(_located(replaced.get(table.id, table)) for table in package.tables),
+                _located(synthetic_requirement_table(source)),
+            ),
+            "decisions": (
+                *synthetic_reinforced_treatments(source),
+                *(
+                    _asked_by_purpose(decision)
+                    if decision.id == PRECONDITIONING_APPLICABILITY_ROUTE
+                    else decision
+                    for decision in package.decisions
+                ),
+            ),
             "procedures": tuple(
                 procedure.model_copy(update={"classifications": partial_discharge_classifications})
                 if procedure.id == ids.TEST_PARTIAL_DISCHARGE
                 else procedure
                 for procedure in package.procedures
-            ),
-            "decisions": tuple(
-                _asked_by_purpose(decision)
-                if decision.id == PRECONDITIONING_APPLICABILITY_ROUTE
-                else decision
-                for decision in package.decisions
             ),
         }
     )
