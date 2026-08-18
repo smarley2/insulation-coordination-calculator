@@ -199,7 +199,15 @@ def _segment_nodes(
         )
     bullets = [line for line in lines if _is_bullet(line.text)]
     if segment.expected_root_kind == "bullets":
-        if len(bullets) < 2:
+        # One item is enough, because a list that runs over a page break leaves a region
+        # holding its tail: the clearance treatment subclause states two items at the foot of
+        # one page and its third at the head of the next. Demanding two there declared the
+        # region a shape mismatch, and the only way to satisfy that was a region that did not
+        # reach the third item at all -- a statement extracted by nothing. What this check is
+        # for is a region that reads as prose where a list was declared, and the paragraph
+        # branch below still refuses the converse; how many items a region holds is the
+        # per-route node-shape contract's question, not this one's.
+        if not bullets:
             raise ExtractionError(
                 f"clause structure mismatch for {semantic_id}: segment {segment_index} "
                 "expected bullet list"
