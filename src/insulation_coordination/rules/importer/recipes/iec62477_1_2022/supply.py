@@ -75,6 +75,10 @@ from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.clauses import (
     ClauseStructureError,
 )
+from insulation_coordination.rules.importer.recipes.iec62477_1_2022.reinforced import (
+    REINFORCED_CLAUSES,
+    REINFORCED_FACT_FAMILY_BY_ROUTE,
+)
 
 #: The non-mains system voltage subclause. Its statement belongs to the same rule the mains
 #: subclause states, so it is declared as that rule's evidence rather than as a second route:
@@ -303,6 +307,14 @@ SUPPLY_CLAUSES: tuple[ClauseAuditSpec, ...] = (
         ),
         output_kind="decision",
     ),
+    #: The reinforced spacing treatment clauses are declared in their own module and merged
+    #: here rather than restated. This tuple and the family map below are what the review
+    #: surface, the approval gate and the fact editor read to know a route exists at all, so a
+    #: clause-fact route outside them is unauthorable and unapprovable -- which is why every
+    #: such route of this recipe joins them wherever its own recipe lives. The name is now
+    #: narrower than the inventory; renaming it reaches the fact editor, so it is left to the
+    #: change that owns that surface.
+    *REINFORCED_CLAUSES,
 )
 
 #: Supply routes whose branch authority stays in this file rather than moving to reviewed
@@ -328,6 +340,7 @@ SUPPLY_FACT_FAMILY_BY_ROUTE: dict[str, str] = {
     f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.non_mains": "spd_reduction",
     f"{ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS}.monitoring": "spd_monitoring",
     ids.SUPPLY_HF_TRANSFORMER_ATTENUATION: "hf_attenuation",
+    **REINFORCED_FACT_FAMILY_BY_ROUTE,
 }
 
 

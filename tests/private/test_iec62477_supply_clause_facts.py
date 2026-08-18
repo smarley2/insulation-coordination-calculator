@@ -31,6 +31,8 @@ from insulation_coordination.rules.importer.clause_facts import (
     HfAttenuationPermissionFact,
     HfAttenuationRequirementFact,
     OvercategoryStep,
+    ReinforcedFactorFact,
+    ReinforcedLevelStepFact,
     SpdMonitoringRequirementFact,
     SpdReductionFloorFact,
     SpdReductionMonitoringFact,
@@ -233,6 +235,71 @@ def _spd_reduction_placeholders(
     return (*projected, *floors)
 
 
+#: Coined (insulation class, treated quantity) pairs for the reinforced placeholders, in the
+#: order the fact model declares each vocabulary. Every statement of a treatment route projects a
+#: row, so no two of them may land on one branch: cycling the quantity inside the class walks
+#: distinct pairs for as many nodes as either licensed subclause carries. Tokens only, and
+#: deliberately combined so no set here reads as a plausible reviewed reading -- the treatments
+#: are authored against the weakest insulation class first, which is the one they are not about.
+_REINFORCED_BRANCHES = tuple(
+    (insulation_class, quantity)
+    for insulation_class in ("functional", "basic", "supplementary", "double", "reinforced")
+    for quantity in (
+        "impulse_withstand_voltage",
+        "temporary_overvoltage_peak",
+        "working_voltage_peak",
+        "basic_insulation_requirement",
+    )
+)
+
+#: An obviously invented factor: a whole number, nothing any document states. What the licensed
+#: clauses state is authored by the maintainer into their own draft, never here.
+_PLACEHOLDER_FACTOR = "3"
+
+
+def _reinforced_placeholders(
+    draft: ImportedRuleDraft, route: str, reference: str
+) -> tuple[SupplyFact, ...]:
+    """One placeholder statement per node the treatment route's own proposals rest on.
+
+    Both of the family's kinds are exercised where the clause carries more than one node: the
+    first statement is the axis step, the rest are factors. That is what proves the *shape* of
+    the projection -- a rule stating a mode, a multiplier and the rule it defers to -- against a
+    fragment the licensed document produced, without recording which of its statements is which.
+
+    Walked from the route's proposals rather than from a number written here, exactly as
+    ``_system_voltage_placeholders`` is: a subclause re-declared over different regions changes
+    what this fixture authors instead of breaking it, and neither the node count nor its
+    distribution is recorded anywhere.
+    """
+
+    fragment = next(item for item in draft.raw_clause_fragments if item.id == f"raw-{route}")
+    stated = sorted(
+        {
+            cited.node_order
+            for proposal in propose_supply_facts(fragment, route)
+            for cited in proposal.node_references
+        }
+    )
+    statements: list[SupplyFact] = []
+    for index, order in enumerate(stated):
+        insulation_class, quantity = _REINFORCED_BRANCHES[index]
+        shared = {
+            "statement_index": index,
+            "node_references": _cited_node(draft, route, order),
+            "obligation": "requirement",
+            "insulation_classes": DimensionScope.of(insulation_class),
+            "treated_quantity": DimensionScope.of(quantity),
+            "requirement_reference": reference,
+        }
+        statements.append(
+            ReinforcedLevelStepFact(**shared)  # type: ignore[arg-type]
+            if index == 0
+            else ReinforcedFactorFact(**shared, factor=_PLACEHOLDER_FACTOR)  # type: ignore[arg-type]
+        )
+    return tuple(statements)
+
+
 def _placeholder_facts(draft: ImportedRuleDraft) -> dict[str, tuple[SupplyFact, ...]]:
     """Local placeholder statements per non-legacy route: valid tokens, invented readings.
 
@@ -310,6 +377,14 @@ def _placeholder_facts(draft: ImportedRuleDraft) -> dict[str, tuple[SupplyFact, 
                 threshold_reference=ids.SUPPLY_IMPULSE_BY_SYSTEM_VOLTAGE_OVC,
                 comparison_required=True,
             ),
+        ),
+        # The reinforced spacing treatments (#110). Each clause states its treatment against its
+        # own requirement table, which the statement names rather than restates.
+        ids.CLEARANCE_REINFORCED_TREATMENT: _reinforced_placeholders(
+            draft, ids.CLEARANCE_REINFORCED_TREATMENT, ids.CLEARANCE_REQUIREMENTS
+        ),
+        ids.CREEPAGE_REINFORCED_TREATMENT: _reinforced_placeholders(
+            draft, ids.CREEPAGE_REINFORCED_TREATMENT, ids.CREEPAGE_REQUIREMENTS
         ),
     }
 
