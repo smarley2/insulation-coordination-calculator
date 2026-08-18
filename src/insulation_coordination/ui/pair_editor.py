@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insulation_coordination.calculation.clearance import CalculationError
 from insulation_coordination.calculation.engine import (
     PairResult,
     SupplyDerivation,
@@ -34,6 +35,10 @@ from insulation_coordination.calculation.engine import (
     resolve_supply_effective_case,
 )
 from insulation_coordination.calculation.stress_propagation import EffectivePairStressResolution
+from insulation_coordination.calculation.verification_plan import (
+    VerificationPlan,
+    VerificationPlanService,
+)
 from insulation_coordination.domain.display import pair_label
 from insulation_coordination.domain.enums import (
     Applicability,
@@ -69,6 +74,7 @@ from insulation_coordination.ui.value_options import (
     populate_combo,
     select_combo_value,
 )
+from insulation_coordination.ui.verification_panel import VerificationPanel
 from insulation_coordination.ui.voltage_guidance import (
     VoltageGuidanceId,
     guidance_for,
@@ -473,6 +479,22 @@ class PairEditor(QWidget):
         self.override_editor.override_changed.connect(self._on_override_changed)
         layout.addWidget(self.override_editor)
 
+        # The plan the panel renders is the page's, held here only so that re-showing the
+        # pair does not blank it. Nothing in this editor ever builds one.
+        self._plan: VerificationPlan | None = None
+        self._plan_notice = ""
+        self.verification_panel = VerificationPanel()
+        self.verification_panel.protection_changed.connect(
+            lambda value: self._update_pair(protection_implementation=value)
+        )
+        self.verification_panel.review_state_changed.connect(
+            lambda value: self._update_pair(protection_review_state=value)
+        )
+        self.verification_panel.solid_insulation_changed.connect(
+            lambda value: self._update_pair(solid_insulation=value)
+        )
+        layout.addWidget(self.verification_panel)
+
     @property
     def pair(self) -> PairCase | None:
         return self._pair
@@ -624,6 +646,11 @@ class PairEditor(QWidget):
         for field, badge_name in self._OVERRIDE_BADGES:
             badge = getattr(self, badge_name)
             badge.set_state(override_field_state(getattr(pair, field)))
+        # The verification choices are read off the same pair, for the same reason: the
+        # badge beside a protection implementation reports what the model holds, never what
+        # a widget was last told. The plan it is shown beside is whatever the page last
+        # handed over; the page re-plans and hands over a new one straight afterwards.
+        self.verification_panel.set_pair(pair, self._plan, self._plan_notice)
 
     def set_supply(
         self,
@@ -642,6 +669,17 @@ class PairEditor(QWidget):
         self.override_editor.set_outcome(
             None if resolution is None else resolution.override_outcome
         )
+
+    def set_verification(self, plan: VerificationPlan | None, notice: str = "") -> None:
+        """Show what the page's verification plan decided about the loaded pair.
+
+        Read-only in both directions: this editor never builds a plan and never writes one
+        back, so opening the panel cannot change a schedule and no calculated result moves.
+        """
+
+        self._plan = plan
+        self._plan_notice = notice
+        self.verification_panel.set_pair(self._pair, plan, notice)
 
     def _on_override_changed(self, override: VerifiedImpulseOverride | None) -> None:
         self._update_pair(impulse_override=override)
@@ -964,6 +1002,12 @@ class PairPage(QWidget):
         self._supply: SupplyDerivation | None = None
         self._supply_notice = ""
         self._supply_inputs: object = None
+        # The dielectric verification plan, rebuilt only when something it reads has moved.
+        # It is a whole-project answer like the derivation above it, and it is never
+        # persisted: nothing here is an input to a clearance or creepage result.
+        self._plan: VerificationPlan | None = None
+        self._plan_notice = ""
+        self._plan_inputs: object = object()
         # Hidden columns are keyed by net-class name, not index: the model resets on
         # every pair edit, and an index would then hide whatever moved into its place.
         self._hidden_nets: set[str] = set()
@@ -1227,13 +1271,19 @@ class PairPage(QWidget):
         )
 
     def _show_supply(self) -> None:
-        """Show the selected pair's share of the derivation, without reloading its editor.
+        """Refresh both read-only panels for the selected pair.
 
-        Called after every project change as well as on selection, so the read-only panel
-        keeps up with an edit - recording an override, most of all - while the entries the
-        user is typing into are left exactly where they are.
+        Called after every project change as well as on selection, so the read-only panels
+        keep up with an edit - recording an override, most of all - while the entries the
+        user is typing into are left exactly where they are. The verification plan is
+        refreshed on exactly the same occasions, which is why it is driven from here rather
+        than from a second set of call sites that would drift out of step with these.
         """
 
+        self._show_derivation()
+        self._show_verification()
+
+    def _show_derivation(self) -> None:
         pair = self._selected_pair()
         if pair is None or self._project is None or self._supply is None:
             self.editor.set_supply(None, self._project, notice=self._supply_notice)
@@ -1248,6 +1298,40 @@ class PairPage(QWidget):
             )
             return
         self.editor.set_supply(resolution, self._project, effective)
+
+    def _refresh_verification(self) -> None:
+        """Build the project's verification plan once, or record why it cannot be built.
+
+        A refusal is kept rather than raised, exactly as the supply derivation's is: an
+        unapproved package, or one that cannot answer the verification questions, must leave
+        the pairs editable and the clearance results intact and say so where the plan would be.
+
+        ponytail: rebuilt whenever the project or the package moves, which is every pair edit.
+        Narrow the key to what the plan actually reads if a large project makes typing lag.
+        """
+
+        inputs = (self._project, id(self._rules), id(self._supply), self._supply_notice)
+        if inputs == self._plan_inputs:
+            return
+        self._plan_inputs = inputs
+        self._plan = None
+        self._plan_notice = ""
+        if self._project is None or self._rules is None:
+            return
+        try:
+            self._plan = VerificationPlanService().build(self._project, self._rules, self._supply)
+        except (CalculationError, ValueError, RuntimeError, TypeError, KeyError) as error:
+            self._plan_notice = format_calculation_error("Dielectric verification", error)
+
+    def _show_verification(self) -> None:
+        self._refresh_verification()
+        self.editor.set_verification(self._plan, self._plan_notice)
+
+    @property
+    def verification_plan(self) -> VerificationPlan | None:
+        """The plan the panel is rendering, so a page above can report its completeness."""
+
+        return self._plan
 
     def select_pair_by_id(self, pair_id: str) -> None:
         self._selected_pair_id = pair_id

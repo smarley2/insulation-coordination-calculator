@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QScrollArea,
+    QSizePolicy,
     QToolButton,
     QToolTip,
     QVBoxLayout,
@@ -278,3 +279,22 @@ def labelled(text: str, help_indicator: HelpIndicator) -> QWidget:
     row.addWidget(help_indicator)
     row.addStretch(1)
     return container
+
+
+def wrapping_label(text: str = "") -> QLabel:
+    """A label that wraps, and that never widens the column it sits in.
+
+    An ignored horizontal size policy is the point: these labels carry whole sentences, and a
+    sentence's unwrapped width would otherwise become its page's minimum width and squeeze
+    every input beside it. Height still follows the width it is given.
+
+    It lives here beside :func:`labelled` because four panels needed the same three lines and
+    three of them had written their own copy.
+    """
+
+    label = QLabel(text)
+    label.setWordWrap(True)
+    policy = QSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
+    policy.setHeightForWidth(True)
+    label.setSizePolicy(policy)
+    return label
