@@ -14,7 +14,6 @@ file can be a question the source actually settles.
 from __future__ import annotations
 
 from decimal import Decimal
-from pathlib import Path
 
 import pytest
 
@@ -23,7 +22,6 @@ from insulation_coordination.domain.rules import (
     Matcher,
     RulePackage,
 )
-from insulation_coordination.rules.archive import load_rule_package, write_rule_package
 from insulation_coordination.rules.evaluator import evaluate_decision
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.iec62477_2022.inventory import (
@@ -34,18 +32,8 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.procedures i
     PRECONDITIONING_ELECTRICAL_ID,
     PRECONDITIONING_MATERIAL_ID,
 )
-from tests.private.test_iec62477_slice_c_roundtrip import _approved_slice_c
 
 pytestmark = pytest.mark.private_standard
-
-
-def _round_trip(reviewed, tmp_path: Path) -> RulePackage:
-    """Approve the reviewed draft, write the archive, and load it back."""
-
-    package = _approved_slice_c(reviewed)
-    archive = tmp_path / "iec62477-end-to-end.icrules"
-    write_rule_package(archive, package)
-    return load_rule_package(archive)
 
 
 def _rule_ids(package: RulePackage) -> frozenset[str]:
@@ -94,8 +82,7 @@ def _request_settled_by(rule: DecisionRule, row_index: int = 0) -> dict[str, Dec
 
 
 def test_every_required_semantic_id_is_queryable_after_a_round_trip(
-    reviewed_draft,
-    tmp_path: Path,
+    licensed_package: RulePackage,
 ) -> None:
     """The whole checklist survives export and re-import, by identifier.
 
@@ -103,7 +90,7 @@ def test_every_required_semantic_id_is_queryable_after_a_round_trip(
     identifier or one of its routes. Nothing here reads a value: what Issue #34 promises its
     consumers is that they can ask for these by stable ID.
     """
-    package = _round_trip(reviewed_draft, tmp_path)
+    package = licensed_package
     available = _rule_ids(package)
 
     assert len(REQUIRED_SOURCE_ITEMS) == 27
@@ -114,8 +101,7 @@ def test_every_required_semantic_id_is_queryable_after_a_round_trip(
 
 
 def test_the_band_factor_answers_a_frequency_and_refuses_one_it_does_not_cover(
-    reviewed_draft,
-    tmp_path: Path,
+    licensed_package: RulePackage,
 ) -> None:
     """Issue #72's promise on the licensed document: a frequency in, a factor or nothing out.
 
@@ -123,7 +109,7 @@ def test_the_band_factor_answers_a_frequency_and_refuses_one_it_does_not_cover(
     a factor. The frequency that must answer nothing is one hertz, far below any band the
     annex declares and not a boundary of one.
     """
-    package = _round_trip(reviewed_draft, tmp_path)
+    package = licensed_package
     rule = next(item for item in package.decisions if item.id == ids.HIGH_FREQUENCY_BAND_FACTOR)
 
     assert rule.exhaustive is False
@@ -147,15 +133,14 @@ def test_the_band_factor_answers_a_frequency_and_refuses_one_it_does_not_cover(
 
 
 def test_the_archive_carries_the_procedures_and_the_preconditioning_routes(
-    reviewed_draft,
-    tmp_path: Path,
+    licensed_package: RulePackage,
 ) -> None:
     """Procedures had never been through the archive layer before this slice.
 
     Both preconditioning routes must arrive, with their steps and their gate, because the
     package now answers "which preconditioning applies" with a rule identifier.
     """
-    package = _round_trip(reviewed_draft, tmp_path)
+    package = licensed_package
     procedures = {rule.id: rule for rule in package.procedures}
 
     assert {PRECONDITIONING_ELECTRICAL_ID, PRECONDITIONING_MATERIAL_ID} <= set(procedures)
@@ -166,12 +151,11 @@ def test_the_archive_carries_the_procedures_and_the_preconditioning_routes(
 
 
 def test_one_representative_request_per_consumer_issue(
-    reviewed_draft,
-    tmp_path: Path,
+    licensed_package: RulePackage,
 ) -> None:
     """#35 DVC guidance, #36 an impulse and TOV derivation, #37 a test-procedure lookup."""
 
-    package = _round_trip(reviewed_draft, tmp_path)
+    package = licensed_package
     decisions = {rule.id: rule for rule in package.decisions}
     tables = {rule.id: rule for rule in package.tables}
     procedures = {rule.id: rule for rule in package.procedures}

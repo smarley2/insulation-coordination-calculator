@@ -48,9 +48,11 @@ def _approved_slice_c(reviewed):
 
 def test_reviewed_slice_c_round_trips_and_every_selector_evaluates(
     tmp_path: Path,
-    reviewed_draft,
+    approved_package,
 ) -> None:
-    package = _approved_slice_c(reviewed_draft)
+    """The archive is the assertion here, so this one writes and reloads its own."""
+
+    package = approved_package
     archive = tmp_path / "reviewed-slice-c.icrules"
     write_rule_package(archive, package)
     reloaded = load_rule_package(archive)
@@ -68,8 +70,8 @@ def test_reviewed_slice_c_round_trips_and_every_selector_evaluates(
         assert result.status == "matched"
 
 
-def test_table_2_references_resolve_to_single_slice_c_targets(reviewed_draft) -> None:
-    package = _approved_slice_c(reviewed_draft)
+def test_table_2_references_resolve_to_single_slice_c_targets(approved_package) -> None:
+    package = approved_package
     references = {
         value.reference
         for decision in package.decisions

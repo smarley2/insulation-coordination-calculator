@@ -23,7 +23,6 @@ document is written to the tree.
 from __future__ import annotations
 
 from decimal import Decimal
-from pathlib import Path
 from uuid import UUID
 
 import pytest
@@ -63,23 +62,13 @@ from insulation_coordination.report.human_view import (
 )
 from insulation_coordination.report.latex import render_latex
 from insulation_coordination.report.model import ReportModel, build_report_model
-from insulation_coordination.rules.archive import load_rule_package, write_rule_package
 from tests.fixtures.supply_topologies import VERIFIED, supply_topology
-from tests.private.test_iec62477_slice_c_roundtrip import _approved_slice_c
 
 pytestmark = pytest.mark.private_standard
 
 #: The one arrangement this project declares. Its voltage is a plain round number chosen here,
 #: not read from any licensed axis, so nothing about the source's own bands is recorded.
 DECLARED_VOLTAGE_V = Decimal(400)
-
-
-def _licensed_package(reviewed_draft, tmp_path: Path) -> RulePackage:
-    """The approved licensed package, written and reloaded through the archive."""
-
-    archive = tmp_path / "iec62477-supply-report.icrules"
-    write_rule_package(archive, _approved_slice_c(reviewed_draft))
-    return load_rule_package(archive)
 
 
 def _project(rules: RulePackage) -> Project:
@@ -157,12 +146,11 @@ def _report(project: Project, rules: RulePackage) -> ReportModel:
 
 
 def test_the_approved_licensed_package_answers_the_supply_adapter(
-    reviewed_draft,
-    tmp_path: Path,
+    licensed_package: RulePackage,
 ) -> None:
     """Every semantic ID the derivation reads survives approval and a round trip."""
 
-    package = _licensed_package(reviewed_draft, tmp_path)
+    package = licensed_package
 
     rules = read_supply_rules(package)
 
@@ -182,8 +170,7 @@ def test_the_approved_licensed_package_answers_the_supply_adapter(
 
 
 def test_every_declared_arrangement_reaches_the_report_derived_or_refused(
-    reviewed_draft,
-    tmp_path: Path,
+    licensed_package: RulePackage,
 ) -> None:
     """A package that cannot answer must say so in the document, not fall silent.
 
@@ -191,7 +178,7 @@ def test_every_declared_arrangement_reaches_the_report_derived_or_refused(
     throughout - the same one an installation receives.
     """
 
-    rules = _licensed_package(reviewed_draft, tmp_path)
+    rules = licensed_package
     project = _project(rules)
 
     model = _report(project, rules)
@@ -215,12 +202,11 @@ def test_every_declared_arrangement_reaches_the_report_derived_or_refused(
 
 
 def test_the_report_states_that_altitude_left_the_licensed_source_voltages_alone(
-    reviewed_draft,
-    tmp_path: Path,
+    licensed_package: RulePackage,
 ) -> None:
     """Read off the derivation's own trace, against the real package's rule identifiers."""
 
-    rules = _licensed_package(reviewed_draft, tmp_path)
+    rules = licensed_package
 
     model = _report(_project(rules), rules)
     view = build_human_report_view(model)
