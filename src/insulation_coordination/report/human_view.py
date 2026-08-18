@@ -1157,10 +1157,10 @@ def _rule_description(step: object) -> str:
             f"The altitude is checked against the boundary {semantic_rule_id} states and does "
             "not exceed it, so no correction factor applies."
         )
-    if operation == "reinforced_stress_treatment":
+    if operation in {"reinforced_stress_treatment", "reinforced_creepage_double"}:
+        # Both treatments are resolved from the approved package, so the step's own
+        # rule-backed reason is the only account of them this projection may give.
         return _sentence(getattr(step, "reason", ""))
-    if operation == "reinforced_creepage_double":
-        return "Reinforced insulation uses twice the selected creepage distance."
     if operation == "table_select" and source is not None:
         table = getattr(source, "table", None) or "the approved table"
         standard = getattr(source, "standard", "the applicable IEC standard")
