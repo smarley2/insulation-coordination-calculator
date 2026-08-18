@@ -56,10 +56,17 @@ from PySide6.QtWidgets import (
 )
 
 from insulation_coordination.calculation.voltage_evidence import (
+    ABOVE_GOVERNING_TEXT,
+    GOVERNING_PREFIX,
+    NOT_STATED,
+    NOTHING_GOVERNS_TEXT,
     GoverningEvidenceResult,
     VoltageEvidenceService,
+    comparison_text,
+    governing_summary,
+    measurement_text,
+    target_label,
 )
-from insulation_coordination.domain.display import pair_label
 from insulation_coordination.domain.project import Project
 from insulation_coordination.domain.verification import (
     EvidenceApprovalState,
@@ -85,7 +92,7 @@ COLUMN_LABELS: Final = (
 )
 
 #: Shown wherever a cell has nothing in it, so a column never collapses into blankness.
-EMPTY_CELL: Final = "—"
+EMPTY_CELL: Final = NOT_STATED
 
 #: The filter entry that selects every value of its field.
 ANY_OPTION: Final = "Any"
@@ -97,16 +104,6 @@ NO_EVIDENCE_TEXT: Final = (
     "clearance or creepage result; it is what a dielectric verification plan is established "
     "from."
 )
-
-#: The heading of the summary line, so a test can find it without matching a whole sentence.
-GOVERNING_PREFIX: Final = "Governing: "
-
-#: What the summary says when nothing approved was found for the summarised target.
-NOTHING_GOVERNS_TEXT: Final = "no approved figure"
-
-#: The comparison a reader must not miss. A draft above the governing figure is exactly the
-#: entry that would be taken for the answer if the column said only "draft".
-ABOVE_GOVERNING_TEXT: Final = "higher than the governing figure and awaiting a decision"
 
 #: Refused rather than performed. An approved figure has been relied on, so correcting it is a
 #: revision that leaves the original in place, not an edit that overwrites it.
@@ -147,78 +144,12 @@ def _options(enum: type[StrEnum]) -> tuple[tuple[str, str], ...]:
     return tuple((_words(member.value), member.value) for member in enum)
 
 
-def target_label(project: Project, target: EvidenceTarget) -> str:
-    """What a target is called on screen: a net by name, a pair by both of its names."""
-
-    if target.pair_id is not None:
-        pair = project.pair_by_id(target.pair_id)
-        return "unknown pair" if pair is None else f"pair {pair_label(project, pair)}"
-    name = next(
-        (net.name for net in project.net_classes if net.id == target.net_id),
-        None,
-    )
-    return "unknown net" if name is None else f"net {name}"
-
-
 def evidence_targets(project: Project) -> tuple[tuple[str, EvidenceTarget], ...]:
     """Every target a figure can be recorded against, nets first and then pairs."""
 
     nets = tuple(EvidenceTarget(net_id=net.id) for net in project.net_classes)
     pairs = tuple(EvidenceTarget(pair_id=pair.id) for pair in project.pairs)
     return tuple((target_label(project, target), target) for target in (*nets, *pairs))
-
-
-def measurement_text(entry: VoltageEvidence) -> str:
-    """Where the figure was measured and to what uncertainty, for an entry that was."""
-
-    parts = [part for part in (entry.measurement_points, entry.tolerance_or_uncertainty) if part]
-    return " / ".join(parts) if parts else EMPTY_CELL
-
-
-def comparison_text(entry: VoltageEvidence, result: GoverningEvidenceResult) -> str:
-    """How ``entry`` stands against everything else recorded for its target and quantity.
-
-    Never a bare state name. A reader looking at this column is asking "is this the number",
-    and the answer for an entry that is not is always why not.
-    """
-
-    governing = result.approved_value_v
-    if entry.approval_state is EvidenceApprovalState.SUPERSEDED_WITH_JUSTIFICATION:
-        return f"superseded, does not govern — {entry.approval_justification}"
-    if entry.approval_state is EvidenceApprovalState.DRAFT:
-        if governing is None or entry.value_v > governing:
-            return f"draft, does not govern — {ABOVE_GOVERNING_TEXT}"
-        return "draft, does not govern — awaiting a decision"
-    if governing is not None and entry.value_v == governing:
-        tied = len(result.governing) > 1
-        return "governs, tied with another approved figure" if tied else "governs"
-    return "approved, below the governing figure"
-
-
-def governing_summary(project: Project, result: GoverningEvidenceResult) -> str:
-    """One line naming what governs a target's quantity, and what is still outstanding.
-
-    The outstanding half is not a footnote. An approved figure with a higher draft beside it
-    is the case the whole approval gate exists for, and a summary that stopped at the approved
-    number would be the one place in this application where a draft won.
-    """
-
-    subject = f"{target_label(project, result.target)}, {_words(result.quantity.value)}"
-    value = (
-        NOTHING_GOVERNS_TEXT if result.approved_value_v is None else f"{result.approved_value_v} V"
-    )
-    line = f"{GOVERNING_PREFIX}{subject} — {value}"
-    drafts = result.awaiting_approval
-    if drafts:
-        highest = max(entry.value_v for entry in drafts)
-        line += (
-            f"; {len(drafts)} awaiting a decision, the highest at {highest} V, "
-            "and none of them governs"
-        )
-    superseded = result.superseded
-    if superseded:
-        line += f"; {len(superseded)} superseded with justification"
-    return line
 
 
 class VoltageEvidencePanel(QWidget):
@@ -597,7 +528,10 @@ class VoltageEvidencePanel(QWidget):
             key = (str(entry.target.model_dump_json()), entry.quantity_kind.value)
             if key not in seen:
                 seen[key] = self._result(entry)
-        return "\n".join(governing_summary(self.project, result) for result in seen.values())
+        return "\n".join(
+            governing_summary(target_label(self.project, result.target), result)
+            for result in seen.values()
+        )
 
     def _update_buttons(self) -> None:
         entry = None if self._project is None else self._selected_entry()

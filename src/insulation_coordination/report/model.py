@@ -32,6 +32,14 @@ from insulation_coordination.calculation.stress_propagation import (
     DomainStressMap,
     EffectivePairStressResolution,
 )
+from insulation_coordination.calculation.verification_plan import (
+    VerificationPlan,
+    VerificationPlanService,
+)
+from insulation_coordination.calculation.voltage_evidence import (
+    GoverningEvidenceResult,
+    VoltageEvidenceService,
+)
 from insulation_coordination.domain.enums import ReviewState
 from insulation_coordination.domain.project import (
     EffectiveCase,
@@ -58,6 +66,7 @@ from insulation_coordination.domain.topology import (
     topology_completion,
 )
 from insulation_coordination.domain.trace import Quantity, TraceStep
+from insulation_coordination.domain.verification import EvidenceTarget, VoltageQuantityKind
 from insulation_coordination.project.image_attachments import (
     ImageAttachmentError,
     stage_report_image,
@@ -243,6 +252,33 @@ class ReportImage(FrozenModel):
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class ReportVerification(FrozenModel):
+    """The dielectric verification issue #37 plans, or the reason there is none.
+
+    The plan is carried whole rather than flattened into report-shaped rows. It is already a
+    deterministic frozen snapshot recomputed from the project and the package on every build,
+    so a second copy of it here would be a second place for the schedule to be wrong; the
+    human view reshapes it for the page and this model keeps it verbatim.
+
+    ``unavailable_reason`` is the other half of the same field. A package that cannot answer
+    the verification questions - an older one, or one whose approval never covered them -
+    leaves the clearance and creepage report exactly as it was and states here why the
+    verification sections are empty. That is why nothing in this model is optional to the
+    build: a report always says which of the two it is.
+
+    ``evidence`` is the project's voltage-evidence library resolved through
+    :class:`~insulation_coordination.calculation.voltage_evidence.VoltageEvidenceService`, one
+    result per target and quantity somebody recorded a figure for. Each result carries every
+    entry, its method and its approval state alongside the value that governs, so the
+    inventory, the design-versus-measurement comparison and the governing trace are one
+    structure rather than three views that could disagree.
+    """
+
+    plan: VerificationPlan | None = None
+    unavailable_reason: str = ""
+    evidence: tuple[GoverningEvidenceResult, ...] = ()
+
+
 class ReportModel(FrozenModel):
     project_id: str
     project_sha256: str
@@ -268,6 +304,7 @@ class ReportModel(FrozenModel):
     excluded_pairs: tuple[ExcludedPair, ...] = ()
     circuit_diagram: ReportImage | None = None
     groups: tuple[ReportGroup, ...]
+    verification: ReportVerification = ReportVerification()
     warnings: tuple[CalculationWarning, ...]
     verification_requirements: tuple[VerificationRequirement, ...]
     rules: RulesProvenance
@@ -417,6 +454,7 @@ def build_report_model(
             configuration.model_copy(deep=True) for configuration in project.supply_configurations
         ),
         supply=_report_supply(supply, tuple(resolution_by_pair.values())),
+        verification=_report_verification(project, rules, supply),
         matrix_rows=matrix_rows,
         excluded_pairs=excluded_pairs,
         groups=report_groups,
@@ -454,6 +492,53 @@ def build_report_model(
             notes=rules.manifest.notes,
         ),
     )
+
+
+def _report_verification(
+    project: Project, rules: RulePackage, supply: SupplyDerivation | None
+) -> ReportVerification:
+    """The verification plan, recomputed here, or the refusal that stopped it being built.
+
+    Recomputed rather than read off the project: a generated plan is never persisted, so the
+    only honest schedule in a report is one derived from the project and the package the
+    report is being built from.
+
+    A refusal is recorded and not raised. Verification incompleteness must not block the
+    clearance and creepage report the calculator already produced, and a package that answers
+    no verification question at all is the extreme case of incomplete.
+
+    The evidence inventory is built either way: what an engineer recorded about this project's
+    voltages is the project's own content, and a package that cannot plan a test is no reason
+    to stop reporting it.
+    """
+
+    evidence = _evidence_inventory(project)
+    try:
+        plan = VerificationPlanService().build(project, rules, supply)
+    except (CalculationError, ValueError) as error:
+        return ReportVerification(unavailable_reason=str(error), evidence=evidence)
+    return ReportVerification(plan=plan, evidence=evidence)
+
+
+def _evidence_inventory(project: Project) -> tuple[GoverningEvidenceResult, ...]:
+    """One resolved result per target and quantity the project records a figure for.
+
+    Nothing is filtered: an entry in draft, one superseded and one that governs all reach the
+    report through the same result, because an inventory that showed only the winners would
+    be exactly the audit trail this issue exists to keep.
+    """
+
+    service = VoltageEvidenceService()
+    asked = dict.fromkeys((entry.target, entry.quantity_kind) for entry in project.voltage_evidence)
+    return tuple(
+        service.governing(project, target, quantity)
+        for target, quantity in sorted(asked, key=_evidence_order)
+    )
+
+
+def _evidence_order(asked: tuple[EvidenceTarget, VoltageQuantityKind]) -> tuple[str, str]:
+    target, quantity = asked
+    return str(target.pair_id or target.net_id), quantity.value
 
 
 #: Any semantic rule about altitude. Altitude corrects a dimensioned distance after the

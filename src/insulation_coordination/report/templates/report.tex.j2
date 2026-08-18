@@ -489,6 +489,249 @@ creepage is \textbf{ {{- calculation.inner_creepage|tex -}} }.
 
 {% endfor %}
 
+\clearpage
+\section{Dielectric Verification}
+{{ human.verification.statement|tex }}
+
+\subsection{Protection Implementation}
+The protection requirement the standard places on a pair and the construction an engineer
+selected to meet it are two separate records. Nothing below is derived from a decisive voltage
+class or from the spacing path the calculation above used.
+
+{% if human.verification.pairs %}
+\begin{longtable}{@{}p{34mm}p{28mm}p{20mm}p{22mm}p{28mm}@{}}
+\toprule
+Pair & Implementation & Level & Selection review & Verification status \\
+\midrule
+\endfirsthead
+\toprule
+Pair & Implementation & Level & Selection review & Verification status \\
+\midrule
+\endhead
+{% for row in human.verification.pairs %}
+{{ row.pair_label|tex }} & {{ row.protection|tex }} & {{ row.protection_level|tex }} & {{ row.review_state|tex }} & {{ row.status|tex }} \\
+{% endfor %}
+\bottomrule
+\end{longtable}
+{% else %}
+No pair carries a dielectric verification assessment.
+{% endif %}
+
+\subsection{Voltage Evidence Inventory}
+Every figure recorded against a net or a pair, whatever its approval state. Nothing is removed
+from this inventory: a superseded entry stays, with the reason it no longer governs.
+
+{% if human.verification.evidence %}
+\begin{longtable}{@{}p{24mm}p{20mm}p{14mm}p{20mm}p{22mm}p{40mm}@{}}
+\toprule
+Target & Quantity & Value & Method & Approval & Comparison \\
+\midrule
+\endfirsthead
+\toprule
+Target & Quantity & Value & Method & Approval & Comparison \\
+\midrule
+\endhead
+{% for row in human.verification.evidence %}
+{{ row.target|tex }} & {{ row.quantity|tex }} & {{ row.value|tex }} & {{ row.method|tex }} & {{ row.approval|tex }} & {{ row.comparison|tex }} \\
+{% endfor %}
+\bottomrule
+\end{longtable}
+
+\textbf{Operating condition, source and measurement detail.}\par
+\begin{longtable}{@{}p{24mm}p{20mm}p{34mm}p{34mm}p{30mm}@{}}
+\toprule
+Target & Quantity & Operating condition & Source / evidence & Measurement points / uncertainty \\
+\midrule
+\endfirsthead
+\toprule
+Target & Quantity & Operating condition & Source / evidence & Measurement points / uncertainty \\
+\midrule
+\endhead
+{% for row in human.verification.evidence %}
+{{ row.target|tex }} & {{ row.quantity|tex }} & {{ row.operating_condition|tex }} & {{ row.source_reference|tex }} & {{ row.measurement|tex }} \\
+{% endfor %}
+\bottomrule
+\end{longtable}
+{% else %}
+No voltage evidence is recorded for this project.
+{% endif %}
+
+\subsection{Governing Value Trace}
+{% if human.verification.governing %}
+\begin{longtable}{@{}p{40mm}p{110mm}@{}}
+\toprule
+Target & What governs, and what is outstanding \\
+\midrule
+\endfirsthead
+\toprule
+Target & What governs, and what is outstanding \\
+\midrule
+\endhead
+{% for item in human.verification.governing %}
+{{ item.name|tex }} & {{ item.value|tex }}{% if item.provenance %} \par {{ item.provenance|tex }}{% endif %} \\
+{% endfor %}
+\bottomrule
+\end{longtable}
+{% else %}
+Nothing is recorded, so no governing value was selected.
+{% endif %}
+
+\subsection{Working Voltage Determination}
+{% if human.verification.working_voltage %}
+\begin{longtable}{@{}p{28mm}p{34mm}p{26mm}p{28mm}p{30mm}@{}}
+\toprule
+Target & Quantities to establish & Status & Operating conditions & Measurement points \\
+\midrule
+\endfirsthead
+\toprule
+Target & Quantities to establish & Status & Operating conditions & Measurement points \\
+\midrule
+\endhead
+{% for row in human.verification.working_voltage %}
+{{ row.target|tex }} & {{ row.quantities|tex }} & {{ row.status|tex }} & {{ row.operating_conditions|tex }} & {{ row.measurement_points|tex }} \\
+{% endfor %}
+\bottomrule
+\end{longtable}
+{% else %}
+No working-voltage determination is planned for this project.
+{% endif %}
+
+\subsection{Pair Verification Matrix}
+{% if human.verification.pairs %}
+\begin{longtable}{@{}p{30mm}p{26mm}p{22mm}p{72mm}@{}}
+\toprule
+Pair & Partial discharge & Recurring peak & Assembled routine test exemption \\
+\midrule
+\endfirsthead
+\toprule
+Pair & Partial discharge & Recurring peak & Assembled routine test exemption \\
+\midrule
+\endhead
+{% for row in human.verification.pairs %}
+{{ row.pair_label|tex }} & {{ row.partial_discharge|tex }} & {{ row.recurring_peak|tex }} & {{ row.exemption|tex }} \\
+{% endfor %}
+\bottomrule
+\end{longtable}
+{% else %}
+No pair carries a dielectric verification assessment.
+{% endif %}
+
+\subsection{Test Schedule}
+One row per distinct test, with every pair it covers. A test whose voltage, classification or
+duration could not be resolved keeps its row and states what is missing; nothing is dropped
+from this schedule, including a row an exemption excused.
+
+{% if human.verification.schedule %}
+\begin{longtable}{@{}p{26mm}p{26mm}p{26mm}p{18mm}p{20mm}p{26mm}@{}}
+\toprule
+Test & High side & Low side & Voltage & Classification & Applicability \\
+\midrule
+\endfirsthead
+\toprule
+Test & High side & Low side & Voltage & Classification & Applicability \\
+\midrule
+\endhead
+{% for row in human.verification.schedule %}
+{{ row.test|tex }} & {{ row.high_side|tex }} & {{ row.low_side|tex }} & {{ row.voltage|tex }} & {{ row.classification|tex }} & {{ row.applicability|tex }} \\
+{% endfor %}
+\bottomrule
+\end{longtable}
+
+\begin{longtable}{@{}p{34mm}p{26mm}p{22mm}p{22mm}p{40mm}@{}}
+\toprule
+Test identifier & Reference & Waveform & Duration & Pairs covered \\
+\midrule
+\endfirsthead
+\toprule
+Test identifier & Reference & Waveform & Duration & Pairs covered \\
+\midrule
+\endhead
+{% for row in human.verification.schedule %}
+{{ row.test_id|tex }} & {{ row.reference|tex }} & {{ row.waveform|tex }} & {{ row.duration|tex }} & {{ row.covered_pairs|tex }} \\
+{% endfor %}
+\bottomrule
+\end{longtable}
+{% else %}
+No dielectric test is planned for this project.
+{% endif %}
+
+\subsection{Connection and Preparation Instructions}
+{% if human.verification.schedule %}
+\begin{itemize}
+{% for row in human.verification.schedule %}
+\item \textbf{ {{- row.test|tex }} — {{ row.test_id|tex -}} }: connect the high side to {{ row.high_side|tex }} and the low side to {{ row.low_side|tex }} ({{ row.reference|tex }}).
+{% if row.preparation %}
+\begin{itemize}
+{% for step in row.preparation %}
+\item {{ step|tex }}
+{% endfor %}
+\end{itemize}
+{% else %}
+No preparation step is recorded for this test.
+{% endif %}
+{% endfor %}
+\end{itemize}
+{% else %}
+No dielectric test is planned, so no preparation is required.
+{% endif %}
+
+\subsection{Unresolved Verification Inputs and Warnings}
+{% if human.verification.notice %}
+{{ human.verification.notice|tex }}
+{% endif %}
+{% if human.verification.unresolved %}
+\textbf{Unresolved inputs.}\par
+\begin{itemize}
+{% for item in human.verification.unresolved %}
+\item {{ item|tex }}
+{% endfor %}
+\end{itemize}
+{% endif %}
+{% if human.verification.schedule|selectattr("unresolved")|list %}
+\textbf{Tests that cannot yet be performed as planned.}\par
+\begin{itemize}
+{% for row in human.verification.schedule if row.unresolved %}
+\item \textbf{ {{- row.test|tex }} — {{ row.test_id|tex -}} } ({{ row.applicability|tex }}):
+\begin{itemize}
+{% for item in row.unresolved %}
+\item {{ item|tex }}
+{% endfor %}
+\end{itemize}
+{% endfor %}
+\end{itemize}
+{% endif %}
+{% if human.verification.warnings %}
+\textbf{Verification warnings.}\par
+\begin{itemize}
+{% for advisory in human.verification.warnings %}
+\item \textbf{ {{- advisory.code|tex -}} }: {{ advisory.message|tex }}{% if advisory.source_reference %}. Source: {{ advisory.source_reference|reference }}{% endif %}
+{% endfor %}
+\end{itemize}
+{% endif %}
+{% if not (human.verification.notice or human.verification.unresolved or human.verification.warnings) %}
+Nothing is outstanding in the dielectric verification plan.
+{% endif %}
+
+\subsection{Verification Rules Identity}
+{% if human.verification.rules %}
+\begin{longtable}{@{}p{40mm}p{110mm}@{}}
+\toprule
+Item & Value \\
+\midrule
+\endfirsthead
+\toprule
+Item & Value \\
+\midrule
+\endhead
+{% for item in human.verification.rules %}
+{{ item.name|tex }} & {{ item.value|tex }} \\
+{% endfor %}
+\bottomrule
+\end{longtable}
+{% else %}
+No verification rule was read, so no rule identity is recorded.
+{% endif %}
+
 {% if human.advisories or human.verification_requirements %}
 \clearpage
 \section{Advisories}
