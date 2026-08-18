@@ -82,77 +82,193 @@ Calculation lookups use normalized numeric axes and stable semantic column IDs;
 footnote letters and headings never become numeric lookup keys. Recipe-declared
 merged cells, such as F.2 spans, are filled only across their covered semantic rows.
 
-## Annex G clearance workflow
+## Insulation-coordination workflow
+
+IEC 62477-1:2022 orchestrates the calculation. It decides which nets face each other, which
+supply stresses reach them, and what has to be verified afterwards. IEC 60664-1 and
+IEC 60664-4 stay underneath it as the dimensioning sources, reached through the approved
+compatibility mappings the active package declares.
 
 ```mermaid
 flowchart TD
-    I["Effective pair inputs"] --> F2["F.2 impulse candidate"]
-    I --> F8["F.8 steady, recurring, and temporary peak candidates"]
-    F2 --> M["Maximum clearance candidate"]
-    F8 --> M
-    M --> A2{"Altitude above the A.2 base boundary?"}
-    A2 -- "No" --> C["Part 1 clearance"]
-    A2 -- "Yes" --> AF["Apply A.2 factor after maximum"]
-    AF --> C
+    P["Project, net and pair inputs"] --> T["Net classification, galvanic domains and barriers"]
+    T --> S{"Supply arrangements enabled?"}
+    S -- "No" --> M["Reviewed pair stresses as entered"]
+    S -- "Yes" --> D["Derive each arrangement's supply stresses"]
+    D --> G["Propagate across domains and verified barriers"]
+    G --> OVR["Apply the verified override recorded at the pair"]
+    OVR --> E["Resolve effective pair stress"]
+    M --> E
+    E --> C["Clearance calculation"]
+    C --> R["Creepage calculation"]
+    C --> O["Governing spacing and trace"]
+    R --> O
+    O --> V["Verification-plan handoff"]
+    V --> Q["Report and export"]
 ```
 
-F.2 uses impulse withstand voltage. F.8 evaluates every applicable periodic peak;
-blank required stresses block calculation, while explicitly not-applicable stresses
-remain traceable omissions. The largest candidate governs. A.2 is applied once, after
-that maximum. At and above the peak-voltage threshold defined by the applicable rule,
-F.9 produces a partial-discharge review advisory for inhomogeneous fields; it does
-not replace the governing distance.
-Homogeneous Case B also carries a withstand-test verification requirement.
+> The diagrams describe the calculator's own data flow. Normative values and applicability
+> decisions are loaded from the active approved `.icrules` package. IEC clause, table, annex,
+> and equation identifiers shown here and in generated traces are provenance references, not
+> embedded copies of the standards.
 
-## Pair-specific critical-frequency flow
+A project that enables no supply arrangement reads no supply rule at all. Its pairs are
+dimensioned from exactly the stresses entered against them, which is the manual IEC 60664
+route and stays available wherever topology or supply data is incomplete or switched off.
+Where a project does enable one, the derived and the entered figure are two answers to the
+same question and the more severe governs: a derived figure never lowers an entered one, and
+either way a disagreement is reported as a warning rather than resolved silently.
 
-Above the high-frequency boundary, `fcritical` is computed independently for every pair
-from its governing periodic Part 1 clearance; impulse clearance is not used as the
+Net classification and decisive voltage class are recorded per net; the guidance shown for a
+class, and the protection the verification plan later expects of it, are read from
+`iec62477_2022.dvc.voltage_limits` and `iec62477_2022.dvc.protection_matrix`. Source stress,
+transferred stress, and effective pair stress then stay separate records:
+`iec62477_2022.supply.impulse_by_system_voltage_ovc` and
+`iec62477_2022.supply.tov_by_system_voltage` answer what an arrangement's system voltage
+requires, while `iec62477_2022.supply.multiple_source_propagation` and
+`iec62477_2022.supply.verified_barrier_transfer` decide what reaches each galvanic domain. A
+barrier recorded as not evaluated is neither isolation nor a connection; it leaves every
+domain it could have reached unresolved and blocks automatic propagation onto those pairs
+instead of guessing.
+
+Clearance and creepage are separate branches with one ordering constraint between them: the
+creepage comparison reads the final clearance, so clearance is dimensioned first. Verification
+consumes the finished spacings and stresses and never re-derives them. Every value is
+`Decimal` throughout and carries the rule ids, source cells, and substitutions it came from;
+a pair that cannot produce a complete trace blocks the final report.
+
+## Clearance calculation workflow
+
+```mermaid
+flowchart TD
+    E["Effective pair stress and context"] --> N["Applicable impulse, temporary, and recurring candidates"]
+    N --> RT["Rule-backed insulation treatment, applied once per candidate"]
+    RT --> B["Evaluate the base clearance candidates"]
+    B --> HF{"High-frequency route applicable?"}
+    HF -- "Yes" --> HFS["High-frequency evaluation"]
+    HF -- "No" --> SEL["Select the governing clearance"]
+    HFS --> SEL
+    SEL --> ALT["Altitude-stage treatment where the active rules require it"]
+    ALT --> OUT["Final clearance, trace, and verification requirements"]
+```
+
+IEC 62477-1:2022 publishes the product-level spacing requirements as
+`iec62477_2022.clearance.requirements`, and the stronger insulation is dimensioned from
+`iec62477_2022.clearance.reinforced_treatment`, whose own reference names the axis a treated
+stress moves along. The dimensioning lookups underneath resolve to IEC 60664-1 routes through
+the package's approved compatibility mappings; a missing, ambiguous, or unapproved mapping
+blocks the calculation instead of falling back to anything.
+
+Reinforced behavior, interpolation policy, altitude behavior, field treatment, and
+high-frequency applicability are rules and data in the package, never constants in this
+README. The insulation treatment is applied exactly once, to the stress, immediately before
+the table is read, and only for the class whose rule states one; a package that cannot supply
+that rule blocks the reinforced pairs and leaves functional and basic pairs untouched.
+
+Blank required stresses block calculation; explicitly not-applicable stresses remain traceable
+omissions. Every applicable candidate is evaluated and compared, and the governing branch, its
+rule ids, and its source cells are recorded. The altitude correction is the A.2 route the
+approved package maps, applied once after that comparison so that it corrects the distance
+that governs rather than each candidate separately. Above the peak-voltage threshold the
+applicable rule defines, F.9 raises a partial-discharge review advisory for inhomogeneous
+fields; it does not replace the governing distance. Homogeneous Case B also carries a
+withstand-test verification requirement.
+
+### High-frequency clearance subflow
+
+This branch is subordinate to the clearance workflow above: it contributes candidates to the
+same comparison and never replaces it. `fcritical` is computed independently for every pair
+from its governing periodic base clearance; the impulse candidate is not used as the
 Equation (1) input.
 
 ```mermaid
 flowchart TD
-    P["Pair periodic Part 1 clearance"] --> FC["Equation (1): pair fcritical"]
+    S["Governing periodic base clearance for this pair"] --> FC["Equation (1): pair fcritical"]
     FC --> FIELD{"Field classification"}
-    FIELD -- "Inhomogeneous" --> CMP{"frequency below fcritical?"}
-    FIELD -- "Homogeneous / approximately homogeneous" --> R["Check radius criterion"]
-    R -- "Fails" --> CMP
-    R -- "Passes" --> FACT["100%, Equation (2), or 125% frequency factor"]
-    FACT --> HF8["Treat periodic voltage and select F.8"]
-    CMP -- "Yes" --> KEEP["Retain Part 1 periodic clearance"]
-    CMP -- "No" --> T1["Select IEC 60664-4 Table 1"]
-    KEEP --> STABLE{"Branch and rounded distance stable?"}
-    T1 --> STABLE
-    HF8 --> STABLE
-    STABLE -- "No, first pass" --> FC
-    STABLE -- "Yes" --> OUT["Part 4 clearance candidate"]
-    STABLE -- "No after second pass" --> BLOCK["Block: unstable second pass"]
+    FIELD -- "Inhomogeneous" --> CMP{"Frequency below the pair fcritical?"}
+    FIELD -- "Homogeneous or approximately homogeneous" --> RAD["Check the electrode radius criterion"]
+    RAD -- "Fails" --> CMP
+    RAD -- "Passes" --> FACT["Resolve the frequency factor from the applicable rule"]
+    FACT --> PEAK["Treat as periodic and re-select the periodic candidate"]
+    CMP -- "Yes" --> KEEP["Retain the base periodic clearance"]
+    CMP -- "No" --> TBL["Select the high-frequency clearance table"]
+    KEEP --> ST{"Branch and rounded distance stable?"}
+    TBL --> ST
+    PEAK --> ST
+    ST -- "No, first pass" --> FC
+    ST -- "Yes" --> CAND["High-frequency clearance candidate"]
+    ST -- "No after a second pass" --> BLOCK["Block: unstable second pass"]
 ```
 
-The engine records starting clearance, actual frequency, `fcritical`, selected branch,
-frequency factor, radius ratio when relevant, and stability for each pass. At most two
-passes are allowed.
+The engine records starting clearance, actual frequency, `fcritical`, the selected branch, the
+frequency factor, the radius ratio where relevant, and stability for each pass. A second pass
+that is still unstable blocks rather than settling on either answer. Whether this branch runs
+at all is still decided by a named constant in
+[`calculation/high_frequency.py`](src/insulation_coordination/calculation/high_frequency.py)
+rather than by `iec62477_2022.high_frequency.applicability`; that rule and
+`iec62477_2022.high_frequency.band_factor` are extracted and inventoried, and moving the
+decision onto them is open work tracked with the licensed-content migration.
 
-## Annex H creepage workflow
+## Creepage calculation workflow
 
 ```mermaid
 flowchart TD
-    V["Long-term RMS voltage"] --> F5["F.5 PCB creepage: pollution degree 1 or 2"]
-    F["Frequency above the high-frequency boundary"] --> T2["IEC 60664-4 Table 2 frequency creepage"]
-    C["Final clearance"] --> FLOOR["Clearance floor"]
-    F5 --> MAX["Maximum creepage candidate"]
-    T2 --> MAX
-    FLOOR --> MAX
-    MAX --> RESULT["Final creepage, never below clearance"]
+    W["Effective working-voltage context"] --> CTX["Construction, pollution, and material context"]
+    CTX --> BASE["Approved base creepage rule"]
+    BASE --> RT["Rule-backed insulation treatment, applied once"]
+    RT --> HF{"High-frequency route applicable?"}
+    HF -- "Yes" --> HFC["High-frequency creepage candidate"]
+    HF -- "No" --> CMP["Compare every applicable creepage candidate"]
+    HFC --> CMP
+    FCL["Final clearance"] --> FLOOR["Clearance-floor candidate"]
+    FLOOR --> CMP
+    CMP --> OUT["Final creepage, provenance, and warnings"]
 ```
 
-F.5 interpolates only along its normalized voltage axis and selects the PCB pollution
-branch exactly. Reinforced insulation applies the treatment defined by the approved
-rule to the F.5 result. Above the high-frequency boundary, Table 2 adds a
-voltage-ceiling/frequency-linear candidate using the band structure and pollution
-multiplier the table declares. Sparse unavailable source combinations block instead
-of being guessed. Final creepage is the maximum of F.5, Table 2 when applicable, and
-final clearance.
+IEC 62477-1:2022 publishes the product-level creepage requirements as
+`iec62477_2022.creepage.requirements`, and the stronger insulation is dimensioned from
+`iec62477_2022.creepage.reinforced_treatment`, applied exactly once to the base result. The
+base rule itself resolves to an IEC 60664-1 route through the package's approved compatibility
+mappings, interpolates only along its own normalized voltage axis, and selects the printed
+wiring pollution branch exactly rather than approximating a neighboring one.
+
+The high-frequency creepage rule contributes one more applicable candidate rather than
+replacing the base one, and the final clearance enters the same comparison as a floor
+candidate, which is what keeps final creepage from ever falling below final clearance. A blank
+long-term RMS voltage blocks; one marked not applicable with a justification is a traceable
+omission and leaves the clearance floor as the only candidate. Sparse unavailable source
+combinations block instead of being guessed. The selected candidate, the reason it governs,
+and every rule id behind it stay in the trace.
+
+## Verification handoff
+
+```mermaid
+flowchart TD
+    IN["Final pair stresses, clearance, creepage, topology, and protection evidence"] --> RULES["Verification-rule evaluation"]
+    RULES --> PLAN["Required test and evidence plan"]
+    PLAN --> UNRES["Unresolved and blocking verification state"]
+    PLAN --> DISC["Report disclosure"]
+    UNRES --> DISC
+```
+
+Verification is a downstream consumer of the calculation, not a stage of the distance lookup.
+It reads the impulse the supply derivation produced, propagated and adjusted by any verified
+override, and it never derives a second figure that could disagree with the one the spacings
+were dimensioned from. The plan is recomputed on every read and never persisted, so two runs
+of one project produce one plan.
+
+The applicable procedures, the electrodes each test is applied between, and the working
+voltage each is assessed at come from the approved package's test rule family, including
+`iec62477_2022.test.impulse_procedure` and
+`iec62477_2022.test.working_voltage_determination`. This README names those roles and no
+procedure values: test voltages, durations, counts, and waveform parameters belong to the
+package.
+
+An unselected protection implementation, a working voltage nobody recorded, or a duration no
+resolved rule states becomes an unresolved input named on the application it belongs to. There
+is no path from "nothing is known" to "not required". An incomplete plan is disclosed in the
+report rather than suppressing it, while a blocking calculation error still blocks final report
+generation. Detailed user guidance for this workflow is issue #8.
 
 ## Unsupported PCB conditions
 
@@ -232,13 +348,16 @@ pull requests are welcome; describe the change and the verification you performe
 | Workflow step | Implementation | Focused verification |
 | --- | --- | --- |
 | Pair orchestration and maxima | [`calculate_pair`](src/insulation_coordination/calculation/engine.py) | [`tests/test_end_to_end.py`](tests/test_end_to_end.py) |
-| Annex G candidates | [`calculate_clearance_candidates`](src/insulation_coordination/calculation/clearance.py) | [`tests/calculation/test_part1.py`](tests/calculation/test_part1.py) |
+| Supply-stress derivation | [`derive_project_supply`](src/insulation_coordination/calculation/engine.py) | [`tests/calculation/test_supply_stress.py`](tests/calculation/test_supply_stress.py) |
+| Topology propagation and effective pair stress | [`resolve_pair_stresses`](src/insulation_coordination/calculation/stress_propagation.py) | [`tests/calculation/test_stress_propagation.py`](tests/calculation/test_stress_propagation.py) |
+| Clearance candidates | [`calculate_clearance_candidates`](src/insulation_coordination/calculation/clearance.py) | [`tests/calculation/test_part1.py`](tests/calculation/test_part1.py) |
 | Pair `fcritical` | [`calculate_critical_frequency`](src/insulation_coordination/calculation/high_frequency.py) | [`tests/calculation/test_high_frequency.py`](tests/calculation/test_high_frequency.py) |
 | Part 4 clearance passes | [`assess_part4_clearance`](src/insulation_coordination/calculation/high_frequency.py) | [`tests/calculation/test_high_frequency.py`](tests/calculation/test_high_frequency.py) |
 | A.2 correction | [`apply_a2_altitude_correction`](src/insulation_coordination/calculation/high_frequency.py) | [`tests/calculation/test_high_frequency.py`](tests/calculation/test_high_frequency.py) |
-| Annex H candidates | [`calculate_creepage_candidates`](src/insulation_coordination/calculation/creepage.py) | [`tests/calculation/test_part1.py`](tests/calculation/test_part1.py) |
+| Creepage candidates | [`calculate_creepage_candidates`](src/insulation_coordination/calculation/creepage.py) | [`tests/calculation/test_part1.py`](tests/calculation/test_part1.py) |
 | Joined F.5 PCB selection | [`select_f5_pcb_creepage`](src/insulation_coordination/calculation/creepage.py) | [`tests/calculation/test_part1.py`](tests/calculation/test_part1.py) |
 | Part 4 Table 2 | [`select_part4_table2_creepage`](src/insulation_coordination/calculation/high_frequency.py) | [`tests/calculation/test_high_frequency.py`](tests/calculation/test_high_frequency.py) |
+| Dielectric verification plan | [`VerificationPlanService`](src/insulation_coordination/calculation/verification_plan.py) | [`tests/calculation/test_verification_plan.py`](tests/calculation/test_verification_plan.py) |
 | PDF review/build/approval | [`rules/importer`](src/insulation_coordination/rules/importer/) | [`tests/private/test_supplied_standards.py`](tests/private/test_supplied_standards.py) |
 
 ## Development

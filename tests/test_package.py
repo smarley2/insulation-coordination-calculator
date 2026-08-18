@@ -67,15 +67,20 @@ def test_release_diagnostic_invocation_routes_without_starting_gui(
     assert calls == [paths]
 
 
-def test_readme_documents_pcb_annex_gh_workflow() -> None:
-    readme = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+def test_readme_documents_pcb_calculation_workflows() -> None:
+    # Collapsed to single spaces so that rewrapping a paragraph cannot fail this test. It
+    # asserts that the README still states these things, never how its lines are broken - and
+    # a rewrap has broken it before, which is worth exactly one join() to prevent.
+    readme = " ".join((Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8").split())
 
     for required in (
         "PCB-only product boundary",
         "Rules Manager review workflow",
-        "Annex G clearance workflow",
-        "Pair-specific critical-frequency flow",
-        "Annex H creepage workflow",
+        "Insulation-coordination workflow",
+        "Clearance calculation workflow",
+        "High-frequency clearance subflow",
+        "Creepage calculation workflow",
+        "Verification handoff",
         "Unsupported PCB conditions",
         "Implementation map",
         "iec60664-1-f2",
