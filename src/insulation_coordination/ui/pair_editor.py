@@ -27,7 +27,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from insulation_coordination.calculation.engine import PairResult
+from insulation_coordination.calculation.engine import (
+    PairResult,
+    SupplyDerivation,
+    derive_project_supply,
+    resolve_supply_effective_case,
+)
+from insulation_coordination.calculation.stress_propagation import EffectivePairStressResolution
 from insulation_coordination.domain.display import pair_label
 from insulation_coordination.domain.enums import (
     Applicability,
@@ -36,6 +42,7 @@ from insulation_coordination.domain.enums import (
     InsulationType,
 )
 from insulation_coordination.domain.project import (
+    EffectiveCase,
     OverrideValue,
     PairCase,
     PairVoltage,
@@ -43,8 +50,11 @@ from insulation_coordination.domain.project import (
     ProjectDefaults,
 )
 from insulation_coordination.domain.rules import RulePackage
+from insulation_coordination.domain.supply import VerifiedImpulseOverride
 from insulation_coordination.project.resolver import resolve_effective_case
+from insulation_coordination.ui.derived_supply_summary import DerivedSupplyPanel
 from insulation_coordination.ui.help_indicator import FieldStateBadge, HelpIndicator
+from insulation_coordination.ui.impulse_override_editor import ImpulseOverrideEditor
 from insulation_coordination.ui.pair_models import (
     MATRIX_PARAMETERS,
     CoverageMatrixModel,
@@ -96,7 +106,10 @@ def _parse_frequency(text: str) -> Decimal:
 #: Pair inputs hold short values, so they stay narrow and hug the right edge.
 _FIELD_WIDTH = 220
 
-#: The states a voltage stress can reach today. #36 adds the derived ones.
+#: The states a voltage stress entry can reach. A derived supply stress is deliberately not
+#: one of them: it is never written into these boxes, so badging one "derived" would label a
+#: number the user typed. The derived figures, and which of the two governs, are on the
+#: read-only panel below - with the same badge, reading off the effective value.
 _VOLTAGE_STATES = (VoltageGuidanceId.MANUAL_VALUE, VoltageGuidanceId.NOT_APPLICABLE)
 
 #: A defaultable parameter carries either the pair's own value or the project's.
@@ -452,6 +465,14 @@ class PairEditor(QWidget):
 
         layout.addWidget(params_group)
 
+        # Read-only, and below the entries on purpose: what the supply derives is an answer
+        # about the fields above it, not another field to fill in.
+        self.supply_panel = DerivedSupplyPanel()
+        layout.addWidget(self.supply_panel)
+        self.override_editor = ImpulseOverrideEditor()
+        self.override_editor.override_changed.connect(self._on_override_changed)
+        layout.addWidget(self.override_editor)
+
     @property
     def pair(self) -> PairCase | None:
         return self._pair
@@ -569,6 +590,7 @@ class PairEditor(QWidget):
         self._construction_combo.blockSignals(False)
         self._cti_combo.blockSignals(False)
         self._notes_edit.blockSignals(False)
+        self.override_editor.set_override(pair.impulse_override)
         self._refresh_states()
 
     #: Defaultable fields, paired with the badge that names where their value came from.
@@ -602,6 +624,27 @@ class PairEditor(QWidget):
         for field, badge_name in self._OVERRIDE_BADGES:
             badge = getattr(self, badge_name)
             badge.set_state(override_field_state(getattr(pair, field)))
+
+    def set_supply(
+        self,
+        resolution: EffectivePairStressResolution | None,
+        project: Project | None = None,
+        effective: EffectiveCase | None = None,
+        notice: str = "",
+    ) -> None:
+        """Show what the project's supply arrangements derive for the loaded pair.
+
+        Read-only throughout: nothing here touches the entries above it, so a pair keeps the
+        values it was given whether a derivation exists, is refused, or is switched off again.
+        """
+
+        self.supply_panel.set_resolution(resolution, project, effective, notice)
+        self.override_editor.set_outcome(
+            None if resolution is None else resolution.override_outcome
+        )
+
+    def _on_override_changed(self, override: VerifiedImpulseOverride | None) -> None:
+        self._update_pair(impulse_override=override)
 
     def set_long_term_rms(self, text: str) -> None:
         if self._pair is None:
@@ -915,6 +958,12 @@ class PairPage(QWidget):
         self._rules: RulePackage | None = None
         self._results: dict[str, PairResult] = {}
         self._selected_pair_id: str | None = None
+        # Derived once per project rather than once per pair: which arrangements this project
+        # supports and where their stress travels are questions about the project, and only
+        # the last stage of the resolution is about the pair in front of the user.
+        self._supply: SupplyDerivation | None = None
+        self._supply_notice = ""
+        self._supply_inputs: object = None
         # Hidden columns are keyed by net-class name, not index: the model resets on
         # every pair edit, and an index would then hide whatever moved into its place.
         self._hidden_nets: set[str] = set()
@@ -1041,8 +1090,14 @@ class PairPage(QWidget):
     def _set_initial_splitter_sizes(self) -> None:
         width = max(self.width(), 1)
         height = max(self.height(), 1)
-        editor_width = self._preferred_editor_width(width)
-        self._top_splitter.setSizes([width - editor_width, editor_width])
+        # Against the splitter's own usable width, not the page's: sizes that add up to more
+        # than the splitter has are scaled down proportionally, and the editor would then get
+        # a little less than it asked for - which is exactly the slack its rows have.
+        top_width = self._top_splitter.width() - self._top_splitter.handleWidth()
+        if top_width <= 0:
+            top_width = width
+        editor_width = self._preferred_editor_width(top_width)
+        self._top_splitter.setSizes([top_width - editor_width, editor_width])
         self._main_splitter.setSizes([int(height * 0.6), int(height * 0.4)])
         pairs_width = self._preferred_pairs_width(width)
         self._lower_splitter.setSizes([pairs_width, width - pairs_width])
@@ -1077,9 +1132,11 @@ class PairPage(QWidget):
     def load_project(self, project: Project) -> None:
         self._project = project
         self._splitters_initialized = False
+        self._refresh_supply()
         self.matrix_model.load_project(project)
         self.pair_list_model.load_project(project)
         self.calculation_review.load_project(project)
+        self._show_supply()
         if self.isVisible():
             self._splitters_initialized = True
             QTimer.singleShot(0, self._set_initial_splitter_sizes)
@@ -1124,6 +1181,73 @@ class PairPage(QWidget):
     def load_rules(self, rules: RulePackage) -> None:
         self._rules = rules
         self.editor.set_impulse_options(impulse_options(rules))
+        self._refresh_supply()
+        self._show_supply()
+
+    def _refresh_supply(self) -> None:
+        """Derive the project's supply stresses once, or record why they cannot be.
+
+        A project enabling no arrangement derives nothing and reads no supply rule, so an
+        existing project is unaffected by this running at all. A refusal is kept rather than
+        raised: the pairs stay editable and the reason is shown where the derivation would be.
+        """
+
+        inputs = self._supply_inputs_now()
+        if inputs == self._supply_inputs:
+            # Nothing the derivation reads has changed, and enumerating the routes between a
+            # project's domains is the one expensive thing on this page. Typing in a field the
+            # supply knows nothing about must not pay for it.
+            return
+        self._supply_inputs = inputs
+        self._supply = None
+        self._supply_notice = ""
+        if self._project is None or self._rules is None:
+            return
+        try:
+            self._supply = derive_project_supply(self._project, self._rules)
+        except (ValueError, RuntimeError, TypeError, KeyError) as error:
+            self._supply_notice = format_calculation_error("Supply configurations", error)
+
+    def _supply_inputs_now(self) -> object:
+        """Everything a derivation reads, as one comparable value.
+
+        The package is compared by identity rather than by value: it is the largest model this
+        application holds, and a deep comparison of it would cost more than the derivation it
+        is meant to avoid.
+        """
+
+        if self._project is None or self._rules is None:
+            return None
+        return (
+            self._project.supply_configurations,
+            self._project.galvanic_domains,
+            self._project.galvanic_barriers,
+            self._project.net_classes,
+            id(self._rules),
+        )
+
+    def _show_supply(self) -> None:
+        """Show the selected pair's share of the derivation, without reloading its editor.
+
+        Called after every project change as well as on selection, so the read-only panel
+        keeps up with an edit - recording an override, most of all - while the entries the
+        user is typing into are left exactly where they are.
+        """
+
+        pair = self._selected_pair()
+        if pair is None or self._project is None or self._supply is None:
+            self.editor.set_supply(None, self._project, notice=self._supply_notice)
+            return
+        try:
+            effective, resolution = resolve_supply_effective_case(self._project, pair, self._supply)
+        except (ValueError, RuntimeError, TypeError, KeyError) as error:
+            self.editor.set_supply(
+                None,
+                self._project,
+                notice=format_calculation_error(pair_label(self._project, pair), error),
+            )
+            return
+        self.editor.set_supply(resolution, self._project, effective)
 
     def select_pair_by_id(self, pair_id: str) -> None:
         self._selected_pair_id = pair_id
@@ -1132,6 +1256,7 @@ class PairPage(QWidget):
         for pair in self._project.pairs:
             if str(pair.id) == pair_id:
                 self.editor.load_pair(pair, self._project.defaults)
+                self._show_supply()
                 return
 
     def copy_selected_pair(self) -> None:
@@ -1203,6 +1328,7 @@ class PairPage(QWidget):
         self.matrix_model.set_parameter(parameter)
         self.pair_list_model.load_project(self._project)
         self.calculation_review.load_project(self._project)
+        self._show_supply()
         self.project_changed.emit(self._project)
 
     def recalculate(self) -> None:
@@ -1215,24 +1341,18 @@ class PairPage(QWidget):
                 "Load an approved rules package before recalculating.",
             )
             return
-        from insulation_coordination.calculation.engine import (
-            calculate_project_pair,
-            derive_project_supply,
-        )
+        from insulation_coordination.calculation.engine import calculate_project_pair
 
         self._results = {}
         self.matrix_model.set_results({})
         self.calculation_review.update_results((), self._project)
-        errors: list[str] = []
-        supply = None
-        derivable = True
-        try:
-            supply = derive_project_supply(self._project, self._rules)
-        except (ValueError, RuntimeError, TypeError, KeyError) as error:
-            # Nothing is dimensioned from the manual entries instead. A project asking for a
-            # derivation it cannot have is blocked, not quietly answered another way.
-            derivable = False
-            errors.append(format_calculation_error("Supply configurations", error))
+        # Nothing is dimensioned from the manual entries instead. A project asking for a
+        # derivation it cannot have is blocked, not quietly answered another way.
+        self._refresh_supply()
+        self._show_supply()
+        supply = self._supply
+        derivable = not self._supply_notice
+        errors: list[str] = [] if derivable else [self._supply_notice]
         for pair in self._project.pairs if derivable else ():
             if pair.is_excluded:
                 continue

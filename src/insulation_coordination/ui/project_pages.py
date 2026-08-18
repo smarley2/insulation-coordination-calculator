@@ -47,6 +47,7 @@ from insulation_coordination.ui.galvanic_barriers import GalvanicBarriersPanel
 from insulation_coordination.ui.galvanic_domains import GalvanicDomainsPanel
 from insulation_coordination.ui.help_indicator import HelpIndicator, labelled
 from insulation_coordination.ui.net_class_classification import NetClassClassificationPanel
+from insulation_coordination.ui.supply_configurations import SupplyConfigurationsPanel
 from insulation_coordination.ui.value_options import (
     IMPULSE_UNAVAILABLE_TEXT,
     MATERIAL_OPTIONS,
@@ -212,6 +213,10 @@ class ProjectPage(QWidget):
         self._barriers_panel.project_changed.connect(self._on_barriers_changed)
         layout.addWidget(self._barriers_panel)
 
+        self._supply_panel = SupplyConfigurationsPanel()
+        self._supply_panel.project_changed.connect(self._apply_project)
+        layout.addWidget(self._supply_panel)
+
         self._net_list.currentRowChanged.connect(self._on_net_selection_changed)
 
     @property
@@ -240,6 +245,7 @@ class ProjectPage(QWidget):
         self._impulse_combo.blockSignals(False)
         self._classification_panel.set_rules_package(package)
         self._barriers_panel.set_rules_package(package)
+        self._supply_panel.set_rules_package(package)
 
     def _show_impulse_default(self) -> None:
         """Offer the package's impulse levels around the default currently stored."""
@@ -320,6 +326,7 @@ class ProjectPage(QWidget):
             self._rules_label.setText(f"{rules.package_id} v{rules.version} ({rules.sha256[:12]}…)")
         self._domains_panel.set_project(project)
         self._barriers_panel.set_project(project)
+        self._supply_panel.set_project(project)
         self._refresh_net_list()
 
     def open_project(self, path: Path) -> None:
@@ -438,6 +445,7 @@ class ProjectPage(QWidget):
         # one computes against - ever drifts from what the rest of the page holds.
         self._domains_panel.set_project(project)
         self._barriers_panel.set_project(project)
+        self._supply_panel.set_project(project)
         self.project_changed.emit(self._project)
 
     def _refresh_net_list(self) -> None:
