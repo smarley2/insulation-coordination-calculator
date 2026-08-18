@@ -1775,6 +1775,374 @@ def synthetic_supply_rule_package(*, edition: str = EDITION) -> RulePackage:
     )
 
 
+#: The two Table 26 procedure fields the fixture fills. Neutral names for what each step is
+#: about; the wording behind them in a real package is licensed and is not reproduced here.
+_SYNTHETIC_PROCEDURE_STEPS = ("synthetic connection step", "synthetic measurement step")
+
+
+def synthetic_verification_rule_package(*, edition: str = EDITION) -> RulePackage:
+    """A verification-only package in the semantic shape the real Table 26-30 and clause
+    projections produce.
+
+    Shape only. Every number, step and condition here is invented: the band boundaries, the
+    cell values and the step wording are this fixture's own, and no reviewed reading of any
+    clause, table row or table column is reproduced. What is faithful is the structure
+    ``read_verification_rules`` resolves against - the route each identifier projects, the test
+    kind each procedure declares, the classification vocabulary, the axes each selection table
+    is keyed by, and each decision's declared input and output names.
+
+    Two shapes are built in deliberately because the adapter has to handle them. The partial
+    discharge and foil procedures each point at the gate projected from the same source
+    statement, which is what lets a test prove that a procedure pointing somewhere else is
+    refused. And the electrical preconditioning route and the foil procedure declare no
+    classification at all, exactly as the real projections do where the cross-reference matrix
+    has no row for the clause.
+
+    ``edition`` builds a package carrying the right identifiers under the wrong source edition,
+    so the refusal of a wrong-edition package needs no second fixture.
+    """
+    reference = SourceReference(
+        document_id="synthetic-verification-source",
+        standard=STANDARD,
+        edition=edition,
+        clause="synthetic-clause",
+        table="synthetic-verification-table",
+        note="Synthetic fixture only; contains no IEC numeric values.",
+    )
+
+    def steps() -> tuple[ProcedureStep, ...]:
+        return tuple(
+            ProcedureStep(order=order, text=text, source=reference)
+            for order, text in enumerate(_SYNTHETIC_PROCEDURE_STEPS, start=1)
+        )
+
+    def procedure(
+        rule_id: str,
+        test_kind: str,
+        *,
+        classifications: tuple[str, ...] = (),
+        applicability_rule_id: str | None = None,
+    ) -> ProcedureRule:
+        return ProcedureRule(
+            id=rule_id,
+            test_kind=test_kind,
+            classifications=classifications,
+            procedure_steps=steps(),
+            applicability_rule_id=applicability_rule_id,
+            source=reference,
+        )
+
+    def table(table_id: str, row_axis_id: str, column_axis_id: str) -> Table:
+        row_values = (Decimal(13), Decimal(26), Decimal(39))
+        column_values = (Decimal(1), Decimal(2))
+        return Table(
+            id=table_id,
+            unit="V",
+            row_axis=TableAxis(
+                id=row_axis_id,
+                unit="V",
+                values=row_values,
+                labels=tuple(f"{row_axis_id}-{value}" for value in row_values),
+            ),
+            column_axis=TableAxis(
+                id=column_axis_id,
+                unit="1",
+                values=column_values,
+                labels=tuple(f"{column_axis_id}-{value}" for value in column_values),
+            ),
+            cells=tuple(
+                TableCell(
+                    row=row,
+                    column=column,
+                    value=Decimal((row + 1) * 200 + (column + 1) * 3),
+                    unit="V",
+                    source=reference,
+                )
+                for row in range(len(row_values))
+                for column in range(len(column_values))
+            ),
+            interpolation="linear",
+            source=reference,
+        )
+
+    def boolean_gate(
+        rule_id: str, inputs: tuple[str, ...], outputs: tuple[str, ...]
+    ) -> DecisionRule:
+        """A decision whose declared names are the contract, answering true to everything."""
+        return DecisionRule(
+            id=rule_id,
+            inputs=tuple(DecisionInput(name=name, kind="boolean") for name in inputs),
+            outputs=tuple(DecisionOutput(name=name, kind="boolean") for name in outputs),
+            rows=(
+                DecisionRow(
+                    matchers=tuple(
+                        Matcher(input=name, op="equals", boolean=True) for name in inputs
+                    ),
+                    values=tuple(DecisionValue(name=name, boolean=True) for name in outputs),
+                    source=reference,
+                ),
+            ),
+            exhaustive=False,
+            source=reference,
+        )
+
+    partial_discharge_gate = DecisionRule(
+        id=f"{ids.TEST_PARTIAL_DISCHARGE}.applicability",
+        inputs=(DecisionInput(name="partial_discharge_test_voltage_declared", kind="boolean"),),
+        outputs=(
+            DecisionOutput(
+                name="partial_discharge_test",
+                kind="categorical",
+                allowed_values=("required", "engineering_input_required"),
+            ),
+        ),
+        rows=tuple(
+            DecisionRow(
+                matchers=(
+                    Matcher(
+                        input="partial_discharge_test_voltage_declared",
+                        op="equals",
+                        boolean=declared,
+                    ),
+                ),
+                values=(DecisionValue(name="partial_discharge_test", categorical=outcome),),
+                source=reference,
+            )
+            for declared, outcome in ((True, "required"), (False, "engineering_input_required"))
+        ),
+        exhaustive=False,
+        source=reference,
+    )
+    foil_gate = DecisionRule(
+        id=f"{ids.TEST_ACCESSIBLE_SURFACE_FOIL}.applicability",
+        inputs=(DecisionInput(name="non_conductive_accessible_surface_present", kind="boolean"),),
+        outputs=(
+            DecisionOutput(name="foil_wrap_required", kind="boolean"),
+            DecisionOutput(
+                name="permitted_classification_substitution",
+                kind="categorical",
+                allowed_values=("synthetic_substitution",),
+            ),
+        ),
+        rows=(
+            DecisionRow(
+                matchers=(
+                    Matcher(
+                        input="non_conductive_accessible_surface_present",
+                        op="equals",
+                        boolean=True,
+                    ),
+                ),
+                values=(
+                    DecisionValue(name="foil_wrap_required", boolean=True),
+                    DecisionValue(
+                        name="permitted_classification_substitution",
+                        categorical="synthetic_substitution",
+                    ),
+                ),
+                source=reference,
+            ),
+        ),
+        exhaustive=False,
+        source=reference,
+    )
+    preconditioning_gate = DecisionRule(
+        id=f"{ids.TEST_PRECONDITIONING}.applicability",
+        inputs=(
+            DecisionInput(
+                name="test_context",
+                kind="categorical",
+                allowed_values=("synthetic_electrical", "synthetic_material"),
+            ),
+            DecisionInput(
+                name="test_purpose",
+                kind="categorical",
+                allowed_values=("synthetic_purpose",),
+            ),
+        ),
+        outputs=(
+            DecisionOutput(name="preconditioning_required", kind="boolean"),
+            DecisionOutput(
+                name="preconditioning_procedure_rule_id",
+                kind="categorical",
+                allowed_values=(
+                    f"{ids.TEST_PRECONDITIONING}.electrical_tests",
+                    f"{ids.TEST_PRECONDITIONING}.material",
+                ),
+            ),
+        ),
+        rows=tuple(
+            DecisionRow(
+                matchers=(Matcher(input="test_context", op="equals", values=(context,)),),
+                values=(
+                    DecisionValue(name="preconditioning_required", boolean=True),
+                    DecisionValue(name="preconditioning_procedure_rule_id", categorical=route),
+                ),
+                source=reference,
+            )
+            for context, route in (
+                ("synthetic_electrical", f"{ids.TEST_PRECONDITIONING}.electrical_tests"),
+                ("synthetic_material", f"{ids.TEST_PRECONDITIONING}.material"),
+            )
+        ),
+        exhaustive=False,
+        source=reference,
+    )
+
+    curve_axis = CurveAxis(
+        quantity_kind="synthetic_time",
+        unit="s",
+        scale="linear",
+        minimum=Decimal(0),
+        maximum=Decimal(10),
+    )
+    voltage_axis = CurveAxis(
+        quantity_kind="synthetic_voltage",
+        unit="V",
+        scale="linear",
+        minimum=Decimal(0),
+        maximum=Decimal(100),
+    )
+    fault_time_voltage = PiecewiseCurveRule(
+        id=ids.DVC_FAULT_TIME_VOLTAGE,
+        variants=(
+            FaultTimeVoltageVariant(
+                id=f"{ids.DVC_FAULT_TIME_VOLTAGE}.synthetic-1",
+                selector=FaultTimeVoltageSelector(
+                    subject="accessible_circuit",
+                    voltage_basis="ac_rms",
+                    dvc_context=None,
+                    environment_context=None,
+                ),
+                x_axis=curve_axis,
+                y_axis=voltage_axis,
+                points=(
+                    CurvePoint(x=Decimal(1), y=Decimal(40)),
+                    CurvePoint(x=Decimal(5), y=Decimal(20)),
+                ),
+                segments=(
+                    CurveSegment(start=0, end=1, segment_type="continuous", interpolation="linear"),
+                ),
+                applicability="Synthetic fixture variant.",
+                source=reference,
+                reviewed_artifact_sha256="f" * 64,
+            ),
+        ),
+        source=reference,
+    )
+
+    return RulePackage(
+        manifest=Manifest(
+            schema_version=RULE_SCHEMA_VERSION,
+            package_id="00000000-0000-0000-0000-00000000000c",
+            version="verification-synthetic-1",
+            importer_version="test-1",
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            source_documents=(
+                SourceDocument(
+                    id="synthetic-verification-source",
+                    standard=STANDARD,
+                    edition=edition,
+                    sha256="c" * 64,
+                ),
+            ),
+            approved=True,
+            compatible=True,
+            approval_records=(
+                ApprovalRecord(
+                    action="approval",
+                    actor="Synthetic Reviewer",
+                    recorded_at=datetime(2026, 1, 2, tzinfo=UTC),
+                    notes="Synthetic verification data reviewed.",
+                ),
+            ),
+        ),
+        tables=(
+            *(
+                table(
+                    f"{ids.TEST_IMPULSE_SELECTION}.{pair}.{form}",
+                    f"system_voltage_{form}_v",
+                    "impulse_selection_column",
+                )
+                for pair in ("mains_circuits", "non_mains_circuits")
+                for form in ("ac", "dc")
+            ),
+            *(
+                table(f"{base_id}.{purpose}.{form}", row_axis_id, "dielectric_test_column")
+                for base_id, row_axis_id in (
+                    (ids.TEST_MAINS_DIELECTRIC_VALUES, "system_voltage_v"),
+                    (ids.TEST_NON_MAINS_DIELECTRIC_VALUES, "working_voltage_recurring_peak_v"),
+                )
+                for purpose in ("routine_and_basic_type", "enhanced_type")
+                for form in ("ac", "dc")
+            ),
+        ),
+        formulas=(),
+        mappings=(),
+        decisions=(
+            # Tables 2 and 3 are resolved for presence and edition only, so the fixture carries
+            # them in their smallest legal shape: their input contract belongs to the DVC
+            # guidance service and is exercised by the DVC fixture instead.
+            boolean_gate(ids.DVC_VOLTAGE_LIMITS, ("synthetic_input",), ("synthetic_output",)),
+            boolean_gate(ids.DVC_PROTECTION_MATRIX, ("synthetic_input",), ("synthetic_output",)),
+            partial_discharge_gate,
+            foil_gate,
+            preconditioning_gate,
+            boolean_gate(
+                ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION,
+                (
+                    "sub_assembly_routine_test_performed",
+                    "assembly_shown_not_to_compromise_insulation",
+                    "assembled_type_test_passed",
+                ),
+                ("assembled_routine_test_exempt",),
+            ),
+        ),
+        procedures=(
+            procedure(
+                ids.TEST_WORKING_VOLTAGE_DETERMINATION,
+                "working_voltage_determination",
+                classifications=("type_test",),
+            ),
+            *(
+                procedure(
+                    f"{ids.TEST_IMPULSE_PROCEDURE}.{variant}",
+                    "impulse_withstand_voltage",
+                    classifications=("type_test", "sample_test"),
+                )
+                for variant in ("insulation_basic", "insulation_reinforced", "transient_reduction")
+            ),
+            procedure(
+                ids.TEST_PARTIAL_DISCHARGE,
+                "partial_discharge",
+                applicability_rule_id=partial_discharge_gate.id,
+            ),
+            procedure(
+                ids.TEST_INTERNAL_SPD_MONITORING,
+                "internal_spd_monitoring",
+                classifications=("type_test",),
+            ),
+            procedure(
+                f"{ids.TEST_PRECONDITIONING}.electrical_tests",
+                "electrical_test_preconditioning",
+                applicability_rule_id=preconditioning_gate.id,
+            ),
+            procedure(
+                f"{ids.TEST_PRECONDITIONING}.material",
+                "material_preconditioning",
+                classifications=("type_test",),
+                applicability_rule_id=preconditioning_gate.id,
+            ),
+            procedure(
+                ids.TEST_ACCESSIBLE_SURFACE_FOIL,
+                "accessible_surface_foil_placement",
+                applicability_rule_id=foil_gate.id,
+            ),
+        ),
+        curves=(fault_time_voltage,),
+    )
+
+
 @pytest.fixture
 def synthetic_package() -> RulePackage:
     return synthetic_rule_package()

@@ -12,13 +12,16 @@ of any entry against the licensed source happens in private sessions only.
 - Scanner totals when first audited: inline-factor=2, inline-threshold=7,
   numeric-series=41, source-like-text=28, synthetic-iec-source=2,
   text-numeric-series=3, value-near-table-id=26 (109 findings).
-- Scanner totals now: inline-factor=2, inline-threshold=7, numeric-series=42,
-  source-like-text=5, synthetic-iec-source=4, text-numeric-series=2
-  (62 findings). Every `value-near-table-id` finding is resolved; the
+- Scanner totals now: inline-factor=2, inline-threshold=7, numeric-series=43,
+  source-like-text=5, synthetic-iec-source=6, text-numeric-series=2
+  (65 findings). Every `value-near-table-id` finding is resolved; the
   `numeric-series` count rose because the fixture rewrite in Task 5 split some
   containers, not because new content was added. The `synthetic-iec-source`
   count rose by two when issue #36's supply fixture joined the DVC fixture in
-  the identity exception below; no new content came with it.
+  the identity exception below, and by two again when issue #37's verification
+  fixture joined them for the same reason; the `numeric-series` count rose by
+  one with that fixture's invented curve points. No new content came with
+  either.
 - Tracked private artifacts (`.pdf`, `.icrules`, `.icproj`, `.icdraft`,
   `audit-inventory.json`): none, in the current tree and in the full history.
 
@@ -87,6 +90,8 @@ in-flight #53 workstream.
 | `tests/fixtures/synthetic_rules.py:89,252,409,634,1082` | numeric-series | Project-invented axes, cells, and curve points | synthetic-ok |
 | `tests/fixtures/synthetic_rules.py:1047,1264` | synthetic-iec-source | The DVC fixture package claims a real IEC standard identity as its source reference | open, deliberately not forced (Task 5). `DvcGuidanceService` refuses any package whose rules lack the expected standard **and** edition, so the fixture must carry that identity for the accept path to exist; dropping it would delete about twenty tests including the refusal case that proves the gate. The fixture references the production constant rather than a literal and marks itself synthetic. Needs either an audit policy decision (assess `synthetic-ok`, naming the gate) or an injectable identity in `src/`. The exception is written into `tests/test_content_boundaries.py`'s docstring so it cannot rot |
 | `tests/fixtures/synthetic_rules.py:1311,1644` | synthetic-iec-source | The supply fixture package claims a real IEC standard identity as its source reference | open, deliberately not forced (issue #36 slice 1). Exactly the DVC case, for a second gate: `read_supply_rules` refuses any rule whose source is not the expected standard **and** edition, so the fixture must carry that identity for the accept path — and the wrong-edition refusal — to be testable at all. Values, axes and the frequency are project-invented and the fixture says so. Resolves with the same policy decision or injectable identity the DVC entry needs |
+| `tests/fixtures/synthetic_rules.py:1806,2044` | synthetic-iec-source | The verification fixture package claims a real IEC standard identity as its source reference | open, deliberately not forced (issue #37 slice 1). The DVC and supply case again, for a third gate: `read_verification_rules` refuses any rule whose source is not the expected standard **and** edition, so the fixture must carry that identity for the accept path — and the wrong-edition refusal, which needs a package that is right about everything else — to be testable at all. Every value, step and condition is project-invented and the fixture says so. Resolves with the same policy decision or injectable identity the DVC and supply entries need |
+| `tests/fixtures/synthetic_rules.py:2008` | numeric-series | The verification fixture's invented curve points and axis bounds | synthetic-ok (issue #37 slice 1; the heuristic fires on any numeric container in a file naming an IEC identifier, and the file must keep those identifiers because the adapter resolves rules by exactly those strings) |
 | `tests/fixtures/topology_examples.py:69` | numeric-series | Synthetic project input triples | synthetic-ok |
 | `tests/rules/importer/iec62477_2022/test_annex_f_recipes.py:107-109` | numeric-series | Page numbers and expected grid shapes | allowed-structural |
 | `tests/rules/test_evaluator.py:616` | numeric-series | Synthetic trace-formatting expectations | synthetic-ok |
