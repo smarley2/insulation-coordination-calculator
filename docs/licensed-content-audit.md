@@ -44,12 +44,12 @@ of any entry against the licensed source happens in private sessions only.
   approved package through `calculation/reinforced_rules.py`, and the
   `numeric-series` container beside one of them went with them. This is a
   removal, not a rewording: the figures are no longer in the tree at all.
-- Issue #37's Task 14 removed **two manual-review findings the scanner cannot
-  see**, both in `report/human_view.py`'s trace-sentence builder. Neither is a
-  scanner class, so the total is unchanged at 60 across that task, and Task 15's
-  five new topology fixtures and their tests added no finding of any class and
-  **no fifth identity exception**: they read the existing verification fixture's
-  identity rather than declaring a source of their own.
+- Issue #37's Task 14 removed **one manual-review finding the scanner cannot
+  see**, in the altitude branch of `report/human_view.py`'s trace-sentence
+  builder. It is not a scanner class, so the total is unchanged at 60 across that
+  task, and Task 15's five new topology fixtures and their tests added no finding
+  of any class and **no fifth identity exception**: they read the existing
+  verification fixture's identity rather than declaring a source of their own.
 - Tracked private artifacts (`.pdf`, `.icrules`, `.icproj`, `.icdraft`,
   `audit-inventory.json`): none, in the current tree and in the full history.
 
@@ -77,7 +77,7 @@ of any entry against the licensed source happens in private sessions only.
 | `src/insulation_coordination/calculation/engine.py:386`, `high_frequency.py:104,257,649` | inline-threshold | The Part 4 frequency boundary, stated as a literal in four comparisons | resolved (issue #37 Task 9; the four comparisons now read one named `PART4_FREQUENCY_THRESHOLD_HZ` in `high_frequency.py`, and the value is stated once. Still a finding-B-class boundary in a single place rather than four, and it remains a candidate for a package-supplied figure) |
 | `src/insulation_coordination/calculation/high_frequency.py:462` | inline-threshold | Altitude-correction base boundary as a literal | confirmed (finding B class) |
 | `src/insulation_coordination/report/human_view.py` (altitude branch of the trace-sentence builder) | manual | Report sentence stated the A.2 altitude boundary as a numeral; no table identifier sits nearby, so no scanner class fires | resolved (issue #37 Task 14; the sentence now says the boundary the named rule states was checked and not exceeded, and states no figure) |
-| `src/insulation_coordination/report/human_view.py` (reinforced-creepage branch of the trace-sentence builder) | manual | Report sentence spelled the reinforced creepage factor out as a word, which the numeral heuristics do not see | resolved (issue #37 Task 14; the branch is deleted, and the step's own reason - built by `calculation/reinforced_rules.py` from the resolved rule - is rendered by the fallback instead) |
+| `src/insulation_coordination/report/human_view.py` (reinforced-creepage branch of the trace-sentence builder) | manual | Report sentence spells the reinforced creepage factor out as a word, which the numeral heuristics do not see | confirmed (finding B class; owned by a separate workstream and deliberately untouched by issue #37 Task 14 to avoid two sessions editing one function) |
 | `src/insulation_coordination/calculation/high_frequency.py:601` | inline-threshold | Altitude table boundary validation constant | confirmed (finding B class) |
 
 The `inline-threshold` entries extend finding B: they are comparison

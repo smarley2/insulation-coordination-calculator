@@ -1157,10 +1157,10 @@ def _rule_description(step: object) -> str:
             f"The altitude is checked against the boundary {semantic_rule_id} states and does "
             "not exceed it, so no correction factor applies."
         )
-    # A reinforced treatment describes itself: the step's own reason is built by
-    # `calculation.reinforced_rules` from the resolved rule and carries that rule's identifier,
-    # so the fallback at the end of this function is the right renderer for it. A sentence
-    # written here would be this application restating a factor it does not own.
+    if operation == "reinforced_stress_treatment":
+        return _sentence(getattr(step, "reason", ""))
+    if operation == "reinforced_creepage_double":
+        return "Reinforced insulation uses twice the selected creepage distance."
     if operation == "table_select" and source is not None:
         table = getattr(source, "table", None) or "the approved table"
         standard = getattr(source, "standard", "the applicable IEC standard")
