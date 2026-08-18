@@ -2,10 +2,14 @@
 
 Each test asserts a boundary property that already holds: the private suite
 skips cleanly when the licensed documents are absent, no private artifact type
-is tracked in the public tree, and a synthetic fixture package does not claim an
-IEC standard as its source identity. Boundary properties that are not yet true
-(rule-backed UI options, rule-backed reinforced policy) are inventoried in
-docs/licensed-content-audit.md instead of being asserted here.
+is tracked in the public tree, no inline factor is left in the tracked tree, and
+a synthetic fixture package does not claim an IEC standard as its source
+identity. Boundary properties that are not yet true (rule-backed UI options) are
+inventoried in docs/licensed-content-audit.md instead of being asserted here.
+
+The inline-factor property became true with issue #40's Task 4: both findings
+were reinforced treatment factors, and both are now resolved from the approved
+package.
 
 Four fixture packages are deliberately outside the identity property and so are
 not listed below. The DVC package has to carry the identity the guidance service
@@ -27,7 +31,12 @@ from pathlib import Path
 import pytest
 
 from insulation_coordination.domain.rules import RulePackage
-from scripts.scan_licensed_content import PRIVATE_NAMES, PRIVATE_SUFFIXES, iter_files
+from scripts.scan_licensed_content import (
+    PRIVATE_NAMES,
+    PRIVATE_SUFFIXES,
+    iter_files,
+    scan_tree,
+)
 from tests.fixtures.synthetic_rules import (
     claimed_standards,
     synthetic_hf_rule_package,
@@ -60,6 +69,16 @@ def test_no_private_artifact_types_are_tracked() -> None:
         for path in iter_files(REPOSITORY)
         if path.suffix.lower() in PRIVATE_SUFFIXES or path.name in PRIVATE_NAMES
     ]
+    assert offending == []
+
+
+def test_no_inline_factor_is_left_in_the_tracked_tree() -> None:
+    offending = [
+        f"{finding.path.as_posix()}:{finding.line}"
+        for finding in scan_tree(REPOSITORY)
+        if finding.category == "inline-factor"
+    ]
+
     assert offending == []
 
 
