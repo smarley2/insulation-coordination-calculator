@@ -956,6 +956,45 @@ def test_accept_raw_grid_resolves_only_selected_grid_and_preserves_raw_text(
     assert after - before == {pending[0].sha256}
 
 
+def test_one_correction_digests_the_whole_draft_once_per_content_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A correction has two content states, so it may digest the draft twice and no more.
+
+    Digesting serializes every collection a draft carries, and a review pass is a few hundred
+    corrections in a row over a draft that keeps growing, so a digest recomputed rather than
+    reused is invisible in behaviour and dominates the run. The two states worth digesting are
+    the draft the correction extends -- whose digest is also the link the audit chain is
+    verified against -- and the draft it produces.
+    """
+
+    from insulation_coordination.rules.importer import approval
+
+    draft = _compound_draft(tmp_path)
+    digested: list[str] = []
+    measured = approval.draft_content_digest
+
+    def counted(candidate: object) -> str:
+        digest = measured(candidate)
+        digested.append(digest)
+        return digest
+
+    monkeypatch.setattr(approval, "draft_content_digest", counted)
+    accepted = accept_raw_grid(
+        draft,
+        grid_id="raw-synthetic-part1-table",
+        corrections={},
+        actor="Maintainer",
+        notes="Compared against PDF",
+    )
+
+    assert unresolved_raw_review_items(accepted) == ()
+    assert len(digested) == 2
+    # Two states, not one state digested twice.
+    assert digested[0] != digested[1]
+
+
 def test_accept_raw_grid_applies_finite_decimal_correction(tmp_path: Path) -> None:
     draft = _compound_draft(tmp_path)
 
