@@ -7,13 +7,20 @@ from dataclasses import dataclass
 from decimal import Decimal
 from uuid import UUID
 
+from insulation_coordination.calculation.stress_propagation import (
+    DomainStress,
+    EffectivePairStressResolution,
+    TemporaryOvervoltageSource,
+)
 from insulation_coordination.domain.rules import SourceReference
+from insulation_coordination.domain.supply import DerivedSupplyScenario
 from insulation_coordination.domain.topology import GalvanicBarrier
 from insulation_coordination.report.model import (
     MatrixRow,
     PairCalculationReport,
     ReportModel,
     ReportStress,
+    ReportSupply,
 )
 
 
@@ -74,11 +81,27 @@ class HumanPairCalculation:
 
 
 @dataclass(frozen=True)
+class HumanPairSupply:
+    """One supply derivation, and the pairs it is the derivation of.
+
+    Pairs sharing a calculation group already share every result value, and they usually
+    share this too - so one block names all of them. Where two of them differ, in the
+    relationship that decides whether a mains temporary overvoltage applies for instance,
+    they get a block each rather than the first pair's route standing in for the second's.
+    """
+
+    pair_labels: tuple[str, ...]
+    stages: tuple[HumanValue, ...]
+    evidence: tuple[HumanValue, ...]
+
+
+@dataclass(frozen=True)
 class HumanGroup:
     name: str
     pair_labels: tuple[str, ...]
     calculations: tuple[HumanPairCalculation, ...]
     rules: tuple[HumanRule, ...]
+    supply: tuple[HumanPairSupply, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -133,6 +156,70 @@ class HumanTopologyStatus:
 
 
 @dataclass(frozen=True)
+class HumanSupplyConfiguration:
+    """One declared supply arrangement, as it was entered."""
+
+    name: str
+    status: str
+    supply_kind: str
+    nominal_voltage: str
+    phase_system: str
+    earthing_arrangement: str
+    overvoltage_category: str
+    input_topology: str
+    notes: str
+
+
+@dataclass(frozen=True)
+class HumanSupplyScenario:
+    """One arrangement's derived result, with the system voltages it resolved to."""
+
+    name: str
+    system_voltage_impulse: str
+    system_voltage_tov: str
+    overvoltage_category: str
+    rated_impulse: str
+    temporary_overvoltage_rms: str
+    temporary_overvoltage_peak: str
+    governs: str
+
+
+@dataclass(frozen=True)
+class HumanBlockedSupplyScenario:
+    """An enabled arrangement that produced no scenario, and every reason it did not."""
+
+    name: str
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class HumanSupplyDomain:
+    """One galvanic domain of the graph the stresses were carried through."""
+
+    name: str
+    state: str
+    electrical_set: str
+    own_impulse: str
+    transferred_impulse: str
+    governing_impulse: str
+    route: str
+    unresolved_barriers: str
+
+
+@dataclass(frozen=True)
+class HumanSupplyView:
+    """Everything the project's supply derivation determined, before any pair reads it."""
+
+    configurations: tuple[HumanSupplyConfiguration, ...]
+    scenarios: tuple[HumanSupplyScenario, ...]
+    scenario_rules: tuple[HumanValue, ...]
+    blocked: tuple[HumanBlockedSupplyScenario, ...]
+    domains: tuple[HumanSupplyDomain, ...]
+    governing: tuple[HumanValue, ...]
+    altitude_statement: str
+
+
+@dataclass(frozen=True)
 class HumanReportView:
     common_values: tuple[HumanValue, ...]
     comparison_matrices: tuple[HumanMatrix, ...]
@@ -143,6 +230,7 @@ class HumanReportView:
     galvanic_domains: tuple[HumanGalvanicDomain, ...]
     galvanic_barriers: tuple[HumanGalvanicBarrier, ...]
     topology_status: HumanTopologyStatus
+    supply: HumanSupplyView | None
     rules: object
 
 
@@ -226,6 +314,9 @@ def build_human_report_view(model: ReportModel) -> HumanReportView:
             )
         )
 
+    # Four topology sections name the same domains, so the lookup is built once here.
+    domain_names = {domain.id: domain.name for domain in model.galvanic_domains}
+
     row_by_id = {row.pair_id: row for row in model.matrix_rows}
     report_groups: list[HumanGroup] = []
     for group_index, group in enumerate(model.groups, start=1):
@@ -239,11 +330,15 @@ def build_human_report_view(model: ReportModel) -> HumanReportView:
                 pair_labels=tuple(calculation.pair_label for calculation in calculations),
                 calculations=calculations,
                 rules=_human_rules(group.calculations),
+                supply=_human_group_supply(
+                    group.calculations,
+                    tuple(calculation.pair_label for calculation in calculations),
+                    model,
+                    domain_names,
+                ),
             )
         )
 
-    # Three topology sections name the same domains, so the lookup is built once here.
-    domain_names = {domain.id: domain.name for domain in model.galvanic_domains}
     warnings = _deduplicate_advisories(model.warnings)
     verification_requirements = _deduplicate_advisories(model.verification_requirements)
     warning_codes = {item.code for item in warnings}
@@ -260,6 +355,7 @@ def build_human_report_view(model: ReportModel) -> HumanReportView:
         galvanic_domains=_human_galvanic_domains(model),
         galvanic_barriers=_human_galvanic_barriers(model, domain_names),
         topology_status=_human_topology_status(model, domain_names),
+        supply=_human_supply(model, domain_names),
         rules=model.rules,
     )
 
@@ -358,6 +454,383 @@ def _human_topology_status(
             for domain_id in model.domains_needing_review
         ),
     )
+
+
+#: The statement the issue requires the report to make explicitly. Altitude corrects a
+#: dimensioned distance once a governing candidate has been chosen; it is never applied to
+#: a source voltage, and a reader should not have to infer that from an absence.
+ALTITUDE_STATEMENT = (
+    "Altitude did not alter any source voltage. The derived impulse withstand voltage and "
+    "the derived temporary overvoltage are source stresses; the altitude correction is "
+    "applied to a dimensioned distance, after the governing clearance candidate has been "
+    "selected, and is reported with that clearance."
+)
+
+#: Stated instead when the derivation's own trace says otherwise. It should be unreachable;
+#: printing a claim the trace contradicts would be worse than printing this.
+ALTITUDE_CONTRADICTED_STATEMENT = (
+    "An altitude rule was read while the source voltages of this project were derived. "
+    "Altitude is not permitted to alter a source voltage, so this result must be explained "
+    "before it is relied on."
+)
+
+
+def _human_supply(model: ReportModel, domain_names: dict[UUID, str]) -> HumanSupplyView | None:
+    """Project the supply derivation, or ``None`` where the project declares no arrangement."""
+    supply = model.supply
+    if supply is None and not model.supply_configurations:
+        return None
+    scenarios = () if supply is None else supply.governing.scenarios
+    governed_by = _governed_labels(supply)
+    return HumanSupplyView(
+        configurations=tuple(
+            HumanSupplyConfiguration(
+                name=configuration.name,
+                status="enabled" if configuration.enabled else "not enabled",
+                supply_kind=_value_text(configuration.supply_kind),
+                nominal_voltage=_effective_text(configuration.nominal_voltage_v, "V"),
+                phase_system=_value_text(configuration.phase_system),
+                earthing_arrangement=_value_text(configuration.earthing_arrangement),
+                overvoltage_category=_value_text(configuration.overvoltage_category),
+                input_topology=_value_text(configuration.input_topology),
+                notes=configuration.notes or "—",
+            )
+            for configuration in model.supply_configurations
+        ),
+        scenarios=tuple(
+            HumanSupplyScenario(
+                name=scenario.configuration_name,
+                system_voltage_impulse=_effective_text(scenario.system_voltage_for_impulse_v, "V"),
+                system_voltage_tov=_effective_text(scenario.system_voltage_for_tov_v, "V"),
+                overvoltage_category=_value_text(scenario.source_ovc),
+                rated_impulse=_effective_text(scenario.rated_impulse_v, "V"),
+                temporary_overvoltage_rms=_effective_text(
+                    scenario.temporary_overvoltage_rms_v, "V"
+                ),
+                temporary_overvoltage_peak=_effective_text(
+                    scenario.temporary_overvoltage_peak_v, "V"
+                ),
+                governs=", ".join(governed_by.get(scenario.configuration_id, ())) or "—",
+            )
+            for scenario in scenarios
+        ),
+        scenario_rules=tuple(
+            HumanValue(
+                name=scenario.configuration_name,
+                value=", ".join(scenario.source_rule_ids) or "—",
+            )
+            for scenario in scenarios
+        ),
+        blocked=tuple(
+            HumanBlockedSupplyScenario(
+                name=unresolved.configuration_name,
+                reasons=tuple(
+                    f"{_value_text(block.code)}: {_sentence(block.message)}"
+                    for block in unresolved.blocks
+                ),
+            )
+            for unresolved in (() if supply is None else supply.governing.unresolved)
+        ),
+        domains=_human_supply_domains(model, domain_names),
+        governing=_human_governing(supply),
+        altitude_statement=(
+            ""
+            if supply is None
+            else (
+                ALTITUDE_CONTRADICTED_STATEMENT
+                if supply.altitude_altered_source_voltages
+                else ALTITUDE_STATEMENT
+            )
+        ),
+    )
+
+
+def _governed_labels(supply: ReportSupply | None) -> dict[UUID, tuple[str, ...]]:
+    """Which of the three governing stresses each configuration won, by configuration."""
+    if supply is None:
+        return {}
+    governing = supply.governing
+    labels: dict[UUID, tuple[str, ...]] = {}
+    for label, owner in (
+        ("impulse", governing.impulse_configuration_id),
+        ("temporary overvoltage peak", governing.tov_configuration_id),
+        ("temporary overvoltage RMS", governing.tov_rms_configuration_id),
+    ):
+        if owner is not None:
+            labels[owner] = (*labels.get(owner, ()), label)
+    return labels
+
+
+def _human_governing(supply: ReportSupply | None) -> tuple[HumanValue, ...]:
+    """The three governing values, each named with the scenario that produced it.
+
+    They are selected independently, so three different arrangements can appear here.
+    """
+    if supply is None:
+        return ()
+    governing = supply.governing
+    names = {
+        scenario.configuration_id: scenario.configuration_name for scenario in governing.scenarios
+    }
+    return tuple(
+        HumanValue(
+            name=label,
+            # A governing value and its owner are recorded together or not at all;
+            # GoverningSupplyStress validates that, so one check answers for both.
+            value=(
+                "—"
+                if value is None or owner is None
+                else f"{_effective_text(value, 'V')} from {names.get(owner, str(owner))}"
+            ),
+        )
+        for label, value, owner in (
+            (
+                "Governing impulse withstand voltage",
+                governing.impulse_v,
+                governing.impulse_configuration_id,
+            ),
+            (
+                "Governing temporary overvoltage (peak)",
+                governing.tov_peak_v,
+                governing.tov_configuration_id,
+            ),
+            (
+                "Governing temporary overvoltage (RMS)",
+                governing.tov_rms_v,
+                governing.tov_rms_configuration_id,
+            ),
+        )
+    )
+
+
+def _human_supply_domains(
+    model: ReportModel, domain_names: dict[UUID, str]
+) -> tuple[HumanSupplyDomain, ...]:
+    """The domain graph: what each domain carries, and the route anything transferred took."""
+    if model.supply is None:
+        return ()
+    return tuple(
+        HumanSupplyDomain(
+            name=domain_names.get(stress.domain_id, str(stress.domain_id)),
+            state=_value_text(stress.state),
+            electrical_set=", ".join(
+                domain_names.get(domain_id, str(domain_id))
+                for domain_id in stress.component_domain_ids
+            )
+            or "—",
+            own_impulse=_effective_text(stress.own_impulse_v, "V"),
+            transferred_impulse=_effective_text(stress.transferred_impulse_v, "V"),
+            governing_impulse=_effective_text(stress.governing_impulse_v, "V"),
+            route=_transfer_route(stress, model, domain_names),
+            unresolved_barriers=", ".join(
+                _barrier_label(barrier_id, model.galvanic_barriers, domain_names)
+                for barrier_id in stress.unresolved_barrier_ids
+            )
+            or "—",
+        )
+        for stress in model.supply.domain_stresses.domains
+    )
+
+
+def _transfer_route(stress: DomainStress, model: ReportModel, domain_names: dict[UUID, str]) -> str:
+    """The domains and barriers the governing stress crossed to arrive, or that none did."""
+    transfer = stress.governing_transfer
+    if transfer is None:
+        return "no barrier crossed"
+    hops = " to ".join(
+        domain_names.get(domain_id, str(domain_id)) for domain_id in transfer.domain_path
+    )
+    crossed = ", ".join(
+        _barrier_label(barrier_id, model.galvanic_barriers, domain_names)
+        for barrier_id in transfer.barrier_path
+    )
+    return (
+        f"{hops} across {crossed}, arriving in overvoltage category "
+        f"{_value_text(transfer.transferred_ovc)}, from {transfer.source.scenario.configuration_name}"
+    )
+
+
+def _human_group_supply(
+    calculations: tuple[PairCalculationReport, ...],
+    pair_labels: tuple[str, ...],
+    model: ReportModel,
+    domain_names: dict[UUID, str],
+) -> tuple[HumanPairSupply, ...]:
+    """One block per distinct derivation in the group, naming the pairs it covers."""
+    blocks: dict[tuple[tuple[HumanValue, ...], tuple[HumanValue, ...]], list[str]] = {}
+    for calculation, label in zip(calculations, pair_labels, strict=True):
+        if calculation.supply is None:
+            continue
+        key = (
+            _human_supply_stages(calculation.supply, model, domain_names),
+            _human_override_evidence(calculation.supply),
+        )
+        blocks.setdefault(key, []).append(label)
+    return tuple(
+        HumanPairSupply(pair_labels=tuple(labels), stages=stages, evidence=evidence)
+        for (stages, evidence), labels in blocks.items()
+    )
+
+
+def _human_supply_stages(
+    resolution: EffectivePairStressResolution,
+    model: ReportModel,
+    domain_names: dict[UUID, str],
+) -> tuple[HumanValue, ...]:
+    """Every stage between the supply and this pair's clearance input, in reading order."""
+    return (
+        HumanValue("Pair relationship", _value_text(resolution.relationship)),
+        HumanValue("Topology state", _value_text(resolution.state)),
+        HumanValue("Source scenarios", _source_scenarios(resolution)),
+        HumanValue("Propagation path", _pair_route(resolution, model, domain_names)),
+        HumanValue(
+            "Source scenario impulse",
+            _effective_text(resolution.source_scenario_impulse_v, "V"),
+        ),
+        HumanValue("Local domain impulse", _effective_text(resolution.local_domain_impulse_v, "V")),
+        HumanValue("Transferred impulse", _effective_text(resolution.transferred_impulse_v, "V")),
+        HumanValue(
+            "Governing before override",
+            _effective_text(resolution.governing_pre_override_impulse_v, "V"),
+        ),
+        HumanValue(
+            "Verified effective impulse",
+            _effective_text(resolution.verified_effective_impulse_v, "V"),
+        ),
+        HumanValue(
+            "Insulation-treated impulse",
+            _effective_text(resolution.insulation_treated_impulse_v, "V"),
+        ),
+        HumanValue("Temporary overvoltage", _pair_temporary_overvoltage(resolution)),
+        HumanValue("Rules read", _pair_source_rules(resolution)),
+    )
+
+
+def _source_scenarios(resolution: EffectivePairStressResolution) -> str:
+    """Every scenario whose stress reaches either side, entering or arriving."""
+    scenarios: dict[UUID, DerivedSupplyScenario] = {}
+    for side in (resolution.side_a, resolution.side_b):
+        if side.stress is None:
+            continue
+        for source in (
+            *side.stress.own,
+            *(transfer.source for transfer in side.stress.transferred),
+        ):
+            scenarios.setdefault(source.scenario.configuration_id, source.scenario)
+    return (
+        "; ".join(
+            f"{scenario.configuration_name}: {_effective_text(scenario.rated_impulse_v, 'V')}"
+            for scenario in scenarios.values()
+        )
+        or "—"
+    )
+
+
+def _pair_route(
+    resolution: EffectivePairStressResolution,
+    model: ReportModel,
+    domain_names: dict[UUID, str],
+) -> str:
+    """The route the governing stress took to each side of the pair."""
+    routes = [
+        f"{domain_names.get(side.stress.domain_id, str(side.stress.domain_id))}: "
+        f"{_transfer_route(side.stress, model, domain_names)}"
+        for side in (resolution.side_a, resolution.side_b)
+        if side.stress is not None
+    ]
+    return "; ".join(dict.fromkeys(routes)) or "—"
+
+
+def _pair_temporary_overvoltage(resolution: EffectivePairStressResolution) -> str:
+    """Whether one applies, on whose authority, and the reason where it does not."""
+    temporary = resolution.temporary_overvoltage
+    if not temporary.applies:
+        return f"not applicable — {_sentence(temporary.reason)}"
+    values = " / ".join(
+        f"{_effective_text(value, 'V')} {basis}"
+        for value, basis in ((temporary.peak_v, "peak"), (temporary.rms_v, "RMS"))
+        if value is not None
+    )
+    source = (
+        "this pair's own entry"
+        if temporary.source is TemporaryOvervoltageSource.PAIR_ENTRY
+        else "the derived mains supply"
+    )
+    return f"{values or '—'} from {source} — {_sentence(temporary.reason)}"
+
+
+def _pair_source_rules(resolution: EffectivePairStressResolution) -> str:
+    """Every semantic rule this pair's derivation read, in the order it read them."""
+    groups = [
+        *(
+            scenario.source_rule_ids
+            for side in (resolution.side_a, resolution.side_b)
+            if side.stress is not None
+            for scenario in (
+                *(source.scenario for source in side.stress.own),
+                *(transfer.source.scenario for transfer in side.stress.transferred),
+            )
+        ),
+        tuple(step.semantic_rule_id for step in resolution.trace_steps),
+        () if resolution.override_outcome is None else resolution.override_outcome.source_rule_ids,
+    ]
+    return ", ".join(dict.fromkeys(rule for group in groups for rule in group)) or "—"
+
+
+def _human_override_evidence(
+    resolution: EffectivePairStressResolution,
+) -> tuple[HumanValue, ...]:
+    """The verified override recorded at this pair, its evidence, and what became of it."""
+    outcome = resolution.override_outcome
+    if outcome is None:
+        return ()
+    override = outcome.override
+    rows = [
+        HumanValue("Recorded value", _effective_text(override.value_v, "V")),
+        HumanValue("Basis", _value_text(override.basis)),
+        HumanValue("Verification method", _value_text(override.verification_method)),
+        HumanValue("Justification", _sentence(override.justification)),
+        HumanValue("Evidence reference", override.evidence_reference or "—"),
+        HumanValue("Affected location", override.affected_location or "—"),
+    ]
+    if override.transformer_frequency_hz is not None:
+        rows.append(
+            HumanValue(
+                "Transformer frequency", _effective_text(override.transformer_frequency_hz, "Hz")
+            )
+        )
+    if override.spd_device_placement is not None:
+        rows.append(HumanValue("Device placement", _value_text(override.spd_device_placement)))
+    if override.spd_device_degradable is not None:
+        rows.append(
+            HumanValue("Device can degrade", "yes" if override.spd_device_degradable else "no")
+        )
+    rows.append(
+        HumanValue(
+            "Outcome",
+            (
+                f"applied; effective impulse {_effective_text(outcome.effective_impulse_v, 'V')}"
+                if outcome.applied
+                else "not applied — "
+                + "; ".join(
+                    f"{_value_text(refusal.code)}: {_sentence(refusal.message)}"
+                    for refusal in outcome.refusals
+                )
+            ),
+        )
+    )
+    dependency = outcome.spd_monitoring_dependency
+    if dependency is not None:
+        rows.append(
+            HumanValue(
+                "Monitoring obligation",
+                f"monitoring {'required' if dependency.monitoring_required else 'not required'}, "
+                f"status indication "
+                f"{'required' if dependency.status_indication_required else 'not required'}; "
+                f"type test {dependency.required_type_test_semantic_id}",
+            )
+        )
+    return tuple(rows)
 
 
 def _matrix_for(

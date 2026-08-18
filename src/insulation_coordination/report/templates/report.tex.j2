@@ -204,6 +204,124 @@ The following remain unresolved:
 \end{itemize}
 {% endif %}
 
+{% if human.supply %}
+\clearpage
+\section{Supply Arrangements}
+This section records the supply arrangements declared for this project, the impulse
+withstand voltage and temporary overvoltage each enabled arrangement derives, the governing
+selection across them, and the galvanic domains those stresses were carried through. Every
+figure here is a source stress: what one pair is finally dimensioned from is reported with
+that pair's calculation.
+
+\subsection{Declared Arrangements}
+\begin{longtable}{@{}p{26mm}p{16mm}p{24mm}p{16mm}p{18mm}p{26mm}p{10mm}p{26mm}@{}}
+\toprule
+Arrangement & Status & Supply kind & Nominal voltage & Phase system & Earthing arrangement & OVC & Input topology \\
+\midrule
+\endfirsthead
+\toprule
+Arrangement & Status & Supply kind & Nominal voltage & Phase system & Earthing arrangement & OVC & Input topology \\
+\midrule
+\endhead
+{% for configuration in human.supply.configurations %}
+{{ configuration.name|tex }} & {{ configuration.status|tex }} & {{ configuration.supply_kind|tex }} & {{ configuration.nominal_voltage|tex }} & {{ configuration.phase_system|tex }} & {{ configuration.earthing_arrangement|tex }} & {{ configuration.overvoltage_category|tex }} & {{ configuration.input_topology|tex }} \\
+{% endfor %}
+\bottomrule
+\end{longtable}
+
+\subsection{Derived Scenarios}
+{% if human.supply.scenarios %}
+Each enabled arrangement is evaluated on its own. The system voltage is resolved separately
+for the impulse withstand voltage and for the temporary overvoltage, because an arrangement
+may state them differently.
+
+\begin{longtable}{@{}p{26mm}p{20mm}p{20mm}p{10mm}p{18mm}p{18mm}p{18mm}p{28mm}@{}}
+\toprule
+Arrangement & System voltage (impulse) & System voltage (TOV) & OVC & Rated impulse & TOV RMS & TOV peak & Governs \\
+\midrule
+\endfirsthead
+\toprule
+Arrangement & System voltage (impulse) & System voltage (TOV) & OVC & Rated impulse & TOV RMS & TOV peak & Governs \\
+\midrule
+\endhead
+{% for scenario in human.supply.scenarios %}
+{{ scenario.name|tex }} & {{ scenario.system_voltage_impulse|tex }} & {{ scenario.system_voltage_tov|tex }} & {{ scenario.overvoltage_category|tex }} & {{ scenario.rated_impulse|tex }} & {{ scenario.temporary_overvoltage_rms|tex }} & {{ scenario.temporary_overvoltage_peak|tex }} & {{ scenario.governs|tex }} \\
+{% endfor %}
+\bottomrule
+\end{longtable}
+
+\textbf{Rules read.}\par
+\begin{itemize}
+{% for entry in human.supply.scenario_rules %}
+\item {{ entry.name|tex }}: {{ entry.value|tex }}
+{% endfor %}
+\end{itemize}
+{% else %}
+No supply arrangement is enabled, so nothing was derived. Every pair is dimensioned from its
+own entries and the project defaults.
+{% endif %}
+
+{% if human.supply.blocked %}
+\subsection{Arrangements That Could Not Be Derived}
+The arrangements below are enabled but produced no scenario. They contribute nothing to the
+governing selection, and every reason is recorded rather than a value being guessed.
+
+\begin{itemize}
+{% for blocked in human.supply.blocked %}
+\item \textbf{ {{- blocked.name|tex -}} }:
+\begin{itemize}
+{% for reason in blocked.reasons %}
+\item {{ reason|tex }}
+{% endfor %}
+\end{itemize}
+{% endfor %}
+\end{itemize}
+{% endif %}
+
+{% if human.supply.governing %}
+\subsection{Governing Selection}
+The impulse withstand voltage and the temporary overvoltage are selected independently, so
+different arrangements may govern them.
+
+\begin{tabularx}{\linewidth}{@{}p{60mm}X@{}}
+\toprule
+Quantity & Governing value and arrangement \\
+\midrule
+{% for item in human.supply.governing %}
+{{ item.name|tex }} & {{ item.value|tex }} \\
+{% endfor %}
+\bottomrule
+\end{tabularx}
+{% endif %}
+
+{% if human.supply.domains %}
+\subsection{Galvanic Domain Stresses}
+Domains no barrier records isolation between share one electrical set and one answer. A
+stress crossing a verified barrier is recorded with the route it took and the overvoltage
+category it arrived in.
+
+\begin{longtable}{@{}p{20mm}p{18mm}p{22mm}p{14mm}p{16mm}p{16mm}p{38mm}p{18mm}@{}}
+\toprule
+Domain & State & Electrical set & Own & Transferred & Governing & Governing route & Unresolved barriers \\
+\midrule
+\endfirsthead
+\toprule
+Domain & State & Electrical set & Own & Transferred & Governing & Governing route & Unresolved barriers \\
+\midrule
+\endhead
+{% for domain in human.supply.domains %}
+{{ domain.name|tex }} & {{ domain.state|tex }} & {{ domain.electrical_set|tex }} & {{ domain.own_impulse|tex }} & {{ domain.transferred_impulse|tex }} & {{ domain.governing_impulse|tex }} & {{ domain.route|tex }} & {{ domain.unresolved_barriers|tex }} \\
+{% endfor %}
+\bottomrule
+\end{longtable}
+{% endif %}
+
+{% if human.supply.altitude_statement %}
+\subsection{Altitude and the Source Voltages}
+{{ human.supply.altitude_statement|tex }}
+{% endif %}
+{% endif %}
+
 {% if model.excluded_pairs %}
 \section{Pairs Excluded from the Analysis}
 Every voltage stress of the pairs below is recorded as not applicable, so no
@@ -306,6 +424,34 @@ Stress & Applicability & Value & Justification \\
 \bottomrule
 \end{tabularx}
 
+{% if group.supply %}
+{% for block in group.supply %}
+\textbf{Supply stress derivation{% if group.supply|length > 1 %} — {{ block.pair_labels|join(", ")|tex }}{% endif %}.}\par
+\begin{tabularx}{\linewidth}{@{}p{48mm}X@{}}
+\toprule
+Stage & Value \\
+\midrule
+{% for stage in block.stages %}
+{{ stage.name|tex }} & {{ stage.value|tex }} \\
+{% endfor %}
+\bottomrule
+\end{tabularx}
+
+{% if block.evidence %}
+\textbf{Verified impulse override.}\par
+\begin{tabularx}{\linewidth}{@{}p{48mm}X@{}}
+\toprule
+Field & Recorded \\
+\midrule
+{% for item in block.evidence %}
+{{ item.name|tex }} & {{ item.value|tex }} \\
+{% endfor %}
+\bottomrule
+\end{tabularx}
+
+{% endif %}
+{% endfor %}
+{% endif %}
 \textbf{Clearance candidates.}\par
 \begin{tabularx}{\linewidth}{@{}lrrX@{}}
 \toprule

@@ -299,6 +299,40 @@ def test_every_route_to_one_domain_is_evaluated_and_the_worst_governs() -> None:
     assert far.governing_impulse_v == far.governing_transfer.impulse_v
 
 
+def test_a_barrier_carries_a_stress_in_whichever_direction_the_supply_enters() -> None:
+    """The same barrier, the same two domains, the supply on the other side of it.
+
+    A barrier is not a diode. The edge is recorded once and read both ways, so a project
+    whose only supply enters downstream transfers upstream - and asserting the mirror of the
+    ordinary case is the only thing that would notice if one of the two edges went missing.
+    """
+
+    rules = _one_level_rules()
+    forward = supply_topology(("Primary", "Secondary"), ((0, 1, VERIFIED),))
+    reverse = supply_topology(
+        ("Primary", "Secondary"),
+        ((0, 1, VERIFIED),),
+        sources={
+            0: CircuitSourceRelationship.INTERNALLY_GENERATED,
+            1: CircuitSourceRelationship.MAINS_CONNECTED,
+        },
+    )
+
+    downstream = _stress(_map(forward, rules), 1)
+    upstream = _stress(_map(reverse, rules), 0)
+
+    assert upstream.state is DomainStressState.TRANSFERRED
+    assert upstream.governing_transfer is not None
+    assert upstream.governing_transfer.domain_path == (domain_id(1), domain_id(0))
+    assert upstream.governing_transfer.barrier_path == (barrier_id(0),)
+    assert upstream.governing_impulse_v == downstream.governing_impulse_v
+    assert upstream.governing_transfer.transferred_ovc is (
+        downstream.governing_transfer.transferred_ovc
+        if downstream.governing_transfer is not None
+        else None
+    )
+
+
 def test_a_cycle_resolves_rather_than_being_refused() -> None:
     rules = _one_level_rules()
     project = supply_topology(

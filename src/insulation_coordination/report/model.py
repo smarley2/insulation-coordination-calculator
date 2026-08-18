@@ -20,6 +20,7 @@ from insulation_coordination.calculation.engine import (
     CalculationWarning,
     EffectiveInputSnapshot,
     PairResult,
+    SupplyDerivation,
     VerificationRequirement,
     calculate_pair,
     derive_project_supply,
@@ -27,6 +28,10 @@ from insulation_coordination.calculation.engine import (
 )
 from insulation_coordination.calculation.grouping import CalculationGroup, calculation_signature
 from insulation_coordination.calculation.high_frequency import FieldIteration
+from insulation_coordination.calculation.stress_propagation import (
+    DomainStressMap,
+    EffectivePairStressResolution,
+)
 from insulation_coordination.domain.enums import ReviewState
 from insulation_coordination.domain.project import (
     EffectiveCase,
@@ -45,6 +50,7 @@ from insulation_coordination.domain.rules import (
     SourceDocument,
     SourceReference,
 )
+from insulation_coordination.domain.supply import GoverningSupplyStress, SupplyConfiguration
 from insulation_coordination.domain.topology import (
     GalvanicBarrier,
     GalvanicDomain,
@@ -136,10 +142,34 @@ class MatrixRow(FrozenModel):
     group_id: str
 
 
+class ReportSupply(FrozenModel):
+    """One project's supply derivation, exactly as its pairs were dimensioned from it.
+
+    The two members are the derivation's own results rather than a second description of
+    them: ``governing`` carries every enabled arrangement's scenario, the ones that could
+    not be derived and why, and the independently selected governing impulse and temporary
+    overvoltage; ``domain_stresses`` carries the domain graph, each domain's own and
+    transferred stress, and the route and barriers a transfer crossed to arrive.
+
+    ``altitude_altered_source_voltages`` is read off the derivation's trace rather than
+    asserted: the report states that altitude left the source voltages alone, and this is
+    the check behind that statement. It is false in every supported configuration, and a
+    later change that routed an altitude rule into the derivation would say so here instead
+    of leaving the report claiming something untrue.
+    """
+
+    governing: GoverningSupplyStress
+    domain_stresses: DomainStressMap
+    altitude_altered_source_voltages: bool
+
+
 class PairCalculationReport(FrozenModel):
     pair_id: str
     pair_key: str
     result_sha256: str
+    #: How the supply stresses reached this pair, stage by stage, or ``None`` where the
+    #: project enables no arrangement and the pair is dimensioned from its own entries.
+    supply: EffectivePairStressResolution | None = None
     effective_inputs: EffectiveInputSnapshot
     stresses: tuple[ReportStress, ...]
     clearance_candidates: tuple[DistanceCandidate, ...]
@@ -230,6 +260,10 @@ class ReportModel(FrozenModel):
     # first consumer that discloses a domain still awaiting review, so it is read directly
     # from the domain models here rather than reshaping that helper's contract.
     domains_needing_review: tuple[UUID, ...] = ()
+    #: Every arrangement the project declares, enabled or not, in project order. A disabled
+    #: row takes no part in the derivation and is disclosed as the recorded decision it is.
+    supply_configurations: tuple[SupplyConfiguration, ...] = ()
+    supply: ReportSupply | None = None
     matrix_rows: tuple[MatrixRow, ...]
     excluded_pairs: tuple[ExcludedPair, ...] = ()
     circuit_diagram: ReportImage | None = None
@@ -306,6 +340,7 @@ def build_report_model(
     supplied_by_pair = {str(result.pair_id): result for result in results}
     pair_by_id = {str(pair.id): pair for pair in project.pairs}
     authoritative_by_pair: dict[str, PairResult] = {}
+    resolution_by_pair: dict[str, EffectivePairStressResolution | None] = {}
     try:
         supply = derive_project_supply(project, rules)
     except CalculationError as error:
@@ -313,6 +348,7 @@ def build_report_model(
     for pair_id in project_pair_ids:
         pair = pair_by_id[pair_id]
         expected_effective, resolution = resolve_supply_effective_case(project, pair, supply)
+        resolution_by_pair[pair_id] = resolution
         supplied = supplied_by_pair[pair_id]
         if supplied.effective_inputs != _effective_snapshot(expected_effective):
             raise ReportBuildError(f"pair {pair_id} effective input snapshot is stale")
@@ -346,7 +382,7 @@ def build_report_model(
                 pair_id for pair_id in project_pair_ids if pair_id in set(group.pair_ids)
             ),
             calculations=tuple(
-                _calculation(authoritative_by_pair[pair_id])
+                _calculation(authoritative_by_pair[pair_id], resolution_by_pair[pair_id])
                 for pair_id in project_pair_ids
                 if pair_id in set(group.pair_ids)
             ),
@@ -377,10 +413,20 @@ def build_report_model(
             for domain in project.galvanic_domains
             if domain.review_state is ReviewState.NEEDS_REVIEW
         ),
+        supply_configurations=tuple(
+            configuration.model_copy(deep=True) for configuration in project.supply_configurations
+        ),
+        supply=_report_supply(supply, tuple(resolution_by_pair.values())),
         matrix_rows=matrix_rows,
         excluded_pairs=excluded_pairs,
         groups=report_groups,
-        warnings=tuple(warning for result in ordered_results for warning in result.warnings),
+        # The derivation's own warnings lead: an arrangement in the lowest overvoltage
+        # category, or a scenario reaching no domain, is a statement about the source every
+        # pair below it inherited, and it is disclosed once rather than per pair.
+        warnings=(
+            *(() if supply is None else _supply_warnings(supply)),
+            *(warning for result in ordered_results for warning in result.warnings),
+        ),
         verification_requirements=tuple(
             requirement
             for result in ordered_results
@@ -407,6 +453,66 @@ def build_report_model(
             ),
             notes=rules.manifest.notes,
         ),
+    )
+
+
+#: Any semantic rule about altitude. Altitude corrects a dimensioned distance after the
+#: governing candidate is chosen; no derivation of a source voltage may read one.
+_ALTITUDE_RULE = "altitude"
+
+
+def _report_supply(
+    supply: SupplyDerivation | None,
+    resolutions: tuple[EffectivePairStressResolution | None, ...],
+) -> ReportSupply | None:
+    """Snapshot the derivation, or ``None`` where the project enabled no arrangement."""
+
+    if supply is None:
+        return None
+    return ReportSupply(
+        governing=supply.governing.model_copy(deep=True),
+        domain_stresses=supply.domain_stresses.model_copy(deep=True),
+        altitude_altered_source_voltages=any(
+            _ALTITUDE_RULE in step.semantic_rule_id
+            for step in _supply_trace_steps(supply, resolutions)
+        ),
+    )
+
+
+def _supply_trace_steps(
+    supply: SupplyDerivation,
+    resolutions: tuple[EffectivePairStressResolution | None, ...],
+) -> tuple[TraceStep, ...]:
+    """Every step taken between the supply arrangements and the clearance engine's input."""
+
+    governing = supply.governing
+    return (
+        *governing.trace_steps,
+        *(step for scenario in governing.scenarios for step in scenario.trace_steps),
+        *(step for scenario in governing.unresolved for step in scenario.trace_steps),
+        *(
+            step
+            for domain in supply.domain_stresses.domains
+            for step in (
+                *domain.trace_steps,
+                *(item for transfer in domain.transferred for item in transfer.trace_steps),
+            )
+        ),
+        *(
+            step
+            for resolution in resolutions
+            if resolution is not None
+            for step in resolution.trace_steps
+        ),
+    )
+
+
+def _supply_warnings(supply: SupplyDerivation) -> tuple[CalculationWarning, ...]:
+    """What the derivation itself has to say, before any pair reads it."""
+
+    return (
+        *(warning for scenario in supply.governing.scenarios for warning in scenario.warnings),
+        *supply.domain_stresses.warnings,
     )
 
 
@@ -565,7 +671,9 @@ def _matrix_row(
     )
 
 
-def _calculation(result: PairResult) -> PairCalculationReport:
+def _calculation(
+    result: PairResult, resolution: EffectivePairStressResolution | None
+) -> PairCalculationReport:
     clearance_source = _candidate_source(
         result.trace.clearance_candidates,
         result.trace.governing_clearance_candidate_id,
@@ -583,6 +691,7 @@ def _calculation(result: PairResult) -> PairCalculationReport:
         pair_id=str(result.pair_id),
         pair_key=result.pair_key,
         result_sha256=calculation_signature(result),
+        supply=None if resolution is None else resolution.model_copy(deep=True),
         effective_inputs=result.effective_inputs.model_copy(deep=True),
         stresses=_report_stresses(result.effective_inputs.voltages),
         clearance_candidates=tuple(
