@@ -50,6 +50,10 @@ from insulation_coordination.calculation.engine import (
     SupplyDerivation,
     resolve_supply_effective_case,
 )
+from insulation_coordination.calculation.high_frequency import (
+    PART4_FREQUENCY_THRESHOLD_HZ,
+    altitude_correction_band,
+)
 from insulation_coordination.calculation.impulse_override import SpdMonitoringDependency
 from insulation_coordination.calculation.partial_discharge import (
     PartialDischargeOutcome,
@@ -394,6 +398,7 @@ class VerificationPlanService:
             for dvc in _assigned_classes(project)
         }
 
+        band = _altitude_band(rules)
         generated: list[TestApplication] = []
         assessments: list[PairVerificationAssessment] = []
         warnings: list[CalculationWarning] = []
@@ -409,6 +414,7 @@ class VerificationPlanService:
                 rule_set,
                 revision,
                 matrix,
+                band,
                 warnings,
             )
             generated.extend(applications)
@@ -458,6 +464,7 @@ def _plan_pair(
     rules: VerificationRuleSet,
     revision: str,
     matrix: Mapping[DecisiveVoltageClass, tuple[ProtectionGuidance, ...]],
+    band: tuple[Decimal, Decimal] | None,
     warnings: list[CalculationWarning],
 ) -> tuple[tuple[TestApplication, ...], PairVerificationAssessment]:
     """One pair's impulse and dielectric applications, and the assessment that summarises them."""
@@ -506,7 +513,16 @@ def _plan_pair(
         monitoring = (_monitoring_application(subject, rules, revision, dependency, message),)
 
     impulse = _impulse_application(
-        pair, subject, effective, resolution, rules, revision, implementation, enhanced, warnings
+        pair,
+        subject,
+        effective,
+        resolution,
+        rules,
+        revision,
+        implementation,
+        enhanced,
+        band,
+        warnings,
     )
     override = _verified_reduction(resolution)
     reduction = (
@@ -738,6 +754,7 @@ def _impulse_application(
     revision: str,
     implementation: ProtectionImplementation | None,
     enhanced: bool,
+    band: tuple[Decimal, Decimal] | None,
     warnings: list[CalculationWarning],
 ) -> TestApplication:
     """The impulse withstand this pair asks for, at the stress issue #36 resolved for it.
@@ -768,7 +785,9 @@ def _impulse_application(
         )
     else:
         voltage = Quantity(value=treated, unit=_VOLTAGE_UNIT)
-    unresolved.extend(_altitude_inputs(pair, effective))
+    altitude_unresolved, altitude_preparation = _altitude_inputs(pair, effective, band)
+    unresolved.extend(altitude_unresolved)
+    preparation.extend(altitude_preparation)
     if enhanced and effective.insulation_type.value is not InsulationType.REINFORCED:
         message = (
             f"Pair {pair.key} is protected by {implementation} and is dimensioned on the "
@@ -907,31 +926,90 @@ def _reduction_application(
     )
 
 
-def _altitude_inputs(pair: PairCase, effective: EffectiveCase) -> tuple[str, ...]:
-    """What the plan owes a reader about altitude, without correcting anything for it.
+def _altitude_band(rules: RulePackage) -> tuple[Decimal, Decimal] | None:
+    """The altitudes the package's clearance correction runs between, or nothing.
 
-    The package's test-voltage altitude correction belongs to the test whose voltage it
-    corrects and is resolved against that test, not up front - see ``RULES_READ_ELSEWHERE``
-    in the rule adapter. Until it is, a planned voltage at an altitude above the reference is
-    an uncorrected one, and saying so is the only honest thing to do with it.
+    Resolved once for the whole plan rather than once per pair: it is a question about the
+    package, and a project's pairs all get the same answer. ``None`` is a package that states
+    no correction, which is reported on the rows that needed it rather than raised - a
+    schedule is still worth having without it.
+    """
+
+    try:
+        return altitude_correction_band(rules)
+    except CalculationError:
+        return None
+
+
+def _altitude_inputs(
+    pair: PairCase,
+    effective: EffectiveCase,
+    band: tuple[Decimal, Decimal] | None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """What the plan owes a reader about altitude: what is uncorrected, and the alternative.
+
+    *The correction is keyed on the altitude of the test, not on the altitude the pair is
+    dimensioned for.* The procedure states it as applying when the test is carried out on a
+    clearance below the reference altitude, and nothing in the project says where the test
+    will be performed. So every planned impulse voltage is an uncorrected one, whatever
+    altitude the pair was dimensioned at, and the row says so and names the correction to
+    apply once the site is known. Raising the input from the pair's own altitude - and from
+    "above zero", which is not a threshold anything states - answered a question nobody asked
+    and stayed silent for the pair tested at sea level, which is the pair the correction is
+    actually for.
+
+    *The correction does not reach solid insulation.* The procedure excepts impulse testing of
+    solid insulation from it outright, and this application covers the clearance alone, so the
+    row says which of the two its statement is about.
+
+    *A clearance dimensioned for the high-altitude band, or above the frequency threshold, has
+    an alternative.* Its test voltage may instead be derived from the clearance itself by
+    reading the correction backwards. That is a permission, so it is stated as a preparation
+    step and never selected here: a plan that silently took the alternative would report a
+    voltage nothing in the schedule explained.
     """
 
     altitude = effective.altitude_m.value
-    if altitude is None:
-        return (
-            (
-                f"No altitude is recorded for pair {pair.key}, so whether its planned test "
-                "voltage needs an altitude correction cannot be answered."
-            ),
+    frequency = effective.frequency_hz.value
+    unresolved = [
+        (
+            "The test-voltage altitude correction is keyed on the altitude at which the test "
+            "is carried out, and nothing records where that will be. The voltage planned here "
+            f"is uncorrected; apply {ids.ALTITUDE_TEST_VOLTAGE_CORRECTION} to it once the test "
+            "site is known. The correction is not applied to impulse testing of solid "
+            "insulation, which this application does not cover."
         )
-    if altitude > 0:
-        return (
-            (
-                f"Pair {pair.key} is dimensioned at {altitude} m. The package's test-voltage "
-                "altitude correction is not applied to the voltage planned here."
-            ),
+    ]
+    if band is None:
+        unresolved.append(
+            "The active rule package states no approved clearance altitude correction, so "
+            f"whether pair {pair.key} was dimensioned in the high-altitude band - and with it "
+            "whether its test voltage may instead be derived from its clearance - cannot be "
+            "answered."
         )
-    return ()
+    elif altitude is None:
+        unresolved.append(
+            f"No altitude is recorded for pair {pair.key}, so whether it was dimensioned in "
+            "the high-altitude band cannot be answered."
+        )
+    reasons = []
+    if band is not None and altitude is not None and altitude > band[0]:
+        reasons.append(
+            f"at {altitude} m, above the altitude the package's clearance correction is referred to"
+        )
+    if frequency is not None and frequency > PART4_FREQUENCY_THRESHOLD_HZ:
+        reasons.append("for a working voltage above the high-frequency threshold")
+    # The pair is deliberately not named: the statement is about the clearance under test, and
+    # two pairs of one connected group produce one row whose preparation should read once.
+    preparation = (
+        (
+            f"This clearance is dimensioned {' and '.join(reasons)}. Its test voltage may "
+            "instead be derived from the clearance itself, by reading "
+            f"{ids.ALTITUDE_TEST_VOLTAGE_CORRECTION} in reverse. This plan states the "
+            "alternative and does not choose it; record the selection with the result."
+        ),
+    )
+    return tuple(unresolved), preparation if reasons else ()
 
 
 # --- AC and DC dielectric --------------------------------------------------------------

@@ -16,6 +16,7 @@ from uuid import UUID
 import pytest
 
 from insulation_coordination.calculation.engine import derive_project_supply
+from insulation_coordination.calculation.high_frequency import altitude_correction_band
 from insulation_coordination.calculation.test_topology import (
     CONFLICTING_APPLICATION_WARNING,
 )
@@ -59,6 +60,8 @@ from insulation_coordination.domain.verification import (
 )
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from tests.fixtures.synthetic_rules import (
+    merged_rule_package,
+    synthetic_part1_rule_package,
     synthetic_supply_rule_package,
     synthetic_verification_rule_package,
 )
@@ -76,6 +79,7 @@ from tests.fixtures.verification_topologies import (
     it_mains_configuration,
     mains_configuration,
     pair_between,
+    single_column_dielectric_package,
     verification_and_supply_package,
     verification_topology,
     with_protection_matrix,
@@ -339,29 +343,97 @@ def test_the_impulse_says_which_verification_it_is_and_which_it_is_not(
     )
 
 
-def test_an_altitude_above_the_reference_is_disclosed_rather_than_corrected_for(
-    package: RulePackage,
+@pytest.mark.parametrize("altitude_m", [Decimal(0), Decimal(2500)])
+def test_every_planned_voltage_is_uncorrected_because_the_test_site_is_unknown(
+    package: RulePackage, altitude_m: Decimal
 ) -> None:
+    """The correction is keyed on the altitude of the test, not on the pair's own.
+
+    A pair dimensioned at sea level is the pair the correction is actually written for, and the
+    plan used to say nothing at all about it; a pair dimensioned high up was told its voltage
+    was uncorrected for a reason no rule states.
+    """
     project = with_protection(
         verification_topology(
-            supply_configurations=(mains_configuration(),), altitude_m=Decimal(2000)
+            supply_configurations=(mains_configuration(),), altitude_m=altitude_m
         ),
         BASIC,
     )
     pair = pair_between(project, LIVE_A, ENCLOSURE)
     application = one(build(project, package), pair, TestKind.IMPULSE_WITHSTAND)
-    assert any("2000 m" in item for item in application.unresolved_inputs)
     assert any(
-        "altitude correction is not applied" in item for item in application.unresolved_inputs
+        "keyed on the altitude at which the test is carried out" in item
+        for item in application.unresolved_inputs
+    )
+    assert any(
+        ids.ALTITUDE_TEST_VOLTAGE_CORRECTION in item for item in application.unresolved_inputs
     )
 
 
-def test_a_project_at_the_reference_altitude_says_nothing_about_a_correction(
+def test_the_uncorrected_statement_excepts_impulse_testing_of_solid_insulation(
     project: Project, package: RulePackage
 ) -> None:
     pair = pair_between(project, LIVE_A, ENCLOSURE)
     application = one(build(project, package), pair, TestKind.IMPULSE_WITHSTAND)
-    assert not any("altitude" in item for item in application.unresolved_inputs)
+    assert any(
+        "not applied to impulse testing of solid insulation" in item
+        for item in application.unresolved_inputs
+    )
+
+
+def test_a_package_stating_no_clearance_correction_cannot_place_the_pair_in_a_band(
+    project: Project, package: RulePackage
+) -> None:
+    """Without the boundary the package states, whether the alternative is open is unknown."""
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    application = one(build(project, package), pair, TestKind.IMPULSE_WITHSTAND)
+    assert any(
+        "states no approved clearance altitude correction" in item
+        for item in application.unresolved_inputs
+    )
+    assert not any("in reverse" in step for step in application.preparation_steps)
+
+
+def test_a_clearance_above_the_frequency_threshold_states_the_derivation_alternative(
+    package: RulePackage,
+) -> None:
+    """A permission, so it is stated and never selected: the voltage is still the pair's."""
+    project = with_protection(
+        verification_topology(
+            supply_configurations=(mains_configuration(),), frequency_hz=Decimal(40000)
+        ),
+        BASIC,
+    )
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    application = one(build(project, package), pair, TestKind.IMPULSE_WITHSTAND)
+    alternative = [step for step in application.preparation_steps if "in reverse" in step]
+    assert len(alternative) == 1
+    assert "above the high-frequency threshold" in alternative[0]
+    assert "does not choose it" in alternative[0]
+
+
+def test_a_clearance_dimensioned_above_the_packages_reference_altitude_states_it_too(
+    tmp_path: Path,
+) -> None:
+    """The band boundary comes from the package's own correction table, never from a literal."""
+    package = merged_rule_package(
+        single_column_dielectric_package(),
+        synthetic_supply_rule_package(),
+        synthetic_part1_rule_package(),
+        path=tmp_path / "with-altitude.icrules",
+    )
+    reference_m, _ = altitude_correction_band(package)
+    project = with_protection(
+        verification_topology(
+            supply_configurations=(mains_configuration(),), altitude_m=reference_m + Decimal(500)
+        ),
+        BASIC,
+    )
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    application = one(build(project, package), pair, TestKind.IMPULSE_WITHSTAND)
+    alternative = [step for step in application.preparation_steps if "in reverse" in step]
+    assert len(alternative) == 1
+    assert "above the altitude the package's clearance correction is referred to" in alternative[0]
 
 
 def test_a_project_with_no_supply_arrangement_asks_for_a_stress_rather_than_inventing_one(

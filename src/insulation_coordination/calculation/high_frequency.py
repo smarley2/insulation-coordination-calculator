@@ -562,6 +562,24 @@ def _apply_altitude_correction(
     return apply_a2_altitude_correction(effective, clearance_mm, rules)
 
 
+def altitude_correction_band(rules: RulePackage) -> tuple[Decimal, Decimal]:
+    """The altitudes the approved A.2 clearance correction is stated between.
+
+    The lower bound is the altitude a clearance is corrected *above* - the row the correction
+    is referred to, whose factor is unity - and the upper bound is the top of the same row
+    axis. Both are the package's to state and neither is written anywhere as a literal, which
+    is what :func:`_validate_a2_altitude_rule` makes sound.
+
+    Public because a consumer outside this module needs the same boundary to say whether a
+    clearance was dimensioned in the high-altitude band, and reading it from the package here
+    is the only way that answer cannot drift from the one the correction itself uses. Raises
+    the same refusal :func:`_read_a2_altitude_rule` does when the package states no rule.
+    """
+
+    _, _, table, _ = _read_a2_altitude_rule(rules)
+    return table.row_axis.values[0], table.row_axis.values[-1]
+
+
 def _read_a2_altitude_rule(
     rules: RulePackage,
 ) -> tuple[CompatibilityMapping, Formula, Table, Decimal]:
