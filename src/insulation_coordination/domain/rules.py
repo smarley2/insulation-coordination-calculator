@@ -44,7 +44,11 @@ RULE_SCHEMA_VERSION = 4
 #: the source heads them with. A column's semantic ID reaches the projected table's column axis
 #: labels, which are hashed into the package identity, so the rename is not upgradable into an
 #: existing draft either.
-IEC_IMPORTER_VERSION = "iec-pdf-12"
+#: ``iec-pdf-13`` is issue #37's partial-discharge applicability. The required inventory gains one
+#: identifier -- the subclause stating when a solid insulation owes the partial-discharge test and
+#: how it is classified -- so a package built before it is incomplete rather than merely older, and
+#: the three clause regions its two rules rest on are regions the older importer never extracted.
+IEC_IMPORTER_VERSION = "iec-pdf-13"
 MAX_IDENTIFIER_LENGTH = 160
 MAX_REFERENCE_TEXT_LENGTH = 500
 MAX_NOTES_LENGTH = 2_000

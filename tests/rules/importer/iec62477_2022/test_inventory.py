@@ -19,6 +19,7 @@ from insulation_coordination.rules.importer.iec62477_2022.semantic_ids import (
     TEST_DIELECTRIC_TOPOLOGY_SELECTION,
     TEST_IMPULSE_SELECTION,
     TEST_PARTIAL_DISCHARGE,
+    TEST_SOLID_INSULATION_PARTIAL_DISCHARGE,
 )
 from insulation_coordination.rules.importer.recipes import RECIPES
 from insulation_coordination.rules.importer.review import (
@@ -196,5 +197,42 @@ def test_a_package_predating_the_voltage_test_body_is_blocked_by_name() -> None:
         assert not (status.extracted or status.typed or status.approved)
 
     assert set(body) <= {status.semantic_id for status in missing_inventory_items(draft)}
+    with pytest.raises(ApprovalError, match="required inventory item"):
+        _require_complete_inventory(draft)
+
+
+def test_the_solid_insulation_partial_discharge_rule_is_its_own_required_item() -> None:
+    """Finding A6's remaining half: Table 30 is the procedure, 4.4.7.10.3 is the rule.
+
+    A sibling row rather than a second locator on the procedure's row, because the two answer
+    different questions and a consumer asks for exactly one of them. Stated here rather than
+    derived from the specs, so the two cannot be re-merged.
+    """
+    items = {item.semantic_id: item for item in REQUIRED_SOURCE_ITEMS}
+    item = items[TEST_SOLID_INSULATION_PARTIAL_DISCHARGE]
+
+    assert (item.expected_clause, item.expected_output_kind) == ("4.4.7.10.3", "decision")
+    assert item.expected_table is None
+    assert item.consumer_issue_ids == (37,)
+    assert items[TEST_PARTIAL_DISCHARGE].expected_output_kind == "procedure"
+
+
+def test_a_package_predating_the_partial_discharge_rule_is_blocked_by_name() -> None:
+    """Growing the required set makes the approved package incomplete, and that must be said.
+
+    Not a crash and not a silent pass: the identifier is declared by the recipe, so completeness
+    counts it, reports it unextracted and unapproved, and the approval path refuses with it named.
+    """
+    draft = _draft()
+    status = {status.semantic_id: status for status in inventory_report(draft)}[
+        TEST_SOLID_INSULATION_PARTIAL_DISCHARGE
+    ]
+
+    assert status.located
+    assert not status.deferred
+    assert not (status.extracted or status.typed or status.approved)
+    assert TEST_SOLID_INSULATION_PARTIAL_DISCHARGE in {
+        item.semantic_id for item in missing_inventory_items(draft)
+    }
     with pytest.raises(ApprovalError, match="required inventory item"):
         _require_complete_inventory(draft)

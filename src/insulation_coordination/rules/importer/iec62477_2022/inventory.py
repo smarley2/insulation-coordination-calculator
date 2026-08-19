@@ -98,6 +98,15 @@ REQUIRED_SOURCE_ITEMS: tuple[RequiredSourceItem, ...] = (
         table="Table 30",
         clause="4.4.7.10.3",
     ),
+    #: Table 30 above is the procedure. This is the subclause that decides whether a solid
+    #: insulation owes that procedure at all, and how the test is classified once it does --
+    #: two conditions on quantities of the pair, which no table states.
+    _item(
+        ids.TEST_SOLID_INSULATION_PARTIAL_DISCHARGE,
+        "decision",
+        (37,),
+        clause="4.4.7.10.3",
+    ),
     _item(ids.TEST_WORKING_VOLTAGE_DETERMINATION, "procedure", (37,)),
     _item(ids.TEST_INTERNAL_SPD_MONITORING, "procedure", (37,)),
     _item(ids.TEST_PRECONDITIONING, "procedure", (37,)),
