@@ -50,6 +50,10 @@ from insulation_coordination.calculation.engine import (
     SupplyDerivation,
     resolve_supply_effective_case,
 )
+from insulation_coordination.calculation.high_frequency import (
+    PART4_FREQUENCY_THRESHOLD_HZ,
+    altitude_correction_band,
+)
 from insulation_coordination.calculation.impulse_override import SpdMonitoringDependency
 from insulation_coordination.calculation.partial_discharge import (
     PartialDischargeOutcome,
@@ -174,6 +178,7 @@ ENHANCED_PROTECTION_IMPLEMENTATIONS: Final[frozenset[ProtectionImplementation]] 
 #: what the test is applied to, which the topology already carries.
 _REQUIREMENT_TARGETS: Final[Mapping[TestReferenceKind, str]] = {
     TestReferenceKind.ADJACENT_CIRCUIT: "adjacent_circuit",
+    TestReferenceKind.DVC_AS_ADJACENT_CIRCUIT: "adjacent_circuit",
     TestReferenceKind.PE_BONDED_ACCESSIBLE_PART: "accessible_part",
     TestReferenceKind.ACCESSIBLE_CONDUCTIVE_PART: "accessible_part",
     TestReferenceKind.ACCESSIBLE_INSULATING_SURFACE_FOIL: "accessible_part",
@@ -189,10 +194,54 @@ _REQUIREMENT_PE_RELATIONSHIPS: Final[Mapping[TestReferenceKind, str]] = {
     TestReferenceKind.ACCESSIBLE_CONDUCTIVE_PART: "not_connected_to_pe",
 }
 
+#: Every relationship that puts one circuit against another. Both read Table 3 in both
+#: directions and both take the other side's class as the adjacent one; what separates them is
+#: how the *test* is keyed and columned, which is a question for the dielectric route.
+_CIRCUIT_TO_CIRCUIT_KINDS: Final[frozenset[TestReferenceKind]] = frozenset(
+    {TestReferenceKind.ADJACENT_CIRCUIT, TestReferenceKind.DVC_AS_ADJACENT_CIRCUIT}
+)
+
+#: Every relationship that puts a circuit against an accessible part rather than against
+#: another circuit. Derived from the requirement targets so the two readings of "this is an
+#: accessible part" cannot part company.
+_ACCESSIBLE_PART_KINDS: Final[frozenset[TestReferenceKind]] = frozenset(
+    kind for kind, target in _REQUIREMENT_TARGETS.items() if target == "accessible_part"
+)
+
+#: The topologies whose *type* test reads the enhanced column whatever construction the pair
+#: carries. Both of them are an accessible surface that is non-conductive, or conductive and
+#: not bonded to PE, and the package's own label for that column names the topology beside
+#: enhanced protection. Selecting the column from the pair's ``ProtectionImplementation``
+#: alone planned a basic-protection pair against such a surface at the lower column.
+#:
+#: A PE-bonded accessible part is deliberately absent: its test reads the basic column for
+#: both classifications, which is what the plan already did for it.
+_ENHANCED_COLUMN_TOPOLOGIES: Final[frozenset[TestReferenceKind]] = frozenset(
+    {
+        TestReferenceKind.ACCESSIBLE_CONDUCTIVE_PART,
+        TestReferenceKind.ACCESSIBLE_INSULATING_SURFACE_FOIL,
+        TestReferenceKind.DVC_AS_ADJACENT_CIRCUIT,
+    }
+)
+
 #: Warning codes a report can group on without matching a message.
 ENHANCED_SPACING_MISMATCH_WARNING: Final = "verification_enhanced_protection_not_dimensioned"
 SPD_MONITORING_OWED_WARNING: Final = "verification_internal_spd_monitoring_owed"
 PROTECTION_REQUIREMENT_UNMET_WARNING: Final = "verification_protection_requirement_not_met"
+
+#: What a DVC A-s circuit's schedule rows say about the one place a single-fault consideration
+#: reaches a spacing. A portion of such a circuit is allowed above the class limits when it is
+#: protected against direct contact and the accessible portion still complies under single
+#: fault - and the annex that allows it requires that portion's own voltages to go on
+#: dimensioning the circuit's clearance and creepage to its surroundings. Stated wherever the
+#: plan reports the DVC A-s case, because the same paragraph is the reason single fault is not
+#: an operating condition of the working voltage and the reason it is not irrelevant either.
+DVC_AS_HIGHER_PORTION_STEP: Final = (
+    "Where a portion of this DVC A-s circuit exceeds the class limits, that portion's own "
+    "voltages still dimension this circuit's clearance and creepage to its surroundings. The "
+    "single fault that admits the portion does not raise the working voltage; the portion's "
+    "voltages are what the spacing is taken from."
+)
 
 #: The trace identifier of this application's own selection of a dielectric route. Not a
 #: semantic rule id: which of the package's four routes answers a pair's question is this
@@ -349,6 +398,7 @@ class VerificationPlanService:
             for dvc in _assigned_classes(project)
         }
 
+        band = _altitude_band(rules)
         generated: list[TestApplication] = []
         assessments: list[PairVerificationAssessment] = []
         warnings: list[CalculationWarning] = []
@@ -364,6 +414,7 @@ class VerificationPlanService:
                 rule_set,
                 revision,
                 matrix,
+                band,
                 warnings,
             )
             generated.extend(applications)
@@ -413,6 +464,7 @@ def _plan_pair(
     rules: VerificationRuleSet,
     revision: str,
     matrix: Mapping[DecisiveVoltageClass, tuple[ProtectionGuidance, ...]],
+    band: tuple[Decimal, Decimal] | None,
     warnings: list[CalculationWarning],
 ) -> tuple[tuple[TestApplication, ...], PairVerificationAssessment]:
     """One pair's impulse and dielectric applications, and the assessment that summarises them."""
@@ -461,13 +513,23 @@ def _plan_pair(
         monitoring = (_monitoring_application(subject, rules, revision, dependency, message),)
 
     impulse = _impulse_application(
-        pair, subject, effective, resolution, rules, revision, implementation, enhanced, warnings
+        pair,
+        subject,
+        effective,
+        resolution,
+        rules,
+        revision,
+        implementation,
+        enhanced,
+        band,
+        warnings,
     )
     override = _verified_reduction(resolution)
     reduction = (
         () if override is None else (_reduction_application(subject, rules, revision, override),)
     )
     recurring_peak = _recurring_peak(project, pair, effective)
+    adjacency = _dvc_as_adjacency(project, pair, subject)
     dielectric = _dielectric_applications(
         pair,
         subject,
@@ -475,8 +537,13 @@ def _plan_pair(
         revision,
         enhanced,
         mains,
-        recurring_peak,
+        recurring_peak if adjacency is None else adjacency.row_v,
         _overvoltage_present(effective, resolution),
+        _accessible_part_exception(project, pair, subject)
+        or (None if adjacency is None else adjacency.not_applicable),
+        row_label="recurring-peak working voltage" if adjacency is None else adjacency.row_label,
+        extra_unresolved=() if adjacency is None else adjacency.unresolved,
+        extra_preparation=() if adjacency is None else adjacency.preparation,
     )
     discharge = assess_partial_discharge(
         pair, effective, rules.partial_discharge, recurring_peak_v=recurring_peak
@@ -572,7 +639,7 @@ def _required_protection(
     first, second = nets[pair.net_a], nets[pair.net_b]
     target = _REQUIREMENT_TARGETS[subject.reference_kind]
     directions: tuple[tuple[NetClass, NetClass], ...]
-    if subject.reference_kind is TestReferenceKind.ADJACENT_CIRCUIT:
+    if subject.reference_kind in _CIRCUIT_TO_CIRCUIT_KINDS:
         directions = ((first, second), (second, first))
     elif first.net_type is NetClassType.CIRCUIT:
         directions = ((first, second),)
@@ -584,7 +651,7 @@ def _required_protection(
     reasons: list[str] = []
     for circuit, other in directions:
         adjacent = None
-        if subject.reference_kind is TestReferenceKind.ADJACENT_CIRCUIT:
+        if subject.reference_kind in _CIRCUIT_TO_CIRCUIT_KINDS:
             adjacent = _designation(other)
             if adjacent is None:
                 reasons.append(_no_class_reason(pair, other.name))
@@ -687,6 +754,7 @@ def _impulse_application(
     revision: str,
     implementation: ProtectionImplementation | None,
     enhanced: bool,
+    band: tuple[Decimal, Decimal] | None,
     warnings: list[CalculationWarning],
 ) -> TestApplication:
     """The impulse withstand this pair asks for, at the stress issue #36 resolved for it.
@@ -717,7 +785,9 @@ def _impulse_application(
         )
     else:
         voltage = Quantity(value=treated, unit=_VOLTAGE_UNIT)
-    unresolved.extend(_altitude_inputs(pair, effective))
+    altitude_unresolved, altitude_preparation = _altitude_inputs(pair, effective, band)
+    unresolved.extend(altitude_unresolved)
+    preparation.extend(altitude_preparation)
     if enhanced and effective.insulation_type.value is not InsulationType.REINFORCED:
         message = (
             f"Pair {pair.key} is protected by {implementation} and is dimensioned on the "
@@ -856,31 +926,90 @@ def _reduction_application(
     )
 
 
-def _altitude_inputs(pair: PairCase, effective: EffectiveCase) -> tuple[str, ...]:
-    """What the plan owes a reader about altitude, without correcting anything for it.
+def _altitude_band(rules: RulePackage) -> tuple[Decimal, Decimal] | None:
+    """The altitudes the package's clearance correction runs between, or nothing.
 
-    The package's test-voltage altitude correction belongs to the test whose voltage it
-    corrects and is resolved against that test, not up front - see ``RULES_READ_ELSEWHERE``
-    in the rule adapter. Until it is, a planned voltage at an altitude above the reference is
-    an uncorrected one, and saying so is the only honest thing to do with it.
+    Resolved once for the whole plan rather than once per pair: it is a question about the
+    package, and a project's pairs all get the same answer. ``None`` is a package that states
+    no correction, which is reported on the rows that needed it rather than raised - a
+    schedule is still worth having without it.
+    """
+
+    try:
+        return altitude_correction_band(rules)
+    except CalculationError:
+        return None
+
+
+def _altitude_inputs(
+    pair: PairCase,
+    effective: EffectiveCase,
+    band: tuple[Decimal, Decimal] | None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """What the plan owes a reader about altitude: what is uncorrected, and the alternative.
+
+    *The correction is keyed on the altitude of the test, not on the altitude the pair is
+    dimensioned for.* The procedure states it as applying when the test is carried out on a
+    clearance below the reference altitude, and nothing in the project says where the test
+    will be performed. So every planned impulse voltage is an uncorrected one, whatever
+    altitude the pair was dimensioned at, and the row says so and names the correction to
+    apply once the site is known. Raising the input from the pair's own altitude - and from
+    "above zero", which is not a threshold anything states - answered a question nobody asked
+    and stayed silent for the pair tested at sea level, which is the pair the correction is
+    actually for.
+
+    *The correction does not reach solid insulation.* The procedure excepts impulse testing of
+    solid insulation from it outright, and this application covers the clearance alone, so the
+    row says which of the two its statement is about.
+
+    *A clearance dimensioned for the high-altitude band, or above the frequency threshold, has
+    an alternative.* Its test voltage may instead be derived from the clearance itself by
+    reading the correction backwards. That is a permission, so it is stated as a preparation
+    step and never selected here: a plan that silently took the alternative would report a
+    voltage nothing in the schedule explained.
     """
 
     altitude = effective.altitude_m.value
-    if altitude is None:
-        return (
-            (
-                f"No altitude is recorded for pair {pair.key}, so whether its planned test "
-                "voltage needs an altitude correction cannot be answered."
-            ),
+    frequency = effective.frequency_hz.value
+    unresolved = [
+        (
+            "The test-voltage altitude correction is keyed on the altitude at which the test "
+            "is carried out, and nothing records where that will be. The voltage planned here "
+            f"is uncorrected; apply {ids.ALTITUDE_TEST_VOLTAGE_CORRECTION} to it once the test "
+            "site is known. The correction is not applied to impulse testing of solid "
+            "insulation, which this application does not cover."
         )
-    if altitude > 0:
-        return (
-            (
-                f"Pair {pair.key} is dimensioned at {altitude} m. The package's test-voltage "
-                "altitude correction is not applied to the voltage planned here."
-            ),
+    ]
+    if band is None:
+        unresolved.append(
+            "The active rule package states no approved clearance altitude correction, so "
+            f"whether pair {pair.key} was dimensioned in the high-altitude band - and with it "
+            "whether its test voltage may instead be derived from its clearance - cannot be "
+            "answered."
         )
-    return ()
+    elif altitude is None:
+        unresolved.append(
+            f"No altitude is recorded for pair {pair.key}, so whether it was dimensioned in "
+            "the high-altitude band cannot be answered."
+        )
+    reasons = []
+    if band is not None and altitude is not None and altitude > band[0]:
+        reasons.append(
+            f"at {altitude} m, above the altitude the package's clearance correction is referred to"
+        )
+    if frequency is not None and frequency > PART4_FREQUENCY_THRESHOLD_HZ:
+        reasons.append("for a working voltage above the high-frequency threshold")
+    # The pair is deliberately not named: the statement is about the clearance under test, and
+    # two pairs of one connected group produce one row whose preparation should read once.
+    preparation = (
+        (
+            f"This clearance is dimensioned {' and '.join(reasons)}. Its test voltage may "
+            "instead be derived from the clearance itself, by reading "
+            f"{ids.ALTITUDE_TEST_VOLTAGE_CORRECTION} in reverse. This plan states the "
+            "alternative and does not choose it; record the selection with the result."
+        ),
+    )
+    return tuple(unresolved), preparation if reasons else ()
 
 
 # --- AC and DC dielectric --------------------------------------------------------------
@@ -895,6 +1024,11 @@ def _dielectric_applications(
     mains: Sequence[DerivedSupplyScenario],
     recurring_peak_v: Decimal | None,
     overvoltage_present: bool | None,
+    not_applicable: str | None,
+    *,
+    row_label: str,
+    extra_unresolved: tuple[str, ...] = (),
+    extra_preparation: tuple[str, ...] = (),
 ) -> tuple[TestApplication, ...]:
     """The routine and type dielectric applications, in both voltage forms the package states.
 
@@ -913,15 +1047,32 @@ def _dielectric_applications(
     own route says it covers both. The enhanced-protection type test is read from its own
     route and is never taken from the other one: reusing a value across the two would assert
     an equality the source was not asked for.
+
+    *Which column the type test reads is a question about the topology as well as about the
+    construction.* The routine test always reads the basic column. The type test reads the
+    enhanced one where the pair is protected by enhanced protection **or** where the low side
+    is an accessible surface that is non-conductive, or conductive and not bonded to PE -
+    which is the second case the package's own label for that column names. Reading the
+    column from the selected implementation alone planned a basic-protection pair against
+    such a surface at the lower of the two.
+
+    ``not_applicable`` is the one condition that stops a row being planned at all. It states
+    why, the rows are generated anyway so a reader can tell an excepted test from one nobody
+    planned, and none of them carries a voltage.
     """
 
+    if not_applicable is not None:
+        return _not_applicable_applications(subject, revision, not_applicable)
     tables = rules.mains_dielectric_values if mains else rules.non_mains_dielectric_values
-    row, row_reason, row_unresolved = _row_value(pair, mains, recurring_peak_v, overvoltage_present)
+    row, row_reason, row_unresolved = _row_value(
+        pair, mains, recurring_peak_v, overvoltage_present, row_label
+    )
+    enhanced_column = enhanced or subject.reference_kind in _ENHANCED_COLUMN_TOPOLOGIES
     routes: tuple[tuple[TestClassification, VoltageTablePair], ...] = (
         (TestClassification.ROUTINE, tables.routine_and_basic_type),
         (
             TestClassification.TYPE,
-            tables.enhanced_type if enhanced else tables.routine_and_basic_type,
+            tables.enhanced_type if enhanced_column else tables.routine_and_basic_type,
         ),
     )
     applications: list[TestApplication] = []
@@ -940,8 +1091,9 @@ def _dielectric_applications(
                     polarity=None,
                     duration=None,
                     repetitions=None,
-                    preparation_steps=subject.preparation_steps,
+                    preparation_steps=(*subject.preparation_steps, *extra_preparation),
                     unresolved=(
+                        *extra_unresolved,
                         *row_unresolved,
                         *unresolved,
                         (
@@ -950,10 +1102,186 @@ def _dielectric_applications(
                         ),
                     ),
                     source_rule_ids=(table.id,),
-                    trace_steps=(*_route_step(table, classification, row, row_reason), *steps),
+                    trace_steps=(
+                        *_route_step(
+                            table,
+                            classification,
+                            row,
+                            row_reason,
+                            _column_reason(classification, subject.reference_kind, enhanced),
+                        ),
+                        *steps,
+                    ),
                 )
             )
     return tuple(applications)
+
+
+def _not_applicable_applications(
+    subject: TestSubject,
+    revision: str,
+    reason: str,
+) -> tuple[TestApplication, ...]:
+    """The dielectric rows of a pair the topology rule excepts from the test.
+
+    Generated rather than omitted, exactly as the partial-discharge row is: a pair the rule
+    settles is a different thing from a pair nobody planned, and a schedule showing only the
+    required rows could not tell them apart. None of them carries a voltage, a route or an
+    unresolved input - there is nothing outstanding about a test that is not owed.
+    """
+
+    return tuple(
+        _application(
+            subject=subject,
+            test_kind=test_kind,
+            classifications=(classification,),
+            revision=revision,
+            voltage=None,
+            waveform=None,
+            polarity=None,
+            duration=None,
+            repetitions=None,
+            preparation_steps=(*subject.preparation_steps, reason),
+            unresolved=(),
+            source_rule_ids=(),
+            trace_steps=(),
+            applicability=TestApplicability.NOT_APPLICABLE,
+        )
+        for classification in (TestClassification.ROUTINE, TestClassification.TYPE)
+        for test_kind in _DIELECTRIC_KINDS.values()
+    )
+
+
+def _accessible_part_exception(
+    project: Project, pair: PairCase, subject: TestSubject
+) -> str | None:
+    """Why a DVC A-s circuit is given no voltage test against an accessible part.
+
+    The topology rule states the test against an earthed conductive accessible part and the
+    test against an accessible surface for each circuit in turn *except* a DVC A-s one, and
+    settles that circuit's case separately as a test against its adjacent circuits. Planning
+    the excepted test anyway asks a test house for work no rule asks for, and reporting it as
+    required-with-something-unresolved reads in a schedule exactly like a test nobody could
+    settle.
+
+    The active package projects the two dielectric value tables and no rule for the topology
+    clause that routes a pair to them, so this reading is stated here rather than read from
+    it. A pair whose circuit side carries no decisive voltage class is not excepted: the
+    absence of a class is reported by the requirement lookup, and treating it as a DVC A-s
+    would take a test away on the strength of something nobody said.
+    """
+
+    if subject.reference_kind not in _ACCESSIBLE_PART_KINDS:
+        return None
+    if _circuit_side_class(project, pair) is not DecisiveVoltageClass.DVC_AS:
+        return None
+    return (
+        f"Pair {pair.key} stands between a DVC A-s circuit and an accessible part. The "
+        "voltage test between a circuit and an accessible part is stated for each circuit "
+        "except a DVC A-s one, whose case is settled as a test against its adjacent circuits "
+        f"instead, so no voltage is planned here. {DVC_AS_HIGHER_PORTION_STEP}"
+    )
+
+
+class _DvcAsAdjacency(FrozenModel):
+    """What the plan makes of a pair with a DVC A-s circuit on one side of it.
+
+    Private and unexported: it exists so :func:`_dvc_as_adjacency` can answer four things at
+    once about one pair without four functions asking the same question of the same project.
+    """
+
+    #: The working voltage that keys the row, which is the higher-voltage circuit's and not
+    #: the pair's. ``None`` where it could not be established for both circuits.
+    row_v: Decimal | None = None
+    row_label: str = "recurring-peak working voltage"
+    unresolved: tuple[str, ...] = ()
+    not_applicable: str | None = None
+    preparation: tuple[str, ...] = ()
+
+
+def _dvc_as_adjacency(
+    project: Project, pair: PairCase, subject: TestSubject
+) -> _DvcAsAdjacency | None:
+    """How clause 5.2.3.4.4 c) keys the test between a DVC A-s circuit and an adjacent circuit.
+
+    Two things separate this test from every other circuit-to-circuit one, and the plan applied
+    neither before the relationship had a name.
+
+    *The row is keyed on the higher-voltage circuit of the two*, not on the circuit under test.
+    The same principle is stated generally for insulation between circuits: the more severe of
+    the two sides, or the working voltage between them, whichever is more severe. The two
+    circuits' own working voltages are what decides which is higher, so both have to be
+    established; where either is not, the row is refused and the missing one is named. Reading
+    the pair's own figure in their place would answer a question nobody asked and could land
+    below the row the source states.
+
+    *Functional insulation between two DVC A-s circuits need not be tested, while basic
+    insulation between DVC A-s circuits must be.* That distinction turns on the construction
+    the engineer selected, which the project holds, so it is applied rather than reported.
+
+    A mains circuit is unaffected: its row axis is the supply's system voltage, and the plan
+    already keys it on the most severe measure across every supply reaching either side, which
+    is the same principle applied to the axis that route actually has.
+    """
+
+    if subject.reference_kind is not TestReferenceKind.DVC_AS_ADJACENT_CIRCUIT:
+        return None
+    nets = {net.id: net for net in project.net_classes}
+    first, second = nets[pair.net_a], nets[pair.net_b]
+    both = (
+        _designation(first) is DecisiveVoltageClass.DVC_AS
+        and _designation(second) is DecisiveVoltageClass.DVC_AS
+    )
+    if both and pair.protection_implementation is ProtectionImplementation.FUNCTIONAL_INSULATION:
+        return _DvcAsAdjacency(
+            not_applicable=(
+                f"Pair {pair.key} is functional insulation between two adjacent DVC A-s "
+                "circuits, which need not be voltage tested. Basic insulation between DVC A-s "
+                "circuits does have to be, so this answer follows the construction selected "
+                f"for this pair and no other pair of the group. {DVC_AS_HIGHER_PORTION_STEP}"
+            )
+        )
+    service = VoltageEvidenceService()
+    figures = {
+        net.name: service.governing(
+            project, EvidenceTarget(net_id=net.id), VoltageQuantityKind.RECURRING_PEAK
+        ).effective_value_v
+        for net in (first, second)
+    }
+    missing = sorted(name for name, value in figures.items() if value is None)
+    keying = (
+        f"This test is keyed on the higher-voltage of {first.name} and {second.name} rather "
+        "than on the circuit under test, because one of them is a DVC A-s circuit."
+    )
+    steps = (keying, DVC_AS_HIGHER_PORTION_STEP)
+    if missing:
+        return _DvcAsAdjacency(
+            unresolved=(
+                (
+                    f"Pair {pair.key} is tested between a DVC A-s circuit and an adjacent "
+                    "circuit, whose row is keyed on the higher-voltage of the two. No "
+                    f"recurring-peak working voltage is established for {', '.join(missing)}, "
+                    "so which of them is the higher cannot be decided. The pair's own figure "
+                    "is not read in their place: it is a voltage across the insulation and not "
+                    "either circuit's own."
+                ),
+            ),
+            preparation=steps,
+        )
+    highest = max(figures, key=lambda name: figures[name] or Decimal(0))
+    return _DvcAsAdjacency(
+        row_v=figures[highest],
+        row_label=f"recurring-peak working voltage of {highest}, the higher-voltage circuit,",
+        preparation=steps,
+    )
+
+
+def _circuit_side_class(project: Project, pair: PairCase) -> DecisiveVoltageClass | None:
+    """The decisive voltage class of the circuit side of a pair, where one is assigned."""
+
+    nets = {net.id: net for net in project.net_classes}
+    first, second = nets[pair.net_a], nets[pair.net_b]
+    return _designation(first if first.net_type is NetClassType.CIRCUIT else second)
 
 
 def _recurring_peak(project: Project, pair: PairCase, effective: EffectiveCase) -> Decimal | None:
@@ -1060,6 +1388,7 @@ def _row_value(
     mains: Sequence[DerivedSupplyScenario],
     recurring_peak_v: Decimal | None,
     overvoltage_present: bool | None,
+    row_label: str,
 ) -> tuple[Decimal | None, str, tuple[str, ...]]:
     """The voltage that keys the dielectric table's row axis, and where it came from.
 
@@ -1099,7 +1428,7 @@ def _row_value(
         )
     return (
         recurring_peak_v,
-        f"recurring-peak working voltage {recurring_peak_v} V",
+        f"{row_label} {recurring_peak_v} V",
         (),
     )
 
@@ -1155,11 +1484,37 @@ def _dielectric_value(
     )
 
 
+def _column_reason(
+    classification: TestClassification,
+    reference_kind: TestReferenceKind,
+    enhanced: bool,
+) -> str:
+    """Why this classification reads the column it reads, in one clause of a sentence."""
+
+    if classification is not TestClassification.TYPE:
+        return "every routine test reads the basic column"
+    if enhanced:
+        return "the type test of a pair protected by enhanced protection reads the enhanced column"
+    if reference_kind is TestReferenceKind.DVC_AS_ADJACENT_CIRCUIT:
+        return (
+            "the type test between a DVC A-s circuit and an adjacent circuit reads the "
+            "enhanced column whatever the pair's construction"
+        )
+    if reference_kind in _ENHANCED_COLUMN_TOPOLOGIES:
+        return (
+            "the type test against an accessible surface that is non-conductive, or "
+            "conductive and not bonded to PE, reads the enhanced column whatever the pair's "
+            "construction"
+        )
+    return "the type test reads the basic column"
+
+
 def _route_step(
     table: Table,
     classification: TestClassification,
     row: Decimal | None,
     row_reason: str,
+    column_reason: str,
 ) -> tuple[TraceStep, ...]:
     """Which route answers this classification, and what the row axis was keyed on.
 
@@ -1179,10 +1534,7 @@ def _route_step(
             source_reference=table.source,
             output=Quantity(value=row, unit=_VOLTAGE_UNIT),
             unrounded_value=row,
-            reason=(
-                f"The {classification.value} test is read from {table.id}, which is the route "
-                "the package states for it."
-            ),
+            reason=(f"The {classification.value} test is read from {table.id}: {column_reason}."),
         ),
     )
 
@@ -1551,6 +1903,7 @@ def _words(token: str) -> str:
 
 __all__ = [
     "DIELECTRIC_ROUTE_TRACE_ID",
+    "DVC_AS_HIGHER_PORTION_STEP",
     "ENHANCED_PROTECTION_IMPLEMENTATIONS",
     "ENHANCED_SPACING_MISMATCH_WARNING",
     "PROTECTION_REQUIREMENT_UNMET_WARNING",

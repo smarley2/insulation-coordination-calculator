@@ -73,14 +73,33 @@ WORKING_VOLTAGE_QUANTITIES: Final[tuple[VoltageQuantityKind, ...]] = (
     VoltageQuantityKind.RECURRING_PEAK,
 )
 
-#: The conditions every determination is planned under. All three are always listed, because a
-#: plan naming a condition is asking for it to be considered rather than asserting that it
-#: occurs; which of them a particular target actually sees is the engineering judgement the
-#: determination exists to collect.
-OPERATING_CONDITIONS: Final[tuple[str, ...]] = (
-    "normal operation",
-    "abnormal operation",
-    "single fault",
+#: The conditions every determination is planned under. The working voltage is the highest
+#: voltage occurring under the rated worst operating conditions when the equipment is used as
+#: intended, and neither abnormal operation nor single fault is one of them - the clause that
+#: asks for the quantity, the test that determines it and the annex that scopes it all name
+#: only the rated worst case. Listing the other two here raised the working voltage to a figure
+#: no clause asks the design to be dimensioned on, and buried the determination they do belong
+#: to. Which supply arrangements can produce the worst case is the determination's own
+#: ``supply_configuration_ids``.
+OPERATING_CONDITIONS: Final[tuple[str, ...]] = ("rated worst operating conditions in intended use",)
+
+#: The conditions whose voltages are collected as their own quantity beside the working
+#: voltage. They are what the decisive voltage class and the protection requirement are judged
+#: against - the class limits and the protection a circuit owes its surroundings are stated
+#: under normal, abnormal and single-fault conditions alike - and they are not what any spacing
+#: is dimensioned on. Recorded rather than dropped: a figure nobody asks for is a figure nobody
+#: records, and the determination that needs it would then have nothing to read.
+CLASS_LIMIT_CONDITIONS: Final[tuple[str, ...]] = ("abnormal operation", "single fault")
+
+#: What the determination tells whoever performs it about the two sets of conditions. Stated on
+#: the schedule row as well as carried as a field, because a reader collecting an abnormal
+#: figure has to be told where it goes before they are told not to add it to the working
+#: voltage.
+CLASS_LIMIT_STEP: Final = (
+    "Record the voltages occurring under abnormal operation and under single fault separately "
+    "from the working voltage. They are not operating conditions of it, and they do not raise "
+    "it; they are what the decisive voltage class and the protection this circuit owes its "
+    "surroundings are judged against."
 )
 
 #: Namespace for determination identities. Derived rather than written as a literal so the one
@@ -287,8 +306,9 @@ def _determination(
         required_quantities=WORKING_VOLTAGE_QUANTITIES,
         supply_configuration_ids=configurations,
         operating_conditions=OPERATING_CONDITIONS,
+        class_limit_conditions=CLASS_LIMIT_CONDITIONS,
         measurement_points=points,
-        preparation_steps=preparation,
+        preparation_steps=(*preparation, CLASS_LIMIT_STEP),
         expected_values=expected,
         status=_status(results),
         unresolved_inputs=unresolved,
@@ -536,6 +556,8 @@ def governing_summary(target: str, result: GoverningEvidenceResult) -> str:
 
 __all__ = [
     "ABOVE_GOVERNING_TEXT",
+    "CLASS_LIMIT_CONDITIONS",
+    "CLASS_LIMIT_STEP",
     "DETERMINATION_NAMESPACE",
     "EFFECTIVE_VOLTAGE_TRACE_ID",
     "GOVERNING_EVIDENCE_TRACE_ID",

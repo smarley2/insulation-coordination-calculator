@@ -20,6 +20,8 @@ from insulation_coordination.calculation.verification_rules import (
     read_verification_rules,
 )
 from insulation_coordination.calculation.voltage_evidence import (
+    CLASS_LIMIT_CONDITIONS,
+    CLASS_LIMIT_STEP,
     OPERATING_CONDITIONS,
     WORKING_VOLTAGE_QUANTITIES,
     VoltageEvidenceService,
@@ -392,6 +394,31 @@ def test_a_determination_names_the_enabled_supply_rows_and_the_governing_procedu
     assert determination.source_rule_ids == (rules.working_voltage_determination.id,)
     assert determination.required_quantities == WORKING_VOLTAGE_QUANTITIES
     assert determination.operating_conditions == OPERATING_CONDITIONS
+
+
+def test_the_working_voltage_is_planned_under_the_rated_worst_case_alone(
+    project: Project, rules: VerificationRuleSet
+) -> None:
+    """Abnormal operation and single fault are not operating conditions of this quantity.
+
+    Listing them here raised the working voltage to a figure no clause asks a design to be
+    dimensioned on, and it buried the determination they do belong to.
+    """
+    determination = plan_working_voltage(project, rules)[0]
+
+    assert determination.operating_conditions == OPERATING_CONDITIONS
+    assert not {"abnormal operation", "single fault"} & set(determination.operating_conditions)
+
+
+def test_the_abnormal_and_single_fault_voltages_are_kept_as_their_own_quantity(
+    project: Project, rules: VerificationRuleSet
+) -> None:
+    """Moved, not dropped: they are what the class limits and Table 3 are judged against."""
+    determination = plan_working_voltage(project, rules)[0]
+
+    assert determination.class_limit_conditions == CLASS_LIMIT_CONDITIONS
+    assert set(determination.class_limit_conditions) == {"abnormal operation", "single fault"}
+    assert CLASS_LIMIT_STEP in determination.preparation_steps
 
 
 def test_a_determination_with_no_evidence_is_planned_and_lists_what_it_needs(

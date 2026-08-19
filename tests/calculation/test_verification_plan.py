@@ -16,10 +16,12 @@ from uuid import UUID
 import pytest
 
 from insulation_coordination.calculation.engine import derive_project_supply
+from insulation_coordination.calculation.high_frequency import altitude_correction_band
 from insulation_coordination.calculation.test_topology import (
     CONFLICTING_APPLICATION_WARNING,
 )
 from insulation_coordination.calculation.verification_plan import (
+    DVC_AS_HIGHER_PORTION_STEP,
     ENHANCED_SPACING_MISMATCH_WARNING,
     PROTECTION_REQUIREMENT_UNMET_WARNING,
     SPD_MONITORING_OWED_WARNING,
@@ -58,6 +60,8 @@ from insulation_coordination.domain.verification import (
 )
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from tests.fixtures.synthetic_rules import (
+    merged_rule_package,
+    synthetic_part1_rule_package,
     synthetic_supply_rule_package,
     synthetic_verification_rule_package,
 )
@@ -75,6 +79,7 @@ from tests.fixtures.verification_topologies import (
     it_mains_configuration,
     mains_configuration,
     pair_between,
+    single_column_dielectric_package,
     verification_and_supply_package,
     verification_topology,
     with_protection_matrix,
@@ -338,29 +343,97 @@ def test_the_impulse_says_which_verification_it_is_and_which_it_is_not(
     )
 
 
-def test_an_altitude_above_the_reference_is_disclosed_rather_than_corrected_for(
-    package: RulePackage,
+@pytest.mark.parametrize("altitude_m", [Decimal(0), Decimal(2500)])
+def test_every_planned_voltage_is_uncorrected_because_the_test_site_is_unknown(
+    package: RulePackage, altitude_m: Decimal
 ) -> None:
+    """The correction is keyed on the altitude of the test, not on the pair's own.
+
+    A pair dimensioned at sea level is the pair the correction is actually written for, and the
+    plan used to say nothing at all about it; a pair dimensioned high up was told its voltage
+    was uncorrected for a reason no rule states.
+    """
     project = with_protection(
         verification_topology(
-            supply_configurations=(mains_configuration(),), altitude_m=Decimal(2000)
+            supply_configurations=(mains_configuration(),), altitude_m=altitude_m
         ),
         BASIC,
     )
     pair = pair_between(project, LIVE_A, ENCLOSURE)
     application = one(build(project, package), pair, TestKind.IMPULSE_WITHSTAND)
-    assert any("2000 m" in item for item in application.unresolved_inputs)
     assert any(
-        "altitude correction is not applied" in item for item in application.unresolved_inputs
+        "keyed on the altitude at which the test is carried out" in item
+        for item in application.unresolved_inputs
+    )
+    assert any(
+        ids.ALTITUDE_TEST_VOLTAGE_CORRECTION in item for item in application.unresolved_inputs
     )
 
 
-def test_a_project_at_the_reference_altitude_says_nothing_about_a_correction(
+def test_the_uncorrected_statement_excepts_impulse_testing_of_solid_insulation(
     project: Project, package: RulePackage
 ) -> None:
     pair = pair_between(project, LIVE_A, ENCLOSURE)
     application = one(build(project, package), pair, TestKind.IMPULSE_WITHSTAND)
-    assert not any("altitude" in item for item in application.unresolved_inputs)
+    assert any(
+        "not applied to impulse testing of solid insulation" in item
+        for item in application.unresolved_inputs
+    )
+
+
+def test_a_package_stating_no_clearance_correction_cannot_place_the_pair_in_a_band(
+    project: Project, package: RulePackage
+) -> None:
+    """Without the boundary the package states, whether the alternative is open is unknown."""
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    application = one(build(project, package), pair, TestKind.IMPULSE_WITHSTAND)
+    assert any(
+        "states no approved clearance altitude correction" in item
+        for item in application.unresolved_inputs
+    )
+    assert not any("in reverse" in step for step in application.preparation_steps)
+
+
+def test_a_clearance_above_the_frequency_threshold_states_the_derivation_alternative(
+    package: RulePackage,
+) -> None:
+    """A permission, so it is stated and never selected: the voltage is still the pair's."""
+    project = with_protection(
+        verification_topology(
+            supply_configurations=(mains_configuration(),), frequency_hz=Decimal(40000)
+        ),
+        BASIC,
+    )
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    application = one(build(project, package), pair, TestKind.IMPULSE_WITHSTAND)
+    alternative = [step for step in application.preparation_steps if "in reverse" in step]
+    assert len(alternative) == 1
+    assert "above the high-frequency threshold" in alternative[0]
+    assert "does not choose it" in alternative[0]
+
+
+def test_a_clearance_dimensioned_above_the_packages_reference_altitude_states_it_too(
+    tmp_path: Path,
+) -> None:
+    """The band boundary comes from the package's own correction table, never from a literal."""
+    package = merged_rule_package(
+        single_column_dielectric_package(),
+        synthetic_supply_rule_package(),
+        synthetic_part1_rule_package(),
+        path=tmp_path / "with-altitude.icrules",
+    )
+    reference_m, _ = altitude_correction_band(package)
+    project = with_protection(
+        verification_topology(
+            supply_configurations=(mains_configuration(),), altitude_m=reference_m + Decimal(500)
+        ),
+        BASIC,
+    )
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    application = one(build(project, package), pair, TestKind.IMPULSE_WITHSTAND)
+    alternative = [step for step in application.preparation_steps if "in reverse" in step]
+    assert len(alternative) == 1
+    assert "above the altitude the package's clearance correction is referred to" in alternative[0]
 
 
 def test_a_project_with_no_supply_arrangement_asks_for_a_stress_rather_than_inventing_one(
@@ -850,6 +923,215 @@ def test_a_basic_pair_takes_both_from_the_route_whose_own_name_covers_both(
     assert routes == {f"{ids.TEST_MAINS_DIELECTRIC_VALUES}.routine_and_basic_type.ac"}
 
 
+@pytest.mark.parametrize("reference", [TOUCHABLE, COVER])
+def test_a_basic_pair_against_an_unbonded_surface_type_tests_at_the_enhanced_column(
+    project: Project, package: RulePackage, reference: UUID
+) -> None:
+    """The column is a question about the topology, not only about what the engineer built.
+
+    The package's own label for the enhanced column names this topology beside enhanced
+    protection. Selecting the column from the selected construction alone planned a
+    basic-protection pair against an unbonded accessible surface at the lower column.
+    """
+    pair = pair_between(project, LIVE_A, reference)
+    plan = build(project, package)
+    type_test = one(plan, pair, TestKind.AC_DIELECTRIC, classifications=(TestClassification.TYPE,))
+    routine = one(plan, pair, TestKind.AC_DIELECTRIC, classifications=(TestClassification.ROUTINE,))
+    assert dielectric_route(type_test) == f"{ids.TEST_MAINS_DIELECTRIC_VALUES}.enhanced_type.ac"
+    assert dielectric_route(routine) == (
+        f"{ids.TEST_MAINS_DIELECTRIC_VALUES}.routine_and_basic_type.ac"
+    )
+
+
+def test_a_basic_pair_against_a_pe_bonded_part_stays_on_the_basic_column(
+    project: Project, package: RulePackage
+) -> None:
+    """The topology the clause excludes from the enhanced column has to stay excluded."""
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    plan = build(project, package)
+    routes = {
+        dielectric_route(item) for item in applications_for(plan, pair, TestKind.AC_DIELECTRIC)
+    }
+    assert routes == {f"{ids.TEST_MAINS_DIELECTRIC_VALUES}.routine_and_basic_type.ac"}
+
+
+@pytest.mark.parametrize("reference", [ENCLOSURE, TOUCHABLE, COVER])
+def test_a_dvc_as_circuit_is_excepted_from_the_test_against_an_accessible_part(
+    package: RulePackage, reference: UUID
+) -> None:
+    """The rule excepts it and settles the case elsewhere, so the row is not planned."""
+    project = with_class(
+        with_protection(
+            verification_topology(supply_configurations=(mains_configuration(),)), BASIC
+        ),
+        LIVE_C,
+        DecisiveVoltageClass.DVC_AS,
+    )
+    pair = pair_between(project, LIVE_C, reference)
+    applications = applications_for(build(project, package), pair, TestKind.AC_DIELECTRIC)
+    assert applications
+    assert {item.applicability for item in applications} == {TestApplicability.NOT_APPLICABLE}
+    assert all(item.voltage is None for item in applications)
+    assert all(not item.unresolved_inputs for item in applications)
+    assert all(
+        any("except a DVC A-s one" in step for step in item.preparation_steps)
+        for item in applications
+    )
+
+
+# --- the DVC A-s adjacency --------------------------------------------------------------
+
+
+#: The pair's own recurring peak in the DVC A-s fixtures below, and the three circuits' own.
+#: All inside the fixture's band axis, all different, and the pair's deliberately unequal to
+#: any of them: a row keyed on the pair rather than on the higher-voltage circuit reads a
+#: different cell and can be told apart by the value alone.
+PAIR_PEAK_V = Decimal(15)
+CIRCUIT_PEAKS_V: dict[UUID, Decimal] = {
+    LIVE_A: Decimal(18),
+    LIVE_B: Decimal(12),
+    LIVE_C: Decimal(25),
+}
+
+
+def dvc_as_topology(
+    *,
+    implementation: ProtectionImplementation = BASIC,
+    classes: tuple[UUID, ...] = (LIVE_C,),
+    peaks: tuple[UUID, ...] = (LIVE_A, LIVE_B, LIVE_C),
+) -> Project:
+    """Three circuits with no supply arrangement, so every pair takes the non-mains route.
+
+    ``classes`` names the circuits reclassified as DVC A-s and ``peaks`` the circuits given an
+    approved working voltage of their own, so a test can withhold exactly one of them.
+    """
+
+    project = with_protection(
+        verification_topology(temporary_overvoltage=NO_OVERVOLTAGE, recurring_peak_v=PAIR_PEAK_V),
+        implementation,
+    )
+    for net_id in classes:
+        project = with_class(project, net_id, DecisiveVoltageClass.DVC_AS)
+    return project.model_copy(
+        update={
+            "voltage_evidence": tuple(
+                _net_evidence(net_id, CIRCUIT_PEAKS_V[net_id], index)
+                for index, net_id in enumerate(peaks)
+            )
+        }
+    )
+
+
+def test_a_pair_facing_a_dvc_as_circuit_is_its_own_relationship(package: RulePackage) -> None:
+    project = dvc_as_topology()
+    pair = pair_between(project, LIVE_A, LIVE_C)
+    plan = VerificationPlanService().build(project, package, None)
+    assert assessment_for(plan, pair).reference_kind is TestReferenceKind.DVC_AS_ADJACENT_CIRCUIT
+
+
+def test_the_dvc_as_adjacency_type_test_reads_the_enhanced_column(package: RulePackage) -> None:
+    """A basic-protection pair, so the column cannot be coming from the construction."""
+    project = dvc_as_topology()
+    pair = pair_between(project, LIVE_A, LIVE_C)
+    plan = VerificationPlanService().build(project, package, None)
+    type_test = one(plan, pair, TestKind.AC_DIELECTRIC, classifications=(TestClassification.TYPE,))
+    routine = one(plan, pair, TestKind.AC_DIELECTRIC, classifications=(TestClassification.ROUTINE,))
+    assert dielectric_route(type_test) == (
+        f"{ids.TEST_NON_MAINS_DIELECTRIC_VALUES}.enhanced_type.ac"
+    )
+    assert dielectric_route(routine) == (
+        f"{ids.TEST_NON_MAINS_DIELECTRIC_VALUES}.routine_and_basic_type.ac"
+    )
+
+
+def test_the_dvc_as_adjacency_row_is_keyed_on_the_higher_voltage_circuit(
+    package: RulePackage,
+) -> None:
+    """Not on the circuit under test and not on the voltage across the pair."""
+    project = dvc_as_topology()
+    pair = pair_between(project, LIVE_A, LIVE_C)
+    plan = VerificationPlanService().build(project, package, None)
+    routine = one(plan, pair, TestKind.AC_DIELECTRIC, classifications=(TestClassification.ROUTINE,))
+    assert routine.voltage is not None
+    assert routine.voltage.value == _interpolated(
+        ids.TEST_NON_MAINS_DIELECTRIC_VALUES,
+        "routine_and_basic_type",
+        "ac",
+        max(CIRCUIT_PEAKS_V[LIVE_A], CIRCUIT_PEAKS_V[LIVE_C]),
+    )
+    assert routine.voltage.value != _interpolated(
+        ids.TEST_NON_MAINS_DIELECTRIC_VALUES, "routine_and_basic_type", "ac", PAIR_PEAK_V
+    )
+
+
+def test_a_dvc_as_adjacency_refuses_a_row_it_cannot_decide_the_higher_circuit_of(
+    package: RulePackage,
+) -> None:
+    project = dvc_as_topology(peaks=(LIVE_A, LIVE_B))
+    pair = pair_between(project, LIVE_A, LIVE_C)
+    plan = VerificationPlanService().build(project, package, None)
+    routine = one(plan, pair, TestKind.AC_DIELECTRIC, classifications=(TestClassification.ROUTINE,))
+    assert routine.voltage is None
+    assert any(
+        "which of them is the higher cannot be decided" in item
+        for item in routine.unresolved_inputs
+    )
+
+
+def test_functional_insulation_between_two_dvc_as_circuits_is_not_tested(
+    package: RulePackage,
+) -> None:
+    project = dvc_as_topology(
+        implementation=ProtectionImplementation.FUNCTIONAL_INSULATION,
+        classes=(LIVE_A, LIVE_B, LIVE_C),
+    )
+    pair = pair_between(project, LIVE_A, LIVE_C)
+    plan = VerificationPlanService().build(project, package, None)
+    applications = applications_for(plan, pair, TestKind.AC_DIELECTRIC)
+    assert applications
+    assert {item.applicability for item in applications} == {TestApplicability.NOT_APPLICABLE}
+
+
+def test_basic_insulation_between_two_dvc_as_circuits_is_still_tested(
+    package: RulePackage,
+) -> None:
+    """The other half of the same rule: only the functional case is excused."""
+    project = dvc_as_topology(classes=(LIVE_A, LIVE_B, LIVE_C))
+    pair = pair_between(project, LIVE_A, LIVE_C)
+    plan = VerificationPlanService().build(project, package, None)
+    routine = one(plan, pair, TestKind.AC_DIELECTRIC, classifications=(TestClassification.ROUTINE,))
+    assert routine.applicability is not TestApplicability.NOT_APPLICABLE
+    assert routine.voltage is not None
+
+
+@pytest.mark.parametrize(
+    ("classes", "implementation"),
+    [
+        ((LIVE_C,), BASIC),
+        ((LIVE_A, LIVE_B, LIVE_C), ProtectionImplementation.FUNCTIONAL_INSULATION),
+    ],
+)
+def test_a_dvc_as_row_states_what_a_higher_voltage_portion_does_to_the_spacing(
+    package: RulePackage,
+    classes: tuple[UUID, ...],
+    implementation: ProtectionImplementation,
+) -> None:
+    """The one place a single-fault consideration reaches a spacing, stated where it applies.
+
+    A portion above the class limits is admitted on a single-fault assessment, and the same
+    paragraph requires that portion's voltages to go on dimensioning the circuit's clearance
+    and creepage to its surroundings. A reader told that single fault is not an operating
+    condition of the working voltage has to be told this in the same breath.
+    """
+    project = dvc_as_topology(implementation=implementation, classes=classes)
+    pair = pair_between(project, LIVE_A, LIVE_C)
+    plan = VerificationPlanService().build(project, package, None)
+    routine = one(plan, pair, TestKind.AC_DIELECTRIC, classifications=(TestClassification.ROUTINE,))
+    assert any(DVC_AS_HIGHER_PORTION_STEP in step for step in routine.preparation_steps), (
+        routine.preparation_steps
+    )
+
+
 def test_a_route_that_states_no_duration_says_so_rather_than_leaving_it_blank(
     project: Project, package: RulePackage
 ) -> None:
@@ -1077,6 +1359,22 @@ def _identified(package: RulePackage) -> RulePackage:
     """The same package with a SHA-256 identity, which a generated test id is derived from."""
 
     return package.model_copy(update={"package_sha256": "b" * 64})
+
+
+def _net_evidence(net_id: UUID, value_v: Decimal, index: int) -> VoltageEvidence:
+    """One circuit's own approved working voltage, which is what keys a DVC A-s adjacency."""
+
+    return VoltageEvidence(
+        id=UUID(int=910 + index),
+        net_id=net_id,
+        quantity_kind=VoltageQuantityKind.RECURRING_PEAK,
+        value_v=value_v,
+        method=VoltageEvidenceMethod.CALCULATION,
+        operating_condition="rated load",
+        source_reference=f"SYN-NET-EV-{index}",
+        recorded_at=RECORDED_AT,
+        approval_state=EvidenceApprovalState.APPROVED_FOR_DESIGN,
+    )
 
 
 def _evidence(pair_id: UUID, value_v: Decimal) -> VoltageEvidence:
