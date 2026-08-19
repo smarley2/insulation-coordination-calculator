@@ -64,12 +64,15 @@ from tests.fixtures.synthetic_rules import (
 from tests.fixtures.verification_topologies import (
     COVER,
     ENCLOSURE,
+    IMPULSE_SYSTEM_VOLTAGE_V,
     LIVE_A,
     LIVE_B,
     LIVE_C,
     SYSTEM_VOLTAGE_V,
     TOUCHABLE,
+    TOV_SYSTEM_VOLTAGE_V,
     dielectric_cell,
+    it_mains_configuration,
     mains_configuration,
     pair_between,
     verification_and_supply_package,
@@ -600,6 +603,35 @@ def test_a_mains_circuit_is_read_from_the_mains_table_on_its_system_voltage(
     assert application.voltage is not None
     assert application.voltage.value == _interpolated(
         ids.TEST_MAINS_DIELECTRIC_VALUES, "routine_and_basic_type", "ac", SYSTEM_VOLTAGE_V
+    )
+
+
+def test_a_mains_row_is_keyed_on_the_temporary_overvoltage_system_voltage(
+    package: RulePackage,
+) -> None:
+    """One arrangement answers the two system-voltage questions with two different measures.
+
+    What this test verifies is withstand of the temporary overvoltage, so the measure that
+    keys its row is the temporary-overvoltage one. Here, as for the arrangement the source
+    names, the impulse measure is the lower of the two, so a row keyed on it plans the test
+    below the row the package states for the circuit.
+    """
+    project = with_protection(
+        verification_topology(supply_configurations=(it_mains_configuration(),)), BASIC
+    )
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    application = one(
+        build(project, package),
+        pair,
+        TestKind.AC_DIELECTRIC,
+        classifications=(TestClassification.ROUTINE,),
+    )
+    assert application.voltage is not None
+    assert application.voltage.value == _interpolated(
+        ids.TEST_MAINS_DIELECTRIC_VALUES, "routine_and_basic_type", "ac", TOV_SYSTEM_VOLTAGE_V
+    )
+    assert application.voltage.value != _interpolated(
+        ids.TEST_MAINS_DIELECTRIC_VALUES, "routine_and_basic_type", "ac", IMPULSE_SYSTEM_VOLTAGE_V
     )
 
 

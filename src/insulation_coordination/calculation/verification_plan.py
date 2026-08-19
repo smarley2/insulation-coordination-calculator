@@ -938,6 +938,38 @@ def _non_mains_route_gap(pair: PairCase, overvoltage_present: bool | None) -> st
     )
 
 
+def _mains_row_value(
+    mains: Sequence[DerivedSupplyScenario],
+) -> tuple[Decimal | None, str, tuple[str, ...]]:
+    """The most severe temporary-overvoltage system voltage across the supplies that reach here.
+
+    A supply whose temporary-overvoltage measure the derivation did not resolve contributes
+    nothing and is named, rather than contributing its impulse measure. The two are separate
+    questions the package answers separately, and substituting the answer to one for the
+    answer to the other is what this function was fixed for.
+    """
+
+    unresolved = tuple(
+        (
+            f"{scenario.configuration_name} resolved no temporary-overvoltage system voltage, "
+            "and that measure is what keys the mains dielectric row. Its impulse system "
+            "voltage is a different measure of the supply and is not read in its place."
+        )
+        for scenario in mains
+        if scenario.system_voltage_for_tov_v is None
+    )
+    resolved = {
+        scenario.configuration_name: scenario.system_voltage_for_tov_v
+        for scenario in mains
+        if scenario.system_voltage_for_tov_v is not None
+    }
+    if not resolved:
+        return None, "no temporary-overvoltage system voltage", unresolved
+    highest = max(resolved.values())
+    names = ", ".join(sorted(resolved))
+    return highest, f"system voltage {highest} V from {names}", unresolved
+
+
 def _row_value(
     pair: PairCase,
     mains: Sequence[DerivedSupplyScenario],
@@ -946,8 +978,13 @@ def _row_value(
 ) -> tuple[Decimal | None, str, tuple[str, ...]]:
     """The voltage that keys the dielectric table's row axis, and where it came from.
 
-    For a mains circuit that is the system voltage of the supply, which the derivation already
-    resolved to the measure the package named for that arrangement.
+    For a mains circuit that is the system voltage of the supply, at the measure the
+    derivation resolved for the *temporary-overvoltage* question and not the impulse one. The
+    two are different measures of one supply for at least one arrangement the package
+    distinguishes, and this test is a test of withstand under temporary overvoltage
+    conditions, so the temporary-overvoltage measure is the one that keys it. On the
+    arrangement where they differ the impulse measure is the lower, which is what made reading
+    it a plan under the row the package states.
 
     A non-mains circuit is keyed on its recurring-peak working voltage only where no temporary
     overvoltage is present on it, because that is the condition the package's non-mains route
@@ -957,9 +994,7 @@ def _row_value(
     """
 
     if mains:
-        highest = max(scenario.system_voltage_for_impulse_v for scenario in mains)
-        names = ", ".join(sorted({scenario.configuration_name for scenario in mains}))
-        return highest, f"system voltage {highest} V from {names}", ()
+        return _mains_row_value(mains)
     if overvoltage_present is not False:
         return (
             None,

@@ -106,6 +106,14 @@ SUPPLY = UUID(int=441)
 #: numbers are this repository's invention and only have to overlap.
 SYSTEM_VOLTAGE_V = Decimal(33)
 
+#: What a three-phase IT arrangement answers the impulse question and the temporary-overvoltage
+#: question with, as :func:`it_mains_configuration` declares them. They differ, and both land
+#: inside the synthetic band axes, so a lookup keyed on one of them can be told from a lookup
+#: keyed on the other by the value it returns. Invented like every other number here: the
+#: source relates its own pair of measures and this pair does not stand for that relation.
+IMPULSE_SYSTEM_VOLTAGE_V = Decimal(15)
+TOV_SYSTEM_VOLTAGE_V = Decimal(33)
+
 #: The dielectric routes' row axis. Chosen so ``SYSTEM_VOLTAGE_V`` lands strictly between two
 #: bands, which is what makes a linear route and a banded route give different answers.
 DIELECTRIC_ROW_BANDS: tuple[Decimal, ...] = (Decimal(10), Decimal(20), Decimal(40))
@@ -224,6 +232,27 @@ def mains_configuration(**overrides: object) -> SupplyConfiguration:
     }
     fields.update(overrides)
     return SupplyConfiguration(**fields)
+
+
+def it_mains_configuration(**overrides: object) -> SupplyConfiguration:
+    """One enabled AC mains row whose two system-voltage questions get two different answers.
+
+    The arrangement the synthetic resolution rule answers differently for the impulse question
+    and the temporary-overvoltage question, so a lookup keyed on the wrong one of them lands
+    on a different row and can be told apart from a lookup keyed on the right one.
+    """
+
+    return mains_configuration(
+        name="IT site supply",
+        earthing_arrangement=EarthingArrangement.IT_THREE_PHASE,
+        declared_system_voltages=(
+            DeclaredSystemVoltage(
+                measure="phase_to_artificial_neutral_rms", value_v=IMPULSE_SYSTEM_VOLTAGE_V
+            ),
+            DeclaredSystemVoltage(measure="phase_to_phase_rms", value_v=TOV_SYSTEM_VOLTAGE_V),
+        ),
+        **overrides,
+    )
 
 
 def pair_between(project: Project, first: UUID, second: UUID) -> PairCase:
@@ -627,6 +656,7 @@ __all__ = [
     "DIELECTRIC_ROW_BANDS",
     "ENCLOSURE",
     "FAMILY_OFFSETS",
+    "IMPULSE_SYSTEM_VOLTAGE_V",
     "LIVE_A",
     "LIVE_B",
     "LIVE_C",
@@ -638,8 +668,10 @@ __all__ = [
     "SUPPLY",
     "SYSTEM_VOLTAGE_V",
     "TOUCHABLE",
+    "TOV_SYSTEM_VOLTAGE_V",
     "declared_solid_insulation",
     "dielectric_cell",
+    "it_mains_configuration",
     "mains_configuration",
     "pair_between",
     "single_column_dielectric_package",
