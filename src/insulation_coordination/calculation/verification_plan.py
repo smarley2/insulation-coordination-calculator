@@ -36,6 +36,15 @@ fallback: a lookup the package refuses becomes an unresolved input naming the re
 working voltage nobody recorded, a duration no resolved rule states - each is an unresolved
 input on the application it belongs to. There is no path from "nothing is known" to
 ``NOT_REQUIRED``.
+
+*An obligation with no rule behind it is still stated.* Several subclauses oblige something the
+recipe projects no rule for: the body of the AC/DC test subclause outside its two value tables,
+the clearance and visual-inspection subclauses, the protective-impedance test. Each of those
+reached the schedule as nothing at all,
+which for a preparation instruction means a test performed wrongly rather than a test left
+unplanned. They are restated here, in this application's own words, against the identifier that
+obliges them - see :func:`_clause_obligations`. Where the deciding
+input is one the project holds it narrows the statement; where it is not, the statement says so.
 """
 
 from __future__ import annotations
@@ -94,6 +103,7 @@ from insulation_coordination.domain.dvc import (
 from insulation_coordination.domain.enums import (
     Applicability,
     DecisiveVoltageClass,
+    FieldCondition,
     InsulationType,
     NetClassType,
     ReviewState,
@@ -117,6 +127,7 @@ from insulation_coordination.domain.rules import (
 from insulation_coordination.domain.supply import (
     MAINS_SUPPLY_KINDS,
     DerivedSupplyScenario,
+    ImpulseOverrideBasis,
     VerifiedImpulseOverride,
 )
 from insulation_coordination.domain.trace import CalculationWarning, Quantity, TraceStep
@@ -171,6 +182,17 @@ _PROTECTION_RANK: Final[Mapping[ProtectionRequirement, int]] = {
 #: reinforced impulse variant and the set that satisfies an enhanced requirement cannot part.
 ENHANCED_PROTECTION_IMPLEMENTATIONS: Final[frozenset[ProtectionImplementation]] = frozenset(
     item for item, level in _IMPLEMENTATION_PROVIDES.items() if level == "enhanced_protection"
+)
+
+#: The two constructions the homogeneous-field refusal is stated for.
+#: Narrower than the enhanced set on purpose: the clause names double and reinforced insulation
+#: specifically, and a protective impedance or another reviewed means reaches an enhanced level
+#: without being either of them.
+_DOUBLE_OR_REINFORCED: Final[frozenset[ProtectionImplementation]] = frozenset(
+    {
+        ProtectionImplementation.DOUBLE_INSULATION,
+        ProtectionImplementation.REINFORCED_INSULATION,
+    }
 )
 
 #: How each test relationship reads as Table 3's ``target`` dimension. Three of the four are
@@ -228,6 +250,7 @@ _ENHANCED_COLUMN_TOPOLOGIES: Final[frozenset[TestReferenceKind]] = frozenset(
 ENHANCED_SPACING_MISMATCH_WARNING: Final = "verification_enhanced_protection_not_dimensioned"
 SPD_MONITORING_OWED_WARNING: Final = "verification_internal_spd_monitoring_owed"
 PROTECTION_REQUIREMENT_UNMET_WARNING: Final = "verification_protection_requirement_not_met"
+HF_TRANSFORMER_SHOWING_WARNING: Final = "verification_hf_transformer_showing_owed"
 
 #: What a DVC A-s circuit's schedule rows say about the one place a single-fault consideration
 #: reaches a spacing. A portion of such a circuit is allowed above the class limits when it is
@@ -272,6 +295,152 @@ _ALTERNATIVE_METHOD_STEP: Final = (
 _CLEARANCE_SCOPE_STEP: Final = (
     "This application verifies the clearance between the connected conductors. Solid "
     "insulation between them is a separate verification and is not covered by this voltage."
+)
+
+# --- obligations the standard states and the package projects no rule for --------------------
+#
+# Every sentence below is this application's own statement of what a clause obliges, written
+# for a reader of the schedule and carrying the clause identifier that obliges it. None of them
+# is read from the package, because the package projects no rule that carries them: the body of
+# the AC/DC test subclause is projected as its two value tables and nothing else, the clearance
+# and visual-inspection subclauses are requirement clauses with no procedure to project, and the
+# reinforced floor is a comparison the reduction recipe records as resolved and deliberately
+# routes to no decision. Where a clause's own deciding input is something the project holds, the
+# step is emitted only for the pairs it applies to; where it is not, the step states the
+# condition and says the project does not answer it, rather than asserting or staying silent.
+
+#: What requires the electrical tests at all, stated on every row that is one of them. The
+#: requirement is gated rather than free-standing, and this plan over-plans deliberately: a test
+#: planned where none was owed costs bench time, and one skipped on an input nobody supplied
+#: costs the verification. Saying which clause asks, and which half of its gate this plan can
+#: see, is what makes the row traceable instead of merely present.
+_ELECTRICAL_TEST_GATE_STEP: Final = (
+    "5.2.3.1 asks for this test, for the insulation classes it names, where 4.4.7.4 requires it "
+    "of a clearance or 4.4.7.8 requires it of solid insulation. This plan holds the clearance "
+    "requirement and holds nothing about this pair's solid insulation, so the row is planned "
+    "rather than gated on the second half of that condition."
+)
+
+#: The layer removal 4.4.7.4.4 attaches to both tests it names. A layer that does not itself
+#: reach basic insulation would carry part of the test voltage, and the clearance the test
+#: exists to verify would not be verified. Stated with its own condition rather than gated,
+#: because one half of that condition is a dimensioning outcome this plan does not hold.
+_LAYER_REMOVAL_STEP: Final = (
+    "Remove every insulation layer that does not reach at least basic insulation for the "
+    "duration of this test, wherever the clearance under test was reduced on a known "
+    "homogeneous field or was dimensioned on the working voltage or on the temporary "
+    "overvoltage and came out below the tabulated distance (4.4.7.4.4). This plan does not "
+    "hold this pair's dimensioned candidates, so which of the two situations applies is read "
+    "from the clearance result, not from here."
+)
+
+#: The second of 5.2.2.1's two situations, which the project does not answer. The first is the
+#: homogeneous-field one and is emitted from the project's own field condition; this one turns
+#: on whether the distance can be measured or inspected at all, and nothing records that.
+_NEAR_THE_DISTANCE_STEP: Final = (
+    "5.2.2.1 also puts this test as close to the distance under test as the construction "
+    "allows where that distance can be neither measured nor inspected and the construction "
+    "documentation is what shows it complies. Nothing in the project records whether the "
+    "distance can be measured, so apply the test at the distance wherever that is the case."
+)
+
+#: 5.2.3.4.4's enclosure condition, and the one relaxation it states. The relaxation is a
+#: permission conditioned on the equipment's construction, so it is stated and never taken:
+#: a plan that quietly performed the routine test open would report a result the schedule did
+#: not describe.
+_ENCLOSURE_CLOSED_STEP: Final = (
+    "5.2.3.4.4 has this test performed on the equipment as it is used: doors shut, nothing "
+    "unfastened, no cover set aside for access. It relaxes that for the routine test alone, and "
+    "only for equipment whose construction leaves no opening giving access to the electrical "
+    "connections; this plan states that relaxation and does not take it."
+)
+
+#: The test-side half of a screened construction. The screen is what makes the construction an
+#: enhanced one, so a test performed with it disconnected verifies a construction the equipment
+#: does not have.
+_SCREEN_CONNECTED_STEP: Final = (
+    "The construction selected for this pair is a screen combined with basic insulation. "
+    "5.2.3.4.4 requires the screen's bond to the conductive accessible parts to be intact for "
+    "the whole of this test, so do not lift it for the measurement: a test taken with the bond "
+    "open verifies a construction the equipment does not have."
+)
+
+#: 5.2.3.4.3's first mandatory disconnection, for the case the project does record: a reducing
+#: device somebody claimed a reduction on at this pair. It is the same device the reduction
+#: verification is applied to, which is why the two rows are worth reading together.
+_LIMITER_DISCONNECTION_STEP: Final = (
+    "A device that reduces impulse voltages is recorded at this pair, and 5.2.3.4.3 has such a "
+    "device out of circuit for the voltage test. Disconnect it, so that the test voltage arrives "
+    "at the insulation instead of at the device, and so that the device operating is not "
+    "mistaken for the insulation giving way."
+)
+
+#: The low-impedance case of the same subclause, with the step that makes it safe to have taken.
+#: Conditioned on something a test house discovers rather than on anything recorded, so the
+#: condition is stated with the obligation.
+_SPD_OPEN_AND_RESTORE_STEP: Final = (
+    "5.2.3.4.3 adds a second step where the assembled equipment cannot be tested at all because "
+    "that device's impedance is too low to hold off the test voltage for as long as the test "
+    "runs: open its connection first, and restore that connection with care once the test is "
+    "over. The restoration is half of the instruction, not a tidying-up afterwards - equipment "
+    "shipped with the connection still open has lost the protection the reduction rests on."
+)
+
+#: The protective-impedance case. Two routes, both permitted, so both are stated and neither is
+#: selected - and the restoration belongs to the second exactly as it does to the SPD one.
+_PROTECTIVE_IMPEDANCE_TEST_STEP: Final = (
+    "A protective impedance is the means selected for this pair. 5.2.3.4.3 requires it either to "
+    "be included in the test, or to have its connection to the protectively separated part of "
+    "the circuit opened before the test and carefully restored afterwards. This plan states "
+    "both routes and selects neither; record which was taken, and record the restoration with "
+    "it."
+)
+
+#: The two tests a protective impedance owes in its own right. They are not dielectric tests and
+#: no row of this schedule can carry them: the application's test-kind vocabulary has no member
+#: for a current or an impedance measurement, and the package projects no procedure for the
+#: subclause that states them. Named here so the obligation is in the plan rather than lost in
+#: the phrase "a separately disclosed engineering item".
+_PROTECTIVE_IMPEDANCE_TESTS_OWED: Final = (
+    "4.4.5.5 with 5.2.3.6 owes two tests for a protective impedance beyond anything this "
+    "schedule plans: a type test showing that the current through it stays within the limits "
+    "4.4.5.5 states under normal operating conditions and under single fault, and a routine "
+    "test verifying its value. Neither is a dielectric test, no test kind in this application "
+    "names a current or an impedance measurement, and the active package projects no procedure "
+    "for the subclause that states them, so they are recorded here and not as schedule rows."
+)
+
+#: The mandatory disconnection the project cannot narrow. Which nets belong to a monitoring or a
+#: protection circuit, and which of those are built to sustain the test, is not something the
+#: topology model records - so this is reported rather than emitted against particular nets.
+_MONITORING_CIRCUIT_DISCONNECTION: Final = (
+    "5.2.3.4.3 requires a monitoring or protection circuit to be taken out of the test where it "
+    "was never built to hold off the test overvoltage for as long as the test runs. Nothing in "
+    "the project says which nets belong to such a circuit, so this plan cannot name them: "
+    "identify them before the test, rather than reading a monitoring circuit failing as the "
+    "insulation failing."
+)
+
+#: The optional case of the same subclause, kept optional. The plan states the preference and
+#: the recommendation that goes with it and decides neither: a component left in circuit is part
+#: of the insulation under test, and removing it on this application's initiative would test
+#: something else.
+_VULNERABLE_COMPONENT_STEP: Final = (
+    "5.2.3.4.3 prefers that individual components forming part of the insulation under test are "
+    "left connected and unbridged wherever that is practicable, and recommends the DC form of "
+    "the test where they are. Disconnecting or bridging a vulnerable component to protect it is "
+    "a permission and not a requirement; record it where it is taken."
+)
+
+#: The sequencing 5.2.3.2 states for a component or device that provides enhanced protection.
+#: A schedule that planned it on the assembled equipment would plan a test that cannot be
+#: performed, and the classification the package already declares for the variant is the other
+#: half of the same statement.
+_BEFORE_ASSEMBLY_STEP: Final = (
+    "Where the enhanced protection of this pair is provided by a component or a device rather "
+    "than by the assembled construction, 5.2.3.2 has that component tested before it is "
+    "assembled into the equipment, as a type test and a sample test. The classifications this "
+    "row carries come from the procedure; the sequencing does not, and is stated here."
 )
 
 
@@ -512,6 +681,10 @@ def _plan_pair(
         )
         monitoring = (_monitoring_application(subject, rules, revision, dependency, message),)
 
+    obligations = _clause_obligations(pair, effective, resolution, implementation, enhanced)
+    unresolved.extend(obligations.pair_unresolved)
+    warnings.extend(obligations.warnings)
+
     impulse = _impulse_application(
         pair,
         subject,
@@ -523,10 +696,17 @@ def _plan_pair(
         enhanced,
         band,
         warnings,
+        obligations,
     )
     override = _verified_reduction(resolution)
     reduction = (
-        () if override is None else (_reduction_application(subject, rules, revision, override),)
+        ()
+        if override is None
+        else (
+            _reduction_application(
+                subject, rules, revision, override, obligations.reduction_preparation
+            ),
+        )
     )
     recurring_peak = _recurring_peak(project, pair, effective)
     adjacency = _dvc_as_adjacency(project, pair, subject)
@@ -542,8 +722,14 @@ def _plan_pair(
         _accessible_part_exception(project, pair, subject)
         or (None if adjacency is None else adjacency.not_applicable),
         row_label="recurring-peak working voltage" if adjacency is None else adjacency.row_label,
-        extra_unresolved=() if adjacency is None else adjacency.unresolved,
-        extra_preparation=() if adjacency is None else adjacency.preparation,
+        extra_unresolved=(
+            *(() if adjacency is None else adjacency.unresolved),
+            *obligations.voltage_unresolved,
+        ),
+        extra_preparation=(
+            *(() if adjacency is None else adjacency.preparation),
+            *obligations.voltage_preparation,
+        ),
     )
     discharge = assess_partial_discharge(
         pair, effective, rules.partial_discharge, recurring_peak_v=recurring_peak
@@ -585,6 +771,220 @@ def _plan_pair(
         routine_exemption=exemption,
         status=_pair_status(pair, applications, tuple(unresolved)),
         unresolved_inputs=tuple(unresolved),
+    )
+
+
+# --- obligations no projected rule carries -----------------------------------------------
+
+
+class _ClauseObligations(FrozenModel):
+    """What one pair owes beyond what the package's procedures state, sorted by where it lands.
+
+    Private and unexported, and shaped like :class:`_DvcAsAdjacency` and for the same reason:
+    one pass over one pair answers every one of these questions, and four functions asking the
+    same project the same things would be four places for the answers to differ.
+
+    The split by destination is the load-bearing part. An impulse test and a voltage test are
+    prepared differently - the enclosure condition and the disconnections belong to the voltage
+    test, the sequencing and the distance belong to the impulse test - and a schedule that put
+    every obligation on every row would tell a test house to disconnect a limiter for a test the
+    clause never asked that of. ``pair_unresolved`` is what belongs to no row at all: an
+    obligation this schedule cannot carry as a test, or a selection it has to question.
+    """
+
+    impulse_preparation: tuple[str, ...] = ()
+    voltage_preparation: tuple[str, ...] = ()
+    voltage_unresolved: tuple[str, ...] = ()
+    reduction_preparation: tuple[str, ...] = ()
+    pair_unresolved: tuple[str, ...] = ()
+    warnings: tuple[CalculationWarning, ...] = ()
+
+
+def _clause_obligations(
+    pair: PairCase,
+    effective: EffectiveCase,
+    resolution: EffectivePairStressResolution | None,
+    implementation: ProtectionImplementation | None,
+    enhanced: bool,
+) -> _ClauseObligations:
+    """Every obligation this pair carries that no rule of the active package states.
+
+    Each of them is a "shall" of the standard whose subclause the recipe projects no procedure
+    or decision for - the AC/DC test's body, the clearance subclause, the visual-inspection
+    subclause, the protective-impedance test - so none of them can be read from the package and
+    all of them would otherwise reach the schedule as nothing at all. That is the failure this
+    function exists to close: a test house working from a schedule that omitted them would
+    perform the tests with an enclosure open, with a limiter still connected, and with a
+    monitoring circuit taking the test voltage.
+
+    Where the deciding input is one the project holds it is used, and three of them are: the
+    pair's field condition decides the homogeneous-field case, the selected construction decides
+    the screen and the protective-impedance cases, and the recorded override's basis decides
+    both the reducing-device case and the transformer showing. Where it is not - which nets are
+    a monitoring circuit, whether the distance can be measured, which axis dimensioned the
+    clearance - the obligation is still stated and says what is missing, because a "shall"
+    nobody can narrow is not a "shall" that goes away.
+    """
+
+    reduction = _verified_reduction(resolution)
+    basis = None if reduction is None else reduction.basis
+    homogeneous = effective.field_condition.value is FieldCondition.HOMOGENEOUS
+    stronger = (
+        effective.insulation_type.value is InsulationType.REINFORCED
+        or implementation in _DOUBLE_OR_REINFORCED
+    )
+
+    impulse = [_ELECTRICAL_TEST_GATE_STEP, _LAYER_REMOVAL_STEP, _NEAR_THE_DISTANCE_STEP]
+    voltage = [
+        _ELECTRICAL_TEST_GATE_STEP,
+        _LAYER_REMOVAL_STEP,
+        _ENCLOSURE_CLOSED_STEP,
+        _VULNERABLE_COMPONENT_STEP,
+    ]
+    voltage_unresolved = [_MONITORING_CIRCUIT_DISCONNECTION]
+    pair_unresolved: list[str] = []
+    warnings: list[CalculationWarning] = []
+    reduction_preparation: list[str] = []
+
+    if homogeneous and not stronger:
+        impulse.append(_homogeneous_field_step(pair))
+    if homogeneous and stronger:
+        pair_unresolved.append(_homogeneous_stronger_reason(pair))
+    if enhanced:
+        impulse.append(_BEFORE_ASSEMBLY_STEP)
+    if implementation is ProtectionImplementation.PROTECTIVE_SCREEN_PLUS_BASIC:
+        voltage.append(_SCREEN_CONNECTED_STEP)
+    if implementation is ProtectionImplementation.PROTECTIVE_IMPEDANCE:
+        voltage.append(_PROTECTIVE_IMPEDANCE_TEST_STEP)
+        pair_unresolved.append(_PROTECTIVE_IMPEDANCE_TESTS_OWED)
+    if implementation is ProtectionImplementation.OTHER_REVIEWED_MEANS:
+        pair_unresolved.append(_other_reviewed_means_reason(pair))
+    if implementation is ProtectionImplementation.SUPPLEMENTARY_INSULATION:
+        pair_unresolved.append(_supplementary_alone_reason(pair))
+    if basis is ImpulseOverrideBasis.SPD_OR_TRANSIENT_LIMITER:
+        voltage.extend((_LIMITER_DISCONNECTION_STEP, _SPD_OPEN_AND_RESTORE_STEP))
+    if basis is ImpulseOverrideBasis.HIGH_FREQUENCY_ISOLATION_TRANSFORMER:
+        assert reduction is not None  # a basis exists only where a reduction applied
+        showing = _transformer_showing_reason(pair, reduction)
+        reduction_preparation.append(showing)
+        warnings.append(
+            CalculationWarning(
+                code=HF_TRANSFORMER_SHOWING_WARNING,
+                message=showing,
+                semantic_rule_id=ids.SUPPLY_HF_TRANSFORMER_ATTENUATION,
+            )
+        )
+    return _ClauseObligations(
+        impulse_preparation=tuple(impulse),
+        voltage_preparation=tuple(voltage),
+        voltage_unresolved=tuple(voltage_unresolved),
+        reduction_preparation=tuple(reduction_preparation),
+        pair_unresolved=tuple(pair_unresolved),
+        warnings=tuple(warnings),
+    )
+
+
+def _homogeneous_field_step(pair: PairCase) -> str:
+    """What a clearance reduced on a known homogeneous field owes, on the impulse row.
+
+    Both subclauses that state it state the same thing from two directions: the reduction is
+    permitted at the price of an impulse test performed across the reduced clearance itself, and
+    the visual-inspection subclause names the same situation as one where the test goes as near
+    as possible to the distance. A test performed anywhere else verifies a distance nobody
+    reduced.
+    """
+
+    return (
+        f"The clearance of pair {pair.key} is dimensioned for a homogeneous field. 4.4.7.4.4 "
+        "permits that reduction for basic or supplementary insulation only against an impulse "
+        "withstand test performed across the reduced clearance itself, and 5.2.2.1 names the "
+        "same situation as one that puts this test as close to that distance as the "
+        "construction allows. Apply it there, not across whatever the assembled equipment "
+        "offers."
+    )
+
+
+def _homogeneous_stronger_reason(pair: PairCase) -> str:
+    """Why a homogeneous field and a double or reinforced construction do not go together.
+
+    The subclause that permits the reduction names basic and supplementary insulation, and closes
+    by stating outright that a reinforced clearance is not reduced for a homogeneous field. So
+    this is a finding about the dimensioning rather than a test to plan, and it is reported: the
+    plan neither reduces anything itself nor has anywhere to put a spacing correction.
+    """
+
+    return (
+        f"Pair {pair.key} is dimensioned for a homogeneous field while the construction it "
+        "carries is a double or reinforced one. 4.4.7.4.4 offers that reduction to basic and "
+        "supplementary insulation and states that a reinforced clearance is not reduced for a "
+        "homogeneous field, so the reduction is not available here. Record which insulation "
+        "class the reduced clearance belongs to."
+    )
+
+
+def _other_reviewed_means_reason(pair: PairCase) -> str:
+    """The obligation the "other means" permission attaches, which nothing else in the plan raises.
+
+    The construction is not one of the means the enhanced-protection clause enumerates. What
+    permits it is the protection-requirement clause's allowance for other means, and that
+    allowance is conditional: the requirements have to be shown met by a failure analysis
+    together with testing. Selecting the member without recording either would be an
+    unevidenced construction reading in the schedule as a settled one.
+    """
+
+    return (
+        f"Pair {pair.key} is protected by another reviewed means, which is not one of the "
+        "constructions 4.4.5.1 enumerates. 4.4.2.7 permits other means only where a failure "
+        "analysis under 4.2, together with testing, demonstrates that what 4.1 and 4.4 ask has "
+        "been satisfied anyway. Record that analysis and that testing; this plan generates "
+        "neither."
+    )
+
+
+def _supplementary_alone_reason(pair: PairCase) -> str:
+    """Why supplementary insulation selected on its own is a question rather than a plan.
+
+    4.4.4.5 defines it as an independent insulation applied *in addition to* basic insulation,
+    and 4.4.4.1 requires a fault-protection means to be independent of and additional to basic
+    protection. So a pair whose only recorded means is this one has not named the protection it
+    is additional to, and the plan asks rather than planning from half a construction. The
+    comparison against the required level says something adjacent - that this application ranks
+    no level for it - and deliberately does not say this.
+    """
+
+    return (
+        f"Supplementary insulation is the only means recorded for pair {pair.key}, and it is not "
+        "a means of protection on its own: 4.4.4.5 defines it as an independent insulation "
+        "applied in addition to basic insulation, and 4.4.4.1 requires a fault-protection means "
+        "to be independent of and additional to basic protection. Record the basic insulation "
+        "this is additional to, or record the combined construction instead."
+    )
+
+
+def _transformer_showing_reason(pair: PairCase, override: VerifiedImpulseOverride) -> str:
+    """The showing a transformer attenuation owes, raised from the reduction that relies on it.
+
+    The permission and the obligation are two halves of one clause: an insulation between the
+    circuit and its surroundings may be determined from the working voltage where a
+    high-frequency transformer provides the isolation, *and* the transformer's ability to hold
+    impulse voltages below the withstand voltage associated with that working voltage has to be
+    shown - by the impulse test, by simulation or by calculation. Issue #36 resolves the
+    permission and records which showing was claimed; nothing raised the obligation, so a
+    reduction could rest on a showing no schedule mentioned.
+
+    Raised from the recorded basis rather than re-derived: which reduction rests on a transformer
+    is a question the override resolution already answered, and asking it again here would let
+    two answers exist.
+    """
+
+    return (
+        f"The impulse reduction recorded at {override.affected_location!r} for pair {pair.key} "
+        "rests on a high-frequency isolation transformer. 4.4.7.2.6 requires that transformer's "
+        "ability to hold impulse voltages below the withstand voltage associated with the "
+        "working voltage to be shown by the impulse test, by simulation or by calculation. The "
+        f"project records a {_words(override.verification_method.value)} against "
+        f"{override.evidence_reference}; the reduction holds only while that showing does, and "
+        "this plan neither performs it nor chooses between the three."
     )
 
 
@@ -756,6 +1156,7 @@ def _impulse_application(
     enhanced: bool,
     band: tuple[Decimal, Decimal] | None,
     warnings: list[CalculationWarning],
+    obligations: _ClauseObligations,
 ) -> TestApplication:
     """The impulse withstand this pair asks for, at the stress issue #36 resolved for it.
 
@@ -768,7 +1169,12 @@ def _impulse_application(
 
     procedure = _impulse_procedure(rules, implementation)
     unresolved: list[str] = []
-    preparation = [*subject.preparation_steps, _ALTERNATIVE_METHOD_STEP, _CLEARANCE_SCOPE_STEP]
+    preparation = [
+        *subject.preparation_steps,
+        _ALTERNATIVE_METHOD_STEP,
+        _CLEARANCE_SCOPE_STEP,
+        *obligations.impulse_preparation,
+    ]
     if procedure is None:
         unresolved.append(
             f"Pair {pair.key} has no protection implementation selected, so the impulse "
@@ -806,8 +1212,10 @@ def _impulse_application(
         )
     if implementation is ProtectionImplementation.PROTECTIVE_IMPEDANCE:
         unresolved.append(
-            f"Pair {pair.key} is protected by a protective impedance, whose verification is a "
-            "separately disclosed engineering item rather than a dimensioned spacing."
+            f"Pair {pair.key} is protected by a protective impedance, which is not a dimensioned "
+            "spacing this test verifies. It owes two tests of its own, named on the pair rather "
+            "than on this row: 4.4.5.5 with 5.2.3.6 asks for a type test of the current through "
+            "it and a routine test of its value."
         )
     classifications = () if procedure is None else classifications_of(procedure)
     return _application(
@@ -865,6 +1273,7 @@ def _reduction_application(
     rules: VerificationRuleSet,
     revision: str,
     override: VerifiedImpulseOverride,
+    obligations: tuple[str, ...] = (),
 ) -> TestApplication:
     """The type test that verifies a claimed reduction of the overvoltage does what is claimed.
 
@@ -874,6 +1283,12 @@ def _reduction_application(
     power condition. Clause 4.4.7.3 asks for the same test where circuit characteristics
     rather than a device are what the reduction rests on, which is why this is generated for
     every applied reduction and not only for the ones that owe monitoring.
+
+    ``obligations`` is how the showing a transformer attenuation owes reaches the schedule.
+    4.4.7.2.6 lets an insulation be determined from the working voltage across such a
+    transformer and obliges the transformer's attenuation to be shown - by this same test, by
+    simulation or by calculation - so this row is where that obligation is named, whichever of
+    the three the project recorded.
 
     The row stands between the pair's own electrodes, as the monitoring row does and for the
     same reason: the test is not measured there - it is applied to the equipment, which the
@@ -905,6 +1320,7 @@ def _reduction_application(
                 f"the basis of {_words(override.basis.value)}, against "
                 f"{override.evidence_reference}."
             ),
+            *obligations,
             *(step.text for step in procedure.preparation_steps),
         ),
         unresolved=(
@@ -1906,6 +2322,7 @@ __all__ = [
     "DVC_AS_HIGHER_PORTION_STEP",
     "ENHANCED_PROTECTION_IMPLEMENTATIONS",
     "ENHANCED_SPACING_MISMATCH_WARNING",
+    "HF_TRANSFORMER_SHOWING_WARNING",
     "PROTECTION_REQUIREMENT_UNMET_WARNING",
     "SPD_MONITORING_OWED_WARNING",
     "PairVerificationAssessment",

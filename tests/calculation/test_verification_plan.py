@@ -23,6 +23,7 @@ from insulation_coordination.calculation.test_topology import (
 from insulation_coordination.calculation.verification_plan import (
     DVC_AS_HIGHER_PORTION_STEP,
     ENHANCED_SPACING_MISMATCH_WARNING,
+    HF_TRANSFORMER_SHOWING_WARNING,
     PROTECTION_REQUIREMENT_UNMET_WARNING,
     SPD_MONITORING_OWED_WARNING,
     PairVerificationAssessment,
@@ -34,6 +35,7 @@ from insulation_coordination.calculation.verification_rules import (
 )
 from insulation_coordination.domain.enums import (
     DecisiveVoltageClass,
+    FieldCondition,
     InsulationType,
     ReviewState,
 )
@@ -1311,6 +1313,324 @@ def test_a_pair_with_no_reduction_carries_no_monitoring_dependency(
     assert assessment_for(build(project, package), pair).spd_monitoring_dependency is None
 
 
+# --- obligations no projected rule carries ---------------------------------------------------
+#
+# Each of these is a requirement of the standard whose subclause the active package projects no
+# rule for, so none of them can arrive on a source rule id and every one of them reached the
+# schedule as nothing at all before this. What the assertions pin is that the obligation is in
+# the row a test house reads, and that its own deciding input - where the project holds one -
+# narrows it to the pairs it belongs to.
+
+
+def voltage_rows(plan: VerificationPlan, pair: PairCase) -> tuple[TestApplication, ...]:
+    """Every AC and DC dielectric row covering ``pair``, in whatever order the plan sorted."""
+
+    return tuple(
+        item
+        for item in plan.test_applications
+        if pair.id in item.covered_pair_ids
+        and item.test_kind in (TestKind.AC_DIELECTRIC, TestKind.DC_DIELECTRIC)
+    )
+
+
+def states(application: TestApplication, *fragments: str) -> bool:
+    """Whether one preparation step of ``application`` carries every one of ``fragments``."""
+
+    return any(
+        all(fragment in step for fragment in fragments) for step in application.preparation_steps
+    )
+
+
+def homogeneous(project: Project) -> Project:
+    """The same project dimensioned for a homogeneous field, which is a project default."""
+
+    return project.model_copy(
+        update={
+            "defaults": project.defaults.model_copy(
+                update={"field_condition": FieldCondition.HOMOGENEOUS}
+            )
+        }
+    )
+
+
+def test_a_homogeneous_clearance_is_impulse_tested_across_the_clearance_itself(
+    project: Project, package: RulePackage
+) -> None:
+    """The reduction is permitted at a price, and the price is a test at the distance."""
+    plan = build(homogeneous(project), package)
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    impulse = one(plan, pair, TestKind.IMPULSE_WITHSTAND)
+    assert states(impulse, "4.4.7.4.4", "5.2.2.1", "as close to that distance")
+
+
+def test_an_inhomogeneous_clearance_is_not_told_to_test_at_the_distance(
+    project: Project, package: RulePackage
+) -> None:
+    """The condition is one the project answers, so it narrows rather than being stated always."""
+    impulse = one(
+        build(project, package),
+        pair_between(project, LIVE_A, ENCLOSURE),
+        TestKind.IMPULSE_WITHSTAND,
+    )
+    assert not states(impulse, "dimensioned for a homogeneous field")
+
+
+def test_a_homogeneous_field_under_a_reinforced_construction_is_reported_as_a_finding(
+    package: RulePackage,
+) -> None:
+    """The subclause offers that reduction to basic and supplementary insulation only."""
+    project = homogeneous(
+        with_protection(
+            verification_topology(
+                supply_configurations=(mains_configuration(),), insulation=InsulationType.REINFORCED
+            ),
+            REINFORCED,
+        )
+    )
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    assessment = assessment_for(build(project, package), pair)
+    assert any(
+        "4.4.7.4.4" in item and "not available here" in item
+        for item in assessment.unresolved_inputs
+    )
+
+
+def test_the_layer_removal_is_stated_on_both_tests_that_carry_it(
+    project: Project, package: RulePackage
+) -> None:
+    """A layer below basic insulation would carry part of the test voltage in either test."""
+    plan = build(project, package)
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    rows = (one(plan, pair, TestKind.IMPULSE_WITHSTAND), *voltage_rows(plan, pair))
+    assert rows
+    for row in rows:
+        assert states(row, "4.4.7.4.4", "does not reach at least basic insulation")
+
+
+def test_the_unmeasurable_distance_situation_is_stated_rather_than_answered(
+    project: Project, package: RulePackage
+) -> None:
+    """Nothing in the project says whether a distance can be measured, so the plan says so."""
+    impulse = one(
+        build(project, package),
+        pair_between(project, LIVE_A, ENCLOSURE),
+        TestKind.IMPULSE_WITHSTAND,
+    )
+    assert states(impulse, "5.2.2.1", "neither measured nor inspected")
+
+
+def test_every_voltage_test_is_performed_with_the_enclosure_closed(
+    project: Project, package: RulePackage
+) -> None:
+    plan = build(project, package)
+    rows = voltage_rows(plan, pair_between(project, LIVE_A, ENCLOSURE))
+    assert rows
+    for row in rows:
+        assert states(row, "5.2.3.4.4", "doors shut")
+        assert states(row, "5.2.3.4.4", "leaves no opening giving access")
+
+
+def test_the_enclosure_condition_is_not_stated_on_the_impulse_row(
+    project: Project, package: RulePackage
+) -> None:
+    """It belongs to the voltage test, and a row carrying every obligation carries none usefully."""
+    impulse = one(
+        build(project, package),
+        pair_between(project, LIVE_A, ENCLOSURE),
+        TestKind.IMPULSE_WITHSTAND,
+    )
+    assert not states(impulse, "doors shut")
+
+
+def test_a_screened_construction_keeps_its_screen_connected_through_the_voltage_test(
+    package: RulePackage,
+) -> None:
+    """The screen is what makes the construction enhanced; a test without it verifies another."""
+    project = with_protection(
+        verification_topology(supply_configurations=(mains_configuration(),)),
+        ProtectionImplementation.PROTECTIVE_SCREEN_PLUS_BASIC,
+    )
+    rows = voltage_rows(build(project, package), pair_between(project, LIVE_A, ENCLOSURE))
+    assert rows
+    for row in rows:
+        assert states(row, "screen combined with basic insulation", "5.2.3.4.4", "bond")
+
+
+def test_a_pair_with_no_screen_is_told_nothing_about_one(
+    project: Project, package: RulePackage
+) -> None:
+    rows = voltage_rows(build(project, package), pair_between(project, LIVE_A, ENCLOSURE))
+    assert rows
+    assert not any(states(row, "screen combined with basic insulation") for row in rows)
+
+
+def test_a_recorded_reducing_device_is_disconnected_and_its_connection_restored(
+    package: RulePackage,
+) -> None:
+    """Both are mandatory, and the restoration is the half that keeps the equipment protected."""
+    project = with_protection(
+        verification_topology(supply_configurations=(mains_configuration(),)), BASIC
+    )
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    rows = voltage_rows(
+        build(_with_override(project, pair.id, Decimal(50), spd=True), package), pair
+    )
+    assert rows
+    for row in rows:
+        assert states(row, "5.2.3.4.3", "reduces impulse voltages", "Disconnect it")
+        assert states(row, "5.2.3.4.3", "restore that connection with care")
+
+
+def test_a_pair_with_no_reducing_device_is_told_nothing_to_disconnect(
+    project: Project, package: RulePackage
+) -> None:
+    rows = voltage_rows(build(project, package), pair_between(project, LIVE_A, ENCLOSURE))
+    assert rows
+    assert not any(states(row, "reduces impulse voltages is recorded") for row in rows)
+    assert not any(states(row, "restore that connection with care") for row in rows)
+
+
+def test_the_monitoring_circuits_that_must_be_disconnected_are_reported_not_guessed(
+    project: Project, package: RulePackage
+) -> None:
+    """The obligation is unconditional; which nets it names is not something #35 records."""
+    rows = voltage_rows(build(project, package), pair_between(project, LIVE_A, ENCLOSURE))
+    assert rows
+    for row in rows:
+        assert any(
+            "5.2.3.4.3" in item and "monitoring or protection circuit" in item
+            for item in row.unresolved_inputs
+        )
+
+
+def test_the_component_that_may_be_disconnected_stays_a_permission(
+    project: Project, package: RulePackage
+) -> None:
+    rows = voltage_rows(build(project, package), pair_between(project, LIVE_A, ENCLOSURE))
+    assert rows
+    for row in rows:
+        assert states(row, "5.2.3.4.3", "permission and not a requirement")
+
+
+def test_a_protective_impedance_states_both_routes_and_the_two_tests_it_owes(
+    package: RulePackage,
+) -> None:
+    """Treating it as a disclosure dropped a type test and a routine test the standard names."""
+    project = with_protection(
+        verification_topology(supply_configurations=(mains_configuration(),)),
+        ProtectionImplementation.PROTECTIVE_IMPEDANCE,
+    )
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    plan = build(project, package)
+    rows = voltage_rows(plan, pair)
+    assert rows
+    for row in rows:
+        assert states(row, "5.2.3.4.3", "included in the test", "carefully restored")
+    assert any(
+        "5.2.3.6" in item and "type test" in item and "routine test" in item
+        for item in assessment_for(plan, pair).unresolved_inputs
+    )
+
+
+def test_an_enhanced_component_is_tested_before_it_is_assembled(
+    package: RulePackage,
+) -> None:
+    project = with_protection(
+        verification_topology(
+            supply_configurations=(mains_configuration(),), insulation=InsulationType.REINFORCED
+        ),
+        REINFORCED,
+    )
+    impulse = one(
+        build(project, package),
+        pair_between(project, LIVE_A, ENCLOSURE),
+        TestKind.IMPULSE_WITHSTAND,
+    )
+    assert states(impulse, "5.2.3.2", "before it is assembled")
+
+
+def test_a_basic_pair_is_told_nothing_about_testing_before_assembly(
+    project: Project, package: RulePackage
+) -> None:
+    impulse = one(
+        build(project, package),
+        pair_between(project, LIVE_A, ENCLOSURE),
+        TestKind.IMPULSE_WITHSTAND,
+    )
+    assert not states(impulse, "before it is assembled")
+
+
+def test_every_electrical_row_names_the_clause_that_requires_it(
+    project: Project, package: RulePackage
+) -> None:
+    """The requirement is gated, and a requirement asserted without its gate is not traceable."""
+    plan = build(project, package)
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    rows = (one(plan, pair, TestKind.IMPULSE_WITHSTAND), *voltage_rows(plan, pair))
+    assert rows
+    for row in rows:
+        assert states(row, "5.2.3.1", "4.4.7.4", "4.4.7.8")
+
+
+def test_another_reviewed_means_carries_the_failure_analysis_its_permission_attaches(
+    package: RulePackage,
+) -> None:
+    """The member is not one of 4.4.5.1's; what permits it also conditions it."""
+    project = with_protection(
+        verification_topology(supply_configurations=(mains_configuration(),)),
+        ProtectionImplementation.OTHER_REVIEWED_MEANS,
+    )
+    assessment = assessment_for(build(project, package), pair_between(project, LIVE_A, ENCLOSURE))
+    assert any(
+        "4.4.2.7" in item and "failure analysis" in item and "4.1 and 4.4" in item
+        for item in assessment.unresolved_inputs
+    )
+
+
+def test_supplementary_insulation_alone_is_questioned_rather_than_planned_from(
+    package: RulePackage,
+) -> None:
+    """It is defined as applied in addition to basic insulation, so alone it names half a means."""
+    project = with_protection(
+        verification_topology(supply_configurations=(mains_configuration(),)),
+        ProtectionImplementation.SUPPLEMENTARY_INSULATION,
+    )
+    assessment = assessment_for(build(project, package), pair_between(project, LIVE_A, ENCLOSURE))
+    assert any(
+        "4.4.4.5" in item and "4.4.4.1" in item and "additional to" in item
+        for item in assessment.unresolved_inputs
+    )
+
+
+def test_a_transformer_attenuation_raises_the_showing_it_owes(package: RulePackage) -> None:
+    """#36 resolves the permission and records the method; the obligation lands in this plan."""
+    project = with_protection(
+        verification_topology(supply_configurations=(mains_configuration(),)), BASIC
+    )
+    # Across the verified barrier: the attenuation permission is refused anywhere else, which is
+    # #36's own gate and not this plan's.
+    pair = pair_between(project, LIVE_A, LIVE_C)
+    project = _with_override(
+        project,
+        pair.id,
+        Decimal(200),
+        basis=ImpulseOverrideBasis.HIGH_FREQUENCY_ISOLATION_TRANSFORMER,
+    )
+    plan = build(project, package)
+    assert HF_TRANSFORMER_SHOWING_WARNING in {warning.code for warning in plan.warnings}
+    reduction = one(plan, pair, TestKind.TRANSIENT_OVERVOLTAGE_REDUCTION)
+    assert states(reduction, "4.4.7.2.6", "shown by the impulse test", "SYN-RED-1")
+
+
+def test_a_reduction_on_another_basis_owes_no_transformer_showing(package: RulePackage) -> None:
+    project = with_protection(
+        verification_topology(supply_configurations=(mains_configuration(),)), BASIC
+    )
+    pair = pair_between(project, LIVE_A, LIVE_C)
+    plan = build(_with_override(project, pair.id, Decimal(200)), package)
+    assert HF_TRANSFORMER_SHOWING_WARNING not in {warning.code for warning in plan.warnings}
+
+
 # --- status ---------------------------------------------------------------------------------
 
 
@@ -1392,21 +1712,37 @@ def _evidence(pair_id: UUID, value_v: Decimal) -> VoltageEvidence:
 
 
 def _with_override(
-    project: Project, pair_id: UUID, value_v: Decimal, *, spd: bool = False
+    project: Project,
+    pair_id: UUID,
+    value_v: Decimal,
+    *,
+    spd: bool = False,
+    basis: ImpulseOverrideBasis | None = None,
 ) -> Project:
+    """One pair carrying a recorded reduction, on whichever basis the caller is testing.
+
+    ``spd`` is the shorthand for the device basis, which needs a placement and a degradability
+    beside it; ``basis`` names any other. Both are here rather than in two helpers because the
+    only thing that differs between them is what the model requires alongside the basis.
+    """
+
+    device = spd or basis is ImpulseOverrideBasis.SPD_OR_TRANSIENT_LIMITER
+    resolved = basis or (
+        ImpulseOverrideBasis.SPD_OR_TRANSIENT_LIMITER
+        if spd
+        else ImpulseOverrideBasis.VERIFIED_CIRCUIT_CHARACTERISTIC
+    )
+    transformer = resolved is ImpulseOverrideBasis.HIGH_FREQUENCY_ISOLATION_TRANSFORMER
     override = VerifiedImpulseOverride(
         value_v=value_v,
-        basis=(
-            ImpulseOverrideBasis.SPD_OR_TRANSIENT_LIMITER
-            if spd
-            else ImpulseOverrideBasis.VERIFIED_CIRCUIT_CHARACTERISTIC
-        ),
+        basis=resolved,
         verification_method=ReductionVerificationMethod.TEST,
         justification="Synthetic reduction for this test module.",
         evidence_reference="SYN-RED-1",
         affected_location="the primary to enclosure insulation",
-        spd_device_placement=SpdDevicePlacement.INTERNAL_TO_EQUIPMENT if spd else None,
-        spd_device_degradable=True if spd else None,
+        transformer_frequency_hz=Decimal(45678) if transformer else None,
+        spd_device_placement=SpdDevicePlacement.INTERNAL_TO_EQUIPMENT if device else None,
+        spd_device_degradable=True if device else None,
     )
     return project.model_copy(
         update={
