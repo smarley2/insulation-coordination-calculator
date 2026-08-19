@@ -43,6 +43,11 @@ HIGH_FREQUENCY_BAND_FACTOR = "iec62477_2022.high_frequency.band_factor"
 
 TEST_IMPULSE_PROCEDURE = "iec62477_2022.test.impulse_procedure"
 TEST_IMPULSE_SELECTION = "iec62477_2022.test.impulse_selection"
+#: The test a source permits *instead of* the impulse withstand test. Its own identifier rather
+#: than a route of the procedure above, for the reason the two reinforced treatments are siblings
+#: of their requirement tables: an alternative is a separate normative statement about a test, not
+#: a route of performing it -- and the engineer's choice between them has to name one of the two.
+TEST_IMPULSE_ALTERNATIVE = "iec62477_2022.test.impulse_alternative"
 TEST_MAINS_DIELECTRIC_VALUES = "iec62477_2022.test.mains_dielectric_values"
 TEST_NON_MAINS_DIELECTRIC_VALUES = "iec62477_2022.test.non_mains_dielectric_values"
 TEST_PARTIAL_DISCHARGE = "iec62477_2022.test.partial_discharge"
@@ -75,6 +80,7 @@ REQUIRED_SEMANTIC_IDS: frozenset[str] = frozenset(
         HIGH_FREQUENCY_BAND_FACTOR,
         TEST_IMPULSE_PROCEDURE,
         TEST_IMPULSE_SELECTION,
+        TEST_IMPULSE_ALTERNATIVE,
         TEST_MAINS_DIELECTRIC_VALUES,
         TEST_NON_MAINS_DIELECTRIC_VALUES,
         TEST_PARTIAL_DISCHARGE,
