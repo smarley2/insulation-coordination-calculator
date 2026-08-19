@@ -84,7 +84,12 @@ issue's explicit instruction).
 
 ## Decision record
 
-- [ ] Maintainer decision: cleanup-only / rewrite / rewrite + Support purge
-- Decided by:
-- Date:
-- Notes:
+- [x] Maintainer decision: **cleanup-only**
+- Decided by: Fabio Posser
+- Date: 2026-08-18
+- Notes: the recommendation above was accepted as written. The historical exposure is
+  fragmentary derived values rather than reproductions of the standards; existing clones and
+  forks retain the objects whatever this repository does; and the cost of a rewrite falls
+  precisely on the commit-SHA references this project uses as its audit trail. Revisit only if
+  a rights-holder raises a concern, in which case go straight to option 3 — option 2 alone
+  leaves the content reachable on GitHub and pays the full disruption for a partial result.
