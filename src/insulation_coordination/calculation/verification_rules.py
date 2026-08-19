@@ -54,7 +54,11 @@ from insulation_coordination.domain.rules import (
     SourceReference,
     Table,
 )
-from insulation_coordination.domain.verification import TestApplicability, TestClassification
+from insulation_coordination.domain.verification import (
+    TestApplicability,
+    TestClassification,
+    TestReferenceKind,
+)
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.iec62477_2022.inventory import EDITION, STANDARD
 
@@ -82,6 +86,31 @@ IMPULSE_SELECTION_PAIRS: tuple[str, ...] = ("mains_circuits", "non_mains_circuit
 #: why they are separate routes and never one value read twice.
 DIELECTRIC_PURPOSES: tuple[str, ...] = ("routine_and_basic_type", "enhanced_type")
 
+#: Table 27's two data columns, named by the insulation class each is headed by. The
+#: overvoltage category names the *pair* of columns and the within-pair axis is the insulation
+#: class, so these are what a consumer selects a column by - the same way a clearance branch is
+#: selected in :mod:`~insulation_coordination.calculation.clearance`. They replaced labels that
+#: named a physical position, which nothing could ask for; a route carrying the old labels is
+#: refused here rather than read off a remembered index.
+IMPULSE_SELECTION_COLUMN_LABELS: tuple[str, ...] = (
+    "test_voltage_basic_or_supplementary_v",
+    "test_voltage_double_or_reinforced_v",
+)
+BASIC_OR_SUPPLEMENTARY_COLUMN, DOUBLE_OR_REINFORCED_COLUMN = IMPULSE_SELECTION_COLUMN_LABELS
+
+
+def dielectric_column_label(purpose: str, form: VoltageForm) -> str:
+    """The label the package gives the one data column of one dielectric route.
+
+    A dielectric route carries a single data column because the purpose and the voltage form
+    are already in its own identifier, so nothing selects between columns here. It is still
+    read by its label rather than by its position: a route that acquired a second column would
+    otherwise be read at whichever one happened to come first.
+    """
+
+    return f"test_voltage_{purpose}_{form}_v"
+
+
 #: Preconditioning carries one gate and one procedure per source clause, because the two
 #: clauses state different step inventories for different work. A consumer asks the gate and
 #: is told which of the two routes to follow.
@@ -93,10 +122,16 @@ PRECONDITIONING_MATERIAL_ROUTE = f"{ids.TEST_PRECONDITIONING}.material"
 FOIL_APPLICABILITY_ROUTE = f"{ids.TEST_ACCESSIBLE_SURFACE_FOIL}.applicability"
 PARTIAL_DISCHARGE_APPLICABILITY_ROUTE = f"{ids.TEST_PARTIAL_DISCHARGE}.applicability"
 
-#: The identifiers this adapter resolves: the thirteen issue #37 names as its rule dependency,
-#: as base identifiers rather than their routes.
+#: The identifiers this adapter resolves, as base identifiers rather than their routes: the
+#: thirteen issue #37 names as its rule dependency, and the four the body of clause 5.2.3.4
+#: was given once it turned out that nothing in the package stated the test its two value
+#: tables belong to.
 READ_SEMANTIC_IDS: frozenset[str] = frozenset(
     {
+        ids.TEST_DIELECTRIC_DISCONNECTION,
+        ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION,
+        ids.TEST_DIELECTRIC_APPLICATION_DURATION,
+        ids.TEST_DIELECTRIC_ACCEPTANCE,
         ids.DVC_VOLTAGE_LIMITS,
         ids.DVC_PROTECTION_MATRIX,
         ids.DVC_FAULT_TIME_VOLTAGE,
@@ -169,6 +204,51 @@ PRECONDITIONING_PURPOSE_INPUT: Final = "test_purpose"
 PRECONDITIONING_REQUIRED_OUTPUT: Final = "preconditioning_required"
 PRECONDITIONING_ROUTE_OUTPUT: Final = "preconditioning_procedure_rule_id"
 EXEMPTION_OUTPUT: Final = "assembled_routine_test_exempt"
+
+# --- the body of the AC or DC voltage test ---------------------------------------------
+#
+# The five inputs the topology selection is asked by and the two outputs it answers with. A
+# consumer supplies all five: the evaluator answers ``input_required`` for any declared input a
+# caller omits, so a question asked with four of them is not a question at all.
+DIELECTRIC_REFERENCE_INPUT: Final = "reference_kind"
+DIELECTRIC_CLASSIFICATION_INPUT: Final = "test_classification"
+DIELECTRIC_DVC_AS_INPUT: Final = "circuit_under_test_is_dvc_as"
+DIELECTRIC_BONDED_INPUT: Final = "circuit_connected_to_conductive_accessible_parts"
+DIELECTRIC_ENHANCED_INPUT: Final = "enhanced_protection"
+DIELECTRIC_COLUMN_OUTPUT: Final = "dielectric_column"
+DIELECTRIC_ROW_AXIS_OUTPUT: Final = "row_axis_circuit"
+#: The sentinel both output vocabularies carry for an application the source excludes. Not a
+#: third output: a row forced to name a column it does not read would state a column nobody
+#: asked for beside an exclusion.
+DIELECTRIC_NOT_APPLICABLE: Final = "not_applicable"
+#: Whose voltage keys the row. Every application but one is keyed on the circuit under test.
+DIELECTRIC_ROW_CIRCUIT_UNDER_TEST: Final = "circuit_under_test"
+DIELECTRIC_ROW_HIGHER_VOLTAGE_CIRCUIT: Final = "higher_voltage_circuit"
+
+#: How this application's topology relationships read as the selection rule's own reference
+#: vocabulary. Two of them answer to one value: a conductive accessible part that is not bonded
+#: to earth and an insulating surface reached through conductive foil are one case as far as
+#: the selection is concerned, and they differ only in the preparation the foil adds.
+#:
+#: :attr:`~insulation_coordination.domain.verification.TestReferenceKind.WITHIN_CIRCUIT` is
+#: deliberately absent. The subclause enumerates the references an application is made
+#: *against*, and a test inside one circuit is not among them - so the rule cannot be asked
+#: about it, and a consumer reports that rather than picking the nearest value.
+DIELECTRIC_REFERENCE_KINDS: Mapping[TestReferenceKind, str] = {
+    TestReferenceKind.PE_BONDED_ACCESSIBLE_PART: "earthed_conductive_accessible_part",
+    TestReferenceKind.ACCESSIBLE_CONDUCTIVE_PART: (
+        "unearthed_or_non_conductive_accessible_surface"
+    ),
+    TestReferenceKind.ACCESSIBLE_INSULATING_SURFACE_FOIL: (
+        "unearthed_or_non_conductive_accessible_surface"
+    ),
+    TestReferenceKind.ADJACENT_CIRCUIT: "adjacent_circuit",
+    TestReferenceKind.DVC_AS_ADJACENT_CIRCUIT: "dvc_as_adjacent_circuit",
+}
+
+#: The one observation the acceptance criterion takes, and the one thing it settles.
+DIELECTRIC_ACCEPTANCE_INPUT: Final = "electric_breakdown_observed"
+DIELECTRIC_ACCEPTANCE_OUTPUT: Final = "voltage_test_passed"
 #: The exemption's conditions in the order the source states them, which is the order a
 #: decision trace reports them in. A set would lose that order, and a reviewer reading which
 #: condition is missing reads it against the sequence the source states.
@@ -198,6 +278,8 @@ _INTERNAL_SPD_TEST_KIND = "internal_spd_monitoring"
 _PRECONDITIONING_ELECTRICAL_TEST_KIND = "electrical_test_preconditioning"
 _PRECONDITIONING_MATERIAL_TEST_KIND = "material_preconditioning"
 _FOIL_TEST_KIND = "accessible_surface_foil_placement"
+_DIELECTRIC_DISCONNECTION_TEST_KIND = "dielectric_test_disconnection"
+_DIELECTRIC_DURATION_TEST_KIND = "dielectric_voltage_application"
 
 # The question each decision rule is resolved by: exactly the inputs this application supplies,
 # and the outputs it reads. The input set is compared for equality rather than containment
@@ -226,6 +308,20 @@ _PRECONDITIONING_GATE_OUTPUTS = frozenset(
 
 _EXEMPTION_INPUTS = frozenset(EXEMPTION_CONDITION_INPUTS)
 _EXEMPTION_OUTPUTS = frozenset({EXEMPTION_OUTPUT})
+
+_DIELECTRIC_SELECTION_INPUTS = frozenset(
+    {
+        DIELECTRIC_REFERENCE_INPUT,
+        DIELECTRIC_CLASSIFICATION_INPUT,
+        DIELECTRIC_DVC_AS_INPUT,
+        DIELECTRIC_BONDED_INPUT,
+        DIELECTRIC_ENHANCED_INPUT,
+    }
+)
+_DIELECTRIC_SELECTION_OUTPUTS = frozenset({DIELECTRIC_COLUMN_OUTPUT, DIELECTRIC_ROW_AXIS_OUTPUT})
+
+_DIELECTRIC_ACCEPTANCE_INPUTS = frozenset({DIELECTRIC_ACCEPTANCE_INPUT})
+_DIELECTRIC_ACCEPTANCE_OUTPUTS = frozenset({DIELECTRIC_ACCEPTANCE_OUTPUT})
 
 # The axes each selection table is keyed by, and the unit every one of them carries. A table
 # read off the wrong axis would resolve a real number to the wrong question.
@@ -357,6 +453,13 @@ class VerificationRuleSet(FrozenModel):
     impulse_selection: ImpulseSelectionTables
     mains_dielectric_values: DielectricValueTables
     non_mains_dielectric_values: DielectricValueTables
+    #: The four rules the body of clause 5.2.3.4 states around its two value tables: what is
+    #: disconnected before the voltage is applied, which column and row side an application
+    #: reads, how long the voltage is held, and what settles the result.
+    dielectric_disconnection: ProcedureRule
+    dielectric_topology_selection: DecisionRule
+    dielectric_application_duration: ProcedureRule
+    dielectric_acceptance: DecisionRule
     partial_discharge: GatedProcedure
     internal_spd_monitoring: ProcedureRule
     preconditioning: PreconditioningRules
@@ -443,6 +546,24 @@ def _resolve(
         ),
         "non_mains_dielectric_values": reader.dielectric_tables(
             ids.TEST_NON_MAINS_DIELECTRIC_VALUES, row_axis_id=_NON_MAINS_DIELECTRIC_ROW_AXIS
+        ),
+        "dielectric_disconnection": reader.procedure(
+            ids.TEST_DIELECTRIC_DISCONNECTION, test_kind=_DIELECTRIC_DISCONNECTION_TEST_KIND
+        ),
+        "dielectric_topology_selection": reader.decision(
+            ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION,
+            inputs=_DIELECTRIC_SELECTION_INPUTS,
+            outputs=_DIELECTRIC_SELECTION_OUTPUTS,
+        ),
+        "dielectric_application_duration": reader.procedure(
+            ids.TEST_DIELECTRIC_APPLICATION_DURATION,
+            test_kind=_DIELECTRIC_DURATION_TEST_KIND,
+            states_duration=True,
+        ),
+        "dielectric_acceptance": reader.decision(
+            ids.TEST_DIELECTRIC_ACCEPTANCE,
+            inputs=_DIELECTRIC_ACCEPTANCE_INPUTS,
+            outputs=_DIELECTRIC_ACCEPTANCE_OUTPUTS,
         ),
         "partial_discharge": reader.gated_procedure(
             ids.TEST_PARTIAL_DISCHARGE,
@@ -538,12 +659,20 @@ class _PackageReader:
 
     # --- procedures ------------------------------------------------------------------
 
-    def procedure(self, rule_id: str, *, test_kind: str) -> ProcedureRule | None:
+    def procedure(
+        self, rule_id: str, *, test_kind: str, states_duration: bool = False
+    ) -> ProcedureRule | None:
         rule = self._present(rule_id, self._package.procedures, "procedure rule")
         if rule is None:
             return None
         if rule.test_kind != test_kind:
             self._shape(rule_id, f"performs {rule.test_kind!r} rather than {test_kind!r}")
+            return None
+        if states_duration and not rule.duration:
+            # The one procedure resolved *for* its duration. A rule of this identifier that
+            # states none answers nothing a consumer asked it, and reporting that on every
+            # planned row instead would say the schedule is incomplete when the package is.
+            self._shape(rule_id, "states no duration for the test it is resolved to state")
             return None
         unknown = sorted(set(rule.classifications) - set(PACKAGE_CLASSIFICATIONS))
         if unknown:
@@ -614,6 +743,7 @@ class _PackageReader:
                 f"{ids.TEST_IMPULSE_SELECTION}.{pair}",
                 row_axis_ids=IMPULSE_SELECTION_ROW_AXES,
                 column_axis_id=_IMPULSE_SELECTION_COLUMN_AXIS,
+                column_labels=dict.fromkeys(VOLTAGE_FORMS, IMPULSE_SELECTION_COLUMN_LABELS),
             )
             for pair in IMPULSE_SELECTION_PAIRS
         }
@@ -630,6 +760,9 @@ class _PackageReader:
                 f"{base_id}.{purpose}",
                 row_axis_ids=row_axis_ids,
                 column_axis_id=_DIELECTRIC_COLUMN_AXIS,
+                column_labels={
+                    form: (dielectric_column_label(purpose, form),) for form in VOLTAGE_FORMS
+                },
             )
             for purpose in DIELECTRIC_PURPOSES
         }
@@ -643,12 +776,14 @@ class _PackageReader:
         *,
         row_axis_ids: Mapping[VoltageForm, str],
         column_axis_id: str,
+        column_labels: Mapping[VoltageForm, tuple[str, ...]] | None = None,
     ) -> VoltageTablePair | None:
         resolved = {
             form: self._table(
                 f"{base_id}.{form}",
                 row_axis_id=row_axis_ids[form],
                 column_axis_id=column_axis_id,
+                column_labels=() if column_labels is None else column_labels[form],
             )
             for form in VOLTAGE_FORMS
         }
@@ -656,7 +791,14 @@ class _PackageReader:
             return None
         return VoltageTablePair(ac=resolved["ac"], dc=resolved["dc"])
 
-    def _table(self, table_id: str, *, row_axis_id: str, column_axis_id: str) -> Table | None:
+    def _table(
+        self,
+        table_id: str,
+        *,
+        row_axis_id: str,
+        column_axis_id: str,
+        column_labels: tuple[str, ...] = (),
+    ) -> Table | None:
         table = self._present(table_id, self._package.tables, "lookup table")
         if table is None:
             return None
@@ -670,6 +812,14 @@ class _PackageReader:
                 table_id,
                 f"is not a {_VOLTAGE_UNIT} table keyed by {row_axis_id} and {column_axis_id}",
             )
+            return None
+        # A route whose columns a consumer selects between has to name them. Checked here so a
+        # plan resolves a column the way a clearance branch is resolved - by the label the
+        # package carries - instead of remembering a position, which is what the labels these
+        # names replaced amounted to.
+        missing = sorted(set(column_labels) - set(table.column_axis.labels))
+        if missing:
+            self._shape(table_id, f"labels no column {missing}")
             return None
         return table
 
@@ -724,8 +874,23 @@ class _PackageReader:
 
 
 __all__ = [
+    "BASIC_OR_SUPPLEMENTARY_COLUMN",
     "CLASSIFICATION_NAMES",
+    "DIELECTRIC_ACCEPTANCE_INPUT",
+    "DIELECTRIC_ACCEPTANCE_OUTPUT",
+    "DIELECTRIC_BONDED_INPUT",
+    "DIELECTRIC_CLASSIFICATION_INPUT",
+    "DIELECTRIC_COLUMN_OUTPUT",
+    "DIELECTRIC_DVC_AS_INPUT",
+    "DIELECTRIC_ENHANCED_INPUT",
+    "DIELECTRIC_NOT_APPLICABLE",
     "DIELECTRIC_PURPOSES",
+    "DIELECTRIC_REFERENCE_INPUT",
+    "DIELECTRIC_REFERENCE_KINDS",
+    "DIELECTRIC_ROW_AXIS_OUTPUT",
+    "DIELECTRIC_ROW_CIRCUIT_UNDER_TEST",
+    "DIELECTRIC_ROW_HIGHER_VOLTAGE_CIRCUIT",
+    "DOUBLE_OR_REINFORCED_COLUMN",
     "EXEMPTION_CONDITION_INPUTS",
     "EXEMPTION_OUTPUT",
     "FOIL_APPLICABILITY_ROUTE",
@@ -733,6 +898,7 @@ __all__ = [
     "FOIL_SUBSTITUTION_OUTPUT",
     "FOIL_WRAP_OUTPUT",
     "IMPULSE_PROCEDURE_VARIANTS",
+    "IMPULSE_SELECTION_COLUMN_LABELS",
     "IMPULSE_SELECTION_PAIRS",
     "IMPULSE_SELECTION_ROW_AXES",
     "PACKAGE_CLASSIFICATIONS",
@@ -763,6 +929,7 @@ __all__ = [
     "VoltageForm",
     "VoltageTablePair",
     "classifications_of",
+    "dielectric_column_label",
     "read_verification_rules",
     "verification_rule_blocks",
 ]

@@ -6,6 +6,10 @@ from pathlib import Path
 import pytest
 
 from insulation_coordination.calculation.high_frequency import A2_ALTITUDE_ROUTE
+from insulation_coordination.calculation.verification_rules import (
+    IMPULSE_SELECTION_COLUMN_LABELS,
+    dielectric_column_label,
+)
 from insulation_coordination.domain.dvc import PROTECTION_TARGET_DIMENSIONS
 from insulation_coordination.domain.rules import (
     RULE_SCHEMA_VERSION,
@@ -2075,6 +2079,112 @@ def merged_rule_package(*packages: RulePackage, path: Path) -> RulePackage:
 #: about; the wording behind them in a real package is licensed and is not reproduced here.
 _SYNTHETIC_PROCEDURE_STEPS = ("synthetic connection step", "synthetic measurement step")
 
+#: What the duration rule states. Invented wording: the real rule carries one reviewed sentence
+#: naming the type test's hold, the routine test's hold and the ramp permitted either side, and
+#: this stands in for that shape without carrying any of it.
+_SYNTHETIC_DIELECTRIC_DURATION = (
+    "synthetic hold for the type test and a shorter synthetic hold for the routine test, "
+    "with a synthetic ramp permitted either side"
+)
+
+#: The reference vocabulary the topology selection declares. Neutral names, and the same four
+#: the public recipe declares, because a consumer resolves the rule by these names and a
+#: fixture spelling them differently would prove nothing about the consumer.
+_SYNTHETIC_REFERENCE_KINDS = (
+    "earthed_conductive_accessible_part",
+    "unearthed_or_non_conductive_accessible_surface",
+    "adjacent_circuit",
+    "dvc_as_adjacent_circuit",
+)
+
+#: The selection's rows, in first-match order, following the structure the public recipe in
+#: ``recipes/iec62477_1_2022/procedures.py`` projects. Conditions only - no value, no duration
+#: and no wording of the source appears here, and the rule is left non-exhaustive so a
+#: consumer can be shown resolving nothing for a combination it does not state.
+_SYNTHETIC_TOPOLOGY_ROWS: tuple[tuple[tuple[tuple[str, str | bool], ...], str, str], ...] = (
+    (
+        (("circuit_connected_to_conductive_accessible_parts", True),),
+        "not_applicable",
+        "not_applicable",
+    ),
+    (
+        (
+            ("reference_kind", "earthed_conductive_accessible_part"),
+            ("circuit_under_test_is_dvc_as", True),
+        ),
+        "not_applicable",
+        "not_applicable",
+    ),
+    (
+        (
+            ("reference_kind", "unearthed_or_non_conductive_accessible_surface"),
+            ("circuit_under_test_is_dvc_as", True),
+        ),
+        "not_applicable",
+        "not_applicable",
+    ),
+    (
+        (
+            ("reference_kind", "dvc_as_adjacent_circuit"),
+            ("test_classification", "type_test"),
+        ),
+        "enhanced_type",
+        "higher_voltage_circuit",
+    ),
+    (
+        (
+            ("reference_kind", "dvc_as_adjacent_circuit"),
+            ("test_classification", "routine_test"),
+        ),
+        "routine_and_basic_type",
+        "higher_voltage_circuit",
+    ),
+    (
+        (
+            ("reference_kind", "unearthed_or_non_conductive_accessible_surface"),
+            ("test_classification", "type_test"),
+        ),
+        "enhanced_type",
+        "circuit_under_test",
+    ),
+    (
+        (
+            ("reference_kind", "unearthed_or_non_conductive_accessible_surface"),
+            ("test_classification", "routine_test"),
+        ),
+        "routine_and_basic_type",
+        "circuit_under_test",
+    ),
+    (
+        (
+            ("reference_kind", "earthed_conductive_accessible_part"),
+            ("test_classification", "type_test"),
+            ("enhanced_protection", True),
+        ),
+        "enhanced_type",
+        "circuit_under_test",
+    ),
+    (
+        (("reference_kind", "earthed_conductive_accessible_part"),),
+        "routine_and_basic_type",
+        "circuit_under_test",
+    ),
+    (
+        (
+            ("reference_kind", "adjacent_circuit"),
+            ("test_classification", "type_test"),
+            ("enhanced_protection", True),
+        ),
+        "enhanced_type",
+        "circuit_under_test",
+    ),
+    (
+        (("reference_kind", "adjacent_circuit"),),
+        "routine_and_basic_type",
+        "circuit_under_test",
+    ),
+)
+
 
 def synthetic_verification_rule_package(*, edition: str = EDITION) -> RulePackage:
     """A verification-only package in the semantic shape the real Table 26-30 and clause
@@ -2118,6 +2228,7 @@ def synthetic_verification_rule_package(*, edition: str = EDITION) -> RulePackag
         *,
         classifications: tuple[str, ...] = (),
         applicability_rule_id: str | None = None,
+        duration: str | None = None,
     ) -> ProcedureRule:
         return ProcedureRule(
             id=rule_id,
@@ -2125,12 +2236,19 @@ def synthetic_verification_rule_package(*, edition: str = EDITION) -> RulePackag
             classifications=classifications,
             procedure_steps=steps(),
             applicability_rule_id=applicability_rule_id,
+            duration=duration,
             source=reference,
         )
 
-    def table(table_id: str, row_axis_id: str, column_axis_id: str) -> Table:
+    def table(
+        table_id: str,
+        row_axis_id: str,
+        column_axis_id: str,
+        column_labels: tuple[str, ...] = (),
+    ) -> Table:
         row_values = (Decimal(13), Decimal(26), Decimal(39))
-        column_values = (Decimal(1), Decimal(2))
+        labels = column_labels or (f"{column_axis_id}-1", f"{column_axis_id}-2")
+        column_values = tuple(Decimal(index + 1) for index in range(len(labels)))
         return Table(
             id=table_id,
             unit="V",
@@ -2144,7 +2262,7 @@ def synthetic_verification_rule_package(*, edition: str = EDITION) -> RulePackag
                 id=column_axis_id,
                 unit="1",
                 values=column_values,
-                labels=tuple(f"{column_axis_id}-{value}" for value in column_values),
+                labels=labels,
             ),
             cells=tuple(
                 TableCell(
@@ -2181,6 +2299,81 @@ def synthetic_verification_rule_package(*, edition: str = EDITION) -> RulePackag
             exhaustive=False,
             source=reference,
         )
+
+    #: The selection the body of clause 5.2.3.4 states: five inputs in, a column and a row side
+    #: out, first-match-wins, and not exhaustive. Shaped like the real projection and settling
+    #: nothing the real one settles - the rows here are this fixture's own, chosen only so that
+    #: every branch a consumer takes is reachable and so that a combination the rule does not
+    #: state stays unsettled.
+    topology_selection = DecisionRule(
+        id=ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION,
+        inputs=(
+            DecisionInput(
+                name="reference_kind",
+                kind="categorical",
+                allowed_values=_SYNTHETIC_REFERENCE_KINDS,
+            ),
+            DecisionInput(
+                name="test_classification",
+                kind="categorical",
+                allowed_values=("type_test", "routine_test"),
+            ),
+            DecisionInput(name="circuit_under_test_is_dvc_as", kind="boolean"),
+            DecisionInput(name="circuit_connected_to_conductive_accessible_parts", kind="boolean"),
+            DecisionInput(name="enhanced_protection", kind="boolean"),
+        ),
+        outputs=(
+            DecisionOutput(
+                name="dielectric_column",
+                kind="categorical",
+                allowed_values=("routine_and_basic_type", "enhanced_type", "not_applicable"),
+            ),
+            DecisionOutput(
+                name="row_axis_circuit",
+                kind="categorical",
+                allowed_values=(
+                    "circuit_under_test",
+                    "higher_voltage_circuit",
+                    "not_applicable",
+                ),
+            ),
+        ),
+        rows=tuple(
+            DecisionRow(
+                matchers=tuple(
+                    Matcher(input=name, op="equals", boolean=value)
+                    if isinstance(value, bool)
+                    else Matcher(input=name, op="equals", values=(value,))
+                    for name, value in conditions
+                ),
+                values=(
+                    DecisionValue(name="dielectric_column", categorical=column),
+                    DecisionValue(name="row_axis_circuit", categorical=row_side),
+                ),
+                source=reference,
+            )
+            for conditions, column, row_side in _SYNTHETIC_TOPOLOGY_ROWS
+        ),
+        exhaustive=False,
+        source=reference,
+    )
+    acceptance = DecisionRule(
+        id=ids.TEST_DIELECTRIC_ACCEPTANCE,
+        inputs=(DecisionInput(name="electric_breakdown_observed", kind="boolean"),),
+        outputs=(DecisionOutput(name="voltage_test_passed", kind="boolean"),),
+        rows=tuple(
+            DecisionRow(
+                matchers=(
+                    Matcher(input="electric_breakdown_observed", op="equals", boolean=observed),
+                ),
+                values=(DecisionValue(name="voltage_test_passed", boolean=not observed),),
+                source=reference,
+            )
+            for observed in (False, True)
+        ),
+        exhaustive=True,
+        source=reference,
+    )
 
     partial_discharge_gate = DecisionRule(
         id=f"{ids.TEST_PARTIAL_DISCHARGE}.applicability",
@@ -2359,12 +2552,18 @@ def synthetic_verification_rule_package(*, edition: str = EDITION) -> RulePackag
                     f"{ids.TEST_IMPULSE_SELECTION}.{pair}.{form}",
                     f"system_voltage_{form}_v",
                     "impulse_selection_column",
+                    IMPULSE_SELECTION_COLUMN_LABELS,
                 )
                 for pair in ("mains_circuits", "non_mains_circuits")
                 for form in ("ac", "dc")
             ),
             *(
-                table(f"{base_id}.{purpose}.{form}", row_axis_id, "dielectric_test_column")
+                table(
+                    f"{base_id}.{purpose}.{form}",
+                    row_axis_id,
+                    "dielectric_test_column",
+                    (dielectric_column_label(purpose, form),),
+                )
                 for base_id, row_axis_id in (
                     (ids.TEST_MAINS_DIELECTRIC_VALUES, "system_voltage_v"),
                     (ids.TEST_NON_MAINS_DIELECTRIC_VALUES, "working_voltage_recurring_peak_v"),
@@ -2384,6 +2583,8 @@ def synthetic_verification_rule_package(*, edition: str = EDITION) -> RulePackag
             partial_discharge_gate,
             foil_gate,
             preconditioning_gate,
+            topology_selection,
+            acceptance,
             boolean_gate(
                 ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION,
                 (
@@ -2433,6 +2634,15 @@ def synthetic_verification_rule_package(*, edition: str = EDITION) -> RulePackag
                 ids.TEST_ACCESSIBLE_SURFACE_FOIL,
                 "accessible_surface_foil_placement",
                 applicability_rule_id=foil_gate.id,
+            ),
+            procedure(
+                ids.TEST_DIELECTRIC_DISCONNECTION,
+                "dielectric_test_disconnection",
+            ),
+            procedure(
+                ids.TEST_DIELECTRIC_APPLICATION_DURATION,
+                "dielectric_voltage_application",
+                duration=_SYNTHETIC_DIELECTRIC_DURATION,
             ),
         ),
         curves=(fault_time_voltage,),

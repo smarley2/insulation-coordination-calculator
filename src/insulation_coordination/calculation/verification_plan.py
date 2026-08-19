@@ -38,9 +38,10 @@ input on the application it belongs to. There is no path from "nothing is known"
 ``NOT_REQUIRED``.
 
 *An obligation with no rule behind it is still stated.* Several subclauses oblige something the
-recipe projects no rule for: the body of the AC/DC test subclause outside its two value tables,
-the clearance and visual-inspection subclauses, the protective-impedance test, the floor a
-reduced requirement may not fall below. Each of those reached the schedule as nothing at all,
+recipe projects no rule for: the enclosure condition and the impracticable fall-back the AC/DC
+test subclause states outside what its selection rule settles, the clearance and
+visual-inspection subclauses, the protective-impedance test, the floor a reduced requirement may
+not fall below. Each of those reached the schedule as nothing at all,
 which for a preparation instruction means a test performed wrongly rather than a test left
 unplanned. They are restated here, in this application's own words, against the identifier that
 obliges them - see :func:`_clause_obligations` and :func:`_reinforced_floor`. Where the deciding
@@ -85,10 +86,25 @@ from insulation_coordination.calculation.test_topology import (
     subjects_for,
 )
 from insulation_coordination.calculation.verification_rules import (
+    BASIC_OR_SUPPLEMENTARY_COLUMN,
+    CLASSIFICATION_NAMES,
+    DIELECTRIC_ACCEPTANCE_INPUT,
+    DIELECTRIC_ACCEPTANCE_OUTPUT,
+    DIELECTRIC_BONDED_INPUT,
+    DIELECTRIC_CLASSIFICATION_INPUT,
+    DIELECTRIC_COLUMN_OUTPUT,
+    DIELECTRIC_DVC_AS_INPUT,
+    DIELECTRIC_ENHANCED_INPUT,
+    DIELECTRIC_NOT_APPLICABLE,
+    DIELECTRIC_PURPOSES,
+    DIELECTRIC_REFERENCE_INPUT,
+    DIELECTRIC_REFERENCE_KINDS,
+    DIELECTRIC_ROW_AXIS_OUTPUT,
+    DIELECTRIC_ROW_HIGHER_VOLTAGE_CIRCUIT,
     VerificationRuleSet,
     VoltageForm,
-    VoltageTablePair,
     classifications_of,
+    dielectric_column_label,
     read_verification_rules,
 )
 from insulation_coordination.calculation.voltage_evidence import (
@@ -117,6 +133,7 @@ from insulation_coordination.domain.project import (
     RulePackageReference,
 )
 from insulation_coordination.domain.rules import (
+    DecisionRule,
     Literal,
     ProcedureRule,
     RulePackage,
@@ -144,7 +161,11 @@ from insulation_coordination.domain.verification import (
     WorkingVoltageDetermination,
     build_test_id,
 )
-from insulation_coordination.rules.evaluator import EvaluationError, evaluate_formula
+from insulation_coordination.rules.evaluator import (
+    EvaluationError,
+    evaluate_decision,
+    evaluate_formula,
+)
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 
 _VOLTAGE_UNIT: Final = "V"
@@ -221,29 +242,6 @@ _REQUIREMENT_PE_RELATIONSHIPS: Final[Mapping[TestReferenceKind, str]] = {
 #: how the *test* is keyed and columned, which is a question for the dielectric route.
 _CIRCUIT_TO_CIRCUIT_KINDS: Final[frozenset[TestReferenceKind]] = frozenset(
     {TestReferenceKind.ADJACENT_CIRCUIT, TestReferenceKind.DVC_AS_ADJACENT_CIRCUIT}
-)
-
-#: Every relationship that puts a circuit against an accessible part rather than against
-#: another circuit. Derived from the requirement targets so the two readings of "this is an
-#: accessible part" cannot part company.
-_ACCESSIBLE_PART_KINDS: Final[frozenset[TestReferenceKind]] = frozenset(
-    kind for kind, target in _REQUIREMENT_TARGETS.items() if target == "accessible_part"
-)
-
-#: The topologies whose *type* test reads the enhanced column whatever construction the pair
-#: carries. Both of them are an accessible surface that is non-conductive, or conductive and
-#: not bonded to PE, and the package's own label for that column names the topology beside
-#: enhanced protection. Selecting the column from the pair's ``ProtectionImplementation``
-#: alone planned a basic-protection pair against such a surface at the lower column.
-#:
-#: A PE-bonded accessible part is deliberately absent: its test reads the basic column for
-#: both classifications, which is what the plan already did for it.
-_ENHANCED_COLUMN_TOPOLOGIES: Final[frozenset[TestReferenceKind]] = frozenset(
-    {
-        TestReferenceKind.ACCESSIBLE_CONDUCTIVE_PART,
-        TestReferenceKind.ACCESSIBLE_INSULATING_SURFACE_FOIL,
-        TestReferenceKind.DVC_AS_ADJACENT_CIRCUIT,
-    }
 )
 
 #: Warning codes a report can group on without matching a message.
@@ -710,18 +708,27 @@ def _plan_pair(
         )
     )
     recurring_peak = _recurring_peak(project, pair, effective)
-    adjacency = _dvc_as_adjacency(project, pair, subject)
+    selections = {
+        classification: _dielectric_selection(
+            rules.dielectric_topology_selection,
+            pair,
+            subject.reference_kind,
+            classification,
+            dvc_as=_circuit_side_class(project, pair) is DecisiveVoltageClass.DVC_AS,
+            enhanced=None if implementation is None else enhanced,
+        )
+        for classification in (TestClassification.ROUTINE, TestClassification.TYPE)
+    }
+    adjacency = _dvc_as_adjacency(project, pair, selections, rules.dielectric_topology_selection.id)
     dielectric = _dielectric_applications(
         pair,
         subject,
         rules,
         revision,
-        enhanced,
+        selections,
         mains,
         recurring_peak if adjacency is None else adjacency.row_v,
         _overvoltage_present(effective, resolution),
-        _accessible_part_exception(project, pair, subject)
-        or (None if adjacency is None else adjacency.not_applicable),
         row_label="recurring-peak working voltage" if adjacency is None else adjacency.row_label,
         extra_unresolved=(
             *(() if adjacency is None else adjacency.unresolved),
@@ -1357,14 +1364,22 @@ def _reduction_application(
     preparation says - but it is what ties the test to the reduction it verifies, and it means
     two pairs of one connected group carrying one reduction produce one row rather than two.
 
-    No voltage. The package states this variant's test voltage as one column of its impulse
-    selection route, that route carries more than one column, and nothing in it says which
-    applies here - the same refusal the dielectric lookup makes, for the same reason. It is
-    emphatically not the pair's own reduced figure: the point of the test is to show the
-    reduction holds when the unreduced stress arrives.
+    *Which column of the impulse selection route this test reads is settled.* Its two data
+    columns are labelled by the insulation class each is headed by, and 5.2.3.2 states this
+    verification against the weaker of the two - so the column is resolved by that label, the
+    way a clearance branch is resolved from the label its table carries, and never by
+    remembering a position. The adapter refuses a route that does not carry the label, so a
+    package whose columns still name a position blocks instead of being read off an index.
+
+    No voltage, still. The row is keyed on the system voltage of the supply at the overvoltage
+    category the reduction is claimed away from, and nothing in the project records that
+    unreduced category against a system voltage. It is emphatically not the pair's own reduced
+    figure: the point of the test is to show the reduction holds when the unreduced stress
+    arrives.
     """
 
     procedure = rules.impulse_procedure.transient_reduction
+    column = BASIC_OR_SUPPLEMENTARY_COLUMN
     return _application(
         subject=subject,
         test_kind=TestKind.TRANSIENT_OVERVOLTAGE_REDUCTION,
@@ -1387,16 +1402,18 @@ def _reduction_application(
         ),
         unresolved=(
             (
-                f"The active package states this test's voltage as one column of "
-                f"{ids.TEST_IMPULSE_SELECTION}, that route states more than one column, and "
-                "nothing in it says which one applies here. The reduced figure recorded at "
-                f"{override.affected_location!r} is not it: this test exists to show the "
-                "reduction holds, so planning it at the reduced value would verify nothing."
+                f"This test's voltage is the {column} column of {ids.TEST_IMPULSE_SELECTION}, "
+                "read at the system voltage of the supply under the overvoltage category the "
+                "reduction is claimed away from. Nothing in the project records that "
+                "unreduced category against a system voltage, so no row is read here. The "
+                f"reduced figure recorded at {override.affected_location!r} is not it either: "
+                "this test exists to show the reduction holds, so planning it at the reduced "
+                "value would verify nothing."
             ),
             (
                 "The acceptance criterion compares the measured peak against the next lower "
-                f"step of the same {ids.TEST_IMPULSE_SELECTION} column. Read it from that "
-                "column once the column above is settled; this plan does not choose it."
+                f"step of the same {column} column of {ids.TEST_IMPULSE_SELECTION}. Read it "
+                "from that column once the row above is settled."
             ),
         ),
         source_rule_ids=(procedure.id,),
@@ -1493,16 +1510,138 @@ def _altitude_inputs(
 # --- AC and DC dielectric --------------------------------------------------------------
 
 
+class _DielectricSelection(FrozenModel):
+    """What the package's topology selection made of one pair's application, per classification.
+
+    ``column`` is the name of one of the two routes Tables 28 and 29 are extracted as, or the
+    rule's own sentinel for an application it excludes. ``row_side`` says whose voltage keys
+    the row. Both empty means the rule did not settle this combination, and ``unresolved``
+    says why - the rule is not exhaustive, so a combination it does not state resolves to
+    nothing rather than falling through to a default.
+    """
+
+    column: str = ""
+    row_side: str = ""
+    unresolved: tuple[str, ...] = ()
+
+    @property
+    def not_applicable(self) -> bool:
+        return self.column == DIELECTRIC_NOT_APPLICABLE
+
+
+def _dielectric_selection(
+    rule: DecisionRule,
+    pair: PairCase,
+    reference_kind: TestReferenceKind,
+    classification: TestClassification,
+    *,
+    dvc_as: bool,
+    enhanced: bool | None,
+) -> _DielectricSelection:
+    """Which column and row side the package's own rule states for one application.
+
+    Selected by asking the package rather than by reading the pair's construction here. Which
+    column an application reads is a question about the topology *and* the classification as
+    well as the construction - a routine test reads the weaker column whatever the pair is
+    made of, an application against an accessible surface that is not bonded to earth reads
+    the stronger one for the type test whatever the pair is made of - and code that decided it
+    from ``ProtectionImplementation`` could not express either.
+
+    Three of the five inputs come straight off the project: the relationship the topology
+    worked out, the classification of the row being planned, and whether the circuit side of
+    the pair carries the class the subclause excepts. A circuit with no class assigned is not
+    excepted - the absence is reported by the requirement lookup, and reading it as the
+    excepted class would take a test away on the strength of something nobody said.
+
+    The fourth, whether the circuit under test is electrically connected to the conductive
+    accessible parts, is answered from the project's own net model: a pair exists between two
+    net classes, which are two conductor groups, and a circuit that were electrically at the
+    accessible parts' potential would be one net with them rather than two. So it is answered
+    ``False`` for every pair a plan holds, which is a reading of the project and not of the
+    source.
+
+    The fifth is the construction, and it is the one that can be unanswerable. Where no
+    implementation is selected the rule is not asked at all: answering "not enhanced" on an
+    engineer's behalf would select the weaker column, which is the failure this module exists
+    to prevent.
+    """
+
+    reference = DIELECTRIC_REFERENCE_KINDS.get(reference_kind)
+    if reference is None:
+        return _DielectricSelection(
+            unresolved=(
+                (
+                    f"Pair {pair.key} is tested {_words(reference_kind.value)}, and "
+                    f"{rule.id} states no application against that reference. The column this "
+                    "test reads and the circuit its row is keyed on are unsettled, so no "
+                    "voltage is planned for it."
+                ),
+            )
+        )
+    if enhanced is None:
+        return _DielectricSelection(
+            unresolved=(
+                (
+                    f"Pair {pair.key} has no protection implementation selected, and "
+                    f"{rule.id} is asked whether the pair carries enhanced protection before "
+                    "it states which column this test reads. The question is left unanswered "
+                    "rather than answered as no, which would plan the test at the weaker "
+                    "column on nobody's word."
+                ),
+            )
+        )
+    try:
+        result = evaluate_decision(
+            rule,
+            {
+                DIELECTRIC_REFERENCE_INPUT: reference,
+                DIELECTRIC_CLASSIFICATION_INPUT: CLASSIFICATION_NAMES[classification],
+                DIELECTRIC_DVC_AS_INPUT: dvc_as,
+                DIELECTRIC_BONDED_INPUT: False,
+                DIELECTRIC_ENHANCED_INPUT: enhanced,
+            },
+        )
+    except EvaluationError as error:
+        return _DielectricSelection(
+            unresolved=(f"The active package's {rule.id} cannot be asked about this test: {error}",)
+        )
+    if result.status != "matched":
+        return _DielectricSelection(
+            unresolved=(
+                (
+                    f"The active package's {rule.id} states no application for the "
+                    f"{classification.value} test of pair {pair.key} against "
+                    f"{_words(reference_kind.value)}. The rule is not exhaustive, so a "
+                    "combination it does not state settles nothing and no column is chosen "
+                    "for it."
+                ),
+            )
+        )
+    values = {item.name: item.categorical for item in result.values}
+    column = values.get(DIELECTRIC_COLUMN_OUTPUT) or ""
+    row_side = values.get(DIELECTRIC_ROW_AXIS_OUTPUT) or ""
+    if column not in (*DIELECTRIC_PURPOSES, DIELECTRIC_NOT_APPLICABLE):
+        return _DielectricSelection(
+            unresolved=(
+                (
+                    f"The active package's {rule.id} answered {column!r} for the "
+                    f"{classification.value} test of pair {pair.key}, and no route of its "
+                    "dielectric value tables carries that name."
+                ),
+            )
+        )
+    return _DielectricSelection(column=column, row_side=row_side)
+
+
 def _dielectric_applications(
     pair: PairCase,
     subject: TestSubject,
     rules: VerificationRuleSet,
     revision: str,
-    enhanced: bool,
+    selections: Mapping[TestClassification, _DielectricSelection],
     mains: Sequence[DerivedSupplyScenario],
     recurring_peak_v: Decimal | None,
     overvoltage_present: bool | None,
-    not_applicable: str | None,
     *,
     row_label: str,
     extra_unresolved: tuple[str, ...] = (),
@@ -1526,38 +1665,50 @@ def _dielectric_applications(
     route and is never taken from the other one: reusing a value across the two would assert
     an equality the source was not asked for.
 
-    *Which column the type test reads is a question about the topology as well as about the
-    construction.* The routine test always reads the basic column. The type test reads the
-    enhanced one where the pair is protected by enhanced protection **or** where the low side
-    is an accessible surface that is non-conductive, or conductive and not bonded to PE -
-    which is the second case the package's own label for that column names. Reading the
-    column from the selected implementation alone planned a basic-protection pair against
-    such a surface at the lower of the two.
+    *Which of the two routes an application reads is the package's answer, not this module's.*
+    ``selections`` holds what :func:`_dielectric_selection` was told, one entry per
+    classification. A selection naming the rule's exclusion sentinel produces the row with
+    nothing owed on it; one the rule did not settle produces the row with the reason on it and
+    no voltage.
 
-    ``not_applicable`` is the one condition that stops a row being planned at all. It states
-    why, the rows are generated anyway so a reader can tell an excepted test from one nobody
-    planned, and none of them carries a voltage.
+    The duration, the ramp and the acceptance criterion come from the two rules the body of
+    the subclause now states, and the setup the same body obliges comes from the third. None
+    of them was in the package when this plan was first written, and each was an unresolved
+    input on every row until it was.
     """
 
-    if not_applicable is not None:
-        return _not_applicable_applications(subject, revision, not_applicable)
     tables = rules.mains_dielectric_values if mains else rules.non_mains_dielectric_values
     row, row_reason, row_unresolved = _row_value(
         pair, mains, recurring_peak_v, overvoltage_present, row_label
     )
-    enhanced_column = enhanced or subject.reference_kind in _ENHANCED_COLUMN_TOPOLOGIES
-    routes: tuple[tuple[TestClassification, VoltageTablePair], ...] = (
-        (TestClassification.ROUTINE, tables.routine_and_basic_type),
-        (
-            TestClassification.TYPE,
-            tables.enhanced_type if enhanced_column else tables.routine_and_basic_type,
-        ),
+    duration_rule = rules.dielectric_application_duration
+    disconnection = rules.dielectric_disconnection
+    acceptance_step, acceptance_unresolved = _acceptance(rules.dielectric_acceptance)
+    setup = (
+        *subject.preparation_steps,
+        *extra_preparation,
+        *(step.text for step in disconnection.procedure_steps),
+        _duration_step(duration_rule),
+        *acceptance_step,
     )
     applications: list[TestApplication] = []
-    for classification, pair_tables in routes:
+    for classification in (TestClassification.ROUTINE, TestClassification.TYPE):
+        selection = selections[classification]
+        if selection.not_applicable:
+            applications.extend(
+                _not_applicable_applications(
+                    subject, revision, classification, _excluded_reason(pair, rules)
+                )
+            )
+            continue
+        pair_tables = None if not selection.column else getattr(tables, selection.column, None)
         for form, test_kind in _DIELECTRIC_KINDS.items():
-            table = pair_tables.for_form(form)
-            voltage, steps, unresolved = _dielectric_value(table, row)
+            table = None if pair_tables is None else pair_tables.for_form(form)
+            voltage, steps, unresolved = (
+                (None, (), ())
+                if table is None
+                else _dielectric_value(table, row, dielectric_column_label(selection.column, form))
+            )
             applications.append(
                 _application(
                     subject=subject,
@@ -1567,26 +1718,34 @@ def _dielectric_applications(
                     voltage=voltage,
                     waveform=None,
                     polarity=None,
-                    duration=None,
+                    duration=duration_rule.duration,
                     repetitions=None,
-                    preparation_steps=(*subject.preparation_steps, *extra_preparation),
+                    preparation_steps=setup,
                     unresolved=(
                         *extra_unresolved,
-                        *row_unresolved,
+                        *selection.unresolved,
+                        *(() if table is None else row_unresolved),
                         *unresolved,
-                        (
-                            f"The active package's {table.id} states no duration for this "
-                            "test; it is read from the procedure the test is performed under."
-                        ),
+                        *acceptance_unresolved,
                     ),
-                    source_rule_ids=(table.id,),
+                    source_rule_ids=(
+                        *(() if table is None else (table.id,)),
+                        rules.dielectric_topology_selection.id,
+                        disconnection.id,
+                        duration_rule.id,
+                        rules.dielectric_acceptance.id,
+                    ),
                     trace_steps=(
-                        *_route_step(
-                            table,
-                            classification,
-                            row,
-                            row_reason,
-                            _column_reason(classification, subject.reference_kind, enhanced),
+                        *(
+                            ()
+                            if table is None
+                            else _route_step(
+                                table,
+                                classification,
+                                row,
+                                row_reason,
+                                _column_reason(classification, rules.dielectric_topology_selection),
+                            )
                         ),
                         *steps,
                     ),
@@ -1595,12 +1754,74 @@ def _dielectric_applications(
     return tuple(applications)
 
 
+def _excluded_reason(pair: PairCase, rules: VerificationRuleSet) -> str:
+    """Why a row the selection rule excludes is planned with nothing owed on it."""
+
+    return (
+        f"The active package's {rules.dielectric_topology_selection.id} states no voltage test "
+        f"for pair {pair.key} in this relationship, so none is planned. "
+        f"{DVC_AS_HIGHER_PORTION_STEP}"
+    )
+
+
+def _duration_step(procedure: ProcedureRule) -> str:
+    """How long the voltage is held, said once against the rule that states it.
+
+    The rule states the type test and the routine test separately in one reviewed sentence,
+    together with the ramp it permits either side of the hold, and that sentence is what every
+    row's ``duration`` carries. The step is here so a reader of the preparation is sent to the
+    right half of it rather than reading one figure and applying it to both.
+    """
+
+    return (
+        f"Hold the full test voltage for the time {procedure.id} states for the classification "
+        "this row carries. That statement covers the type test and the routine test "
+        "separately and states the ramp permitted either side of the hold; this row's stated "
+        "duration is the whole of it, so read the half that applies."
+    )
+
+
+def _acceptance(rule: DecisionRule) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """What settles this test's result, asked of the package rather than restated here.
+
+    The rule takes one observation and states the outcome, so the plan asks it what the
+    absence of that observation settles and puts the answer on the row. A package whose rule
+    answers nothing leaves the criterion unresolved: a schedule row that named no acceptance
+    criterion at all would be a test nobody could sign off.
+    """
+
+    try:
+        result = evaluate_decision(rule, {DIELECTRIC_ACCEPTANCE_INPUT: False})
+    except EvaluationError as error:
+        return (), (f"The active package's {rule.id} cannot be asked for this test: {error}",)
+    passed = next(
+        (item.boolean for item in result.values if item.name == DIELECTRIC_ACCEPTANCE_OUTPUT),
+        None,
+    )
+    if result.status != "matched" or passed is None:
+        return (), (
+            (
+                f"The active package's {rule.id} settles nothing for this test, so the "
+                "schedule states no acceptance criterion for it."
+            ),
+        )
+    verdict = "is passed" if passed else "is not passed"
+    return (
+        (
+            f"Record whether an electric breakdown occurred while the voltage was applied. "
+            f"{rule.id} settles this test from that one observation, and states that it "
+            f"{verdict} where none occurred."
+        ),
+    ), ()
+
+
 def _not_applicable_applications(
     subject: TestSubject,
     revision: str,
+    classification: TestClassification,
     reason: str,
 ) -> tuple[TestApplication, ...]:
-    """The dielectric rows of a pair the topology rule excepts from the test.
+    """The dielectric rows of an application the selection rule excludes.
 
     Generated rather than omitted, exactly as the partial-discharge row is: a pair the rule
     settles is a different thing from a pair nobody planned, and a schedule showing only the
@@ -1625,47 +1846,15 @@ def _not_applicable_applications(
             trace_steps=(),
             applicability=TestApplicability.NOT_APPLICABLE,
         )
-        for classification in (TestClassification.ROUTINE, TestClassification.TYPE)
         for test_kind in _DIELECTRIC_KINDS.values()
     )
 
 
-def _accessible_part_exception(
-    project: Project, pair: PairCase, subject: TestSubject
-) -> str | None:
-    """Why a DVC A-s circuit is given no voltage test against an accessible part.
-
-    The topology rule states the test against an earthed conductive accessible part and the
-    test against an accessible surface for each circuit in turn *except* a DVC A-s one, and
-    settles that circuit's case separately as a test against its adjacent circuits. Planning
-    the excepted test anyway asks a test house for work no rule asks for, and reporting it as
-    required-with-something-unresolved reads in a schedule exactly like a test nobody could
-    settle.
-
-    The active package projects the two dielectric value tables and no rule for the topology
-    clause that routes a pair to them, so this reading is stated here rather than read from
-    it. A pair whose circuit side carries no decisive voltage class is not excepted: the
-    absence of a class is reported by the requirement lookup, and treating it as a DVC A-s
-    would take a test away on the strength of something nobody said.
-    """
-
-    if subject.reference_kind not in _ACCESSIBLE_PART_KINDS:
-        return None
-    if _circuit_side_class(project, pair) is not DecisiveVoltageClass.DVC_AS:
-        return None
-    return (
-        f"Pair {pair.key} stands between a DVC A-s circuit and an accessible part. The "
-        "voltage test between a circuit and an accessible part is stated for each circuit "
-        "except a DVC A-s one, whose case is settled as a test against its adjacent circuits "
-        f"instead, so no voltage is planned here. {DVC_AS_HIGHER_PORTION_STEP}"
-    )
-
-
 class _DvcAsAdjacency(FrozenModel):
-    """What the plan makes of a pair with a DVC A-s circuit on one side of it.
+    """What the plan makes of a pair whose row the selection rule keys on the other circuit.
 
-    Private and unexported: it exists so :func:`_dvc_as_adjacency` can answer four things at
-    once about one pair without four functions asking the same question of the same project.
+    Private and unexported: it exists so :func:`_dvc_as_adjacency` can answer three things at
+    once about one pair without three functions asking the same question of the same project.
     """
 
     #: The working voltage that keys the row, which is the higher-voltage circuit's and not
@@ -1673,17 +1862,21 @@ class _DvcAsAdjacency(FrozenModel):
     row_v: Decimal | None = None
     row_label: str = "recurring-peak working voltage"
     unresolved: tuple[str, ...] = ()
-    not_applicable: str | None = None
     preparation: tuple[str, ...] = ()
 
 
 def _dvc_as_adjacency(
-    project: Project, pair: PairCase, subject: TestSubject
+    project: Project,
+    pair: PairCase,
+    selections: Mapping[TestClassification, _DielectricSelection],
+    rule_id: str,
 ) -> _DvcAsAdjacency | None:
-    """How clause 5.2.3.4.4 c) keys the test between a DVC A-s circuit and an adjacent circuit.
+    """How the package keys the test between a DVC A-s circuit and an adjacent circuit.
 
-    Two things separate this test from every other circuit-to-circuit one, and the plan applied
-    neither before the relationship had a name.
+    *Which pairs this applies to is the package's answer.* The selection rule names the side of
+    the pair whose voltage keys the row, and this runs for the applications it keys on the
+    higher-voltage circuit rather than on the circuit under test. Reading it off the
+    relationship here instead would be this module deciding what the rule already states.
 
     *The row is keyed on the higher-voltage circuit of the two*, not on the circuit under test.
     The same principle is stated generally for insulation between circuits: the more severe of
@@ -1694,15 +1887,22 @@ def _dvc_as_adjacency(
     below the row the source states.
 
     *Functional insulation between two DVC A-s circuits need not be tested, while basic
-    insulation between DVC A-s circuits must be.* That distinction turns on the construction
-    the engineer selected, which the project holds, so it is applied rather than reported.
+    insulation between DVC A-s circuits must be.* 4.4.7.2.7 states both, and the selection
+    rule states neither: it settles the column and the row side for this relationship and says
+    nothing about the construction. So the exemption is reported rather than taken. The test
+    stays in the schedule with the permission named on it, which is the conservative half of
+    the two - a plan that took an exemption no resolved rule grants would remove work from a
+    schedule on this module's own reading.
 
     A mains circuit is unaffected: its row axis is the supply's system voltage, and the plan
     already keys it on the most severe measure across every supply reaching either side, which
     is the same principle applied to the axis that route actually has.
     """
 
-    if subject.reference_kind is not TestReferenceKind.DVC_AS_ADJACENT_CIRCUIT:
+    if not any(
+        selection.row_side == DIELECTRIC_ROW_HIGHER_VOLTAGE_CIRCUIT
+        for selection in selections.values()
+    ):
         return None
     nets = {net.id: net for net in project.net_classes}
     first, second = nets[pair.net_a], nets[pair.net_b]
@@ -1710,15 +1910,20 @@ def _dvc_as_adjacency(
         _designation(first) is DecisiveVoltageClass.DVC_AS
         and _designation(second) is DecisiveVoltageClass.DVC_AS
     )
-    if both and pair.protection_implementation is ProtectionImplementation.FUNCTIONAL_INSULATION:
-        return _DvcAsAdjacency(
-            not_applicable=(
+    exemption = (
+        (
+            (
                 f"Pair {pair.key} is functional insulation between two adjacent DVC A-s "
-                "circuits, which need not be voltage tested. Basic insulation between DVC A-s "
-                "circuits does have to be, so this answer follows the construction selected "
-                f"for this pair and no other pair of the group. {DVC_AS_HIGHER_PORTION_STEP}"
-            )
+                "circuits, which 4.4.7.2.7 states need not be voltage tested while basic "
+                f"insulation between DVC A-s circuits must be. The active package's {rule_id} "
+                "settles the column and the row side for this relationship and does not carry "
+                "that permission, so the test stays in the schedule rather than being taken "
+                "away on this plan's own reading of the subclause."
+            ),
         )
+        if both and pair.protection_implementation is ProtectionImplementation.FUNCTIONAL_INSULATION
+        else ()
+    )
     service = VoltageEvidenceService()
     figures = {
         net.name: service.governing(
@@ -1729,12 +1934,13 @@ def _dvc_as_adjacency(
     missing = sorted(name for name, value in figures.items() if value is None)
     keying = (
         f"This test is keyed on the higher-voltage of {first.name} and {second.name} rather "
-        "than on the circuit under test, because one of them is a DVC A-s circuit."
+        f"than on the circuit under test, because {rule_id} states this application's row so."
     )
     steps = (keying, DVC_AS_HIGHER_PORTION_STEP)
     if missing:
         return _DvcAsAdjacency(
             unresolved=(
+                *exemption,
                 (
                     f"Pair {pair.key} is tested between a DVC A-s circuit and an adjacent "
                     "circuit, whose row is keyed on the higher-voltage of the two. No "
@@ -1750,6 +1956,7 @@ def _dvc_as_adjacency(
     return _DvcAsAdjacency(
         row_v=figures[highest],
         row_label=f"recurring-peak working voltage of {highest}, the higher-voltage circuit,",
+        unresolved=exemption,
         preparation=steps,
     )
 
@@ -1912,7 +2119,7 @@ def _row_value(
 
 
 def _dielectric_value(
-    table: Table, row: Decimal | None
+    table: Table, row: Decimal | None, column_label: str
 ) -> tuple[Quantity | None, tuple[TraceStep, ...], tuple[str, ...]]:
     """Read one dielectric route at ``row``, or say why the package would not answer.
 
@@ -1921,29 +2128,25 @@ def _dielectric_value(
     whose axis is the band's upper bound. Whether interpolation is permitted is the package's
     statement and is read off the table rather than restated here.
 
-    A route stating more than one column is refused. The package labels a dielectric column by
-    the source column it came from, so nothing in it says which of several applies to this
-    test, and choosing one would be this application inventing a reading of the source.
+    The column is selected by the label the package gives it, the way a clearance branch is,
+    and never by its position on the axis. A position names nothing a consumer can ask for,
+    and a route that grew a second column would be read at whichever one came first.
     """
 
     if row is None:
         return None, (), ()
-    columns = table.column_axis.values
-    if len(columns) != 1:
+    try:
+        column_index = table.column_axis.labels.index(column_label)
+    except ValueError:
         return (
             None,
             (),
-            (
-                (
-                    f"The active package's {table.id} states {len(columns)} columns and "
-                    "nothing in it says which one applies to this test."
-                ),
-            ),
+            (f"The active package's {table.id} labels no {column_label} column.",),
         )
     expression = TableSelect(
         table_id=table.id,
         row=Variable(name="row"),
-        column=Literal(value=columns[0]),
+        column=Literal(value=table.column_axis.values[column_index]),
         row_mode="linear" if table.interpolation == "linear" else "ceiling",
         column_mode="exact",
     )
@@ -1962,29 +2165,16 @@ def _dielectric_value(
     )
 
 
-def _column_reason(
-    classification: TestClassification,
-    reference_kind: TestReferenceKind,
-    enhanced: bool,
-) -> str:
-    """Why this classification reads the column it reads, in one clause of a sentence."""
+def _column_reason(classification: TestClassification, rule: DecisionRule) -> str:
+    """Why this classification reads the route it reads, in one clause of a sentence.
 
-    if classification is not TestClassification.TYPE:
-        return "every routine test reads the basic column"
-    if enhanced:
-        return "the type test of a pair protected by enhanced protection reads the enhanced column"
-    if reference_kind is TestReferenceKind.DVC_AS_ADJACENT_CIRCUIT:
-        return (
-            "the type test between a DVC A-s circuit and an adjacent circuit reads the "
-            "enhanced column whatever the pair's construction"
-        )
-    if reference_kind in _ENHANCED_COLUMN_TOPOLOGIES:
-        return (
-            "the type test against an accessible surface that is non-conductive, or "
-            "conductive and not bonded to PE, reads the enhanced column whatever the pair's "
-            "construction"
-        )
-    return "the type test reads the basic column"
+    One sentence for every case now, because there is one reason: the package's own selection
+    rule was asked about this relationship and this classification and named the route. The
+    branch of prose that used to stand here was this module's reading of the subclause, and
+    the rule is what replaced it.
+    """
+
+    return f"{rule.id} names this route for the {classification.value} test of this relationship"
 
 
 def _route_step(
@@ -2130,13 +2320,20 @@ def _discharge_application(
     Its applicability comes from the assessment rather than from whether anything is
     unresolved, because this is the one test whose rule can settle "not required" - and the
     settled answers carry no unresolved inputs, so the two never contradict each other.
+
+    So do its classifications. 4.4.7.10.3 states them - a type test on the components,
+    sub-assemblies and printed wiring boards, and a sample test where the insulation is a
+    single layer of material - and the assessment derives them from the pair's own solid
+    insulation record. The procedure declares none, because the cross-reference matrix has no
+    row for the clause, so taking them from the procedure showed nothing on the schedule row
+    while the clause-derived answer sat unused beside it.
     """
 
     procedure = rules.partial_discharge.procedure
     return _application(
         subject=subject,
         test_kind=TestKind.PARTIAL_DISCHARGE,
-        classifications=classifications_of(procedure),
+        classifications=outcome.classifications,
         revision=revision,
         voltage=None,
         waveform=procedure.waveform,

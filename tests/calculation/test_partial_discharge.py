@@ -109,8 +109,8 @@ def assess(project: Project, package: RulePackage) -> PartialDischargeOutcome:
     """The assessment of one pair, read without the schedule row in the way.
 
     The classification the applicability clause states is read here rather than off a schedule
-    row, because the row still takes its classifications from the procedure the package
-    declares. That is a call site outside this module.
+    row, so a test of this module fails for a reason inside it. The row carries the same
+    answer: ``verification_plan`` takes a discharge row's classifications from the assessment.
     """
 
     pair = pair_between(project, LIVE_A, ENCLOSURE)

@@ -30,6 +30,7 @@ from uuid import UUID
 from insulation_coordination.calculation.verification_rules import (
     PRECONDITIONING_APPLICABILITY_ROUTE,
     PROTECTION_REQUIREMENT_OUTPUT,
+    dielectric_column_label,
 )
 from insulation_coordination.domain.dvc import DVC_INPUT, PROTECTION_TARGET_DIMENSIONS
 from insulation_coordination.domain.enums import (
@@ -575,7 +576,7 @@ def _dielectric_tables(interpolation: str) -> tuple[Table, ...]:
                             id="dielectric_test_column",
                             unit="1",
                             values=(Decimal(1),),
-                            labels=("synthetic-test-voltage",),
+                            labels=(dielectric_column_label(purpose, form),),
                         ),
                         cells=tuple(
                             TableCell(
