@@ -20,6 +20,7 @@ from insulation_coordination.domain.enums import Applicability, FieldCondition, 
 from insulation_coordination.domain.project import EffectiveCase, FrozenModel
 from insulation_coordination.domain.quantities import DecimalValue
 from insulation_coordination.domain.rules import (
+    CompatibilityMapping,
     Formula,
     Maximum,
     Multiply,
@@ -36,6 +37,11 @@ from insulation_coordination.rules.evaluator import EvaluationError, evaluate_fo
 #: question of the same figure, and a boundary written four times is one that three of them
 #: can drift from. Consumers outside this module read it here rather than restating it.
 PART4_FREQUENCY_THRESHOLD_HZ: Final[Decimal] = Decimal(30000)
+
+#: The semantic route the A.2 altitude correction is reached by. An identifier, minted by the
+#: importer recipe and matched verbatim; the altitude it names is the recipe's to state, and
+#: this module reads the boundary itself off the referenced table rather than off this string.
+A2_ALTITUDE_ROUTE: Final[str] = "iec60664-1:altitude_correction:base=2000m"
 
 
 class HighFrequencyCalculationError(CalculationError):
@@ -466,37 +472,25 @@ def apply_a2_altitude_correction(
             "ALTITUDE_OUT_OF_RANGE",
             f"altitude {altitude} m is outside the supported range",
         )
-    if altitude <= Decimal(2000):
-        source = next(
-            (
-                mapping.source
-                for mapping in rules.mappings
-                if mapping.source_rule_id == "iec60664-1:altitude_correction:base=2000m"
-            ),
-            None,
-        )
-        if source is None:
-            return AltitudeResult(clearance_mm=clearance_mm, applied=False)
+    mapping, formula, table, column_value = _read_a2_altitude_rule(rules)
+    base_altitude_m = table.row_axis.values[0]
+    if altitude <= base_altitude_m:
         step = TraceStep(
             semantic_rule_id="iec60664-1:a2-altitude-not-applied",
             operation="altitude_boundary",
             symbolic="k_{A2}=1",
-            substituted=f"h={altitude} m <= 2000 m",
+            substituted=f"h={altitude} m <= {base_altitude_m} m",
             inputs=(Quantity(value=altitude, unit="m"),),
-            source_reference=source,
+            source_reference=mapping.source,
             output=Quantity(value=clearance_mm, unit="mm"),
             unrounded_value=clearance_mm,
-            reason="altitude is at or below 2000 m; no A.2 factor applies",
+            reason=(
+                "altitude does not exceed the base altitude the approved A.2 rule states, "
+                "so no correction factor applies"
+            ),
         )
         return AltitudeResult(clearance_mm=clearance_mm, applied=False, steps=(step,))
-    route = "iec60664-1:altitude_correction:base=2000m"
     try:
-        mapping, formula = _select_formula(
-            rules,
-            route,
-            route_label="altitude correction",
-        )
-        _, column_value = _validate_a2_altitude_rule(formula, rules)
         evaluated_factor = _evaluate(
             formula,
             {
@@ -514,7 +508,7 @@ def apply_a2_altitude_correction(
             )
         factor_steps = _mapped_steps(
             evaluated_factor,
-            route,
+            A2_ALTITUDE_ROUTE,
             f"altitude correction factor evaluated from approved mapping {mapping.id}",
         )
         evaluated_clearance = evaluate_formula(
@@ -538,7 +532,7 @@ def apply_a2_altitude_correction(
         correction_steps = evaluated_clearance.steps[:-1] + (
             evaluated_clearance.steps[-1].model_copy(
                 update={
-                    "semantic_rule_id": f"{route}:corrected_clearance",
+                    "semantic_rule_id": f"{A2_ALTITUDE_ROUTE}:corrected_clearance",
                     "reason": "governing clearance multiplied by the approved altitude factor",
                 }
             ),
@@ -566,6 +560,35 @@ def _apply_altitude_correction(
     rules: RulePackage,
 ) -> AltitudeResult:
     return apply_a2_altitude_correction(effective, clearance_mm, rules)
+
+
+def _read_a2_altitude_rule(
+    rules: RulePackage,
+) -> tuple[CompatibilityMapping, Formula, Table, Decimal]:
+    """The approved A.2 correction rule, or a refusal saying the package cannot state it.
+
+    The altitude a clearance is corrected *above* is the first coordinate of the referenced
+    table's own row axis, and :func:`_validate_a2_altitude_rule` is what makes that reading
+    sound: it refuses any table whose row axis is not a strictly increasing canonical-m
+    series, or whose factor at that first coordinate is anything but unity. A row that
+    multiplies by one is the row the correction is referred to, whatever altitude it sits at,
+    so the boundary is read from the package instead of written here.
+
+    Nothing falls back. A package with no approved A.2 route used to skip the correction in
+    silence for any altitude at or below a boundary this module named itself; without a rule
+    there is now no boundary to compare against, so the calculation blocks and says so.
+    """
+
+    try:
+        mapping, formula = _select_formula(rules, A2_ALTITUDE_ROUTE, route_label="A.2 altitude")
+    except CalculationError as error:
+        raise HighFrequencyCalculationError(
+            "ALTITUDE_RULE_UNAVAILABLE",
+            "the active rule package states no approved A.2 altitude correction, so the "
+            f"altitude a clearance has to be corrected above is unknown: {error}",
+        ) from error
+    table, column_value = _validate_a2_altitude_rule(formula, rules)
+    return mapping, formula, table, column_value
 
 
 def _validate_a2_altitude_rule(
@@ -605,7 +628,6 @@ def _validate_a2_altitude_rule(
         or len(table.column_axis.values) != 1
         or len(row_values) < 2
         or any(left >= right for left, right in pairwise(row_values))
-        or row_values[0] != Decimal(2000)
     ):
         raise HighFrequencyCalculationError(
             "ALTITUDE_RULE_INVALID",
@@ -634,9 +656,12 @@ def _validate_a2_altitude_rule(
             )
         factors.append(cell_matches[0].value)
     if factors[0] != Decimal(1):
+        # The unity row is what makes the first row-axis coordinate readable as the boundary
+        # the correction is referred to. A table whose lowest row already scales something is
+        # a shape this module has no algorithm for, not a boundary to guess at.
         raise HighFrequencyCalculationError(
             "ALTITUDE_RULE_INVALID",
-            "altitude factor must equal one at the 2000 m boundary",
+            "altitude factor must equal one at the lowest altitude the table's row axis states",
         )
     if any(right < left for left, right in pairwise(factors)):
         raise HighFrequencyCalculationError(

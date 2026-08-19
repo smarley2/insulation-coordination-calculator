@@ -7,15 +7,15 @@ line references, detection classes, and neutral descriptions only. It never
 restates a licensed value, heading, note, or clause wording; classification
 of any entry against the licensed source happens in private sessions only.
 
-- First audited: 2026-08-13. Reconciled: 2026-08-18, after issue #110, issue #40's
-  Task 4 (#117, #119), and issue #37's Tasks 9, 10, 11, 14 and 15.
+- First audited: 2026-08-13. Reconciled: 2026-08-19, after issue #110, issue #40's
+  Tasks 4 (#117, #119), 11 and 12, and issue #37's Tasks 9, 10, 11, 14 and 15.
 - Command: `uv run python scripts/scan_licensed_content.py .`
 - Scanner totals when first audited: inline-factor=2, inline-threshold=7,
   numeric-series=41, source-like-text=28, synthetic-iec-source=2,
   text-numeric-series=3, value-near-table-id=26 (109 findings).
-- Scanner totals now: inline-threshold=3, numeric-series=43,
+- Scanner totals now: inline-threshold=1, numeric-series=43,
   source-like-text=5, synthetic-iec-source=7, text-numeric-series=2
-  (60 findings). Every `value-near-table-id` finding is resolved; the
+  (58 findings). Every `value-near-table-id` finding is resolved; the
   `numeric-series` count rose because the fixture rewrite in Task 5 split some
   containers, not because new content was added. The `synthetic-iec-source`
   count rose by two when issue #36's supply fixture joined the DVC fixture in
@@ -56,6 +56,19 @@ of any entry against the licensed source happens in private sessions only.
   verification fixture's identity rather than declaring a source of their own.
 - Tracked private artifacts (`.pdf`, `.icrules`, `.icproj`, `.icdraft`,
   `audit-inventory.json`): none, in the current tree and in the full history.
+- Issue #40's Task 12 took `inline-threshold` from three to **one**, and the
+  total from 60 to 58. Both resolved entries were the A.2 altitude boundary: the
+  altitude a clearance is corrected above, and the constant the shape gate
+  compared the table's first row against. Neither figure is in the tree any more.
+  The boundary is now the first coordinate of the approved A.2 table's own row
+  axis -- the row whose factor the gate proves is unity -- so it is the package's
+  statement, and a package carrying no A.2 route blocks the calculation with
+  `ALTITUDE_RULE_UNAVAILABLE` rather than quietly returning an uncorrected
+  distance. The same task removed a licensed figure from
+  `tests/calculation/conftest.py`, whose A.2 fixture had to start at the real
+  boundary while the validator demanded it and now invents its own, and added a
+  conforming A.2 rule to the shared Part 1 fixture, because every real Part 1
+  package states one and the engine now refuses a package that does not.
 - Issue #40's Task 11 added no finding. It found three that had never been
   inventoried -- one each in `test_dvc_clause_projection.py`,
   `test_raw_grid_review.py` and `test_semantic_review.py` -- and classified them
@@ -91,17 +104,21 @@ of any entry against the licensed source happens in private sessions only.
 | `src/insulation_coordination/calculation/clearance.py:146-166` | manual | Treatment trace wording and symbolic text mirror the source procedure rather than neutral application text | resolved (issue #40 Task 4, #117; the step now states what this application did and names the rule that decided it) |
 | `src/insulation_coordination/calculation/creepage.py:144` | inline-factor | Reinforced creepage multiplier in calculation code | resolved (issue #40 Task 4, #117; same route, resolved from the same package) |
 | `src/insulation_coordination/report/human_view.py:1054` | manual | Report projection restated the creepage treatment in a sentence written into public source | resolved (issue #40 Task 4, #119; both treatment operations now render the trace step's own rule-backed reason. Found while closing Task 4, so it was never inventoried as a finding) |
-| `src/insulation_coordination/calculation/engine.py:180` | inline-threshold | High-frequency routing boundary as a literal | confirmed (finding B class) |
-| `src/insulation_coordination/calculation/engine.py:387` | inline-threshold | Partial-discharge advisory trigger as a literal | confirmed (finding B class) |
+| `src/insulation_coordination/calculation/engine.py:180` | inline-threshold | High-frequency routing boundary as a literal | confirmed (finding B class; investigated in issue #40 Task 12 and deliberately left. The approved package *does* state a frequency boundary, in the row matchers of `iec62477_2022.high_frequency.applicability`, but that rule is IEC 62477-1 Annex F's own applicability statement while this constant gates the IEC 60664-4 routines; it includes its lower bound where the constant excludes it; and it answers a three-input question whose answer differs from a frequency-only gate for impulse and temporary-overvoltage stresses and above the annex's upper bound. Reading only the part of it that agrees would be a migration in name. What is missing is an IEC 60664-4 scope rule: `recipes/iec60664_4_2005.py` extracts the annex's equations but no clause stating the frequency below which Part 4 says nothing, so this needs an extraction step under `rules/importer/` -- issue #34's tree, not this one's) |
+| `src/insulation_coordination/calculation/engine.py:387` | inline-threshold | Partial-discharge advisory trigger as a literal | confirmed (finding B class; investigated in issue #40 Task 12 and deliberately left. No resolved rule states this trigger. The advisory's own `semantic_rule_id` names a rule no package carries, the F.9 table it cites is keyed by the same row axis as F.8 so no axis edge supplies the figure, and `iec62477_2022.test.partial_discharge.applicability` answers whether a partial-discharge *test* is required, which is a different question. What is missing is an extracted IEC 60664-1 Annex F clause rule and a semantic identifier for it -- again an extraction step under `rules/importer/`. The warning's wording states the trigger in words as well as the comparison stating it as a numeral; both go together when the rule arrives) |
 | `src/insulation_coordination/calculation/engine.py:386`, `high_frequency.py:104,257,649` | inline-threshold | The Part 4 frequency boundary, stated as a literal in four comparisons | resolved (issue #37 Task 9; the four comparisons now read one named `PART4_FREQUENCY_THRESHOLD_HZ` in `high_frequency.py`, and the value is stated once. Still a finding-B-class boundary in a single place rather than four, and it remains a candidate for a package-supplied figure) |
-| `src/insulation_coordination/calculation/high_frequency.py:462` | inline-threshold | Altitude-correction base boundary as a literal | confirmed (finding B class) |
+| `src/insulation_coordination/calculation/high_frequency.py:462` | inline-threshold | Altitude-correction base boundary as a literal | resolved (issue #40 Task 12; the altitude a clearance is corrected above is read off the row axis of the A.2 table the approved mapping already resolves, and a package that states no A.2 route blocks the calculation instead of skipping the correction in silence) |
 | `src/insulation_coordination/report/human_view.py` (altitude branch of the trace-sentence builder) | manual | Report sentence stated the A.2 altitude boundary as a numeral; no table identifier sits nearby, so no scanner class fires | resolved (issue #37 Task 14; the sentence now says the boundary the named rule states was checked and not exceeded, and states no figure) |
 | `src/insulation_coordination/report/human_view.py` (reinforced-creepage branch of the trace-sentence builder) | manual | Report sentence spells the reinforced creepage factor out as a word, which the numeral heuristics do not see | confirmed (finding B class; owned by a separate workstream and deliberately untouched by issue #37 Task 14 to avoid two sessions editing one function) |
-| `src/insulation_coordination/calculation/high_frequency.py:601` | inline-threshold | Altitude table boundary validation constant | confirmed (finding B class) |
+| `src/insulation_coordination/calculation/high_frequency.py:601` | inline-threshold | Altitude table boundary validation constant | resolved (issue #40 Task 12; the shape gate no longer compares the first row against a figure. It still requires a unity factor on that row, which is what makes the row readable as the boundary the correction is referred to -- a structural expectation, not a value) |
 
 The `inline-threshold` entries extend finding B: they are comparison
 constants rather than multiplicative factors, but the same migration rule
-applies (semantic rule in `.icrules`, blocking behavior when absent).
+applies (semantic rule in `.icrules`, blocking behavior when absent). Issue
+#40's Task 12 resolved the two altitude entries and left the other two where
+they were, for the reasons written into their rows: both of the remaining ones
+need a value the importer does not extract yet, and neither is a constant a
+consumer can simply stop writing down.
 
 ## Importer recipes
 
@@ -265,7 +282,6 @@ same warning on every run, CI included.
 docs/superpowers/plans/2026-08-10-iec62477-slice-d.md text-numeric-series 1
 docs/superpowers/specs/2026-08-07-iec62477-foundation-design.md text-numeric-series 1
 src/insulation_coordination/calculation/engine.py inline-threshold 1
-src/insulation_coordination/calculation/high_frequency.py inline-threshold 2
 src/insulation_coordination/rules/importer/recipes/iec60664_1_2020.py numeric-series 2
 src/insulation_coordination/rules/importer/recipes/iec60664_4_2005.py numeric-series 2
 src/insulation_coordination/rules/importer/recipes/iec60664_4_2005.py source-like-text 2

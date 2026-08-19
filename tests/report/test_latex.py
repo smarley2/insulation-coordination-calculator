@@ -9,6 +9,7 @@ from insulation_coordination.calculation.engine import (
     calculate_pair,
 )
 from insulation_coordination.calculation.grouping import calculation_signature, group_results
+from insulation_coordination.calculation.high_frequency import A2_ALTITUDE_ROUTE
 from insulation_coordination.domain.project import RulePackageReference
 from insulation_coordination.domain.rules import Round, SourceReference
 from insulation_coordination.project.resolver import resolve_effective_case
@@ -425,10 +426,20 @@ def test_report_rejects_dangerous_formula_from_otherwise_valid_approved_package(
     tmp_path,
 ) -> None:
     project, _, _, rules = report_inputs
+    # The A.2 altitude factor is left alone: the engine gates its shape before reading the
+    # altitude boundary off it, so wrapping it would block the calculation this test needs to
+    # reach the report.
+    altitude_formula_id = next(
+        mapping.target_rule_id
+        for mapping in rules.mappings
+        if mapping.source_rule_id == A2_ALTITUDE_ROUTE
+    )
     unsafe_source = rules.model_copy(
         update={
             "formulas": tuple(
-                formula.model_copy(
+                formula
+                if formula.id == altitude_formula_id
+                else formula.model_copy(
                     update={
                         "expression": Round(
                             value=formula.expression,

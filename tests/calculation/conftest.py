@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from insulation_coordination.calculation.high_frequency import A2_ALTITUDE_ROUTE
 from insulation_coordination.domain.rules import (
     Add,
     Compare,
@@ -124,8 +125,9 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
         ("case_a_mm", "case_b_mm"),
     )
     a2_source = source.model_copy(update={"table": "A.2"})
-    # First row and first factor: dictated by the engine's A.2 validator.
-    a2_rows = tuple(map(Decimal, ("2000", "4400", "6600", "9900")))
+    # First factor: dictated by the engine's A.2 validator, which reads the row it sits on as
+    # the altitude the correction is referred to. The altitudes themselves are invented.
+    a2_rows = tuple(map(Decimal, ("2200", "4200", "6600", "9900")))
     a2_values = tuple(map(Decimal, ("1", "2", "4", "8")))
     a2 = Table(
         id="iec60664-1-a2",
@@ -312,7 +314,13 @@ def semantic_annex_g_rules(tmp_path: Path) -> RulePackage:
     retained_formulas = tuple(
         item for item in base.formulas if not item.id.startswith("synthetic-clearance-")
     )
-    retained_mappings = tuple(item for item in base.mappings if "_clearance_" not in item.id)
+    retained_mappings = tuple(
+        item
+        for item in base.mappings
+        # The base package states its own altitude correction; this one replaces it, and two
+        # mappings on one semantic route are an ambiguity the engine refuses outright.
+        if "_clearance_" not in item.id and item.source_rule_id != A2_ALTITUDE_ROUTE
+    )
     candidate = base.model_copy(
         update={
             "tables": (*retained_tables, f2, f5, f8, f9, a2),
