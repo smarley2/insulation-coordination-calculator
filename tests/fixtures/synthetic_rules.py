@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from insulation_coordination.calculation.high_frequency import A2_ALTITUDE_ROUTE
 from insulation_coordination.domain.dvc import PROTECTION_TARGET_DIMENSIONS
 from insulation_coordination.domain.rules import (
     RULE_SCHEMA_VERSION,
@@ -726,6 +727,76 @@ def synthetic_part1_rule_package() -> RulePackage:
             "synthetic-creepage-reinforced-formula",
         ),
     )
+    # Every real Part 1 package states an altitude correction, and the engine now reads the
+    # altitude a clearance is corrected above off this table's own row axis rather than from a
+    # constant of its own -- so a package without one blocks. The base altitude and the factors
+    # above it are invented; only the unity factor on the first row is structural, because that
+    # is what makes the first row the one the correction is referred to.
+    altitude_source = reference.model_copy(update={"table": "synthetic-altitude"})
+    altitude_rows = tuple(map(Decimal, ("1800", "4800", "7800")))
+    altitude_factors = tuple(map(Decimal, ("1", "1.5", "2")))
+    altitude_table = Table(
+        id="synthetic-altitude-correction",
+        unit="1",
+        row_axis=TableAxis(
+            id="altitude_m",
+            unit="m",
+            values=altitude_rows,
+            labels=tuple(str(value) for value in altitude_rows),
+        ),
+        column_axis=TableAxis(
+            id="clearance_factor",
+            unit="1",
+            values=(Decimal(1),),
+            labels=("clearance_factor",),
+        ),
+        cells=tuple(
+            TableCell(
+                row=index,
+                column=0,
+                value=factor,
+                unit="1",
+                source=altitude_source.model_copy(update={"row": str(altitude)}),
+            )
+            for index, (altitude, factor) in enumerate(
+                zip(altitude_rows, altitude_factors, strict=True)
+            )
+        ),
+        supported_ranges=(
+            SupportedRange(
+                variable="altitude_m",
+                minimum=altitude_rows[0],
+                maximum=altitude_rows[-1],
+                unit="m",
+                source=altitude_source,
+            ),
+        ),
+        interpolation="linear",
+        source=altitude_source,
+    )
+    altitude_formula = Formula(
+        id="synthetic-altitude-factor",
+        expression=TableSelect(
+            table_id=altitude_table.id,
+            row=Variable(name="altitude_m"),
+            column=Variable(name="clearance_factor"),
+            row_mode="linear",
+            column_mode="exact",
+        ),
+        unit="1",
+        parameter_sets=(
+            ParameterSet(
+                id="synthetic-default",
+                parameters=(
+                    Parameter(name="altitude_m", unit="m"),
+                    Parameter(name="clearance_factor", unit="1"),
+                ),
+                source=altitude_source,
+            ),
+        ),
+        latex="k_{alt,synthetic}=k(h)",
+        source=altitude_source,
+    )
     # Real packages carry every pollution degree; inner layers are dimensioned in
     # pollution degree 1, so the fixture routes both like the importer recipes do.
     mapping_specs = tuple(
@@ -763,17 +834,26 @@ def synthetic_part1_rule_package() -> RulePackage:
                 ),
             ),
         ),
-        tables=(*tables, synthetic_requirement_table(reference)),
-        formulas=formulas,
-        mappings=tuple(
+        tables=(*tables, synthetic_requirement_table(reference), altitude_table),
+        formulas=(*formulas, altitude_formula),
+        mappings=(
+            *(
+                CompatibilityMapping(
+                    id=mapping_id,
+                    source_rule_id=source_rule_id,
+                    target_rule_id=target_rule_id,
+                    approved=True,
+                    source=reference,
+                )
+                for mapping_id, source_rule_id, target_rule_id in mapping_specs
+            ),
             CompatibilityMapping(
-                id=mapping_id,
-                source_rule_id=source_rule_id,
-                target_rule_id=target_rule_id,
+                id="altitude_correction",
+                source_rule_id=A2_ALTITUDE_ROUTE,
+                target_rule_id=altitude_formula.id,
                 approved=True,
-                source=reference,
-            )
-            for mapping_id, source_rule_id, target_rule_id in mapping_specs
+                source=altitude_source,
+            ),
         ),
         decisions=synthetic_reinforced_treatments(reference),
     )
@@ -886,14 +966,6 @@ def synthetic_hf_rule_package() -> RulePackage:
             ("1",),
             "iterations",
             ("10",),
-        ),
-        table(
-            "synthetic-altitude-factor",
-            "altitude_m",
-            "m",
-            ("2000", "4000", "6000"),
-            "1",
-            ("1", "1.2", "1.5"),
         ),
     )
 
@@ -1032,26 +1104,6 @@ def synthetic_hf_rule_package() -> RulePackage:
         unit="iterations",
         source=reference,
     )
-    altitude = Formula(
-        id="synthetic-altitude-correction",
-        expression=LinearInterpolate(
-            table_id="synthetic-altitude-factor",
-            x=Variable(name="altitude_m"),
-        ),
-        unit="1",
-        parameter_sets=parameter_set(("altitude_m", "m")),
-        supported_ranges=(
-            SupportedRange(
-                variable="altitude_m",
-                minimum=Decimal(2000),
-                maximum=Decimal(6000),
-                unit="m",
-                source=reference,
-            ),
-        ),
-        latex="k_{alt,synthetic}=k(h)",
-        source=reference,
-    )
     hf_creepage = Formula(
         id="synthetic-hf-creepage",
         expression=Multiply(
@@ -1090,11 +1142,6 @@ def synthetic_hf_rule_package() -> RulePackage:
             "hf_iteration_limit",
             "iec60664-4:field_iteration:max_iterations",
             iteration_limit.id,
-        ),
-        (
-            "altitude_correction",
-            "iec60664-1:altitude_correction:base=2000m",
-            altitude.id,
         ),
     ]
     for field in ("homogeneous", "approximately_homogeneous"):
@@ -1191,7 +1238,6 @@ def synthetic_hf_rule_package() -> RulePackage:
                 functional_applicability,
                 tolerance,
                 iteration_limit,
-                altitude,
                 hf_creepage,
             ),
             "mappings": (

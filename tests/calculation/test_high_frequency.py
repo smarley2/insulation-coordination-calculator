@@ -1,4 +1,5 @@
 from decimal import Decimal
+from pathlib import Path
 from uuid import UUID
 
 import pytest
@@ -9,6 +10,7 @@ from insulation_coordination.calculation.clearance import (
 )
 from insulation_coordination.calculation.engine import RequiredStressError, calculate_pair
 from insulation_coordination.calculation.high_frequency import (
+    A2_ALTITUDE_ROUTE,
     HighFrequencyCalculationError,
     calculate_critical_frequency,
     calculate_high_frequency_candidates,
@@ -28,6 +30,7 @@ from insulation_coordination.domain.project import (
     PairVoltages,
 )
 from insulation_coordination.domain.rules import RulePackage
+from insulation_coordination.rules.archive import load_rule_package, write_rule_package
 from tests.fixtures.synthetic_rules import claimed_standards
 
 
@@ -340,7 +343,7 @@ def test_engine_trace_has_pair_decisions_and_no_fabricated_iteration_settings(
     (
         ("0", "1", False),
         ("2000", "1", False),
-        ("3800", "1.75", True),
+        ("3800", "1.8", True),
         ("6600", "4", True),
         ("9900", "8", True),
     ),
@@ -366,8 +369,8 @@ def test_a2_altitude_applies_after_clearance_maximum(
             if item.semantic_rule_id == "iec60664-1:altitude_correction:base=2000m"
         )
         assert step.source_cells == (
-            "2000/clearance_factor",
-            "4400/clearance_factor",
+            "2200/clearance_factor",
+            "4200/clearance_factor",
         ) or altitude_m in {"6600", "9900"}
     else:
         step = next(
@@ -375,7 +378,89 @@ def test_a2_altitude_applies_after_clearance_maximum(
             for item in result.trace.steps
             if item.semantic_rule_id == "iec60664-1:a2-altitude-not-applied"
         )
-        assert "at or below 2000 m" in step.reason
+        assert "does not exceed the base altitude the approved A.2 rule states" in step.reason
+        assert step.source_reference is not None
+
+
+@pytest.mark.parametrize("altitude_m", ("0", "2000", "3800"))
+def test_a2_altitude_without_an_approved_rule_blocks_instead_of_skipping(
+    altitude_m: str,
+    case_factory,
+    tmp_path: Path,
+    semantic_part4_rules: RulePackage,
+) -> None:
+    """No A.2 route, no boundary: the calculation refuses rather than passing the clearance.
+
+    The altitude a clearance is corrected above used to be a literal in this module, so a
+    package that stated nothing about altitude still produced an uncorrected answer that
+    looked like a corrected one. Below the boundary is the case that used to fall through
+    silently, which is why it is parametrized alongside the two that always blocked.
+    """
+
+    stripped = _resealed(
+        semantic_part4_rules,
+        tmp_path,
+        mappings=tuple(
+            mapping
+            for mapping in semantic_part4_rules.mappings
+            if mapping.source_rule_id != A2_ALTITUDE_ROUTE
+        ),
+    )
+
+    with pytest.raises(HighFrequencyCalculationError) as caught:
+        calculate_pair(case_factory(frequency_hz="30000", altitude_m=altitude_m), stripped)
+
+    assert caught.value.code == "ALTITUDE_RULE_UNAVAILABLE"
+    assert "states no approved A.2 altitude correction" in str(caught.value)
+
+
+def test_a2_altitude_boundary_is_read_from_the_package_row_axis(
+    case_factory,
+    tmp_path: Path,
+    semantic_part4_rules: RulePackage,
+) -> None:
+    """Move the table's lowest row and the boundary moves with it; nothing here fixes it."""
+
+    a2 = next(table for table in semantic_part4_rules.tables if table.id == "iec60664-1-a2")
+    base = a2.row_axis.values[0]
+    lifted = _with_lifted_a2_base(semantic_part4_rules, tmp_path, base + Decimal(1000))
+
+    result = calculate_pair(case_factory(frequency_hz="30000", altitude_m=str(base)), lifted)
+
+    assert result.trace.altitude_correction_applied is False
+    assert result.clearance_mm == result.trace.pre_altitude_clearance_mm
+
+
+def _with_lifted_a2_base(rules: RulePackage, tmp_path: Path, base: Decimal) -> RulePackage:
+    """The same package with the A.2 row axis and its declared range shifted up by one row."""
+
+    a2 = next(table for table in rules.tables if table.id == "iec60664-1-a2")
+    values = (base, *a2.row_axis.values[1:])
+    moved = a2.model_copy(
+        update={
+            "row_axis": a2.row_axis.model_copy(
+                update={"values": values, "labels": tuple(str(value) for value in values)}
+            ),
+            "supported_ranges": tuple(
+                item.model_copy(update={"minimum": base}) if item.variable == "altitude_m" else item
+                for item in a2.supported_ranges
+            ),
+        }
+    )
+    return _resealed(
+        rules,
+        tmp_path,
+        tables=tuple(moved if table.id == a2.id else table for table in rules.tables),
+    )
+
+
+def _resealed(rules: RulePackage, tmp_path: Path, **changes: object) -> RulePackage:
+    """``rules`` with ``changes`` applied and its checksums recomputed by the archive."""
+
+    candidate = rules.model_copy(update={**changes, "checksums": {}, "package_sha256": None})
+    path = tmp_path / "resealed.icrules"
+    write_rule_package(path, candidate)
+    return load_rule_package(path)
 
 
 def test_a2_altitude_outside_reviewed_range_blocks(
