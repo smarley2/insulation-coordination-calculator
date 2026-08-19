@@ -66,10 +66,16 @@ jobs:
             exit 0
           fi
 
-          # The runners point at azure.archive.ubuntu.com, which has a history of going
-          # unreachable on its own. Fall back to the canonical archive before giving up.
+          # The runners resolve their mirrors through mirror+file:/etc/apt/apt-mirrors.txt
+          # rather than naming a host in the sources, so there is no URI to rewrite - point
+          # that file at the canonical archive instead. Every probe here is guarded: grep
+          # exits 1 when it matches nothing, and under pipefail that would abort the script
+          # before the retry it exists to reach.
           echo "default mirror failed; switching to the canonical archive" >&2
-          grep -Rls 'azure.archive.ubuntu.com' /etc/apt/sources.list /etc/apt/sources.list.d             | xargs -r sudo sed -i 's|://azure.archive.ubuntu.com|://archive.ubuntu.com|g'
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            echo 'http://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          fi
+          grep -Rls 'azure.archive.ubuntu.com'             /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null             | xargs -r sudo sed -i 's|://azure.archive.ubuntu.com|://archive.ubuntu.com|g'             || true
 
           if install_missing; then
             echo "installed from the fallback mirror"
