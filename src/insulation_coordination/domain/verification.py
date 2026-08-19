@@ -153,6 +153,12 @@ class TestKind(StrEnum):
 
     WORKING_VOLTAGE_DETERMINATION = "working_voltage_determination"
     IMPULSE_WITHSTAND = "impulse_withstand"
+    #: Verification that a claimed reduction of the overvoltage does what is claimed for it.
+    #: Its own kind rather than a variant of the impulse withstand test: it is applied to the
+    #: equipment rather than between one pair's electrodes, it is judged on what the reduction
+    #: measures rather than on whether the insulation held, and a schedule that folded the two
+    #: together would let one result be read as the other.
+    TRANSIENT_OVERVOLTAGE_REDUCTION = "transient_overvoltage_reduction"
     AC_DIELECTRIC = "ac_dielectric"
     DC_DIELECTRIC = "dc_dielectric"
     PARTIAL_DISCHARGE = "partial_discharge"

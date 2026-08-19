@@ -106,6 +106,14 @@ SUPPLY = UUID(int=441)
 #: numbers are this repository's invention and only have to overlap.
 SYSTEM_VOLTAGE_V = Decimal(33)
 
+#: What a three-phase IT arrangement answers the impulse question and the temporary-overvoltage
+#: question with, as :func:`it_mains_configuration` declares them. They differ, and both land
+#: inside the synthetic band axes, so a lookup keyed on one of them can be told from a lookup
+#: keyed on the other by the value it returns. Invented like every other number here: the
+#: source relates its own pair of measures and this pair does not stand for that relation.
+IMPULSE_SYSTEM_VOLTAGE_V = Decimal(15)
+TOV_SYSTEM_VOLTAGE_V = Decimal(33)
+
 #: The dielectric routes' row axis. Chosen so ``SYSTEM_VOLTAGE_V`` lands strictly between two
 #: bands, which is what makes a linear route and a banded route give different answers.
 DIELECTRIC_ROW_BANDS: tuple[Decimal, ...] = (Decimal(10), Decimal(20), Decimal(40))
@@ -137,6 +145,7 @@ def verification_topology(
     insulation: InsulationType = InsulationType.BASIC,
     altitude_m: Decimal = Decimal(0),
     recurring_peak_v: Decimal | None = Decimal(25),
+    temporary_overvoltage: PairVoltage | None = None,
     frequency_hz: Decimal = Decimal(50),
 ) -> Project:
     """Three circuits over two domains, a PE-bonded part, a touchable part and a cover.
@@ -144,6 +153,12 @@ def verification_topology(
     ``LIVE_A`` and ``LIVE_B`` share ``PRIMARY``, so any test between one of them and a
     reference part covers both. Every pair carries dimensionable stresses, so nothing is
     excluded and nothing is blank.
+
+    ``temporary_overvoltage`` is taken whole rather than as a value, because which of the
+    three states a pair's entry is in is exactly what the non-mains dielectric route turns
+    on: a stated overvoltage, one an engineer reviewed and excluded, and one nobody has
+    answered for are three different questions and only the middle one reads the
+    no-overvoltage table.
     """
 
     domains = (
@@ -163,7 +178,10 @@ def verification_topology(
         _reference(TOUCHABLE, "Handle", NetClassType.ACCESSIBLE_CONDUCTIVE_PART),
         _reference(COVER, "Cover", NetClassType.ACCESSIBLE_INSULATING_SURFACE),
     )
-    pairs = tuple(_dimensionable(pair, recurring_peak_v) for pair in reconcile_pairs(nets, ()))
+    pairs = tuple(
+        _dimensionable(pair, recurring_peak_v, temporary_overvoltage)
+        for pair in reconcile_pairs(nets, ())
+    )
     return Project(
         id=UUID(int=400),
         metadata=ProjectMetadata(title="Verification topology example"),
@@ -214,6 +232,27 @@ def mains_configuration(**overrides: object) -> SupplyConfiguration:
     }
     fields.update(overrides)
     return SupplyConfiguration(**fields)
+
+
+def it_mains_configuration(**overrides: object) -> SupplyConfiguration:
+    """One enabled AC mains row whose two system-voltage questions get two different answers.
+
+    The arrangement the synthetic resolution rule answers differently for the impulse question
+    and the temporary-overvoltage question, so a lookup keyed on the wrong one of them lands
+    on a different row and can be told apart from a lookup keyed on the right one.
+    """
+
+    return mains_configuration(
+        name="IT site supply",
+        earthing_arrangement=EarthingArrangement.IT_THREE_PHASE,
+        declared_system_voltages=(
+            DeclaredSystemVoltage(
+                measure="phase_to_artificial_neutral_rms", value_v=IMPULSE_SYSTEM_VOLTAGE_V
+            ),
+            DeclaredSystemVoltage(measure="phase_to_phase_rms", value_v=TOV_SYSTEM_VOLTAGE_V),
+        ),
+        **overrides,
+    )
 
 
 def pair_between(project: Project, first: UUID, second: UUID) -> PairCase:
@@ -583,7 +622,11 @@ def _reference(net_id: UUID, name: str, net_type: NetClassType) -> NetClass:
     )
 
 
-def _dimensionable(pair: PairCase, recurring_peak_v: Decimal | None) -> PairCase:
+def _dimensionable(
+    pair: PairCase,
+    recurring_peak_v: Decimal | None,
+    temporary_overvoltage: PairVoltage | None,
+) -> PairCase:
     """Give every stress a value, so nothing is blank and no pair is excluded."""
 
     recurring = (
@@ -597,7 +640,11 @@ def _dimensionable(pair: PairCase, recurring_peak_v: Decimal | None) -> PairCase
                 long_term_rms_v=PairVoltage.applicable(Decimal(500)),
                 steady_state_peak_v=PairVoltage.applicable(Decimal(300)),
                 recurring_peak_v=recurring,
-                temporary_overvoltage_peak_v=PairVoltage.applicable(Decimal(250)),
+                temporary_overvoltage_peak_v=(
+                    PairVoltage.applicable(Decimal(250))
+                    if temporary_overvoltage is None
+                    else temporary_overvoltage
+                ),
             )
         }
     )
@@ -609,6 +656,7 @@ __all__ = [
     "DIELECTRIC_ROW_BANDS",
     "ENCLOSURE",
     "FAMILY_OFFSETS",
+    "IMPULSE_SYSTEM_VOLTAGE_V",
     "LIVE_A",
     "LIVE_B",
     "LIVE_C",
@@ -620,8 +668,10 @@ __all__ = [
     "SUPPLY",
     "SYSTEM_VOLTAGE_V",
     "TOUCHABLE",
+    "TOV_SYSTEM_VOLTAGE_V",
     "declared_solid_insulation",
     "dielectric_cell",
+    "it_mains_configuration",
     "mains_configuration",
     "pair_between",
     "single_column_dielectric_package",

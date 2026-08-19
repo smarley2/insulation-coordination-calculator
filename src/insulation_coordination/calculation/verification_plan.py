@@ -110,7 +110,11 @@ from insulation_coordination.domain.rules import (
     TableSelect,
     Variable,
 )
-from insulation_coordination.domain.supply import MAINS_SUPPLY_KINDS, DerivedSupplyScenario
+from insulation_coordination.domain.supply import (
+    MAINS_SUPPLY_KINDS,
+    DerivedSupplyScenario,
+    VerifiedImpulseOverride,
+)
 from insulation_coordination.domain.trace import CalculationWarning, Quantity, TraceStep
 from insulation_coordination.domain.verification import (
     EvidenceTarget,
@@ -126,6 +130,7 @@ from insulation_coordination.domain.verification import (
     build_test_id,
 )
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_formula
+from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 
 _VOLTAGE_UNIT: Final = "V"
 
@@ -458,9 +463,20 @@ def _plan_pair(
     impulse = _impulse_application(
         pair, subject, effective, resolution, rules, revision, implementation, enhanced, warnings
     )
+    override = _verified_reduction(resolution)
+    reduction = (
+        () if override is None else (_reduction_application(subject, rules, revision, override),)
+    )
     recurring_peak = _recurring_peak(project, pair, effective)
     dielectric = _dielectric_applications(
-        pair, subject, rules, revision, enhanced, mains, recurring_peak
+        pair,
+        subject,
+        rules,
+        revision,
+        enhanced,
+        mains,
+        recurring_peak,
+        _overvoltage_present(effective, resolution),
     )
     discharge = assess_partial_discharge(
         pair, effective, rules.partial_discharge, recurring_peak_v=recurring_peak
@@ -482,6 +498,7 @@ def _plan_pair(
             ),
             exemption,
         ),
+        *reduction,
         *monitoring,
     )
     return applications, PairVerificationAssessment(
@@ -681,7 +698,7 @@ def _impulse_application(
     voltage nothing asked for.
     """
 
-    procedure = _impulse_procedure(rules, implementation, resolution)
+    procedure = _impulse_procedure(rules, implementation)
     unresolved: list[str] = []
     preparation = [*subject.preparation_steps, _ALTERNATIVE_METHOD_STEP, _CLEARANCE_SCOPE_STEP]
     if procedure is None:
@@ -743,24 +760,100 @@ def _impulse_application(
 def _impulse_procedure(
     rules: VerificationRuleSet,
     implementation: ProtectionImplementation | None,
-    resolution: EffectivePairStressResolution | None,
 ) -> ProcedureRule | None:
     """Which of the impulse procedure's variants states the conditions for this pair.
 
-    A pair whose impulse was reduced by a verified override is a transient-reduction case, and
-    the variant the package projects for it states conditions the other two do not. It is
-    selected in preference to the construction variants because it is the narrower statement:
-    the reduction is the reason this pair's figure is what it is.
+    The pair's construction, and nothing else. The package's third variant is not a third
+    construction: it states the conditions for verifying a claimed reduction of the
+    overvoltage, which is a separate test applied to the equipment. Selecting it here in
+    preference to a construction variant took a pair's insulation impulse application away
+    from it whenever somebody recorded a reduction - see :func:`_reduction_application`, which
+    is where that test is generated instead, in addition to this one rather than in place of
+    it.
     """
 
-    outcome = None if resolution is None else resolution.override_outcome
-    if outcome is not None and outcome.applied and outcome.override.is_reduction:
-        return rules.impulse_procedure.transient_reduction
     if implementation is None:
         return None
     if implementation in ENHANCED_PROTECTION_IMPLEMENTATIONS:
         return rules.impulse_procedure.insulation_reinforced
     return rules.impulse_procedure.insulation_basic
+
+
+def _verified_reduction(
+    resolution: EffectivePairStressResolution | None,
+) -> VerifiedImpulseOverride | None:
+    """The reduction claim recorded at this pair that actually applied, if there is one."""
+
+    outcome = None if resolution is None else resolution.override_outcome
+    if outcome is None or not outcome.applied or not outcome.override.is_reduction:
+        return None
+    return outcome.override
+
+
+def _reduction_application(
+    subject: TestSubject,
+    rules: VerificationRuleSet,
+    revision: str,
+    override: VerifiedImpulseOverride,
+) -> TestApplication:
+    """The type test that verifies a claimed reduction of the overvoltage does what is claimed.
+
+    Owed in addition to the insulation impulse applications of the pairs the reduction affects
+    and never instead of one: clause 5.2.3.2 states it as a further requirement, and the
+    package's own variant of the procedure carries its own subject, preconditioning answer and
+    power condition. Clause 4.4.7.3 asks for the same test where circuit characteristics
+    rather than a device are what the reduction rests on, which is why this is generated for
+    every applied reduction and not only for the ones that owe monitoring.
+
+    The row stands between the pair's own electrodes, as the monitoring row does and for the
+    same reason: the test is not measured there - it is applied to the equipment, which the
+    preparation says - but it is what ties the test to the reduction it verifies, and it means
+    two pairs of one connected group carrying one reduction produce one row rather than two.
+
+    No voltage. The package states this variant's test voltage as one column of its impulse
+    selection route, that route carries more than one column, and nothing in it says which
+    applies here - the same refusal the dielectric lookup makes, for the same reason. It is
+    emphatically not the pair's own reduced figure: the point of the test is to show the
+    reduction holds when the unreduced stress arrives.
+    """
+
+    procedure = rules.impulse_procedure.transient_reduction
+    return _application(
+        subject=subject,
+        test_kind=TestKind.TRANSIENT_OVERVOLTAGE_REDUCTION,
+        classifications=classifications_of(procedure),
+        revision=revision,
+        voltage=None,
+        waveform=procedure.waveform,
+        polarity=procedure.polarity,
+        duration=procedure.duration,
+        repetitions=procedure.repetitions,
+        preparation_steps=(
+            (
+                "Apply this test to the equipment, not between the conductors of one pair. "
+                f"It verifies the reduction recorded at {override.affected_location!r}, on "
+                f"the basis of {_words(override.basis.value)}, against "
+                f"{override.evidence_reference}."
+            ),
+            *(step.text for step in procedure.preparation_steps),
+        ),
+        unresolved=(
+            (
+                f"The active package states this test's voltage as one column of "
+                f"{ids.TEST_IMPULSE_SELECTION}, that route states more than one column, and "
+                "nothing in it says which one applies here. The reduced figure recorded at "
+                f"{override.affected_location!r} is not it: this test exists to show the "
+                "reduction holds, so planning it at the reduced value would verify nothing."
+            ),
+            (
+                "The acceptance criterion compares the measured peak against the next lower "
+                f"step of the same {ids.TEST_IMPULSE_SELECTION} column. Read it from that "
+                "column once the column above is settled; this plan does not choose it."
+            ),
+        ),
+        source_rule_ids=(procedure.id,),
+        trace_steps=(),
+    )
 
 
 def _altitude_inputs(pair: PairCase, effective: EffectiveCase) -> tuple[str, ...]:
@@ -801,13 +894,20 @@ def _dielectric_applications(
     enhanced: bool,
     mains: Sequence[DerivedSupplyScenario],
     recurring_peak_v: Decimal | None,
+    overvoltage_present: bool | None,
 ) -> tuple[TestApplication, ...]:
     """The routine and type dielectric applications, in both voltage forms the package states.
 
     A mains-connected circuit is looked up in the mains table on the system voltage its supply
-    resolved to; every other circuit is looked up in the non-mains table on its recurring-peak
-    working voltage. A circuit reached by more than one supply is mains-connected if any of
-    them is, and the most severe of their system voltages is what keys the row.
+    resolved to. A circuit reached by more than one supply is mains-connected if any of them
+    is, and the most severe of their system voltages is what keys the row.
+
+    A non-mains circuit has two routes, not one, and which of them applies is decided by
+    whether a temporary overvoltage is present on it. The package's non-mains table is the
+    route for a circuit that has none, keyed on its recurring-peak working voltage; a circuit
+    that has one takes its test voltage from that overvoltage instead, and reading the table
+    for it would plan the test under what is required. A circuit nobody has answered the
+    question for reads neither.
 
     The routine test and the basic-protection type test share one route because the package's
     own route says it covers both. The enhanced-protection type test is read from its own
@@ -816,7 +916,7 @@ def _dielectric_applications(
     """
 
     tables = rules.mains_dielectric_values if mains else rules.non_mains_dielectric_values
-    row, row_reason, row_unresolved = _row_value(pair, mains, recurring_peak_v)
+    row, row_reason, row_unresolved = _row_value(pair, mains, recurring_peak_v, overvoltage_present)
     routes: tuple[tuple[TestClassification, VoltageTablePair], ...] = (
         (TestClassification.ROUTINE, tables.routine_and_basic_type),
         (
@@ -881,22 +981,111 @@ def _recurring_peak(project: Project, pair: PairCase, effective: EffectiveCase) 
     return governing.effective_value_v
 
 
+def _overvoltage_present(
+    effective: EffectiveCase,
+    resolution: EffectivePairStressResolution | None,
+) -> bool | None:
+    """Whether a temporary overvoltage is present on this pair. ``None`` means nobody said.
+
+    Three states, not two, because the non-mains dielectric route turns on exactly this
+    question and "nothing is recorded" is not an answer of "no". The pair's own entry is asked
+    first and an exclusion recorded on it stands over a derived value, which is the precedence
+    the stress resolution already applies - the disagreement is surfaced there rather than
+    being settled twice, differently, in two places.
+    """
+
+    entry = effective.voltages.temporary_overvoltage_peak_v
+    if entry.applicability is Applicability.NOT_APPLICABLE:
+        return False
+    if entry.applicability is Applicability.APPLICABLE:
+        return True
+    if resolution is not None and resolution.temporary_overvoltage.applies:
+        return True
+    return None
+
+
+def _non_mains_route_gap(pair: PairCase, overvoltage_present: bool | None) -> str:
+    """Why a non-mains pair that is not on the no-overvoltage route gets no voltage here."""
+
+    if overvoltage_present is None:
+        return (
+            f"Nothing establishes whether a temporary overvoltage is present on pair "
+            f"{pair.key}, and the two non-mains routes differ by exactly that. Record whether "
+            "the nature of its supply produces one; a circuit nobody has answered for is not "
+            "read as a circuit that has none."
+        )
+    return (
+        f"Pair {pair.key} is a non-mains circuit carrying a temporary overvoltage, so its "
+        "test voltage is derived from that overvoltage and not read from a table row. The "
+        f"active package's {ids.TEST_NON_MAINS_DIELECTRIC_VALUES} projects only the route for "
+        "a circuit that has none, and nothing in it states the derivation or the factor the "
+        "enhanced-protection and accessible-surface tests apply to it."
+    )
+
+
+def _mains_row_value(
+    mains: Sequence[DerivedSupplyScenario],
+) -> tuple[Decimal | None, str, tuple[str, ...]]:
+    """The most severe temporary-overvoltage system voltage across the supplies that reach here.
+
+    A supply whose temporary-overvoltage measure the derivation did not resolve contributes
+    nothing and is named, rather than contributing its impulse measure. The two are separate
+    questions the package answers separately, and substituting the answer to one for the
+    answer to the other is what this function was fixed for.
+    """
+
+    unresolved = tuple(
+        (
+            f"{scenario.configuration_name} resolved no temporary-overvoltage system voltage, "
+            "and that measure is what keys the mains dielectric row. Its impulse system "
+            "voltage is a different measure of the supply and is not read in its place."
+        )
+        for scenario in mains
+        if scenario.system_voltage_for_tov_v is None
+    )
+    resolved = {
+        scenario.configuration_name: scenario.system_voltage_for_tov_v
+        for scenario in mains
+        if scenario.system_voltage_for_tov_v is not None
+    }
+    if not resolved:
+        return None, "no temporary-overvoltage system voltage", unresolved
+    highest = max(resolved.values())
+    names = ", ".join(sorted(resolved))
+    return highest, f"system voltage {highest} V from {names}", unresolved
+
+
 def _row_value(
     pair: PairCase,
     mains: Sequence[DerivedSupplyScenario],
     recurring_peak_v: Decimal | None,
+    overvoltage_present: bool | None,
 ) -> tuple[Decimal | None, str, tuple[str, ...]]:
     """The voltage that keys the dielectric table's row axis, and where it came from.
 
-    For a mains circuit that is the system voltage of the supply, which the derivation already
-    resolved to the measure the package named for that arrangement. For every other circuit it
-    is the recurring-peak working voltage.
+    For a mains circuit that is the system voltage of the supply, at the measure the
+    derivation resolved for the *temporary-overvoltage* question and not the impulse one. The
+    two are different measures of one supply for at least one arrangement the package
+    distinguishes, and this test is a test of withstand under temporary overvoltage
+    conditions, so the temporary-overvoltage measure is the one that keys it. On the
+    arrangement where they differ the impulse measure is the lower, which is what made reading
+    it a plan under the row the package states.
+
+    A non-mains circuit is keyed on its recurring-peak working voltage only where no temporary
+    overvoltage is present on it, because that is the condition the package's non-mains route
+    is stated for. The other two states return no row at all: one is a circuit whose test
+    voltage comes from somewhere this package does not project, and the other is a circuit
+    nobody has answered the question for. Neither is a reason to read the route anyway.
     """
 
     if mains:
-        highest = max(scenario.system_voltage_for_impulse_v for scenario in mains)
-        names = ", ".join(sorted({scenario.configuration_name for scenario in mains}))
-        return highest, f"system voltage {highest} V from {names}", ()
+        return _mains_row_value(mains)
+    if overvoltage_present is not False:
+        return (
+            None,
+            "no non-mains route resolved",
+            (_non_mains_route_gap(pair, overvoltage_present),),
+        )
     if recurring_peak_v is None:
         return (
             None,
