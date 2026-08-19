@@ -20,6 +20,7 @@ from insulation_coordination.calculation.test_topology import (
     CONFLICTING_APPLICATION_WARNING,
 )
 from insulation_coordination.calculation.verification_plan import (
+    DVC_AS_HIGHER_PORTION_STEP,
     ENHANCED_SPACING_MISMATCH_WARNING,
     PROTECTION_REQUIREMENT_UNMET_WARNING,
     SPD_MONITORING_OWED_WARNING,
@@ -1029,6 +1030,34 @@ def test_basic_insulation_between_two_dvc_as_circuits_is_still_tested(
     routine = one(plan, pair, TestKind.AC_DIELECTRIC, classifications=(TestClassification.ROUTINE,))
     assert routine.applicability is not TestApplicability.NOT_APPLICABLE
     assert routine.voltage is not None
+
+
+@pytest.mark.parametrize(
+    ("classes", "implementation"),
+    [
+        ((LIVE_C,), BASIC),
+        ((LIVE_A, LIVE_B, LIVE_C), ProtectionImplementation.FUNCTIONAL_INSULATION),
+    ],
+)
+def test_a_dvc_as_row_states_what_a_higher_voltage_portion_does_to_the_spacing(
+    package: RulePackage,
+    classes: tuple[UUID, ...],
+    implementation: ProtectionImplementation,
+) -> None:
+    """The one place a single-fault consideration reaches a spacing, stated where it applies.
+
+    A portion above the class limits is admitted on a single-fault assessment, and the same
+    paragraph requires that portion's voltages to go on dimensioning the circuit's clearance
+    and creepage to its surroundings. A reader told that single fault is not an operating
+    condition of the working voltage has to be told this in the same breath.
+    """
+    project = dvc_as_topology(implementation=implementation, classes=classes)
+    pair = pair_between(project, LIVE_A, LIVE_C)
+    plan = VerificationPlanService().build(project, package, None)
+    routine = one(plan, pair, TestKind.AC_DIELECTRIC, classifications=(TestClassification.ROUTINE,))
+    assert any(DVC_AS_HIGHER_PORTION_STEP in step for step in routine.preparation_steps), (
+        routine.preparation_steps
+    )
 
 
 def test_a_route_that_states_no_duration_says_so_rather_than_leaving_it_blank(

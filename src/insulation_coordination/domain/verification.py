@@ -262,7 +262,16 @@ class WorkingVoltageDetermination(FrozenModel):
     target: EvidenceTarget
     required_quantities: tuple[VoltageQuantityKind, ...]
     supply_configuration_ids: tuple[UUID, ...] = ()
+    #: The conditions the working voltage itself is established under. The standard scopes it
+    #: to the rated worst operating conditions of intended use and names nothing else.
     operating_conditions: tuple[str, ...] = ()
+    #: The conditions that are *not* operating conditions of the working voltage, and whose
+    #: voltages are collected as their own quantity. They belong to the decisive-voltage-class
+    #: and protection-requirement determination, which the standard states under normal,
+    #: abnormal and single-fault conditions alike. Kept beside the working voltage rather than
+    #: dropped: an abnormal figure nobody asked for is one nobody records, and the class limits
+    #: are judged against it.
+    class_limit_conditions: tuple[str, ...] = ()
     measurement_points: tuple[str, ...] = ()
     preparation_steps: tuple[str, ...] = ()
     expected_values: tuple[VoltageEvidence, ...] = ()

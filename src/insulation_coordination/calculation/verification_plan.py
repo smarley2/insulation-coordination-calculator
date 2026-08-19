@@ -225,6 +225,20 @@ ENHANCED_SPACING_MISMATCH_WARNING: Final = "verification_enhanced_protection_not
 SPD_MONITORING_OWED_WARNING: Final = "verification_internal_spd_monitoring_owed"
 PROTECTION_REQUIREMENT_UNMET_WARNING: Final = "verification_protection_requirement_not_met"
 
+#: What a DVC A-s circuit's schedule rows say about the one place a single-fault consideration
+#: reaches a spacing. A portion of such a circuit is allowed above the class limits when it is
+#: protected against direct contact and the accessible portion still complies under single
+#: fault - and the annex that allows it requires that portion's own voltages to go on
+#: dimensioning the circuit's clearance and creepage to its surroundings. Stated wherever the
+#: plan reports the DVC A-s case, because the same paragraph is the reason single fault is not
+#: an operating condition of the working voltage and the reason it is not irrelevant either.
+DVC_AS_HIGHER_PORTION_STEP: Final = (
+    "Where a portion of this DVC A-s circuit exceeds the class limits, that portion's own "
+    "voltages still dimension this circuit's clearance and creepage to its surroundings. The "
+    "single fault that admits the portion does not raise the working voltage; the portion's "
+    "voltages are what the spacing is taken from."
+)
+
 #: The trace identifier of this application's own selection of a dielectric route. Not a
 #: semantic rule id: which of the package's four routes answers a pair's question is this
 #: application's bookkeeping, and labelling it with a package identifier would credit the
@@ -1087,7 +1101,7 @@ def _accessible_part_exception(
         f"Pair {pair.key} stands between a DVC A-s circuit and an accessible part. The "
         "voltage test between a circuit and an accessible part is stated for each circuit "
         "except a DVC A-s one, whose case is settled as a test against its adjacent circuits "
-        "instead, so no voltage is planned here."
+        f"instead, so no voltage is planned here. {DVC_AS_HIGHER_PORTION_STEP}"
     )
 
 
@@ -1146,7 +1160,7 @@ def _dvc_as_adjacency(
                 f"Pair {pair.key} is functional insulation between two adjacent DVC A-s "
                 "circuits, which need not be voltage tested. Basic insulation between DVC A-s "
                 "circuits does have to be, so this answer follows the construction selected "
-                "for this pair and no other pair of the group."
+                f"for this pair and no other pair of the group. {DVC_AS_HIGHER_PORTION_STEP}"
             )
         )
     service = VoltageEvidenceService()
@@ -1161,6 +1175,7 @@ def _dvc_as_adjacency(
         f"This test is keyed on the higher-voltage of {first.name} and {second.name} rather "
         "than on the circuit under test, because one of them is a DVC A-s circuit."
     )
+    steps = (keying, DVC_AS_HIGHER_PORTION_STEP)
     if missing:
         return _DvcAsAdjacency(
             unresolved=(
@@ -1173,13 +1188,13 @@ def _dvc_as_adjacency(
                     "either circuit's own."
                 ),
             ),
-            preparation=(keying,),
+            preparation=steps,
         )
     highest = max(figures, key=lambda name: figures[name] or Decimal(0))
     return _DvcAsAdjacency(
         row_v=figures[highest],
         row_label=f"recurring-peak working voltage of {highest}, the higher-voltage circuit,",
-        preparation=(keying,),
+        preparation=steps,
     )
 
 
@@ -1810,6 +1825,7 @@ def _words(token: str) -> str:
 
 __all__ = [
     "DIELECTRIC_ROUTE_TRACE_ID",
+    "DVC_AS_HIGHER_PORTION_STEP",
     "ENHANCED_PROTECTION_IMPLEMENTATIONS",
     "ENHANCED_SPACING_MISMATCH_WARNING",
     "PROTECTION_REQUIREMENT_UNMET_WARNING",
