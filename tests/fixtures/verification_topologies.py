@@ -137,6 +137,7 @@ def verification_topology(
     insulation: InsulationType = InsulationType.BASIC,
     altitude_m: Decimal = Decimal(0),
     recurring_peak_v: Decimal | None = Decimal(25),
+    temporary_overvoltage: PairVoltage | None = None,
     frequency_hz: Decimal = Decimal(50),
 ) -> Project:
     """Three circuits over two domains, a PE-bonded part, a touchable part and a cover.
@@ -144,6 +145,12 @@ def verification_topology(
     ``LIVE_A`` and ``LIVE_B`` share ``PRIMARY``, so any test between one of them and a
     reference part covers both. Every pair carries dimensionable stresses, so nothing is
     excluded and nothing is blank.
+
+    ``temporary_overvoltage`` is taken whole rather than as a value, because which of the
+    three states a pair's entry is in is exactly what the non-mains dielectric route turns
+    on: a stated overvoltage, one an engineer reviewed and excluded, and one nobody has
+    answered for are three different questions and only the middle one reads the
+    no-overvoltage table.
     """
 
     domains = (
@@ -163,7 +170,10 @@ def verification_topology(
         _reference(TOUCHABLE, "Handle", NetClassType.ACCESSIBLE_CONDUCTIVE_PART),
         _reference(COVER, "Cover", NetClassType.ACCESSIBLE_INSULATING_SURFACE),
     )
-    pairs = tuple(_dimensionable(pair, recurring_peak_v) for pair in reconcile_pairs(nets, ()))
+    pairs = tuple(
+        _dimensionable(pair, recurring_peak_v, temporary_overvoltage)
+        for pair in reconcile_pairs(nets, ())
+    )
     return Project(
         id=UUID(int=400),
         metadata=ProjectMetadata(title="Verification topology example"),
@@ -583,7 +593,11 @@ def _reference(net_id: UUID, name: str, net_type: NetClassType) -> NetClass:
     )
 
 
-def _dimensionable(pair: PairCase, recurring_peak_v: Decimal | None) -> PairCase:
+def _dimensionable(
+    pair: PairCase,
+    recurring_peak_v: Decimal | None,
+    temporary_overvoltage: PairVoltage | None,
+) -> PairCase:
     """Give every stress a value, so nothing is blank and no pair is excluded."""
 
     recurring = (
@@ -597,7 +611,11 @@ def _dimensionable(pair: PairCase, recurring_peak_v: Decimal | None) -> PairCase
                 long_term_rms_v=PairVoltage.applicable(Decimal(500)),
                 steady_state_peak_v=PairVoltage.applicable(Decimal(300)),
                 recurring_peak_v=recurring,
-                temporary_overvoltage_peak_v=PairVoltage.applicable(Decimal(250)),
+                temporary_overvoltage_peak_v=(
+                    PairVoltage.applicable(Decimal(250))
+                    if temporary_overvoltage is None
+                    else temporary_overvoltage
+                ),
             )
         }
     )

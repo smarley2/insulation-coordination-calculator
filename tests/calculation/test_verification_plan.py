@@ -35,7 +35,7 @@ from insulation_coordination.domain.enums import (
     InsulationType,
     ReviewState,
 )
-from insulation_coordination.domain.project import PairCase, Project
+from insulation_coordination.domain.project import PairCase, PairVoltage, Project
 from insulation_coordination.domain.rules import RulePackage
 from insulation_coordination.domain.supply import (
     ImpulseOverrideBasis,
@@ -80,6 +80,9 @@ from tests.fixtures.verification_topologies import (
 RECORDED_AT = datetime(2026, 5, 6, 7, 8, 9, tzinfo=UTC)
 BASIC = ProtectionImplementation.BASIC_INSULATION
 REINFORCED = ProtectionImplementation.REINFORCED_INSULATION
+#: A reviewed answer that this pair carries no temporary overvoltage, which is the one state
+#: of the three that sends a non-mains pair to the no-overvoltage table.
+NO_OVERVOLTAGE = PairVoltage.not_applicable("Reviewed for this fixture: none is present.")
 #: The fixture band ``SYSTEM_VOLTAGE_V`` falls into, which is what a route refusing
 #: interpolation reads instead of a value between two rows.
 UPPER_BAND_INDEX = 2
@@ -600,10 +603,14 @@ def test_a_mains_circuit_is_read_from_the_mains_table_on_its_system_voltage(
     )
 
 
-def test_a_circuit_behind_a_barrier_is_not_a_mains_circuit(
-    project: Project, package: RulePackage
-) -> None:
+def test_a_circuit_behind_a_barrier_is_not_a_mains_circuit(package: RulePackage) -> None:
     """The barrier is exactly what makes the non-mains table the one that applies."""
+    project = with_protection(
+        verification_topology(
+            supply_configurations=(mains_configuration(),), temporary_overvoltage=NO_OVERVOLTAGE
+        ),
+        BASIC,
+    )
     pair = pair_between(project, LIVE_C, ENCLOSURE)
     plan = build(project, package)
     application = one(
@@ -622,12 +629,73 @@ def test_a_pair_reaching_a_mains_circuit_at_all_is_a_mains_case(
     assert assessment_for(build(project, package), pair).mains_connected
 
 
+def test_a_non_mains_pair_carrying_a_temporary_overvoltage_does_not_read_the_table(
+    package: RulePackage,
+) -> None:
+    """The no-overvoltage table is not the route for a circuit that has an overvoltage.
+
+    The package projects one non-mains dielectric route and it is the table's. Nothing in it
+    derives a test voltage from a temporary overvoltage, so the pair gets an unresolved input
+    naming what is missing - never the table's lower answer read anyway.
+    """
+    project = with_protection(
+        verification_topology(
+            supply_configurations=(mains_configuration(),),
+            recurring_peak_v=Decimal(15),
+            temporary_overvoltage=PairVoltage.applicable(Decimal(250)),
+        ),
+        BASIC,
+    )
+    pair = pair_between(project, LIVE_C, TOUCHABLE)
+    application = one(
+        build(project, package),
+        pair,
+        TestKind.AC_DIELECTRIC,
+        classifications=(TestClassification.ROUTINE,),
+    )
+    assert application.voltage is None
+    assert application.applicability is TestApplicability.ENGINEERING_INPUT_REQUIRED
+    assert any(
+        "temporary overvoltage" in item and ids.TEST_NON_MAINS_DIELECTRIC_VALUES in item
+        for item in application.unresolved_inputs
+    )
+
+
+def test_a_non_mains_pair_whose_overvoltage_state_is_unknown_does_not_fall_through(
+    package: RulePackage,
+) -> None:
+    """A blank entry is a question nobody answered, and it is not a "no"."""
+    project = with_protection(
+        verification_topology(
+            supply_configurations=(mains_configuration(),),
+            recurring_peak_v=Decimal(15),
+            temporary_overvoltage=PairVoltage.blank(),
+        ),
+        BASIC,
+    )
+    pair = pair_between(project, LIVE_C, TOUCHABLE)
+    application = one(
+        build(project, package),
+        pair,
+        TestKind.AC_DIELECTRIC,
+        classifications=(TestClassification.ROUTINE,),
+    )
+    assert application.voltage is None
+    assert application.applicability is TestApplicability.ENGINEERING_INPUT_REQUIRED
+    assert any(
+        "whether a temporary overvoltage is present" in item
+        for item in application.unresolved_inputs
+    )
+
+
 def test_a_non_mains_circuit_is_keyed_on_its_recurring_peak_working_voltage(
     package: RulePackage,
 ) -> None:
     project = with_protection(
         verification_topology(
-            supply_configurations=(mains_configuration(),), recurring_peak_v=Decimal(15)
+            supply_configurations=(mains_configuration(),),
+            recurring_peak_v=Decimal(15),
+            temporary_overvoltage=NO_OVERVOLTAGE,
         ),
         BASIC,
     )
@@ -649,7 +717,9 @@ def test_an_approved_evidence_entry_above_the_pair_entry_is_what_keys_the_row(
 ) -> None:
     project = with_protection(
         verification_topology(
-            supply_configurations=(mains_configuration(),), recurring_peak_v=Decimal(15)
+            supply_configurations=(mains_configuration(),),
+            recurring_peak_v=Decimal(15),
+            temporary_overvoltage=NO_OVERVOLTAGE,
         ),
         BASIC,
     )
@@ -672,7 +742,9 @@ def test_a_non_mains_circuit_with_no_working_voltage_at_all_asks_for_one(
 ) -> None:
     project = with_protection(
         verification_topology(
-            supply_configurations=(mains_configuration(),), recurring_peak_v=None
+            supply_configurations=(mains_configuration(),),
+            recurring_peak_v=None,
+            temporary_overvoltage=NO_OVERVOLTAGE,
         ),
         BASIC,
     )
@@ -783,7 +855,7 @@ def test_a_banded_route_reads_the_band_rather_than_interpolating_into_it(
 
 def test_a_route_stating_more_than_one_column_is_refused_rather_than_guessed_at() -> None:
     """The package labels a column by the source column it came from and nothing more."""
-    project = with_protection(verification_topology(), BASIC)
+    project = with_protection(verification_topology(temporary_overvoltage=NO_OVERVOLTAGE), BASIC)
     plan = VerificationPlanService().build(
         project, _identified(with_protection_matrix(synthetic_verification_rule_package())), None
     )

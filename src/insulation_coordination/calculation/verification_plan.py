@@ -126,6 +126,7 @@ from insulation_coordination.domain.verification import (
     build_test_id,
 )
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_formula
+from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 
 _VOLTAGE_UNIT: Final = "V"
 
@@ -460,7 +461,14 @@ def _plan_pair(
     )
     recurring_peak = _recurring_peak(project, pair, effective)
     dielectric = _dielectric_applications(
-        pair, subject, rules, revision, enhanced, mains, recurring_peak
+        pair,
+        subject,
+        rules,
+        revision,
+        enhanced,
+        mains,
+        recurring_peak,
+        _overvoltage_present(effective, resolution),
     )
     discharge = assess_partial_discharge(
         pair, effective, rules.partial_discharge, recurring_peak_v=recurring_peak
@@ -801,13 +809,20 @@ def _dielectric_applications(
     enhanced: bool,
     mains: Sequence[DerivedSupplyScenario],
     recurring_peak_v: Decimal | None,
+    overvoltage_present: bool | None,
 ) -> tuple[TestApplication, ...]:
     """The routine and type dielectric applications, in both voltage forms the package states.
 
     A mains-connected circuit is looked up in the mains table on the system voltage its supply
-    resolved to; every other circuit is looked up in the non-mains table on its recurring-peak
-    working voltage. A circuit reached by more than one supply is mains-connected if any of
-    them is, and the most severe of their system voltages is what keys the row.
+    resolved to. A circuit reached by more than one supply is mains-connected if any of them
+    is, and the most severe of their system voltages is what keys the row.
+
+    A non-mains circuit has two routes, not one, and which of them applies is decided by
+    whether a temporary overvoltage is present on it. The package's non-mains table is the
+    route for a circuit that has none, keyed on its recurring-peak working voltage; a circuit
+    that has one takes its test voltage from that overvoltage instead, and reading the table
+    for it would plan the test under what is required. A circuit nobody has answered the
+    question for reads neither.
 
     The routine test and the basic-protection type test share one route because the package's
     own route says it covers both. The enhanced-protection type test is read from its own
@@ -816,7 +831,7 @@ def _dielectric_applications(
     """
 
     tables = rules.mains_dielectric_values if mains else rules.non_mains_dielectric_values
-    row, row_reason, row_unresolved = _row_value(pair, mains, recurring_peak_v)
+    row, row_reason, row_unresolved = _row_value(pair, mains, recurring_peak_v, overvoltage_present)
     routes: tuple[tuple[TestClassification, VoltageTablePair], ...] = (
         (TestClassification.ROUTINE, tables.routine_and_basic_type),
         (
@@ -881,22 +896,76 @@ def _recurring_peak(project: Project, pair: PairCase, effective: EffectiveCase) 
     return governing.effective_value_v
 
 
+def _overvoltage_present(
+    effective: EffectiveCase,
+    resolution: EffectivePairStressResolution | None,
+) -> bool | None:
+    """Whether a temporary overvoltage is present on this pair. ``None`` means nobody said.
+
+    Three states, not two, because the non-mains dielectric route turns on exactly this
+    question and "nothing is recorded" is not an answer of "no". The pair's own entry is asked
+    first and an exclusion recorded on it stands over a derived value, which is the precedence
+    the stress resolution already applies - the disagreement is surfaced there rather than
+    being settled twice, differently, in two places.
+    """
+
+    entry = effective.voltages.temporary_overvoltage_peak_v
+    if entry.applicability is Applicability.NOT_APPLICABLE:
+        return False
+    if entry.applicability is Applicability.APPLICABLE:
+        return True
+    if resolution is not None and resolution.temporary_overvoltage.applies:
+        return True
+    return None
+
+
+def _non_mains_route_gap(pair: PairCase, overvoltage_present: bool | None) -> str:
+    """Why a non-mains pair that is not on the no-overvoltage route gets no voltage here."""
+
+    if overvoltage_present is None:
+        return (
+            f"Nothing establishes whether a temporary overvoltage is present on pair "
+            f"{pair.key}, and the two non-mains routes differ by exactly that. Record whether "
+            "the nature of its supply produces one; a circuit nobody has answered for is not "
+            "read as a circuit that has none."
+        )
+    return (
+        f"Pair {pair.key} is a non-mains circuit carrying a temporary overvoltage, so its "
+        "test voltage is derived from that overvoltage and not read from a table row. The "
+        f"active package's {ids.TEST_NON_MAINS_DIELECTRIC_VALUES} projects only the route for "
+        "a circuit that has none, and nothing in it states the derivation or the factor the "
+        "enhanced-protection and accessible-surface tests apply to it."
+    )
+
+
 def _row_value(
     pair: PairCase,
     mains: Sequence[DerivedSupplyScenario],
     recurring_peak_v: Decimal | None,
+    overvoltage_present: bool | None,
 ) -> tuple[Decimal | None, str, tuple[str, ...]]:
     """The voltage that keys the dielectric table's row axis, and where it came from.
 
     For a mains circuit that is the system voltage of the supply, which the derivation already
-    resolved to the measure the package named for that arrangement. For every other circuit it
-    is the recurring-peak working voltage.
+    resolved to the measure the package named for that arrangement.
+
+    A non-mains circuit is keyed on its recurring-peak working voltage only where no temporary
+    overvoltage is present on it, because that is the condition the package's non-mains route
+    is stated for. The other two states return no row at all: one is a circuit whose test
+    voltage comes from somewhere this package does not project, and the other is a circuit
+    nobody has answered the question for. Neither is a reason to read the route anyway.
     """
 
     if mains:
         highest = max(scenario.system_voltage_for_impulse_v for scenario in mains)
         names = ", ".join(sorted({scenario.configuration_name for scenario in mains}))
         return highest, f"system voltage {highest} V from {names}", ()
+    if overvoltage_present is not False:
+        return (
+            None,
+            "no non-mains route resolved",
+            (_non_mains_route_gap(pair, overvoltage_present),),
+        )
     if recurring_peak_v is None:
         return (
             None,
