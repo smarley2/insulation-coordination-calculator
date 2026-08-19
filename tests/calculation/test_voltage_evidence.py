@@ -46,6 +46,7 @@ from insulation_coordination.domain.verification import (
 )
 from tests.fixtures.supply_topologies import COVER, ENCLOSURE, circuit_id, supply_topology
 from tests.fixtures.synthetic_rules import synthetic_verification_rule_package
+from tests.fixtures.verification_topologies import with_protection_matrix
 
 RECORDED_AT = datetime(2026, 3, 4, 5, 6, 7, tzinfo=UTC)
 AC = VoltageQuantityKind.AC_RMS
@@ -59,7 +60,7 @@ MEASUREMENT = VoltageEvidenceMethod.MEASUREMENT
 
 @pytest.fixture
 def rules() -> VerificationRuleSet:
-    return read_verification_rules(synthetic_verification_rule_package())
+    return read_verification_rules(with_protection_matrix(synthetic_verification_rule_package()))
 
 
 @pytest.fixture

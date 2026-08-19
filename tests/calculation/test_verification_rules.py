@@ -14,6 +14,7 @@ from insulation_coordination.calculation.verification_rules import (
     PRECONDITIONING_APPLICABILITY_ROUTE,
     PRECONDITIONING_ELECTRICAL_ROUTE,
     PRECONDITIONING_MATERIAL_ROUTE,
+    PROTECTION_REQUIREMENT_OUTPUT,
     READ_SEMANTIC_IDS,
     RULES_READ_ELSEWHERE,
     VOLTAGE_FORMS,
@@ -23,6 +24,7 @@ from insulation_coordination.calculation.verification_rules import (
     read_verification_rules,
     verification_rule_blocks,
 )
+from insulation_coordination.domain.dvc import DVC_INPUT, PROTECTION_TARGET_DIMENSIONS
 from insulation_coordination.domain.rules import (
     DecisionInput,
     DecisionRule,
@@ -35,11 +37,12 @@ from insulation_coordination.domain.verification import TestClassification
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.iec62477_2022.inventory import EDITION
 from tests.fixtures.synthetic_rules import synthetic_verification_rule_package
+from tests.fixtures.verification_topologies import with_protection_matrix
 
 
 @pytest.fixture
 def verification_package() -> RulePackage:
-    return synthetic_verification_rule_package()
+    return with_protection_matrix(synthetic_verification_rule_package())
 
 
 def _blocks(
@@ -214,7 +217,7 @@ def test_an_untrusted_package_is_refused_whole(
 
 
 def test_a_wrong_edition_package_carries_the_right_identifiers_and_still_blocks() -> None:
-    wrong = synthetic_verification_rule_package(edition=f"{EDITION}-draft")
+    wrong = with_protection_matrix(synthetic_verification_rule_package(edition=f"{EDITION}-draft"))
 
     codes = {code for code, _rule_id in _blocks(wrong)}
     blocked_ids = {rule_id for _code, rule_id in _blocks(wrong)}
@@ -296,6 +299,37 @@ def test_a_decision_declaring_one_extra_input_is_refused_on_equality(
         VerificationRuleBlockCode.UNEXPECTED_SHAPE,
         ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION,
     ) in _blocks(_replace(verification_package, "decisions", widened))
+
+
+def test_the_protection_matrix_is_resolved_by_the_dimensions_the_guidance_service_reads_it_by(
+    verification_package: RulePackage,
+) -> None:
+    """One reading of Table 3, so a plan's requirement and a guidance page cannot disagree."""
+    rule = _decision(verification_package, ids.DVC_PROTECTION_MATRIX)
+
+    assert {item.name for item in rule.inputs} == {DVC_INPUT, *PROTECTION_TARGET_DIMENSIONS}
+    assert PROTECTION_REQUIREMENT_OUTPUT in {item.name for item in rule.outputs}
+
+
+def test_a_protection_matrix_shaped_for_another_question_is_refused(
+    verification_package: RulePackage,
+) -> None:
+    """A plan asks this rule what protection is required, so presence is no longer enough."""
+    rule = _decision(verification_package, ids.DVC_PROTECTION_MATRIX)
+    renamed = rule.model_copy(
+        update={
+            "inputs": tuple(
+                item.model_copy(update={"name": "synthetic_other_dimension"})
+                if item.name == "person_scope"
+                else item
+                for item in rule.inputs
+            )
+        }
+    )
+
+    assert (VerificationRuleBlockCode.UNEXPECTED_SHAPE, ids.DVC_PROTECTION_MATRIX) in _blocks(
+        _replace(verification_package, "decisions", renamed)
+    )
 
 
 def test_a_decision_missing_an_output_this_application_reads_is_refused(
