@@ -35,11 +35,16 @@ RULE_SCHEMA_VERSION = 4
 #: two clause fragments the older importer never extracted are what their rules rest on, and a
 #: bullet region holding a list's tail now extracts where it used to fail the shape check. None
 #: of that can be upgraded into an existing draft: it has to be re-extracted and re-reviewed.
-#: ``iec-pdf-11`` is issue #37's alternative impulse verification. The required inventory gains
-#: the impulse-alternative identifier, so a package built before it is incomplete rather than
-#: merely older, and the four clause regions its two routes rest on are regions the older
-#: importer never extracted. Neither can be upgraded into an existing draft.
-IEC_IMPORTER_VERSION = "iec-pdf-11"
+#: ``iec-pdf-12`` is issue #37's body of the AC or DC voltage test. The required inventory gains
+#: four identifiers -- the disconnection obligations, the electrode and column selection, the
+#: application duration and the acceptance criterion -- so a package built before it is
+#: incomplete rather than merely older, and the nine clause regions they rest on are regions the
+#: older importer never extracted. Table 27's data columns are renamed at the same time: they
+#: named a physical position, which nothing could select on, and now name the insulation class
+#: the source heads them with. A column's semantic ID reaches the projected table's column axis
+#: labels, which are hashed into the package identity, so the rename is not upgradable into an
+#: existing draft either.
+IEC_IMPORTER_VERSION = "iec-pdf-12"
 MAX_IDENTIFIER_LENGTH = 160
 MAX_REFERENCE_TEXT_LENGTH = 500
 MAX_NOTES_LENGTH = 2_000

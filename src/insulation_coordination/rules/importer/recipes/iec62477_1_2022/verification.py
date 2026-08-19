@@ -315,6 +315,14 @@ _TABLE_27_COLUMN_PAIRS: tuple[tuple[str, tuple[int, int], Literal["none", "linea
     ("non_mains_circuits", (2, 3), "linear"),
     ("mains_circuits", (4, 5), "none"),
 )
+#: What the two columns of a pair select on, in source column order. The overvoltage category
+#: names the *pair*, not a column inside it: within each pair the source heads the first column
+#: with one insulation class and the second with the other, and Table 26 states the same mapping
+#: from the other side, its insulation-class row against its test-voltage row. So the within-pair
+#: axis is the insulation class, and these are the labels a consumer selects a column by. They
+#: replace the positional labels the columns used to carry, which named a physical index and so
+#: could be selected by nothing (issue #37, conformance review of 2026-08-18, section C).
+_TABLE_27_COLUMN_CLASSES: tuple[str, ...] = ("basic_or_supplementary", "double_or_reinforced")
 
 
 def _table_27_specs() -> tuple[TableAuditSpec, ...]:
@@ -338,13 +346,15 @@ def _table_27_specs() -> tuple[TableAuditSpec, ...]:
                 ),
                 *(
                     TableColumnSpec(
-                        semantic_id=f"selected_test_voltage_col{source_column}_v",
-                        heading=f"selected test voltage, source column {source_column}",
+                        semantic_id=f"test_voltage_{insulation_class}_v",
+                        heading=f"test voltage, {insulation_class}, column {source_column}",
                         source_column=source_column,
                         role="data",
                         unit="V",
                     )
-                    for source_column in pair_columns
+                    for insulation_class, source_column in zip(
+                        _TABLE_27_COLUMN_CLASSES, pair_columns, strict=True
+                    )
                 ),
             )
             specs.append(
@@ -402,7 +412,10 @@ TABLE_27_SPECS: tuple[TableAuditSpec, ...] = _table_27_specs()
 # group's wording. Splitting by purpose and by supply kind keeps four quantities in four
 # rules instead of one grid that mixes them.
 _DIELECTRIC_CLAUSE = "5.2.3.4.2"
-_DIELECTRIC_PURPOSES: tuple[tuple[str, int, int], ...] = (
+#: Public, because ``procedures.py`` builds the column-selection decision over exactly these
+#: route names: the rule that says which column an application reads has to name the columns
+#: the value tables were extracted as, and a second spelling of them would let the two drift.
+DIELECTRIC_PURPOSES: tuple[tuple[str, int, int], ...] = (
     ("routine_and_basic_type", 1, 2),
     ("enhanced_type", 3, 4),
 )
@@ -455,7 +468,7 @@ def _dielectric_specs(
     """One spec per test purpose per supply kind, all reading the same row axis."""
 
     specs: list[TableAuditSpec] = []
-    for purpose, ac_column, dc_column in _DIELECTRIC_PURPOSES:
+    for purpose, ac_column, dc_column in DIELECTRIC_PURPOSES:
         for supply, source_column in (("ac", ac_column), ("dc", dc_column)):
             source_columns = (0, source_column)
             specs.append(
@@ -841,6 +854,7 @@ GRID_PROJECTORS = {
 
 __all__ = [
     "CONTINUATION_ROWS",
+    "DIELECTRIC_PURPOSES",
     "DIELECTRIC_SPECS",
     "FIELD_ROWS",
     "GRID_PROJECTORS",

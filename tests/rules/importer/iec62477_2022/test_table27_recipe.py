@@ -179,3 +179,31 @@ def test_both_routes_project_a_complete_rectangle() -> None:
         assert (data_columns, spec.expected_data_columns) == (2, 3)
         assert len(table.cells) == spec.expected_data_rows * data_columns
         assert list(table.row_axis.values) == sorted(table.row_axis.values)
+
+
+def test_the_data_columns_are_labelled_by_insulation_class_not_by_position() -> None:
+    """The within-pair axis is the insulation class, and a label has to be selectable by it.
+
+    A conformance review (issue #37, 2026-08-18, section C) established the grouping from the
+    source's own column structure: each pair is headed by a supply kind and an overvoltage
+    category, and inside a pair the first column is one insulation class and the second the
+    other. The labels used to name a physical column index, which no consumer could select on,
+    so the table was resolvable and read by nobody.
+    """
+    for spec in TABLE_27_SPECS:
+        data = tuple(column for column in spec.columns if column.role == "data")
+        assert tuple(column.semantic_id for column in data) == (
+            "test_voltage_basic_or_supplementary_v",
+            "test_voltage_double_or_reinforced_v",
+        )
+        # The weaker class is the lower-numbered source column in both pairs.
+        assert data[0].source_column < data[1].source_column
+
+
+def test_the_column_labels_a_consumer_selects_on_reach_the_projected_axis() -> None:
+    """Which is also why renaming them changes package identity and needs a version bump."""
+    for spec in TABLE_27_SPECS:
+        table = project_table(IDENTITY, spec, _synthetic_grid(spec))
+        assert table.column_axis.labels == tuple(
+            column.semantic_id for column in spec.columns if column.role == "data"
+        )
