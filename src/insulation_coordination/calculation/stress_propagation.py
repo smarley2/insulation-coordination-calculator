@@ -45,7 +45,10 @@ from itertools import combinations
 from typing import Final
 from uuid import UUID
 
-from insulation_coordination.calculation.clearance import apply_reinforced_stress_treatment
+from insulation_coordination.calculation.clearance import (
+    apply_reinforced_stress_treatment,
+    reinforced_stress_floor,
+)
 from insulation_coordination.calculation.impulse_override import (
     OverrideOutcome,
     PairImpulseOverride,
@@ -71,6 +74,7 @@ from insulation_coordination.domain.rules import DecisionValue
 from insulation_coordination.domain.supply import (
     MAINS_SUPPLY_KINDS,
     DerivedSupplyScenario,
+    ImpulseOverrideBasis,
     OvervoltageCategory,
     PairRelationship,
     SupplyKind,
@@ -85,6 +89,7 @@ from insulation_coordination.domain.topology import (
 from insulation_coordination.domain.trace import CalculationWarning, Quantity, TraceStep
 from insulation_coordination.project.resolver import resolve_effective_case
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_decision
+from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 
 _VOLTAGE_UNIT: Final = "V"
 
@@ -94,6 +99,10 @@ _VOLTAGE_UNIT: Final = "V"
 #: it did not make.
 PROPAGATION_TRACE_ID: Final = "supply.domain_propagation"
 PAIR_TRACE_ID: Final = "supply.pair_stress"
+#: The comparison of two figures this resolution already holds. Not a semantic rule id for the
+#: same reason as the two above: the package states the floor's clause in reviewed text and
+#: projects it into no row, so there is no decision to credit with the answer.
+REINFORCED_FLOOR_TRACE_ID: Final = "supply.reinforced_reduction_floor"
 
 #: Warning codes a caller can group on without matching a message.
 UNATTACHED_SCENARIO_WARNING: Final = "supply_scenario_reaches_no_domain"
@@ -103,6 +112,8 @@ CONNECTION_UNSTATED_WARNING: Final = "supply_connection_unstated"
 REDUNDANT_BARRIER_WARNING: Final = "supply_barrier_bypassed"
 TOV_ENTRY_CONTRADICTS_WARNING: Final = "supply_pair_tov_entry_contradicts_derivation"
 TREATMENT_UNAVAILABLE_WARNING: Final = "supply_insulation_treatment_unavailable"
+REINFORCED_FLOOR_WARNING: Final = "supply_reinforced_reduction_floor_applied"
+REINFORCED_FLOOR_UNRESOLVED_WARNING: Final = "supply_reinforced_reduction_floor_unresolved"
 
 #: This application's overvoltage categories in the package's own words, and back again.
 _RULE_CATEGORIES: Final[Mapping[OvervoltageCategory, str]] = {
@@ -257,6 +268,11 @@ class EffectivePairStressResolution(FrozenModel):
     governing_pre_override_impulse_v: DecimalValue | None = None
     #: What governs after one. Equal to the pre-override value when no override applied. This
     #: is the value the clearance engine is handed, and it is deliberately untreated.
+    #:
+    #: One thing holds it up: where a reducing means lowers a double or reinforced pair far
+    #: enough that its treated figure would sit under the floor 4.4.7.2.3 and 4.4.7.2.4 both
+    #: state, this is the deepest reduction whose treated figure still reaches that floor. See
+    #: :func:`_floored_reduction`, and the warning it carries.
     verified_effective_impulse_v: DecimalValue | None = None
     #: The same value once the pair's insulation class has been treated. Reported, never
     #: consumed: the engine applies that treatment itself, to the untreated value above, so
@@ -831,6 +847,13 @@ def resolve_pair_stresses(
     effective = (
         outcome.effective_impulse_v if outcome is not None and outcome.applied else governing
     )
+    effective, floor_step, floor_warning = _floored_reduction(
+        governing, effective, outcome, insulation, reinforced
+    )
+    if floor_step is not None:
+        steps.append(floor_step)
+    if floor_warning is not None:
+        warnings.append(floor_warning)
     treated, treatment_step, treatment_warning = _insulation_treated(
         effective, insulation, reinforced
     )
@@ -965,6 +988,101 @@ def _apply_override(
         insulation_type=insulation,
         mains_supplied=_is_mains_supplied(stresses),
     )
+
+
+def _floored_reduction(
+    unreduced: Decimal | None,
+    effective: Decimal | None,
+    outcome: OverrideOutcome | None,
+    insulation: InsulationType | None,
+    reinforced: ReinforcedRuleSet | None,
+) -> tuple[Decimal | None, TraceStep | None, CalculationWarning | None]:
+    """The effective impulse a reduced double or reinforced pair may be dimensioned from.
+
+    Both subclauses that let a means of reducing the overvoltage lower an impulse requirement
+    close with the same refusal: the requirement for a double or reinforced construction is not
+    reduced below what basic insulation would need with that means absent. Basic insulation
+    takes the impulse withstand voltage untreated, so the figure the refusal names is the
+    pre-override one this resolution already holds - no second lookup states it, and none is
+    made.
+
+    *The floor is applied here rather than to the treated figure* because the treated figure is
+    reported and the untreated one is dimensioned from. The clearance engine is handed the
+    value below and applies the treatment itself, so a floor expressed only on what this module
+    reports would leave the delivered spacing under it. What goes back is the deepest reduction
+    whose treatment still reaches the floor, read through the same seam the forward treatment
+    goes through, so the reported figure and the dimensioned one stay one figure.
+
+    Nothing else is floored. The permission the refusal belongs to is the one a limiting device
+    carries, and the other bases a reduction can rest on are separate permissions with separate
+    clauses; and the refusal is about a stronger construction, so a functional, basic or
+    supplementary pair keeps its reduction whole.
+    """
+
+    if (
+        effective is None
+        or unreduced is None
+        or insulation is not InsulationType.REINFORCED
+        or outcome is None
+        or not outcome.applied
+        or outcome.override.basis is not ImpulseOverrideBasis.SPD_OR_TRANSIENT_LIMITER
+        or effective >= unreduced
+    ):
+        return effective, None, None
+    location = outcome.override.affected_location
+    try:
+        deepest = reinforced_stress_floor(
+            unreduced,
+            kind=insulation,
+            stress_field="impulse_v",
+            reinforced=reinforced,
+        )
+    except ReinforcedTreatmentUnavailable as error:
+        return (
+            effective,
+            None,
+            CalculationWarning(
+                code=REINFORCED_FLOOR_UNRESOLVED_WARNING,
+                message=(
+                    f"This pair is a reinforced one carrying a reduction at {location!r}, and "
+                    f"4.4.7.2.3 and 4.4.7.2.4 hold its requirement at or above the {unreduced} "
+                    f"{_VOLTAGE_UNIT} basic insulation would need with that reducing means "
+                    f"absent. The active package cannot say which reduced stress carries that "
+                    f"floor: {error}. The recorded reduction stands and this pair needs review."
+                ),
+                semantic_rule_id=ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS,
+            ),
+        )
+    if effective >= deepest:
+        return effective, None, None
+    step = TraceStep(
+        semantic_rule_id=REINFORCED_FLOOR_TRACE_ID,
+        operation="reinforced_reduction_floor",
+        symbolic=r"U_{imp}=\max(U_{imp}(reduced), U_{imp}(floor))",
+        substituted=f"{effective} {_VOLTAGE_UNIT} -> {deepest} {_VOLTAGE_UNIT}",
+        inputs=(Quantity(value=effective, unit=_VOLTAGE_UNIT),),
+        source_reference=None,
+        output=Quantity(value=deepest, unit=_VOLTAGE_UNIT),
+        unrounded_value=deepest,
+        reason=(
+            "a reduction may not take a double or reinforced requirement below what basic "
+            "insulation would need with the reducing means absent"
+        ),
+    )
+    warning = CalculationWarning(
+        code=REINFORCED_FLOOR_WARNING,
+        message=(
+            f"The reduction recorded at {location!r} takes this reinforced pair to {effective} "
+            f"{_VOLTAGE_UNIT}, and the treated figure that follows sits below the {unreduced} "
+            f"{_VOLTAGE_UNIT} basic insulation would need with that reducing means absent. "
+            f"4.4.7.2.3 and 4.4.7.2.4 both refuse that, so this pair is dimensioned from "
+            f"{deepest} {_VOLTAGE_UNIT} - the deepest reduction whose treated figure still "
+            f"reaches {unreduced} {_VOLTAGE_UNIT}. The reduction those subclauses permit is one "
+            "overvoltage-category step, and it is offered to basic and supplementary insulation."
+        ),
+        semantic_rule_id=ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS,
+    )
+    return deepest, step, warning
 
 
 def _insulation_treated(

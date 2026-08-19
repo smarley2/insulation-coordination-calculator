@@ -21,10 +21,16 @@ from uuid import UUID
 
 import pytest
 
-from insulation_coordination.calculation.clearance import apply_reinforced_stress_treatment
+from insulation_coordination.calculation.clearance import (
+    DistanceCandidate,
+    apply_reinforced_stress_treatment,
+    reinforced_stress_floor,
+)
 from insulation_coordination.calculation.engine import (
     ENTRY_EXCEEDS_DERIVED_WARNING,
     SUPERSEDED_ENTRY_WARNING,
+    PairResult,
+    SupplyDerivation,
     _with_supply_stresses,
     calculate_pair,
     calculate_project_pair,
@@ -33,6 +39,8 @@ from insulation_coordination.calculation.engine import (
 )
 from insulation_coordination.calculation.reinforced_rules import ReinforcedTreatmentUnavailable
 from insulation_coordination.calculation.stress_propagation import (
+    REINFORCED_FLOOR_UNRESOLVED_WARNING,
+    REINFORCED_FLOOR_WARNING,
     TREATMENT_UNAVAILABLE_WARNING,
     TemporaryOvervoltageSource,
 )
@@ -60,6 +68,7 @@ from insulation_coordination.domain.supply import (
     OvervoltageCategory,
     PhaseSystem,
     ReductionVerificationMethod,
+    SpdDevicePlacement,
     SupplyConfiguration,
     SupplyKind,
     VerifiedImpulseOverride,
@@ -75,6 +84,7 @@ from tests.fixtures.supply_topologies import (
     supply_topology,
 )
 from tests.fixtures.synthetic_rules import (
+    SYNTHETIC_REINFORCED_FACTOR,
     SYNTHETIC_REQUIREMENT_LEVELS_V,
     merged_rule_package,
     synthetic_supply_rule_package,
@@ -788,3 +798,216 @@ def test_the_same_project_derives_the_same_result_twice(
     )
 
     assert first == second
+
+
+# --- the floor a reduced double or reinforced requirement may not cross ---------------------
+
+
+def _with_device_reduction(
+    project: Project, pair: PairCase, value_v: Decimal
+) -> tuple[Project, PairCase]:
+    """``pair`` carrying a reduction claimed on a limiting device, which is the floor's basis.
+
+    The device details are what the model requires beside that basis, and a limiter that does
+    not degrade is the case the synthetic monitoring route answers without refusing.
+    """
+    reduced = pair.model_copy(
+        update={
+            "impulse_override": VerifiedImpulseOverride(
+                value_v=value_v,
+                basis=ImpulseOverrideBasis.SPD_OR_TRANSIENT_LIMITER,
+                verification_method=ReductionVerificationMethod.TEST,
+                justification="Synthetic limiter for this test module.",
+                evidence_reference="SYN-SPD-1",
+                affected_location="Primary circuit to enclosure",
+                spd_device_placement=SpdDevicePlacement.INTERNAL_TO_EQUIPMENT,
+                spd_device_degradable=False,
+            )
+        }
+    )
+    updated = project.model_copy(
+        update={"pairs": tuple(reduced if item.id == pair.id else item for item in project.pairs)}
+    )
+    return updated, reduced
+
+
+def _deepest_the_floor_allows(supply: SupplyDerivation, unreduced: Decimal) -> Decimal:
+    return reinforced_stress_floor(
+        unreduced,
+        kind=InsulationType.REINFORCED,
+        stress_field="impulse_v",
+        reinforced=supply.reinforced,
+    )
+
+
+def _impulse_candidate(result: PairResult) -> DistanceCandidate:
+    return next(
+        item for item in result.trace.clearance_candidates if item.candidate_id == "impulse"
+    )
+
+
+def _stepped(rules: RulePackage, tmp_path: Path, governing: Decimal) -> RulePackage:
+    """The merged fixture with a stepping impulse treatment and every impulse cell at one level."""
+    return _merged(
+        with_stepped_reinforced_impulse(rules),
+        tmp_path,
+        name="floor",
+        supply=_supply_with_impulse_cells(governing),
+    )
+
+
+def test_a_reduction_below_the_floor_is_held_at_the_deepest_one_the_floor_allows(
+    semantic_annex_g_rules: RulePackage, tmp_path: Path
+) -> None:
+    """The multiplying branch, where any reduction past the reciprocal of the factor breaches.
+
+    The treated figure is what a double or reinforced construction is designed for, and
+    4.4.7.2.3 and 4.4.7.2.4 both refuse to let a reducing means take it below what basic
+    insulation would need with that means absent - the pre-override figure. So the reduction is
+    held at the deepest one whose treated figure still reaches that.
+
+    The impulse cells are moved to a level the invented factor divides exactly, so the figures
+    asserted here are the arithmetic rather than the last place of a Decimal quotient.
+    """
+    rules = _merged(
+        semantic_annex_g_rules,
+        tmp_path,
+        name="divisible",
+        supply=_supply_with_impulse_cells(
+            SYNTHETIC_REINFORCED_FACTOR * SYNTHETIC_REQUIREMENT_LEVELS_V[0]
+        ),
+    )
+    project = _project(_configuration(), insulation=InsulationType.REINFORCED)
+    supply = derive_project_supply(project, rules)
+    assert supply is not None
+    unreduced = supply.governing.impulse_v
+    assert unreduced is not None
+    deepest = _deepest_the_floor_allows(supply, unreduced)
+    assert deepest < unreduced
+    project, pair = _with_device_reduction(
+        project, _circuit_to_surroundings(project), deepest - Decimal(1)
+    )
+
+    effective, resolution = resolve_supply_effective_case(project, pair, supply)
+
+    assert resolution is not None
+    assert resolution.override_outcome is not None and resolution.override_outcome.applied
+    assert resolution.verified_effective_impulse_v == deepest
+    assert resolution.insulation_treated_impulse_v == unreduced
+    assert effective.impulse_v.value == deepest
+    floor = [item for item in resolution.warnings if item.code == REINFORCED_FLOOR_WARNING]
+    assert len(floor) == 1
+    assert floor[0].semantic_rule_id == ids.SUPPLY_SPD_REDUCTION_REQUIREMENTS
+    assert "4.4.7.2.3" in floor[0].message and "4.4.7.2.4" in floor[0].message
+    assert str(unreduced) in floor[0].message and str(deepest) in floor[0].message
+    steps = [
+        item for item in resolution.trace_steps if item.operation == "reinforced_reduction_floor"
+    ]
+    assert len(steps) == 1
+    assert steps[0].output is not None and steps[0].output.value == deepest
+
+
+def test_a_reduction_the_floor_allows_is_dimensioned_from_exactly_what_was_recorded(
+    supply_and_clearance_rules: RulePackage,
+) -> None:
+    """The floor is a floor, not a ceiling: a reduction at it keeps every volt it claims."""
+    project = _project(_configuration(), insulation=InsulationType.REINFORCED)
+    supply = derive_project_supply(project, supply_and_clearance_rules)
+    assert supply is not None
+    unreduced = supply.governing.impulse_v
+    assert unreduced is not None
+    deepest = _deepest_the_floor_allows(supply, unreduced)
+    project, pair = _with_device_reduction(project, _circuit_to_surroundings(project), deepest)
+
+    _effective, resolution = resolve_supply_effective_case(project, pair, supply)
+
+    assert resolution is not None
+    assert resolution.verified_effective_impulse_v == deepest
+    assert REINFORCED_FLOOR_WARNING not in {item.code for item in resolution.warnings}
+
+
+def test_a_basic_pair_keeps_the_whole_reduction_the_floor_would_have_held(
+    supply_and_clearance_rules: RulePackage,
+) -> None:
+    """The refusal is about a double or reinforced construction, and about nothing else."""
+    project = _project(_configuration(), insulation=InsulationType.BASIC)
+    supply = derive_project_supply(project, supply_and_clearance_rules)
+    assert supply is not None
+    unreduced = supply.governing.impulse_v
+    assert unreduced is not None
+    deep = unreduced / Decimal(10)
+    project, pair = _with_device_reduction(project, _circuit_to_surroundings(project), deep)
+
+    _effective, resolution = resolve_supply_effective_case(project, pair, supply)
+
+    assert resolution is not None
+    assert resolution.verified_effective_impulse_v == deep
+    assert REINFORCED_FLOOR_WARNING not in {item.code for item in resolution.warnings}
+
+
+def test_the_floor_changes_the_clearance_the_engine_dimensions_not_only_the_report(
+    semantic_annex_g_rules: RulePackage, tmp_path: Path
+) -> None:
+    """The part that matters: a dimension, not a report.
+
+    The engine is handed the untreated stress and applies the treatment itself, so a floor
+    expressed only on the figure this resolution reports would leave the delivered spacing
+    under it. The reduction here is two coordinates deep, which is what the stepping branch
+    needs to breach at all, and the distance that comes out is compared against the one a
+    reduction sitting exactly on the floor produces.
+    """
+    below, on_the_floor, unreduced = SYNTHETIC_REQUIREMENT_LEVELS_V[:3]
+    rules = _stepped(semantic_annex_g_rules, tmp_path, unreduced)
+    project = _project(_configuration(), insulation=InsulationType.REINFORCED)
+    supply = derive_project_supply(project, rules)
+    assert supply is not None
+    assert supply.governing.impulse_v == unreduced
+    too_deep, deep_pair = _with_device_reduction(project, _circuit_to_surroundings(project), below)
+    at_the_floor, floor_pair = _with_device_reduction(
+        project, _circuit_to_surroundings(project), on_the_floor
+    )
+
+    held = calculate_project_pair(too_deep, deep_pair, rules, supply=supply)
+    allowed = calculate_project_pair(at_the_floor, floor_pair, rules, supply=supply)
+    untouched = calculate_project_pair(
+        project, _circuit_to_surroundings(project), rules, supply=supply
+    )
+
+    candidate = _impulse_candidate(held)
+    assert candidate.stress.value == on_the_floor, "the engine is handed the floored reduction"
+    assert candidate.treated_stress is not None
+    assert candidate.treated_stress.value == unreduced, "and steps it back up to the floor"
+    assert candidate.distance_mm == _impulse_candidate(allowed).distance_mm
+    assert candidate.distance_mm < _impulse_candidate(untouched).distance_mm, (
+        "the reduction still buys something"
+    )
+    assert REINFORCED_FLOOR_WARNING in {item.code for item in held.warnings}
+
+
+def test_a_floor_the_package_cannot_place_is_reported_beside_the_treatment_it_cannot_apply(
+    semantic_annex_g_rules: RulePackage, tmp_path: Path
+) -> None:
+    """Two refusals, two reasons. Neither swallows the other.
+
+    A pre-override figure the requirement axis does not carry has no coordinate below it, so
+    the floor cannot be placed; the reduced figure is off the same axis, so the treatment
+    cannot be applied either. Reporting only the second would leave a reinforced pair looking
+    as though the treated figure were the only thing missing.
+    """
+    off_axis = SYNTHETIC_REQUIREMENT_LEVELS_V[2] + Decimal(1)
+    rules = _stepped(semantic_annex_g_rules, tmp_path, off_axis)
+    project = _project(_configuration(), insulation=InsulationType.REINFORCED)
+    supply = derive_project_supply(project, rules)
+    assert supply is not None
+    assert supply.governing.impulse_v == off_axis
+    reduced = SYNTHETIC_REQUIREMENT_LEVELS_V[0] + Decimal(1)
+    project, pair = _with_device_reduction(project, _circuit_to_surroundings(project), reduced)
+
+    _effective, resolution = resolve_supply_effective_case(project, pair, supply)
+
+    assert resolution is not None
+    codes = {item.code for item in resolution.warnings}
+    assert REINFORCED_FLOOR_UNRESOLVED_WARNING in codes
+    assert TREATMENT_UNAVAILABLE_WARNING in codes
+    assert resolution.verified_effective_impulse_v == reduced
+    assert resolution.insulation_treated_impulse_v is None
