@@ -18,6 +18,7 @@ from insulation_coordination.calculation.verification_rules import (
     PROTECTION_REQUIREMENT_OUTPUT,
     READ_SEMANTIC_IDS,
     RULES_READ_ELSEWHERE,
+    SOLID_PARTIAL_DISCHARGE_CLASSIFICATION_ROUTE,
     VOLTAGE_FORMS,
     VerificationRuleBlockCode,
     VerificationRulesUnavailable,
@@ -178,6 +179,50 @@ def test_a_package_predating_the_current_importer_blocks_with_every_rule_named(
         read_verification_rules(older)
 
 
+def test_a_package_predating_the_partial_discharge_subclause_blocks_with_both_routes_named(
+    verification_package: RulePackage,
+) -> None:
+    """Neither route existed before the subclause was extracted, and both are named.
+
+    No importer version is compared. The adapter checks the shape, and the shape is what an
+    older importer could not produce: it carried the procedure table's test-voltage gate and
+    nothing projected from the subclause that says when the test is owed. So the package still
+    resolves everything else and blocks on exactly these two, collected rather than raised at
+    the first.
+    """
+    routes = (
+        ids.TEST_SOLID_INSULATION_PARTIAL_DISCHARGE,
+        SOLID_PARTIAL_DISCHARGE_CLASSIFICATION_ROUTE,
+    )
+    older = verification_package.model_copy(
+        update={
+            "decisions": tuple(
+                item for item in verification_package.decisions if item.id not in routes
+            )
+        }
+    )
+    blocks = verification_rule_blocks(older)
+
+    assert {
+        block.semantic_rule_id
+        for block in blocks
+        if block.code is VerificationRuleBlockCode.RULE_MISSING
+    } == set(routes)
+    assert {block.code for block in blocks} == {VerificationRuleBlockCode.RULE_MISSING}
+    with pytest.raises(VerificationRulesUnavailable):
+        read_verification_rules(older)
+
+
+def test_the_partial_discharge_subclause_resolves_both_of_its_decisions(
+    verification_package: RulePackage,
+) -> None:
+    rules = read_verification_rules(verification_package)
+    clause = rules.solid_insulation_partial_discharge
+
+    assert clause.applicability.id == ids.TEST_SOLID_INSULATION_PARTIAL_DISCHARGE
+    assert clause.classification.id == SOLID_PARTIAL_DISCHARGE_CLASSIFICATION_ROUTE
+
+
 def test_a_duration_rule_stating_no_duration_is_refused(
     verification_package: RulePackage,
 ) -> None:
@@ -282,15 +327,18 @@ def test_each_dielectric_route_labels_its_own_data_column(
                 )
 
 
-def test_the_read_identifiers_are_the_seventeen_the_issue_requires() -> None:
+def test_the_read_identifiers_are_the_eighteen_the_issue_requires() -> None:
     # Every identifier this adapter resolves is a required inventory item, and none of the
     # ones it deliberately leaves to another consumer is also claimed here. Thirteen from the
-    # issue's own list, plus the four the body of clause 5.2.3.4 was given.
+    # issue's own list, the four the body of clause 5.2.3.4 was given, and the subclause that
+    # states when a solid insulation owes the partial-discharge test. That subclause projects
+    # two decisions and both are resolved, but they share one base identifier: the
+    # classification is a route beneath it, exactly as every other route here is.
     from insulation_coordination.rules.importer.iec62477_2022.semantic_ids import (
         REQUIRED_SEMANTIC_IDS,
     )
 
-    assert len(READ_SEMANTIC_IDS) == 17
+    assert len(READ_SEMANTIC_IDS) == 18
     assert READ_SEMANTIC_IDS <= REQUIRED_SEMANTIC_IDS
     assert RULES_READ_ELSEWHERE <= REQUIRED_SEMANTIC_IDS
     assert not READ_SEMANTIC_IDS & RULES_READ_ELSEWHERE
