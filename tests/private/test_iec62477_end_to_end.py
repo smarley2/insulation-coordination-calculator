@@ -17,6 +17,12 @@ from decimal import Decimal
 
 import pytest
 
+from insulation_coordination.calculation.verification_rules import (
+    BASIC_OR_SUPPLEMENTARY_COLUMN,
+    DOUBLE_OR_REINFORCED_COLUMN,
+    read_verification_rules,
+    verification_rule_blocks,
+)
 from insulation_coordination.domain.rules import (
     DecisionRule,
     Matcher,
@@ -195,3 +201,47 @@ def test_one_representative_request_per_consumer_issue(
     )
     assert impulse_procedures
     assert all(rule.procedure_steps for rule in impulse_procedures)
+
+
+def test_the_verification_adapter_resolves_the_licensed_package(
+    licensed_package: RulePackage,
+) -> None:
+    """Issue #37's whole rule dependency, resolved against the real printing.
+
+    The synthetic package proves the adapter's refusals; this proves that the shape it refuses
+    on is the shape the licensed document actually produces. Every identifier, every route,
+    every declared input and output name, the insulation-class labels a consumer selects a
+    Table 27 column by, and the duration the AC or DC voltage test states.
+
+    Assertions stay on identifiers and on structure. No value, heading or wording is named.
+    """
+
+    assert verification_rule_blocks(licensed_package) == ()
+    rules = read_verification_rules(licensed_package)
+
+    # The four the body of clause 5.2.3.4 states around its two value tables.
+    assert rules.dielectric_disconnection.procedure_steps
+    assert rules.dielectric_application_duration.duration
+    assert rules.dielectric_topology_selection.rows
+    assert not rules.dielectric_topology_selection.exhaustive
+    assert rules.dielectric_acceptance.exhaustive
+
+    # The selection answers with a route the value tables are actually extracted as.
+    routes = {
+        value.categorical
+        for row in rules.dielectric_topology_selection.rows
+        for value in row.values
+        if value.name == "dielectric_column"
+    }
+    assert routes <= {"routine_and_basic_type", "enhanced_type", "not_applicable"}
+
+    # And both column groups of Table 27 name their insulation class, so a consumer can
+    # select one instead of remembering where it sat.
+    for pair in (
+        rules.impulse_selection.mains_circuits,
+        rules.impulse_selection.non_mains_circuits,
+    ):
+        for form in ("ac", "dc"):
+            labels = pair.for_form(form).column_axis.labels
+            assert BASIC_OR_SUPPLEMENTARY_COLUMN in labels
+            assert DOUBLE_OR_REINFORCED_COLUMN in labels

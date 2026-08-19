@@ -8,6 +8,7 @@ from insulation_coordination.calculation.verification_rules import (
     DIELECTRIC_PURPOSES,
     FOIL_APPLICABILITY_ROUTE,
     IMPULSE_PROCEDURE_VARIANTS,
+    IMPULSE_SELECTION_COLUMN_LABELS,
     IMPULSE_SELECTION_PAIRS,
     PACKAGE_CLASSIFICATIONS,
     PARTIAL_DISCHARGE_APPLICABILITY_ROUTE,
@@ -21,6 +22,7 @@ from insulation_coordination.calculation.verification_rules import (
     VerificationRuleBlockCode,
     VerificationRulesUnavailable,
     classifications_of,
+    dielectric_column_label,
     read_verification_rules,
     verification_rule_blocks,
 )
@@ -102,17 +104,193 @@ def test_an_approved_package_resolves_every_required_identifier(
     assert rules.assembled_routine_exemption.id == ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION
     assert rules.partial_discharge.procedure.id == ids.TEST_PARTIAL_DISCHARGE
     assert rules.accessible_surface_foil.procedure.id == ids.TEST_ACCESSIBLE_SURFACE_FOIL
+    assert rules.dielectric_disconnection.id == ids.TEST_DIELECTRIC_DISCONNECTION
+    assert rules.dielectric_topology_selection.id == ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION
+    assert rules.dielectric_application_duration.id == ids.TEST_DIELECTRIC_APPLICATION_DURATION
+    assert rules.dielectric_acceptance.id == ids.TEST_DIELECTRIC_ACCEPTANCE
     assert verification_rule_blocks(verification_package) == ()
 
 
-def test_the_read_identifiers_are_the_thirteen_the_issue_requires() -> None:
+# --- the body of clause 5.2.3.4 --------------------------------------------------------
+
+
+DIELECTRIC_CLAUSE_IDS = (
+    ids.TEST_DIELECTRIC_DISCONNECTION,
+    ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION,
+    ids.TEST_DIELECTRIC_APPLICATION_DURATION,
+    ids.TEST_DIELECTRIC_ACCEPTANCE,
+)
+
+
+def test_a_package_predating_the_current_importer_blocks_with_every_rule_named(
+    verification_package: RulePackage,
+) -> None:
+    """A package built before these rules existed cannot carry them, and says so by name.
+
+    Never a crash and never a silent pass: the four identifiers were declared with the
+    importer version this application resolves against, so a package from before it is missing
+    all four and its Table 27 routes still label their columns by position.
+    """
+    older = verification_package.model_copy(
+        update={
+            "procedures": tuple(
+                item
+                for item in verification_package.procedures
+                if item.id not in DIELECTRIC_CLAUSE_IDS
+            ),
+            "decisions": tuple(
+                item
+                for item in verification_package.decisions
+                if item.id not in DIELECTRIC_CLAUSE_IDS
+            ),
+            "tables": tuple(
+                item.model_copy(
+                    update={
+                        "column_axis": item.column_axis.model_copy(
+                            update={
+                                "labels": tuple(
+                                    f"selected_test_voltage_col{index + 2}_v"
+                                    for index in range(len(item.column_axis.labels))
+                                )
+                            }
+                        )
+                    }
+                )
+                if item.id.startswith(ids.TEST_IMPULSE_SELECTION)
+                else item
+                for item in verification_package.tables
+            ),
+        }
+    )
+    blocks = verification_rule_blocks(older)
+    missing = {
+        block.semantic_rule_id
+        for block in blocks
+        if block.code is VerificationRuleBlockCode.RULE_MISSING
+    }
+    assert missing == set(DIELECTRIC_CLAUSE_IDS)
+    assert any(
+        block.code is VerificationRuleBlockCode.UNEXPECTED_SHAPE
+        and "labels no column" in block.message
+        for block in blocks
+    )
+    with pytest.raises(VerificationRulesUnavailable):
+        read_verification_rules(older)
+
+
+def test_a_duration_rule_stating_no_duration_is_refused(
+    verification_package: RulePackage,
+) -> None:
+    """It is resolved for its duration, so one that states none answers nothing."""
+    blank = verification_package.model_copy(
+        update={
+            "procedures": tuple(
+                item.model_copy(update={"duration": None})
+                if item.id == ids.TEST_DIELECTRIC_APPLICATION_DURATION
+                else item
+                for item in verification_package.procedures
+            )
+        }
+    )
+    blocks = verification_rule_blocks(blank)
+    assert any(
+        block.semantic_rule_id == ids.TEST_DIELECTRIC_APPLICATION_DURATION
+        and block.code is VerificationRuleBlockCode.UNEXPECTED_SHAPE
+        for block in blocks
+    )
+
+
+def test_a_selection_rule_declaring_another_input_is_refused(
+    verification_package: RulePackage,
+) -> None:
+    """Five inputs are supplied, so a rule declaring a sixth can be asked nothing at all."""
+    from insulation_coordination.domain.rules import DecisionInput
+
+    widened = verification_package.model_copy(
+        update={
+            "decisions": tuple(
+                item.model_copy(
+                    update={
+                        "inputs": (
+                            *item.inputs,
+                            DecisionInput(name="something_else", kind="boolean"),
+                        )
+                    }
+                )
+                if item.id == ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION
+                else item
+                for item in verification_package.decisions
+            )
+        }
+    )
+    assert any(
+        block.semantic_rule_id == ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION
+        and block.code is VerificationRuleBlockCode.UNEXPECTED_SHAPE
+        for block in verification_rule_blocks(widened)
+    )
+
+
+def test_the_impulse_selection_routes_label_both_insulation_class_columns(
+    verification_package: RulePackage,
+) -> None:
+    """Selecting a column by class is only possible where the route names the classes."""
+    routes = read_verification_rules(verification_package).impulse_selection
+    for pair in (routes.mains_circuits, routes.non_mains_circuits):
+        for form in ("ac", "dc"):
+            labels = pair.for_form(form).column_axis.labels
+            assert set(IMPULSE_SELECTION_COLUMN_LABELS) <= set(labels)
+
+
+def test_a_dielectric_route_labelling_its_column_otherwise_is_refused(
+    verification_package: RulePackage,
+) -> None:
+    """A route read by label answers nothing where the label is not the one it declares."""
+    relabelled = verification_package.model_copy(
+        update={
+            "tables": tuple(
+                item.model_copy(
+                    update={
+                        "column_axis": item.column_axis.model_copy(
+                            update={"labels": ("some-other-column",)}
+                        )
+                    }
+                )
+                if item.id.startswith(ids.TEST_MAINS_DIELECTRIC_VALUES)
+                else item
+                for item in verification_package.tables
+            )
+        }
+    )
+    assert any(
+        block.code is VerificationRuleBlockCode.UNEXPECTED_SHAPE
+        and "labels no column" in block.message
+        for block in verification_rule_blocks(relabelled)
+    )
+
+
+def test_each_dielectric_route_labels_its_own_data_column(
+    verification_package: RulePackage,
+) -> None:
+    """One column, still named rather than taken at whichever position it sits."""
+    rules = read_verification_rules(verification_package)
+    for tables in (rules.mains_dielectric_values, rules.non_mains_dielectric_values):
+        for purpose in DIELECTRIC_PURPOSES:
+            pair = getattr(tables, purpose)
+            for form in ("ac", "dc"):
+                assert dielectric_column_label(purpose, form) in (
+                    pair.for_form(form).column_axis.labels
+                )
+
+
+def test_the_read_identifiers_are_the_seventeen_the_issue_requires() -> None:
     # Every identifier this adapter resolves is a required inventory item, and none of the
-    # ones it deliberately leaves to another consumer is also claimed here.
+    # ones it deliberately leaves to another consumer is also claimed here. Thirteen from the
+    # issue's own list, plus the four the body of clause 5.2.3.4 was given.
     from insulation_coordination.rules.importer.iec62477_2022.semantic_ids import (
         REQUIRED_SEMANTIC_IDS,
     )
 
-    assert len(READ_SEMANTIC_IDS) == 13
+    assert len(READ_SEMANTIC_IDS) == 17
     assert READ_SEMANTIC_IDS <= REQUIRED_SEMANTIC_IDS
     assert RULES_READ_ELSEWHERE <= REQUIRED_SEMANTIC_IDS
     assert not READ_SEMANTIC_IDS & RULES_READ_ELSEWHERE

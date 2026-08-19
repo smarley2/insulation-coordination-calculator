@@ -35,6 +35,7 @@ from insulation_coordination.calculation.verification_plan import (
     VerificationPlanService,
 )
 from insulation_coordination.calculation.verification_rules import (
+    BASIC_OR_SUPPLEMENTARY_COLUMN,
     VerificationRulesUnavailable,
 )
 from insulation_coordination.domain.enums import (
@@ -69,7 +70,6 @@ from tests.fixtures.synthetic_rules import (
     merged_rule_package,
     synthetic_part1_rule_package,
     synthetic_supply_rule_package,
-    synthetic_verification_rule_package,
 )
 from tests.fixtures.verification_topologies import (
     COVER,
@@ -81,6 +81,7 @@ from tests.fixtures.verification_topologies import (
     SYSTEM_VOLTAGE_V,
     TOUCHABLE,
     TOV_SYSTEM_VOLTAGE_V,
+    declared_solid_insulation,
     dielectric_cell,
     it_mains_configuration,
     mains_configuration,
@@ -88,7 +89,7 @@ from tests.fixtures.verification_topologies import (
     single_column_dielectric_package,
     verification_and_supply_package,
     verification_topology,
-    with_protection_matrix,
+    with_pair_fields,
 )
 
 RECORDED_AT = datetime(2026, 5, 6, 7, 8, 9, tzinfo=UTC)
@@ -980,7 +981,10 @@ def test_a_dvc_as_circuit_is_excepted_from_the_test_against_an_accessible_part(
     assert all(item.voltage is None for item in applications)
     assert all(not item.unresolved_inputs for item in applications)
     assert all(
-        any("except a DVC A-s one" in step for step in item.preparation_steps)
+        any(
+            ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION in step and "states no voltage test" in step
+            for step in item.preparation_steps
+        )
         for item in applications
     )
 
@@ -1084,9 +1088,15 @@ def test_a_dvc_as_adjacency_refuses_a_row_it_cannot_decide_the_higher_circuit_of
     )
 
 
-def test_functional_insulation_between_two_dvc_as_circuits_is_not_tested(
+def test_functional_insulation_between_two_dvc_as_circuits_is_reported_not_excused(
     package: RulePackage,
 ) -> None:
+    """4.4.7.2.7 excuses it and the package's selection rule does not carry the permission.
+
+    So the test stays in the schedule with the permission named on it. Taking a test away on
+    this module's own reading of a subclause is the one direction in which a wrong answer
+    costs the verification rather than bench time.
+    """
     project = dvc_as_topology(
         implementation=ProtectionImplementation.FUNCTIONAL_INSULATION,
         classes=(LIVE_A, LIVE_B, LIVE_C),
@@ -1095,7 +1105,14 @@ def test_functional_insulation_between_two_dvc_as_circuits_is_not_tested(
     plan = VerificationPlanService().build(project, package, None)
     applications = applications_for(plan, pair, TestKind.AC_DIELECTRIC)
     assert applications
-    assert {item.applicability for item in applications} == {TestApplicability.NOT_APPLICABLE}
+    assert TestApplicability.NOT_APPLICABLE not in {item.applicability for item in applications}
+    assert all(
+        any(
+            "need not be voltage tested" in item and ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION in item
+            for item in application.unresolved_inputs
+        )
+        for application in applications
+    )
 
 
 def test_basic_insulation_between_two_dvc_as_circuits_is_still_tested(
@@ -1138,9 +1155,41 @@ def test_a_dvc_as_row_states_what_a_higher_voltage_portion_does_to_the_spacing(
     )
 
 
-def test_a_route_that_states_no_duration_says_so_rather_than_leaving_it_blank(
+@pytest.mark.parametrize("classification", [TestClassification.ROUTINE, TestClassification.TYPE])
+def test_the_duration_is_read_from_the_rule_that_states_it(
+    project: Project, package: RulePackage, classification: TestClassification
+) -> None:
+    """Both classifications carry it, and nothing is outstanding about it any more.
+
+    The rule states the type test's hold, the routine test's hold and the permitted ramp in
+    one reviewed sentence, so both rows carry that sentence and a preparation step sends a
+    reader to the half that applies to the row they are looking at.
+    """
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    application = one(
+        build(project, package),
+        pair,
+        TestKind.AC_DIELECTRIC,
+        classifications=(classification,),
+    )
+    stated = next(
+        item.duration
+        for item in package.procedures
+        if item.id == ids.TEST_DIELECTRIC_APPLICATION_DURATION
+    )
+    assert application.duration == stated
+    assert ids.TEST_DIELECTRIC_APPLICATION_DURATION in application.source_rule_ids
+    assert not any("duration" in item for item in application.unresolved_inputs)
+    assert any(
+        ids.TEST_DIELECTRIC_APPLICATION_DURATION in step and "ramp" in step
+        for step in application.preparation_steps
+    )
+
+
+def test_the_acceptance_criterion_is_read_from_the_rule_that_settles_it(
     project: Project, package: RulePackage
 ) -> None:
+    """The plan asks the rule what no breakdown settles rather than restating the criterion."""
     pair = pair_between(project, LIVE_A, ENCLOSURE)
     application = one(
         build(project, package),
@@ -1148,8 +1197,94 @@ def test_a_route_that_states_no_duration_says_so_rather_than_leaving_it_blank(
         TestKind.AC_DIELECTRIC,
         classifications=(TestClassification.ROUTINE,),
     )
-    assert application.duration is None
-    assert any("states no duration" in item for item in application.unresolved_inputs)
+    assert ids.TEST_DIELECTRIC_ACCEPTANCE in application.source_rule_ids
+    assert any(
+        ids.TEST_DIELECTRIC_ACCEPTANCE in step and "electric breakdown" in step
+        for step in application.preparation_steps
+    )
+
+
+def test_the_disconnection_rule_reaches_the_voltage_row_preparation(
+    project: Project, package: RulePackage
+) -> None:
+    """5.2.3.4.3 is projected now, so its own steps are what the schedule carries."""
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    application = one(
+        build(project, package),
+        pair,
+        TestKind.AC_DIELECTRIC,
+        classifications=(TestClassification.ROUTINE,),
+    )
+    disconnection = next(
+        item for item in package.procedures if item.id == ids.TEST_DIELECTRIC_DISCONNECTION
+    )
+    assert ids.TEST_DIELECTRIC_DISCONNECTION in application.source_rule_ids
+    assert all(step.text in application.preparation_steps for step in disconnection.procedure_steps)
+
+
+def test_a_pair_with_no_implementation_selected_gets_no_dielectric_column(
+    package: RulePackage,
+) -> None:
+    """The rule asks whether the pair carries enhanced protection before it names a column.
+
+    Answering "no" for an engineer who selected nothing would read the weaker column, which is
+    the failure the whole selection exists to prevent.
+    """
+    project = verification_topology(temporary_overvoltage=NO_OVERVOLTAGE)
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    application = one(
+        build(project, package),
+        pair,
+        TestKind.AC_DIELECTRIC,
+        classifications=(TestClassification.TYPE,),
+    )
+    assert application.voltage is None
+    assert any(
+        "left unanswered rather than answered as no" in item
+        for item in application.unresolved_inputs
+    )
+
+
+def test_a_combination_the_rule_does_not_state_settles_nothing(package: RulePackage) -> None:
+    """The selection is not exhaustive, so an unmatched combination is unresolved.
+
+    Never a fall-through to a default. A row planned at whichever column came first would look
+    in the schedule exactly like a row the source settled.
+    """
+    without_adjacency = package.model_copy(
+        update={
+            "decisions": tuple(
+                item.model_copy(
+                    update={
+                        "rows": tuple(
+                            row
+                            for row in item.rows
+                            if not any(
+                                matcher.values == ("adjacent_circuit",) for matcher in row.matchers
+                            )
+                        )
+                    }
+                )
+                if item.id == ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION
+                else item
+                for item in package.decisions
+            )
+        }
+    )
+    project = with_protection(verification_topology(temporary_overvoltage=NO_OVERVOLTAGE), BASIC)
+    pair = pair_between(project, LIVE_A, LIVE_C)
+    application = one(
+        build(project, without_adjacency),
+        pair,
+        TestKind.AC_DIELECTRIC,
+        classifications=(TestClassification.ROUTINE,),
+    )
+    assert application.voltage is None
+    assert application.applicability is TestApplicability.ENGINEERING_INPUT_REQUIRED
+    assert any(
+        f"{ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION} states no application" in item
+        for item in application.unresolved_inputs
+    )
 
 
 def test_a_banded_route_reads_the_band_rather_than_interpolating_into_it(
@@ -1173,17 +1308,52 @@ def test_a_banded_route_reads_the_band_rather_than_interpolating_into_it(
     )
 
 
-def test_a_route_stating_more_than_one_column_is_refused_rather_than_guessed_at() -> None:
-    """The package labels a column by the source column it came from and nothing more."""
-    project = with_protection(verification_topology(temporary_overvoltage=NO_OVERVOLTAGE), BASIC)
-    plan = VerificationPlanService().build(
-        project, _identified(with_protection_matrix(synthetic_verification_rule_package())), None
+def test_the_reduction_test_names_the_column_its_class_selects(package: RulePackage) -> None:
+    """5.2.3.2 states this verification against the weaker of Table 27's two class columns.
+
+    Before those columns were labelled by insulation class, the row said that nothing in the
+    route stated which column applied. It does now, and the row names it - what is still
+    outstanding is the row, not the column.
+    """
+    project = with_protection(
+        verification_topology(supply_configurations=(mains_configuration(),)), BASIC
     )
-    application = next(
-        item for item in plan.test_applications if item.test_kind is TestKind.AC_DIELECTRIC
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    project = _with_override(project, pair.id, Decimal(50))
+    reduction = one(build(project, package), pair, TestKind.TRANSIENT_OVERVOLTAGE_REDUCTION)
+    assert reduction.unresolved_inputs
+    assert all(BASIC_OR_SUPPLEMENTARY_COLUMN in item for item in reduction.unresolved_inputs)
+    assert not any("more than one column" in item for item in reduction.unresolved_inputs)
+
+
+# --- partial discharge on the schedule row ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("layers", "expected"),
+    [
+        (1, (TestClassification.TYPE, TestClassification.SAMPLE)),
+        (3, (TestClassification.TYPE,)),
+    ],
+)
+def test_the_discharge_row_carries_the_classification_the_clause_states(
+    package: RulePackage, layers: int, expected: tuple[TestClassification, ...]
+) -> None:
+    """4.4.7.10.3 states the classification, and the procedure declares none.
+
+    The assessment derives it from the pair's own declaration - a type test always, and a
+    sample test in addition where the insulation is a single layer. Taking the row's
+    classifications from the procedure instead showed nothing at all on the schedule while the
+    clause-derived answer sat unused beside it.
+    """
+    project = with_pair_fields(
+        verification_topology(supply_configurations=(mains_configuration(),)),
+        protection_implementation=ProtectionImplementation.REINFORCED_INSULATION,
+        solid_insulation=declared_solid_insulation(layer_count=layers),
     )
-    assert application.voltage is None
-    assert any("says which one applies" in item for item in application.unresolved_inputs)
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    discharge = one(build(project, package), pair, TestKind.PARTIAL_DISCHARGE)
+    assert discharge.classifications == expected
 
 
 # --- topology and deduplication in the whole plan --------------------------------------------
