@@ -80,9 +80,33 @@ of any entry against the licensed source happens in private sessions only.
   `synthetic-iec-source` findings are **not exceptions**: this issue's own content boundary permits
   standard names, edition numbers and source provenance references, so a synthetic fixture naming
   the identity its service gates on is permitted content and the scanner class is an over-broad
-  heuristic. Their rows are reclassified below. (2) The Git-history treatment is **cleanup-only**,
-  recorded in `docs/git-history-treatment.md`. (3) Two rows carrying `confirmed (finding A)` were
-  stale — Task 3 removed that series in #92 — and are corrected below.
+  heuristic. Their rows are reclassified below; the formal decision record is below. (2) The
+  Git-history treatment is **cleanup-only**, recorded in `docs/git-history-treatment.md`. (3) Two
+  rows carrying `confirmed (finding A)` were stale — Task 3 removed that series in #92 — and are
+  corrected below.
+
+## Decision record: DVC/synthetic-iec-source identity exception
+
+A public fixture must claim a real IEC standard identity (name and edition) wherever the
+runtime it exercises gates on that identity — `DvcGuidanceService` and its siblings check both
+standard *and* edition, so a fixture with no identity could not exercise the accept path or the
+wrong-edition refusal at all, and removing the identity would delete the tests that prove the
+gate exists. Four `synthetic-iec-source` fixtures now carry one for exactly this reason (the DVC,
+supply, verification, and verification-topology fixtures inventoried below).
+
+- [x] Maintainer decision: **bless the exception**
+- Decided by: Fabio Posser
+- Date: 2026-08-19
+- Notes: a standard name and edition number are explicitly on this issue's own permitted list, and
+  none of the four fixtures reproduce a licensed value, heading, note, or clause phrase — only the
+  identity two typed fields need to gate on. The alternative, an identity injectable from outside
+  `src/` purely so a fixture could avoid stating a real standard name, would add production
+  indirection whose only purpose is satisfying a scanner heuristic, which is a worse trade than
+  keeping the identity and reviewing what sits beside it. Standing condition, to keep the exception
+  narrow: it covers the standard identity only — name and edition — and any fixture that claims an
+  IEC standard identity must still carry no licensed value, heading, note, or prose beside it. A
+  fixture that pairs the identity with a real cell, series, or heading is a new finding, not covered
+  by this decision.
 
 ## Assessment vocabulary
 
@@ -99,13 +123,14 @@ of any entry against the licensed source happens in private sessions only.
 | Location | Class | Description | Assessment |
 | --- | --- | --- | --- |
 | `src/insulation_coordination/ui/value_options.py:14` | numeric-series | Complete constrained option series with unit labels, offered by the UI | resolved (issue #40 Task 3, #92; the series is gone from the module, which now names only the row-axis identifier an approved package publishes the levels under. This row was left stale and is corrected 2026-08-18) |
+| `src/insulation_coordination/ui/value_options.py:24-30` | manual | `POLLUTION_OPTIONS` and `MATERIAL_OPTIONS` tuples, the two option lists that remain in the module now that the impulse levels come from the package | resolved (issue #40 Task 3, reviewed 2026-08-19; both tuples are category labels — pollution-degree numbers 1-2 and material-group letters I/II/IIIa/IIIb — not normative values. This issue's own ownership boundary already permits "units and generic concepts such as voltage, RMS, peak, DVC, OVC, pollution degree" in public source, and a material-group identifier is the same class of generic vocabulary. Neither tuple pairs a value with a table or clause identifier, and which subset of degrees this product offers is a product-scope choice, not licensed content) |
 | `src/insulation_coordination/calculation/clearance.py:132` | numeric-series | Preferred-level series used by the reinforced treatment | resolved (issue #40 Task 4, #117; the series is read off the row axis of the requirement the treatment rule refers to, and no series remains in the module) |
 | `src/insulation_coordination/calculation/clearance.py:155` | inline-factor | Reinforced stress multiplier in calculation code | resolved (issue #40 Task 4, #117; the factor comes from the approved package, and an absent, unapproved or incompatible package blocks instead of falling back) |
 | `src/insulation_coordination/calculation/clearance.py:146-166` | manual | Treatment trace wording and symbolic text mirror the source procedure rather than neutral application text | resolved (issue #40 Task 4, #117; the step now states what this application did and names the rule that decided it) |
 | `src/insulation_coordination/calculation/creepage.py:144` | inline-factor | Reinforced creepage multiplier in calculation code | resolved (issue #40 Task 4, #117; same route, resolved from the same package) |
 | `src/insulation_coordination/report/human_view.py:1054` | manual | Report projection restated the creepage treatment in a sentence written into public source | resolved (issue #40 Task 4, #119; both treatment operations now render the trace step's own rule-backed reason. Found while closing Task 4, so it was never inventoried as a finding) |
-| `src/insulation_coordination/calculation/engine.py:180` | inline-threshold | High-frequency routing boundary as a literal | confirmed (finding B class; investigated in issue #40 Task 12 and deliberately left. The approved package *does* state a frequency boundary, in the row matchers of `iec62477_2022.high_frequency.applicability`, but that rule is IEC 62477-1 Annex F's own applicability statement while this constant gates the IEC 60664-4 routines; it includes its lower bound where the constant excludes it; and it answers a three-input question whose answer differs from a frequency-only gate for impulse and temporary-overvoltage stresses and above the annex's upper bound. Reading only the part of it that agrees would be a migration in name. What is missing is an IEC 60664-4 scope rule: `recipes/iec60664_4_2005.py` extracts the annex's equations but no clause stating the frequency below which Part 4 says nothing, so this needs an extraction step under `rules/importer/` -- issue #34's tree, not this one's) |
-| `src/insulation_coordination/calculation/engine.py:387` | inline-threshold | Partial-discharge advisory trigger as a literal | confirmed (finding B class; investigated in issue #40 Task 12 and deliberately left. No resolved rule states this trigger. The advisory's own `semantic_rule_id` names a rule no package carries, the F.9 table it cites is keyed by the same row axis as F.8 so no axis edge supplies the figure, and `iec62477_2022.test.partial_discharge.applicability` answers whether a partial-discharge *test* is required, which is a different question. What is missing is an extracted IEC 60664-1 Annex F clause rule and a semantic identifier for it -- again an extraction step under `rules/importer/`. The warning's wording states the trigger in words as well as the comparison stating it as a numeral; both go together when the rule arrives) |
+| `src/insulation_coordination/calculation/engine.py:180` | inline-threshold | High-frequency routing boundary as a literal | confirmed (finding B class; investigated in issue #40 Task 12 and deliberately left. The approved package *does* state a frequency boundary, in the row matchers of `iec62477_2022.high_frequency.applicability`, but that rule is IEC 62477-1 Annex F's own applicability statement while this constant gates the IEC 60664-4 routines; it includes its lower bound where the constant excludes it; and it answers a three-input question whose answer differs from a frequency-only gate for impulse and temporary-overvoltage stresses and above the annex's upper bound. Reading only the part of it that agrees would be a migration in name. What is missing is an IEC 60664-4 scope rule: `recipes/iec60664_4_2005.py` extracts the annex's equations but no clause stating the frequency below which Part 4 says nothing, so this needs an extraction step under `rules/importer/`, now tracked in issue #133) |
+| `src/insulation_coordination/calculation/engine.py:387` | inline-threshold | Partial-discharge advisory trigger as a literal | confirmed (finding B class; investigated in issue #40 Task 12 and deliberately left. No resolved rule states this trigger. The advisory's own `semantic_rule_id` names a rule no package carries, the F.9 table it cites is keyed by the same row axis as F.8 so no axis edge supplies the figure, and `iec62477_2022.test.partial_discharge.applicability` answers whether a partial-discharge *test* is required, which is a different question. What is missing is an extracted IEC 60664-1 Annex F clause rule and a semantic identifier for it -- again an extraction step under `rules/importer/`, now tracked in issue #133. The warning's wording states the trigger in words as well as the comparison stating it as a numeral; both go together when the rule arrives) |
 | `src/insulation_coordination/calculation/engine.py:386`, `high_frequency.py:104,257,649` | inline-threshold | The Part 4 frequency boundary, stated as a literal in four comparisons | resolved (issue #37 Task 9; the four comparisons now read one named `PART4_FREQUENCY_THRESHOLD_HZ` in `high_frequency.py`, and the value is stated once. Still a finding-B-class boundary in a single place rather than four, and it remains a candidate for a package-supplied figure) |
 | `src/insulation_coordination/calculation/high_frequency.py:462` | inline-threshold | Altitude-correction base boundary as a literal | resolved (issue #40 Task 12; the altitude a clearance is corrected above is read off the row axis of the A.2 table the approved mapping already resolves, and a package that states no A.2 route blocks the calculation instead of skipping the correction in silence) |
 | `src/insulation_coordination/report/human_view.py` (altitude branch of the trace-sentence builder) | manual | Report sentence stated the A.2 altitude boundary as a numeral; no table identifier sits nearby, so no scanner class fires | resolved (issue #37 Task 14; the sentence now says the boundary the named rule states was checked and not exceeded, and states no figure) |
@@ -193,16 +218,19 @@ references in resolved rows are historical and point at the neutralized text.
 
 ## Boundary properties not yet true
 
-These belong to issue #40 tasks that are still open; they are inventoried
-here instead of being asserted by `tests/test_content_boundaries.py`:
-
-- UI option lists supplied entirely by a rules package (Task 3; blocked on
-  #34 slice D content). The impulse levels already are, since #92 - what is
-  left in `ui/value_options.py` is the pollution-degree and material-group
-  label tuples, which the scanner no longer flags. The row above still carries
-  the original finding-A assessment and needs a private-session review.
+This section inventories issue #40 tasks still open, instead of asserting
+them in `tests/test_content_boundaries.py`. None remain open as of
+2026-08-19; the last one is listed under "Done since the first audit" below.
 
 Done since the first audit:
+
+- UI option lists supplied entirely by a rules package (Task 3). The impulse
+  levels come from the approved package, since #92. What was left in
+  `ui/value_options.py` — the pollution-degree and material-group label
+  tuples — was reviewed on 2026-08-19 and found to be generic vocabulary
+  rather than licensed content, needing no comparison against the source; see
+  the corresponding
+  `value_options.py:24-30` row above.
 
 - The scanner running with `--strict` in CI (Task 11). See the baseline section
   at the foot of this document.
