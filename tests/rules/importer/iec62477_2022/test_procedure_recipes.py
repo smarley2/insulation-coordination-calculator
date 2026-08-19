@@ -28,6 +28,11 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import RECIP
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.procedures import (
     CLASSIFICATION_COLUMNS,
     CLASSIFICATION_MATRIX_ID,
+    DIELECTRIC_COLUMNS,
+    DIELECTRIC_NOT_APPLICABLE,
+    DIELECTRIC_REFERENCE_KINDS,
+    DIELECTRIC_ROW_AXIS_CIRCUITS,
+    DIELECTRIC_TEST_CLASSIFICATIONS,
     FOIL_APPLICABILITY_ID,
     IMPULSE_ALTERNATIVE_VARIANTS,
     MATERIAL_PRECONDITIONING_INVOCATIONS,
@@ -40,6 +45,10 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.procedures i
     TEST_CLAUSE_COLUMN,
     project_accessible_surface_foil,
     project_assembled_routine_exemption,
+    project_dielectric_acceptance,
+    project_dielectric_application_duration,
+    project_dielectric_disconnection,
+    project_dielectric_topology_selection,
     project_impulse_alternative,
     project_internal_spd_monitoring,
     project_preconditioning,
@@ -76,6 +85,10 @@ CLAUSE_OF = {
     ids.TEST_ACCESSIBLE_SURFACE_FOIL: "5.2.3.4.4",
     ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION: "5.2.3.4.4",
     ids.TEST_IMPULSE_ALTERNATIVE: "5.2.3.3",
+    ids.TEST_DIELECTRIC_DISCONNECTION: "5.2.3.4.3",
+    ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION: "5.2.3.4.4",
+    ids.TEST_DIELECTRIC_APPLICATION_DURATION: "5.2.3.4.5",
+    ids.TEST_DIELECTRIC_ACCEPTANCE: "5.2.3.4.6",
 }
 
 
@@ -582,3 +595,226 @@ def test_the_alternative_leaves_the_application_pattern_in_its_reviewed_step() -
 def test_the_alternative_blocks_on_a_node_count_the_recipe_does_not_declare() -> None:
     with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_PROCEDURE_STRUCTURE"):
         project_impulse_alternative(_alternative_fragment(3), IDENTITY)
+
+
+# --- the body of the AC or DC voltage test ---------------------------------------------
+
+#: The four subclauses of the AC or DC voltage test the value tables do not state, and the
+#: number of reviewed regions the recipe declares for each.
+DIELECTRIC_BODY_SEGMENTS = {
+    ids.TEST_DIELECTRIC_DISCONNECTION: 4,
+    ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION: 3,
+    ids.TEST_DIELECTRIC_APPLICATION_DURATION: 1,
+    ids.TEST_DIELECTRIC_ACCEPTANCE: 1,
+}
+
+
+def _topology_fragment(
+    kinds: tuple[str, ...] = ("paragraph", "bullet", "bullet", "bullet", "paragraph"),
+) -> RawClauseFragment:
+    """The selection clause's mixed node shape: a lead-in, three items and a closing sentence."""
+
+    source = SOURCE.model_copy(update={"clause": CLAUSE_OF[ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION]})
+    nodes = tuple(
+        ClauseNode(
+            order=order,
+            kind=kind,  # type: ignore[arg-type]
+            raw_text=f"synthetic selection statement {order + 1}",
+            source=source,
+        )
+        for order, kind in enumerate(kinds)
+    )
+    fragment = RawClauseFragment(
+        id=f"raw-{ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION}",
+        raw_sha256="0" * 64,
+        nodes=nodes,
+        tokens=(),
+        source=source,
+    )
+    return fragment.model_copy(update={"raw_sha256": canonical_model_sha256(fragment)})
+
+
+def _selection(**inputs: str | bool) -> DecisionResult:
+    rules, _proposals = project_dielectric_topology_selection(_topology_fragment(), IDENTITY)
+    return evaluate_decision(rules[0], inputs)
+
+
+def _application(
+    reference_kind: str,
+    classification: str,
+    *,
+    dvc_as: bool = False,
+    connected: bool = False,
+    enhanced: bool = False,
+) -> dict[str, str | None]:
+    result = _selection(
+        reference_kind=reference_kind,
+        test_classification=classification,
+        circuit_under_test_is_dvc_as=dvc_as,
+        circuit_connected_to_conductive_accessible_parts=connected,
+        enhanced_protection=enhanced,
+    )
+    return {value.name: value.categorical for value in result.values}
+
+
+def test_the_voltage_test_body_is_declared_under_its_own_subclause_locators() -> None:
+    """Four required items, four subclauses. The value tables state none of this.
+
+    A conformance review (issue #37, 2026-08-18, finding B3) found the whole body of the test
+    unrepresented: the package carried Tables 28 and 29 and nothing that said how long to hold
+    the voltage, between which electrodes, what to disconnect first, or what counts as a pass.
+    """
+    declared = {spec.semantic_id: spec for spec in PROCEDURE_CLAUSES}
+
+    for semantic_id, segments in DIELECTRIC_BODY_SEGMENTS.items():
+        spec = declared[semantic_id]
+        assert spec.clause == CLAUSE_OF[semantic_id]
+        assert len(spec.segments) == segments
+        assert semantic_id in IEC_RECIPE.clause_projectors
+
+
+def test_the_duration_rule_answers_the_question_nothing_in_the_package_answered() -> None:
+    """The reviewed sentence reaches ``duration``, which is where a consumer asks.
+
+    Slice 3 recorded every planned dielectric application as carrying an unresolved input
+    because no resolved rule stated a duration. This is the rule that states it.
+    """
+    rules, proposals = project_dielectric_application_duration(
+        _fragment(ids.TEST_DIELECTRIC_APPLICATION_DURATION, 1, kind="paragraph"),
+        IDENTITY,
+    )
+
+    procedure = next(rule for rule in rules if isinstance(rule, ProcedureRule))
+    assert procedure.duration == procedure.procedure_steps[0].text
+    assert procedure.duration
+    # The matrix has a row for the parent subclause, not for this one, so nothing is claimed.
+    assert procedure.classifications == ()
+    assert [proposal.rule_kind for proposal in proposals] == ["procedure"]
+
+
+def test_the_disconnection_rule_carries_one_step_per_reviewed_obligation() -> None:
+    rules, _proposals = project_dielectric_disconnection(
+        _fragment(ids.TEST_DIELECTRIC_DISCONNECTION, 4, kind="paragraph"),
+        IDENTITY,
+    )
+
+    procedure = next(rule for rule in rules if isinstance(rule, ProcedureRule))
+    assert len(procedure.procedure_steps) == 4
+    assert [step.order for step in procedure.procedure_steps] == [1, 2, 3, 4]
+    assert procedure.classifications == ()
+
+
+def test_the_acceptance_criterion_settles_both_of_its_outcomes() -> None:
+    """Unlike the permissions in this module, an acceptance criterion has no unknown case.
+
+    A breakdown is a failure, and a criterion that reported it as unresolved would leave a
+    consumer unable to say the test failed.
+    """
+    rules, _proposals = project_dielectric_acceptance(
+        _fragment(ids.TEST_DIELECTRIC_ACCEPTANCE, 1, kind="paragraph"),
+        IDENTITY,
+    )
+
+    rule = next(item for item in rules if isinstance(item, DecisionRule))
+    assert rule.exhaustive
+    outcomes = {
+        observed: evaluate_decision(rule, {"electric_breakdown_observed": observed})
+        for observed in (False, True)
+    }
+    assert [value.boolean for value in outcomes[False].values] == [True]
+    assert [value.boolean for value in outcomes[True].values] == [False]
+
+
+def test_the_column_an_application_reads_follows_the_classification_and_the_reference() -> None:
+    """Finding A4: the column is a property of the topology and the test, not of the pair.
+
+    A basic-protection circuit tested against an accessible surface that is non-conductive or
+    not bonded to earth reads the stronger column for its type test. Selecting from the pair's
+    protection implementation alone planned that application at the weaker one.
+    """
+    basic, enhanced = DIELECTRIC_COLUMNS
+    own_side, _higher = DIELECTRIC_ROW_AXIS_CIRCUITS
+    surface = "unearthed_or_non_conductive_accessible_surface"
+
+    assert _application(surface, "type_test") == {
+        "dielectric_column": enhanced,
+        "row_axis_circuit": own_side,
+    }
+    assert _application(surface, "routine_test")["dielectric_column"] == basic
+    # And the routine test always reads the weaker column, however the circuit is protected.
+    assert _application("adjacent_circuit", "routine_test", enhanced=True)["dielectric_column"] == (
+        basic
+    )
+    assert _application("adjacent_circuit", "type_test", enhanced=True)["dielectric_column"] == (
+        enhanced
+    )
+    assert _application("adjacent_circuit", "type_test")["dielectric_column"] == basic
+
+
+def test_the_dvc_as_adjacency_reads_its_row_from_the_higher_voltage_circuit() -> None:
+    """Finding A5: this one application is keyed on the other side of the pair."""
+    basic, enhanced = DIELECTRIC_COLUMNS
+    _own_side, higher = DIELECTRIC_ROW_AXIS_CIRCUITS
+
+    assert _application("dvc_as_adjacent_circuit", "type_test") == {
+        "dielectric_column": enhanced,
+        "row_axis_circuit": higher,
+    }
+    assert _application("dvc_as_adjacent_circuit", "routine_test") == {
+        "dielectric_column": basic,
+        "row_axis_circuit": higher,
+    }
+
+
+def test_the_applications_the_source_states_are_not_made_resolve_to_no_column() -> None:
+    """The two exclusions the subclause states, which the plan asserted its way past."""
+    for reference_kind in (
+        "earthed_conductive_accessible_part",
+        "unearthed_or_non_conductive_accessible_surface",
+    ):
+        assert _application(reference_kind, "type_test", dvc_as=True) == {
+            "dielectric_column": DIELECTRIC_NOT_APPLICABLE,
+            "row_axis_circuit": DIELECTRIC_NOT_APPLICABLE,
+        }
+    assert (
+        _application("adjacent_circuit", "routine_test", connected=True)["dielectric_column"]
+        == DIELECTRIC_NOT_APPLICABLE
+    )
+
+
+def test_the_selection_names_only_columns_the_value_tables_project() -> None:
+    """A column this rule named that no route projects would resolve to nothing."""
+    from insulation_coordination.rules.importer.recipes.iec62477_1_2022.verification import (
+        DIELECTRIC_SPECS,
+    )
+
+    routes = {spec.semantic_id.rsplit(".", 2)[1] for spec in DIELECTRIC_SPECS}
+
+    assert set(DIELECTRIC_COLUMNS) <= routes
+    rules, _proposals = project_dielectric_topology_selection(_topology_fragment(), IDENTITY)
+    outputs = {output.name: output.allowed_values for output in rules[0].outputs}
+    assert set(outputs["dielectric_column"]) == {*DIELECTRIC_COLUMNS, DIELECTRIC_NOT_APPLICABLE}
+    inputs = {item.name: item.allowed_values for item in rules[0].inputs}
+    assert inputs["reference_kind"] == DIELECTRIC_REFERENCE_KINDS
+    assert inputs["test_classification"] == DIELECTRIC_TEST_CLASSIFICATIONS
+    # A combination the subclause does not settle resolves to nothing rather than to a column.
+    assert not rules[0].exhaustive
+
+
+def test_each_voltage_test_body_projection_blocks_on_an_undeclared_node_shape() -> None:
+    with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_PROCEDURE_STRUCTURE"):
+        project_dielectric_disconnection(
+            _fragment(ids.TEST_DIELECTRIC_DISCONNECTION, 3, kind="paragraph"), IDENTITY
+        )
+    with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_PROCEDURE_STRUCTURE"):
+        project_dielectric_application_duration(
+            _fragment(ids.TEST_DIELECTRIC_APPLICATION_DURATION, 2, kind="paragraph"), IDENTITY
+        )
+    with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_PROCEDURE_STRUCTURE"):
+        project_dielectric_acceptance(
+            _fragment(ids.TEST_DIELECTRIC_ACCEPTANCE, 2, kind="paragraph"), IDENTITY
+        )
+    with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_PROCEDURE_STRUCTURE"):
+        project_dielectric_topology_selection(
+            _topology_fragment(("paragraph", "bullet", "bullet")), IDENTITY
+        )

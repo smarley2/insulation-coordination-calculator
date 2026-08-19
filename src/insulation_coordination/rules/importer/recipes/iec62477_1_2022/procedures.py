@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import NoReturn
+from typing import Literal, NoReturn
 
 from insulation_coordination.domain.rules import (
     MAX_APPLICABILITY_LENGTH,
@@ -50,12 +50,13 @@ from insulation_coordination.rules.importer.identify import (
 )
 from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.verification import (
+    DIELECTRIC_PURPOSES,
     FIELD_ROWS,
     VARIANT_COLUMNS,
     ProcedureStructureError,
 )
 
-#: The matrix is evidence for the procedures, not one of the twenty-six required source
+#: The matrix is evidence for the procedures, not one of the required source
 #: items, so it deliberately has no entry in ``semantic_ids``: adding one would claim the
 #: package owes a rule for it. Its identifier still follows the same shape, because it names
 #: a raw grid a maintainer reviews.
@@ -288,6 +289,11 @@ _IMPULSE_ALTERNATIVE_CLAUSE = "5.2.3.3"
 #: so a consumer joins a saved choice to its rule without a translation table in between.
 IMPULSE_ALTERNATIVE_AC_ID = f"{ids.TEST_IMPULSE_ALTERNATIVE}.ac_voltage_test"
 IMPULSE_ALTERNATIVE_DC_ID = f"{ids.TEST_IMPULSE_ALTERNATIVE}.dc_voltage_test"
+#: The remaining subclauses of the AC or DC voltage test. The performance subclause is the one
+#: ``_VOLTAGE_TEST_PERFORMANCE_CLAUSE`` above already names; the other three are its siblings.
+_DIELECTRIC_DISCONNECTION_CLAUSE = "5.2.3.4.3"
+_DIELECTRIC_DURATION_CLAUSE = "5.2.3.4.5"
+_DIELECTRIC_ACCEPTANCE_CLAUSE = "5.2.3.4.6"
 
 PROCEDURE_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ClauseAuditSpec(
@@ -409,6 +415,80 @@ PROCEDURE_CLAUSES: tuple[ClauseAuditSpec, ...] = (
         ),
         output_kind="procedure",
         projected_rule_ids=(IMPULSE_ALTERNATIVE_AC_ID, IMPULSE_ALTERNATIVE_DC_ID),
+    ),
+    ClauseAuditSpec(
+        semantic_id=ids.TEST_DIELECTRIC_DISCONNECTION,
+        clause=_DIELECTRIC_DISCONNECTION_CLAUSE,
+        #: Four regions of running prose, one per paragraph, for the reason the permitted
+        #: alternative's four are declared apart: a paragraph region extracts as one node, and
+        #: merged the four obligations would share one text no step could be attributed to.
+        #: The subclause's heading is above the first region and is not extracted.
+        segments=tuple(
+            ClauseSegmentSpec(
+                page_number=128,
+                expected_bbox=bbox,
+                expected_root_kind="paragraph",
+            )
+            for bbox in (
+                (65.0, 390.0, 535.0, 443.0),
+                (65.0, 451.0, 535.0, 493.0),
+                (65.0, 501.0, 535.0, 554.0),
+                (65.0, 562.0, 535.0, 604.0),
+            )
+        ),
+        output_kind="procedure",
+    ),
+    ClauseAuditSpec(
+        semantic_id=ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION,
+        clause=_VOLTAGE_TEST_PERFORMANCE_CLAUSE,
+        #: Three regions. The first is the lead-in sentence and the first two items of the
+        #: subclause's list; the second is the third item, which begins the next page and runs
+        #: on into the prose qualifying it; the third is the sentence, below the figure, that
+        #: states when the test is not made at all. What lies between the second and third --
+        #: the figure itself and the enclosure condition -- states no electrode pair and no
+        #: column, so neither is inside a region.
+        segments=(
+            ClauseSegmentSpec(
+                page_number=128,
+                expected_bbox=(65.0, 632.0, 535.0, 787.0),
+                expected_root_kind="bullets",
+            ),
+            ClauseSegmentSpec(
+                page_number=129,
+                expected_bbox=(65.0, 84.0, 535.0, 245.0),
+                expected_root_kind="bullets",
+            ),
+            ClauseSegmentSpec(
+                page_number=129,
+                expected_bbox=(65.0, 730.0, 535.0, 761.0),
+                expected_root_kind="paragraph",
+            ),
+        ),
+        output_kind="decision",
+    ),
+    ClauseAuditSpec(
+        semantic_id=ids.TEST_DIELECTRIC_APPLICATION_DURATION,
+        clause=_DIELECTRIC_DURATION_CLAUSE,
+        segments=(
+            ClauseSegmentSpec(
+                page_number=130,
+                expected_bbox=(65.0, 405.0, 535.0, 437.0),
+                expected_root_kind="paragraph",
+            ),
+        ),
+        output_kind="procedure",
+    ),
+    ClauseAuditSpec(
+        semantic_id=ids.TEST_DIELECTRIC_ACCEPTANCE,
+        clause=_DIELECTRIC_ACCEPTANCE_CLAUSE,
+        segments=(
+            ClauseSegmentSpec(
+                page_number=130,
+                expected_bbox=(65.0, 465.0, 535.0, 486.0),
+                expected_root_kind="paragraph",
+            ),
+        ),
+        output_kind="decision",
     ),
 )
 
@@ -1051,8 +1131,299 @@ def project_impulse_alternative(
     return tuple(rules), tuple(proposals)
 
 
+# --- the body of the AC or DC voltage test ---------------------------------------------
+#
+# Tables 28 and 29 carry the test's values and nothing else. These four projections carry what
+# the subclause states around them, and none of the four declares a classification: the
+# cross-reference matrix has a row for the test's parent subclause, not for its parts, so a
+# classification here would be this recipe's invention. Which of the two column groups an
+# application reads *is* stated per classification, and that is the selection rule below --
+# a different question from what the matrix answers.
+
+_DIELECTRIC_DISCONNECTION_SHAPE = ("paragraph",) * 4
+_DIELECTRIC_DURATION_SHAPE = ("paragraph",) * 1
+_DIELECTRIC_ACCEPTANCE_SHAPE = ("paragraph",) * 1
+#: The lead-in sentence, the first two list items, the third item, and the closing sentence.
+_DIELECTRIC_TOPOLOGY_SHAPE = ("paragraph", "bullet", "bullet", "bullet", "paragraph")
+
+
+def project_dielectric_disconnection(
+    fragment: RawClauseFragment,
+    identity: StandardIdentity,
+    _draft: object = None,
+    _confirmed_facts: object = None,
+) -> tuple[tuple[ProcedureRule, ...], tuple[SemanticProposal, ...]]:
+    """Project what is disconnected, opened and restored before the voltage is applied.
+
+    Four reviewed paragraphs, four steps, in source order: what shall be disconnected, what
+    should not be, which connection shall be opened and afterwards restored, and how a
+    protective impedance is handled. Kept as steps rather than as a decision because the
+    source states obligations on the test setup, not a choice keyed on an input -- and the two
+    it states as recommendations sit beside the two it states as requirements, which only the
+    reviewed wording distinguishes.
+    """
+
+    label = "dielectric test disconnection"
+    _require_own_fragment(fragment, identity, ids.TEST_DIELECTRIC_DISCONNECTION, label)
+    _require_shape(fragment, _DIELECTRIC_DISCONNECTION_SHAPE, label)
+
+    procedure = ProcedureRule(
+        id=ids.TEST_DIELECTRIC_DISCONNECTION,
+        test_kind="dielectric_test_disconnection",
+        procedure_steps=_steps(fragment),
+        source=fragment.source,
+    )
+    return (procedure,), (_proposal(procedure, "procedure", fragment),)
+
+
+def project_dielectric_application_duration(
+    fragment: RawClauseFragment,
+    identity: StandardIdentity,
+    _draft: object = None,
+    _confirmed_facts: object = None,
+) -> tuple[tuple[ProcedureRule, ...], tuple[SemanticProposal, ...]]:
+    """Project how long the voltage is held, and the ramp the source permits around it.
+
+    One reviewed paragraph states both, separately for the type and the routine test, so it
+    becomes one step and is also carried on ``duration``: a consumer asking a procedure how
+    long to apply the voltage reads that field, and until this rule existed nothing in the
+    package answered it. Text rather than a number for the reason the permitted alternative's
+    ramp is text -- a limit is licensed source content and belongs in the reviewed statement,
+    not beside the recipe -- and one field rather than two because the source states the two
+    durations in one sentence, which splitting would mean parsing in public code.
+    """
+
+    label = "dielectric test application duration"
+    _require_own_fragment(fragment, identity, ids.TEST_DIELECTRIC_APPLICATION_DURATION, label)
+    _require_shape(fragment, _DIELECTRIC_DURATION_SHAPE, label)
+
+    procedure = ProcedureRule(
+        id=ids.TEST_DIELECTRIC_APPLICATION_DURATION,
+        test_kind="dielectric_voltage_application",
+        duration=fragment.nodes[0].raw_text.strip()[:MAX_REFERENCE_TEXT_LENGTH] or None,
+        procedure_steps=_steps(fragment),
+        source=fragment.source,
+    )
+    return (procedure,), (_proposal(procedure, "procedure", fragment),)
+
+
+#: What is observed, and what the observation settles. One boolean each: the source states the
+#: criterion as a single condition on the whole application.
+_ACCEPTANCE_INPUT = "electric_breakdown_observed"
+_ACCEPTANCE_OUTPUT = "voltage_test_passed"
+
+
+def project_dielectric_acceptance(
+    fragment: RawClauseFragment,
+    identity: StandardIdentity,
+    _draft: object = None,
+    _confirmed_facts: object = None,
+) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
+    """Project the acceptance criterion of the AC or DC voltage test.
+
+    Exhaustive over its one input, unlike the permissions elsewhere in this module. Those are
+    conditional grants, where a combination the source does not settle has to resolve to
+    nothing; this is an acceptance criterion over a single observation, and the source states
+    both of its outcomes -- the observation absent is a pass, and an acceptance criterion that
+    left its own failing case unresolved would report a breakdown as an unknown result.
+    """
+
+    label = "dielectric test acceptance"
+    _require_own_fragment(fragment, identity, ids.TEST_DIELECTRIC_ACCEPTANCE, label)
+    _require_shape(fragment, _DIELECTRIC_ACCEPTANCE_SHAPE, label)
+
+    rule = DecisionRule(
+        id=ids.TEST_DIELECTRIC_ACCEPTANCE,
+        inputs=(DecisionInput(name=_ACCEPTANCE_INPUT, kind="boolean"),),
+        outputs=(DecisionOutput(name=_ACCEPTANCE_OUTPUT, kind="boolean"),),
+        rows=tuple(
+            DecisionRow(
+                matchers=(Matcher(input=_ACCEPTANCE_INPUT, op="equals", boolean=observed),),
+                values=(DecisionValue(name=_ACCEPTANCE_OUTPUT, boolean=not observed),),
+                source=fragment.nodes[0].source,
+            )
+            for observed in (False, True)
+        ),
+        exhaustive=True,
+        source=fragment.source,
+    )
+    return (rule,), (_proposal(rule, "decision", fragment),)
+
+
+#: The reference an application is made against -- the low side of the pair. Neutral names for
+#: the three the subclause's list enumerates, plus the adjacency case it states separately
+#: because that one reads its row from the other side of the pair.
+DIELECTRIC_REFERENCE_KINDS = (
+    "earthed_conductive_accessible_part",
+    "unearthed_or_non_conductive_accessible_surface",
+    "adjacent_circuit",
+    "dvc_as_adjacent_circuit",
+)
+DIELECTRIC_TEST_CLASSIFICATIONS = ("type_test", "routine_test")
+#: What an application is *not*. A sentinel member of both output vocabularies rather than a
+#: third boolean output, because the subclause states its exclusions as cases of the same list
+#: the columns come from, and a row that had to name a column it does not read would be a lie.
+DIELECTRIC_NOT_APPLICABLE = "not_applicable"
+#: The two column groups Tables 28 and 29 are extracted as, named by the route ids those specs
+#: carry. Read from the shared declaration so this rule cannot name a column no route projects.
+DIELECTRIC_COLUMNS = (*(purpose for purpose, _ac, _dc in DIELECTRIC_PURPOSES),)
+#: Which side of the pair the row is read from. The subclause states the circuit under test for
+#: every application except the adjacency one, which it states as the higher-voltage circuit.
+DIELECTRIC_ROW_AXIS_CIRCUITS = ("circuit_under_test", "higher_voltage_circuit")
+_TOPOLOGY_INPUTS: tuple[tuple[str, Literal["categorical", "boolean"]], ...] = (
+    ("reference_kind", "categorical"),
+    ("test_classification", "categorical"),
+    ("circuit_under_test_is_dvc_as", "boolean"),
+    ("circuit_connected_to_conductive_accessible_parts", "boolean"),
+    ("enhanced_protection", "boolean"),
+)
+_TOPOLOGY_COLUMN_OUTPUT = "dielectric_column"
+_TOPOLOGY_ROW_OUTPUT = "row_axis_circuit"
+#: One entry per row the subclause states, in first-match order: the reviewed node the row
+#: rests on, its conditions in ``_TOPOLOGY_INPUTS`` order, the column it reads and the side of
+#: the pair its row is keyed on. ``None`` leaves a dimension unmatched, which is how a row the
+#: source states without qualifying it stays one row instead of a product of the dimensions it
+#: says nothing about. The node index makes a row cite the part of the subclause it came from
+#: rather than the fragment as a whole.
+_NA = DIELECTRIC_NOT_APPLICABLE
+_BASIC_COLUMN, _ENHANCED_COLUMN = DIELECTRIC_COLUMNS
+_OWN_ROW, _HIGHER_ROW = DIELECTRIC_ROW_AXIS_CIRCUITS
+_TOPOLOGY_ROWS: tuple[tuple[int, tuple[str | bool | None, ...], str, str], ...] = (
+    # The closing sentence: a circuit electrically connected to the conductive accessible parts
+    # is not tested at all. First, because it holds whatever the electrodes would have been.
+    (4, (None, None, None, True, None), _NA, _NA),
+    # Both applications of the first item except DVC As circuits, which the third item handles.
+    (1, ("earthed_conductive_accessible_part", None, True, None, None), _NA, _NA),
+    (1, ("unearthed_or_non_conductive_accessible_surface", None, True, None, None), _NA, _NA),
+    # The third item: the column follows the classification, and the row is keyed on the
+    # higher-voltage circuit of the two rather than on the circuit under test.
+    (3, ("dvc_as_adjacent_circuit", "type_test", None, None, None), _ENHANCED_COLUMN, _HIGHER_ROW),
+    (3, ("dvc_as_adjacent_circuit", "routine_test", None, None, None), _BASIC_COLUMN, _HIGHER_ROW),
+    # The first item's second application: the classification alone decides the column here.
+    # The protection level of the circuit under test does not enter, which is the whole point
+    # of stating this case apart from the enhanced-protection one below.
+    (
+        1,
+        ("unearthed_or_non_conductive_accessible_surface", "type_test", None, None, None),
+        _ENHANCED_COLUMN,
+        _OWN_ROW,
+    ),
+    (
+        1,
+        ("unearthed_or_non_conductive_accessible_surface", "routine_test", None, None, None),
+        _BASIC_COLUMN,
+        _OWN_ROW,
+    ),
+    # The first item's first application and the second item. Both name the basic column, and
+    # the third item's closing prose states that the type test of insulation used for enhanced
+    # protection is otherwise read from the other one, so enhanced protection is a row of its
+    # own ahead of each. A routine test never reaches those: the source states the stronger
+    # column for the type test only.
+    (
+        3,
+        ("earthed_conductive_accessible_part", "type_test", None, None, True),
+        _ENHANCED_COLUMN,
+        _OWN_ROW,
+    ),
+    (1, ("earthed_conductive_accessible_part", None, None, None, None), _BASIC_COLUMN, _OWN_ROW),
+    (3, ("adjacent_circuit", "type_test", None, None, True), _ENHANCED_COLUMN, _OWN_ROW),
+    (2, ("adjacent_circuit", None, None, None, None), _BASIC_COLUMN, _OWN_ROW),
+)
+
+
+def _topology_matcher(name: str, value: str | bool | None) -> tuple[Matcher, ...]:
+    """One matcher, or none where the source states the row without qualifying this dimension."""
+
+    if value is None:
+        return ()
+    if isinstance(value, bool):
+        return (Matcher(input=name, op="equals", boolean=value),)
+    return (Matcher(input=name, op="equals", values=(value,)),)
+
+
+def project_dielectric_topology_selection(
+    fragment: RawClauseFragment,
+    identity: StandardIdentity,
+    _draft: object = None,
+    _confirmed_facts: object = None,
+) -> tuple[tuple[DecisionRule, ...], tuple[SemanticProposal, ...]]:
+    """Project which electrodes an application uses and which column it reads.
+
+    The subclause states the electrode pairs as a list and, for each, which column of the value
+    tables the application reads and whose voltage keys the row. It states three exclusions --
+    the DVC As circuits its first item excepts, the circuit electrically connected to the
+    conductive accessible parts, and, inside the third item, the enhanced-protection type test
+    that reads the lower column where the higher one cannot be applied. All of that is one
+    selection, so it is one decision: a consumer that had to join a topology rule to a column
+    rule would be inventing the join.
+
+    Not exhaustive. A combination the subclause does not settle resolves to nothing and the
+    consumer blocks, which is the only safe answer for a rule whose output is a test voltage.
+
+    Two things the subclause states here are deliberately not part of this rule. The enclosure
+    condition and the foil requirement are test-setup obligations rather than electrode or
+    column selections, and the foil already has its own required item. And the permission to
+    fall back to the lower column where the higher one cannot be applied is carried as the
+    enhanced-protection row's reviewed statement rather than as an input: the source qualifies
+    it with what is *typically* impossible, which is an engineering judgement about a
+    particular assembly and not something a package can resolve.
+    """
+
+    label = "dielectric topology selection"
+    _require_own_fragment(fragment, identity, ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION, label)
+    _require_shape(fragment, _DIELECTRIC_TOPOLOGY_SHAPE, label)
+
+    allowed: Mapping[str, tuple[str, ...]] = {
+        "reference_kind": DIELECTRIC_REFERENCE_KINDS,
+        "test_classification": DIELECTRIC_TEST_CLASSIFICATIONS,
+    }
+    rule = DecisionRule(
+        id=ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION,
+        inputs=tuple(
+            DecisionInput(name=name, kind=kind, allowed_values=allowed.get(name, ()))
+            if kind == "categorical"
+            else DecisionInput(name=name, kind=kind)
+            for name, kind in _TOPOLOGY_INPUTS
+        ),
+        outputs=(
+            DecisionOutput(
+                name=_TOPOLOGY_COLUMN_OUTPUT,
+                kind="categorical",
+                allowed_values=(*DIELECTRIC_COLUMNS, DIELECTRIC_NOT_APPLICABLE),
+            ),
+            DecisionOutput(
+                name=_TOPOLOGY_ROW_OUTPUT,
+                kind="categorical",
+                allowed_values=(*DIELECTRIC_ROW_AXIS_CIRCUITS, DIELECTRIC_NOT_APPLICABLE),
+            ),
+        ),
+        rows=tuple(
+            DecisionRow(
+                matchers=tuple(
+                    matcher
+                    for (name, _kind), value in zip(_TOPOLOGY_INPUTS, conditions, strict=True)
+                    for matcher in _topology_matcher(name, value)
+                ),
+                values=(
+                    DecisionValue(name=_TOPOLOGY_COLUMN_OUTPUT, categorical=column),
+                    DecisionValue(name=_TOPOLOGY_ROW_OUTPUT, categorical=row_side),
+                ),
+                source=fragment.nodes[node].source,
+            )
+            for node, conditions, column, row_side in _TOPOLOGY_ROWS
+        ),
+        exhaustive=False,
+        source=fragment.source,
+    )
+    return (rule,), (_proposal(rule, "decision", fragment),)
+
+
 CLAUSE_PROJECTORS: Mapping[str, ClauseProjector] = {
     ids.TEST_IMPULSE_ALTERNATIVE: project_impulse_alternative,
+    ids.TEST_DIELECTRIC_DISCONNECTION: project_dielectric_disconnection,
+    ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION: project_dielectric_topology_selection,
+    ids.TEST_DIELECTRIC_APPLICATION_DURATION: project_dielectric_application_duration,
+    ids.TEST_DIELECTRIC_ACCEPTANCE: project_dielectric_acceptance,
     ids.TEST_WORKING_VOLTAGE_DETERMINATION: project_working_voltage_determination,
     ids.TEST_INTERNAL_SPD_MONITORING: project_internal_spd_monitoring,
     ids.TEST_PRECONDITIONING: project_preconditioning,
@@ -1067,6 +1438,11 @@ __all__ = [
     "CLASSIFICATION_MATRIX_ID",
     "CLASSIFICATION_MATRIX_SPECS",
     "CLAUSE_PROJECTORS",
+    "DIELECTRIC_COLUMNS",
+    "DIELECTRIC_NOT_APPLICABLE",
+    "DIELECTRIC_REFERENCE_KINDS",
+    "DIELECTRIC_ROW_AXIS_CIRCUITS",
+    "DIELECTRIC_TEST_CLASSIFICATIONS",
     "FOIL_APPLICABILITY_ID",
     "IMPULSE_ALTERNATIVE_AC_ID",
     "IMPULSE_ALTERNATIVE_DC_ID",
@@ -1083,6 +1459,10 @@ __all__ = [
     "matrix_grid",
     "project_accessible_surface_foil",
     "project_assembled_routine_exemption",
+    "project_dielectric_acceptance",
+    "project_dielectric_application_duration",
+    "project_dielectric_disconnection",
+    "project_dielectric_topology_selection",
     "project_impulse_alternative",
     "project_internal_spd_monitoring",
     "project_preconditioning",

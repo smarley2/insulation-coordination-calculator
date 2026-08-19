@@ -1,3 +1,9 @@
+import pytest
+
+from insulation_coordination.rules.importer.approval import (
+    ApprovalError,
+    _require_complete_inventory,
+)
 from insulation_coordination.rules.importer.iec62477_2022.inventory import (
     DEFERRED_SEMANTIC_IDS,
     REQUIRED_SOURCE_ITEMS,
@@ -7,10 +13,19 @@ from insulation_coordination.rules.importer.iec62477_2022.semantic_ids import (
     ALTITUDE_TEST_VOLTAGE_CORRECTION,
     DVC_FAULT_TIME_VOLTAGE,
     REQUIRED_SEMANTIC_IDS,
+    TEST_DIELECTRIC_ACCEPTANCE,
+    TEST_DIELECTRIC_APPLICATION_DURATION,
+    TEST_DIELECTRIC_DISCONNECTION,
+    TEST_DIELECTRIC_TOPOLOGY_SELECTION,
     TEST_IMPULSE_SELECTION,
     TEST_PARTIAL_DISCHARGE,
 )
 from insulation_coordination.rules.importer.recipes import RECIPES
+from insulation_coordination.rules.importer.review import (
+    inventory_report,
+    missing_inventory_items,
+)
+from tests.rules.importer.iec62477_2022.test_procedure_recipes import _draft
 
 
 def test_inventory_covers_every_required_id_exactly_once() -> None:
@@ -132,3 +147,54 @@ def test_annex_e_tables_are_two_required_items_with_their_own_consumers() -> Non
     assert items[ALTITUDE_CLEARANCE_CORRECTION].consumer_issue_ids == (36,)
     assert items[ALTITUDE_TEST_VOLTAGE_CORRECTION].expected_table == "Table E.2"
     assert items[ALTITUDE_TEST_VOLTAGE_CORRECTION].consumer_issue_ids == (37,)
+
+
+def test_the_voltage_test_body_is_four_required_items_with_their_own_clauses() -> None:
+    """Finding B3: Tables 28 and 29 carried the values and nothing carried the procedure.
+
+    Each row names the subclause it comes from, because a required item without a locator is
+    the same class of gap as the partial-discharge row above: completeness can report the item
+    missing but nobody can tell where to go and get it.
+    """
+    expected = {
+        TEST_DIELECTRIC_DISCONNECTION: ("5.2.3.4.3", "procedure"),
+        TEST_DIELECTRIC_TOPOLOGY_SELECTION: ("5.2.3.4.4", "decision"),
+        TEST_DIELECTRIC_APPLICATION_DURATION: ("5.2.3.4.5", "procedure"),
+        TEST_DIELECTRIC_ACCEPTANCE: ("5.2.3.4.6", "decision"),
+    }
+    items = {item.semantic_id: item for item in REQUIRED_SOURCE_ITEMS}
+
+    for semantic_id, (clause, kind) in expected.items():
+        item = items[semantic_id]
+        assert (item.expected_clause, item.expected_output_kind) == (clause, kind)
+        assert item.expected_table is None
+        assert item.consumer_issue_ids == (37,)
+
+
+def test_a_package_predating_the_voltage_test_body_is_blocked_by_name() -> None:
+    """Growing the required set makes the approved package incomplete, and that must be said.
+
+    Not a crash and not a silent pass: the four identifiers are declared by the recipe, so
+    completeness counts them, reports each as unapproved, and the approval path refuses with
+    them named. A maintainer re-extracts and re-reviews rather than wondering why nothing
+    changed.
+    """
+    draft = _draft()
+    statuses = {status.semantic_id: status for status in inventory_report(draft)}
+    body = (
+        TEST_DIELECTRIC_DISCONNECTION,
+        TEST_DIELECTRIC_TOPOLOGY_SELECTION,
+        TEST_DIELECTRIC_APPLICATION_DURATION,
+        TEST_DIELECTRIC_ACCEPTANCE,
+    )
+
+    for semantic_id in body:
+        status = statuses[semantic_id]
+        # Located, so it counts against completeness rather than being skipped as deferred.
+        assert status.located
+        assert not status.deferred
+        assert not (status.extracted or status.typed or status.approved)
+
+    assert set(body) <= {status.semantic_id for status in missing_inventory_items(draft)}
+    with pytest.raises(ApprovalError, match="required inventory item"):
+        _require_complete_inventory(draft)

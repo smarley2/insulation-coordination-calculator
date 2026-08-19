@@ -83,6 +83,14 @@ REQUIRED_SOURCE_ITEMS: tuple[RequiredSourceItem, ...] = (
     _item(ids.TEST_IMPULSE_ALTERNATIVE, "procedure", (37,), clause="5.2.3.3"),
     _item(ids.TEST_MAINS_DIELECTRIC_VALUES, "table", (37,), table="Table 28"),
     _item(ids.TEST_NON_MAINS_DIELECTRIC_VALUES, "table", (37,), table="Table 29"),
+    #: The AC or DC voltage test's own subclauses. Tables 28 and 29 above carry only its
+    #: values; without these four the package states no duration, no electrode topology, no
+    #: column-selection rule, no disconnection obligation and no acceptance criterion, which
+    #: is why every planned dielectric application recorded a missing duration.
+    _item(ids.TEST_DIELECTRIC_DISCONNECTION, "procedure", (37,), clause="5.2.3.4.3"),
+    _item(ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION, "decision", (37,), clause="5.2.3.4.4"),
+    _item(ids.TEST_DIELECTRIC_APPLICATION_DURATION, "procedure", (37,), clause="5.2.3.4.5"),
+    _item(ids.TEST_DIELECTRIC_ACCEPTANCE, "decision", (37,), clause="5.2.3.4.6"),
     _item(
         ids.TEST_PARTIAL_DISCHARGE,
         "procedure",

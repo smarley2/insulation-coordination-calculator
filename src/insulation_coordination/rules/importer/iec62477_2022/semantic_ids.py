@@ -50,6 +50,18 @@ TEST_IMPULSE_SELECTION = "iec62477_2022.test.impulse_selection"
 TEST_IMPULSE_ALTERNATIVE = "iec62477_2022.test.impulse_alternative"
 TEST_MAINS_DIELECTRIC_VALUES = "iec62477_2022.test.mains_dielectric_values"
 TEST_NON_MAINS_DIELECTRIC_VALUES = "iec62477_2022.test.non_mains_dielectric_values"
+#: The body of the AC or DC voltage test, which its two value tables above do not state. Four
+#: identifiers rather than one, because the source states four separately consumable things and
+#: a consumer asks for exactly one of them: what is disconnected and restored before the voltage
+#: is applied, which electrodes an application uses and which column of the value tables it
+#: reads, how long the voltage is held, and what counts as a pass. Siblings of the two value
+#: tables for the reason the reinforced treatments are siblings of their requirement tables:
+#: none of the four is a route of resolving a tabulated value. Each names its role rather than
+#: its subclause, so a renumbered edition does not rename the contract.
+TEST_DIELECTRIC_DISCONNECTION = "iec62477_2022.test.dielectric_disconnection"
+TEST_DIELECTRIC_TOPOLOGY_SELECTION = "iec62477_2022.test.dielectric_topology_selection"
+TEST_DIELECTRIC_APPLICATION_DURATION = "iec62477_2022.test.dielectric_application_duration"
+TEST_DIELECTRIC_ACCEPTANCE = "iec62477_2022.test.dielectric_acceptance"
 TEST_PARTIAL_DISCHARGE = "iec62477_2022.test.partial_discharge"
 TEST_WORKING_VOLTAGE_DETERMINATION = "iec62477_2022.test.working_voltage_determination"
 TEST_INTERNAL_SPD_MONITORING = "iec62477_2022.test.internal_spd_monitoring"
@@ -83,6 +95,10 @@ REQUIRED_SEMANTIC_IDS: frozenset[str] = frozenset(
         TEST_IMPULSE_ALTERNATIVE,
         TEST_MAINS_DIELECTRIC_VALUES,
         TEST_NON_MAINS_DIELECTRIC_VALUES,
+        TEST_DIELECTRIC_DISCONNECTION,
+        TEST_DIELECTRIC_TOPOLOGY_SELECTION,
+        TEST_DIELECTRIC_APPLICATION_DURATION,
+        TEST_DIELECTRIC_ACCEPTANCE,
         TEST_PARTIAL_DISCHARGE,
         TEST_WORKING_VOLTAGE_DETERMINATION,
         TEST_INTERNAL_SPD_MONITORING,
