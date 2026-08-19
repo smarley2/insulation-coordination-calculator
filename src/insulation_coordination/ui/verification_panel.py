@@ -419,8 +419,6 @@ class VerificationPanel(QWidget):
         self._layers_edit = QLineEdit()
         self._layers_edit.editingFinished.connect(self._on_solid_insulation_changed)
         choices.addRow("Layer count:", self._layers_edit)
-        self._separable_combo = self._tristate()
-        choices.addRow("Layers separately testable:", self._separable_combo)
         self._exempt_combo = self._tristate()
         choices.addRow("Material exempt from PD:", self._exempt_combo)
         self._material_edit = QLineEdit()
@@ -642,7 +640,6 @@ class VerificationPanel(QWidget):
             self._present_combo,
             self._thickness_edit,
             self._layers_edit,
-            self._separable_combo,
             self._exempt_combo,
             self._material_edit,
         )
@@ -660,12 +657,6 @@ class VerificationPanel(QWidget):
         declared = None if pair is None else pair.solid_insulation
         self._present_combo.setCurrentIndex(
             _index_of(self._present_combo, None if declared is None else declared.present)
-        )
-        self._separable_combo.setCurrentIndex(
-            _index_of(
-                self._separable_combo,
-                None if declared is None else declared.separately_testable_layers,
-            )
         )
         self._exempt_combo.setCurrentIndex(
             _index_of(self._exempt_combo, None if declared is None else declared.material_pd_exempt)
@@ -710,7 +701,6 @@ class VerificationPanel(QWidget):
                 minimum_thickness_mm=_decimal(self._thickness_edit.text()),
                 material_pd_exempt=self._exempt_combo.currentData(),
                 layer_count=_integer(self._layers_edit.text()),
-                separately_testable_layers=self._separable_combo.currentData(),
                 material_reference=self._material_edit.text().strip() or None,
             )
         except (InvalidOperation, ValueError) as error:

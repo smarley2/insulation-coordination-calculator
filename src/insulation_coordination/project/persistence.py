@@ -20,7 +20,15 @@ from insulation_coordination.domain.enums import (
 from insulation_coordination.domain.project import Project
 from insulation_coordination.domain.verification import ProtectionImplementation
 
-PROJECT_SCHEMA_VERSION = 7
+PROJECT_SCHEMA_VERSION = 8
+
+# The solid-insulation key the version 7 -> 8 migration drops. It recorded whether a declared
+# construction's layers could be tested one at a time, and no clause of the standard this
+# application implements asks that: the applicability clause of the partial-discharge test asks
+# only how many layers there are. Unlike every other step in the chain this one removes a field
+# rather than introducing one, so it carries no guard - a version-7 document is *expected* to
+# hold this key, and the whole point of the step is to drop it.
+SEPARABLE_LAYERS_KEY = "separately_testable_layers"
 
 # The project-level key the version 6 -> 7 migration introduces. Guarded like every other
 # introduced key: a version-6 document already carrying it was migrated once or hand-edited,
@@ -192,6 +200,22 @@ def migrate_project_document(raw: dict[str, object]) -> dict[str, object]:
         # to migrate to - the impulse test is the source's own default, but a project that
         # never saw the choice has not selected it.
         version = 7
+    if version == 7:
+        # Same defensive shape as the version 3 and 5 steps: a ``pairs`` that is not a list,
+        # or a ``solid_insulation`` that is not an object, is left exactly as it is for
+        # ``Project.model_validate`` to reject with a proper load error.
+        declared_field = document.get("pairs", [])
+        declaring_pairs: list[object] = declared_field if isinstance(declared_field, list) else []
+        for entry in declaring_pairs:
+            if not isinstance(entry, dict):
+                continue
+            solid = entry.get("solid_insulation")
+            if isinstance(solid, dict):
+                # Dropped, not folded into ``notes``: the answer was recorded against a
+                # question nothing asks, and moving it into free text would put it back in
+                # front of a reviewer as though something still depended on it.
+                solid.pop(SEPARABLE_LAYERS_KEY, None)
+        version = 8
     if version != PROJECT_SCHEMA_VERSION:
         raise ProjectVersionError(f"Project schema {declared} is unsupported")
     document["schema_version"] = PROJECT_SCHEMA_VERSION

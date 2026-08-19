@@ -18,9 +18,6 @@ from uuid import UUID
 import pytest
 
 from insulation_coordination.calculation.engine import derive_project_supply
-from insulation_coordination.calculation.partial_discharge import (
-    HIGH_FREQUENCY_REVIEW_WARNING,
-)
 from insulation_coordination.calculation.verification_plan import (
     SPD_MONITORING_OWED_WARNING,
     VerificationPlan,
@@ -111,17 +108,24 @@ def dielectric_family(application: TestApplication) -> str:
 # --- wireless charger -------------------------------------------------------------------
 
 
-def test_a_high_frequency_project_raises_the_part_4_review(package: RulePackage) -> None:
-    """Above the boundary the partial-discharge gate names, the plan must not settle quietly."""
+def test_a_basic_insulation_project_is_outside_the_partial_discharge_clause(
+    package: RulePackage,
+) -> None:
+    """Every pair of this charger selected basic insulation, and the clause names two others.
+
+    The review this project also owes for operating above the high-frequency boundary is raised
+    where its insulation is dimensioned, against the annex that governs clearance, creepage
+    distance and solid insulation together - see ``tests/calculation/test_engine.py``. It is
+    not a property of the partial-discharge test, whose procedure is specified at power
+    frequency.
+    """
 
     plan = build(wireless_charger(), package)
 
-    assert HIGH_FREQUENCY_REVIEW_WARNING in {warning.code for warning in plan.warnings}
     discharge = rows(plan, TestKind.PARTIAL_DISCHARGE)
     assert discharge
-    assert all(
-        item.applicability is TestApplicability.ENGINEERING_INPUT_REQUIRED for item in discharge
-    )
+    assert all(item.applicability is TestApplicability.NOT_APPLICABLE for item in discharge)
+    assert all(item.unresolved_inputs == () for item in discharge)
 
 
 def test_a_coupling_nobody_verified_lets_no_impulse_through(package: RulePackage) -> None:

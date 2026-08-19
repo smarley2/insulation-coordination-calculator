@@ -4,7 +4,21 @@ Applicability only. This module never calculates a thickness, never approves one
 produces a partial-discharge test voltage of its own: what it decides is whether the test is
 owed, and what is still missing before that can be said.
 
-Three properties are why it is shaped this way.
+*The scope is the clause's, and the procedure is Table 30's.* Clause 4.4.7.10.3 is what says
+which pairs this test reaches: it asks the partial-discharge test of the solid insulation of
+double insulation and of reinforced insulation, in addition to the impulse and the AC or DC
+test, on the two conditions it states about the recurring-peak working voltage across the
+insulation and the electric stress derived from it. Table 30 says how the test is performed.
+Reading applicability off the procedure is how a pair that the clause never reached came to be
+told a test was owed of it, so the two are asked in that order here: the selected protective means
+first, and the procedure only for pairs the clause scopes.
+
+*A pair the clause does not reach is not applicable rather than unresolved.* Where the project
+already holds the deciding input - the engineer's own selection of a protective means that is
+neither double nor reinforced insulation - answering "required, and here is what is missing"
+would ask for an input that could not change the answer. Ignorance is still reported as
+ignorance: an unselected means, and an undeclared thickness, layer count or material, are all
+engineering inputs.
 
 *Nothing unknown becomes "not required".* A pair that has declared nothing about its solid
 insulation gets :attr:`~insulation_coordination.domain.verification.TestApplicability.
@@ -30,11 +44,21 @@ the package decided something this application decided.
 .. note::
 
    **The gate's input has no home in the project model.** ``partial_discharge_test_voltage_
-   declared`` is a declaration about the test, and schema 6 records solid-insulation thickness,
-   layers and material but no test voltage. Until a schema bump adds one, an established
+   declared`` is a declaration about the test, and the project records solid-insulation
+   thickness, layers and material but no test voltage. Until a schema bump adds one, an established
    recurring-peak working voltage stands in for it: that is the quantity the test voltage is
    set from, so a pair that has one has the input the test needs and a pair that has none does
    not. The substitution is stated on every assessment it decides.
+
+.. note::
+
+   **The clause's two conditions have no rule in the approved package.** 4.4.7.10.3 states
+   them, and the package's own applicability route is projected from Table 30's test-voltage
+   row rather than from that clause, so nothing here can be asked whether a pair exceeds them.
+   The comparison is therefore recorded as a named unresolved input on every pair the clause
+   scopes, which is why a scoped pair is never settled as required here. Restating the two
+   values as constants would put licensed figures in application code and would let this
+   module decide an applicability the standard reserves to the rules it states.
 """
 
 from __future__ import annotations
@@ -42,7 +66,6 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Final
 
-from insulation_coordination.calculation.high_frequency import PART4_FREQUENCY_THRESHOLD_HZ
 from insulation_coordination.calculation.verification_rules import (
     PARTIAL_DISCHARGE_GATE_INPUT,
     PARTIAL_DISCHARGE_GATE_OUTPUT,
@@ -54,21 +77,37 @@ from insulation_coordination.domain.project import EffectiveCase, PairCase
 from insulation_coordination.domain.quantities import DecimalValue
 from insulation_coordination.domain.trace import CalculationWarning, Quantity, TraceStep
 from insulation_coordination.domain.verification import (
+    ProtectionImplementation,
     SolidInsulationTestData,
     TestApplicability,
+    TestClassification,
 )
 from insulation_coordination.rules.evaluator import evaluate_decision
 
-#: Raised above the frequency at which IEC 60664-4 takes over. Partial-discharge behaviour is
-#: one of the things that part treats differently, and this application dimensions nothing
-#: from it: the warning exists so the reader knows a review is owed, not so a plan can skip it.
-HIGH_FREQUENCY_REVIEW_WARNING: Final = "verification_partial_discharge_high_frequency_review"
+#: The clause identifier this module's scope, classification and threshold statements all come
+#: from. Named once so a reader of any of the sentences below can find the one clause behind
+#: them, and so none of them has to spell it out twice.
+APPLICABILITY_CLAUSE: Final = "4.4.7.10.3"
 
-#: The trace identifier of this application's own arithmetic on the declared thickness. Not a
-#: semantic rule id: dividing a working voltage by a thickness is this module's sum, and
-#: labelling it with a package identifier would credit the package with a figure it never
-#: stated. Reported so a reviewer can see the stress the insulation is under; nothing here
-#: compares it against anything.
+#: The two constructions the applicability clause is scoped to, which is what its own heading
+#: names. Nothing else reaches it: the remaining means of enhanced protection are not solid
+#: insulation of double or reinforced insulation, and basic, supplementary and functional
+#: insulation are routed by 4.4.7.10.1 to the sibling clause, which asks for no
+#: partial-discharge test at all.
+IN_SCOPE_IMPLEMENTATIONS: Final[frozenset[ProtectionImplementation]] = frozenset(
+    {
+        ProtectionImplementation.DOUBLE_INSULATION,
+        ProtectionImplementation.REINFORCED_INSULATION,
+    }
+)
+
+#: The trace identifier of the electric stress the applicability clause defines - the
+#: recurring-peak working voltage over the distance between the two parts of different
+#: potential, which for a declared construction is its minimum thickness. Not a semantic rule
+#: id: the quotient is this module's sum, and labelling it with a package identifier would
+#: credit the package with a figure it never stated. Reported because it is one of the two
+#: quantities the clause's conditions are about; nothing here compares it against anything,
+#: because no approved rule states what to compare it against.
 ELECTRIC_STRESS_TRACE_ID: Final = "verification.partial_discharge_electric_stress"
 #: The trace identifier of the substitution the module note describes.
 GATE_INPUT_TRACE_ID: Final = "verification.partial_discharge_gate_input"
@@ -91,8 +130,17 @@ class PartialDischargeOutcome(FrozenModel):
     recurring_peak_v: DecimalValue | None = None
     #: The recurring peak over the declared minimum thickness. Reported, never a criterion.
     electric_stress_v_per_mm: DecimalValue | None = None
+    #: What kind of test the applicability clause states this is, for a pair it scopes whose
+    #: layer count is declared. Empty for every other pair: a classification is a statement
+    #: about a test that is owed, and the clause's sample-test condition is asked about a
+    #: layer count nobody supplied.
+    classifications: tuple[TestClassification, ...] = ()
     preparation_steps: tuple[str, ...] = ()
     unresolved_inputs: tuple[str, ...] = ()
+    #: Nothing raises one today. The high-frequency review this assessment used to carry now
+    #: belongs to the insulation design, which is where the annex that owns that boundary
+    #: applies; the field stays because the plan collects it and a partial-discharge warning
+    #: that is genuinely about the test has somewhere to go.
     warnings: tuple[CalculationWarning, ...] = ()
     source_rule_ids: tuple[str, ...] = ()
     trace_steps: tuple[TraceStep, ...] = ()
@@ -111,10 +159,19 @@ def assess_partial_discharge(
     the governing approved evidence, or the figure recorded on the pair, whichever the
     evidence service resolved. It is passed in rather than resolved here so that one pair has
     one working voltage across the whole plan, whatever reads it.
+
+    ``effective`` is the resolved calculation case of the pair. Nothing is read off it today:
+    the review a pair above the high-frequency boundary owes is raised where the insulation is
+    dimensioned, not against this test, because the annex that owns that boundary governs
+    clearance, creepage distance and solid insulation alike while this procedure is specified
+    at power frequency. The parameter stays because the caller has it and the assessment is the
+    natural place for a further per-pair stress to be read from.
     """
 
+    out_of_scope = _out_of_scope(pair, gated, recurring_peak_v)
+    if out_of_scope is not None:
+        return out_of_scope
     declared = pair.solid_insulation
-    warnings = _high_frequency_warnings(pair, effective)
     if declared is None or declared.present is None:
         return PartialDischargeOutcome(
             applicability=TestApplicability.ENGINEERING_INPUT_REQUIRED,
@@ -126,7 +183,6 @@ def assess_partial_discharge(
                     "answered."
                 ),
             ),
-            warnings=warnings,
         )
     if not declared.present:
         return PartialDischargeOutcome(
@@ -138,7 +194,6 @@ def assess_partial_discharge(
                     "conductors, so there is none to verify for partial discharge."
                 ),
             ),
-            warnings=warnings,
         )
     if declared.material_pd_exempt:
         # The model refuses a claimed exemption without a reference, so there is one to name.
@@ -152,28 +207,151 @@ def assess_partial_discharge(
                     "is the engineer's declaration and is reproduced here, not verified."
                 ),
             ),
-            warnings=warnings,
         )
     stress, stress_steps = _electric_stress(declared, recurring_peak_v)
     unresolved = list(_undeclared(pair, declared))
     applicability, gate_steps, gate_unresolved = _gate_outcome(pair, gated, recurring_peak_v)
     unresolved.extend(gate_unresolved)
-    if not gated.procedure.classifications:
-        unresolved.append(
-            f"The active package's {gated.procedure.id} states no test classification, so "
-            f"whether pair {pair.key} owes this as a type test or a sample test is unresolved."
-        )
+    unresolved.append(_threshold_gap(pair, gated))
+    # Unconditional while that gap line is, which is until the clause's own conditions have a
+    # rule. The gate is still asked and its answer still governs the moment they do, which is
+    # why this stays a test of the list rather than a straight assignment.
     if unresolved:
         applicability = TestApplicability.ENGINEERING_INPUT_REQUIRED
     return PartialDischargeOutcome(
         applicability=applicability,
         recurring_peak_v=recurring_peak_v,
         electric_stress_v_per_mm=stress,
-        preparation_steps=_layer_steps(declared),
+        classifications=_classifications(declared),
+        preparation_steps=_classification_steps(declared),
         unresolved_inputs=tuple(unresolved),
-        warnings=warnings,
         source_rule_ids=(gated.procedure.id, gated.applicability.id),
         trace_steps=(*stress_steps, *gate_steps),
+    )
+
+
+def _out_of_scope(
+    pair: PairCase, gated: GatedProcedure, recurring_peak_v: Decimal | None
+) -> PartialDischargeOutcome | None:
+    """The answer for a pair the applicability clause does not reach, or ``None`` if it does.
+
+    Read off the protective means the engineer selected, which is the only thing the clause's
+    scope turns on. One of the three answers here is settled and two are not, and the
+    difference is whether the project stated something: a means that is not double or
+    reinforced insulation is a statement that puts the pair outside the clause, whereas no
+    means at all - and a means approved by a review this application never saw - is nobody
+    having said yet which clause applies.
+
+    Every answer carries the procedure identifier, because that is the inventory row against
+    which the applicability clause is recorded: the sentences below restate what that clause
+    obliges, and a restatement with no rule behind it is this application's own opinion.
+    """
+
+    implementation = pair.protection_implementation
+    if implementation in IN_SCOPE_IMPLEMENTATIONS:
+        return None
+    if implementation is None:
+        return PartialDischargeOutcome(
+            applicability=TestApplicability.ENGINEERING_INPUT_REQUIRED,
+            recurring_peak_v=recurring_peak_v,
+            unresolved_inputs=(
+                (
+                    f"Pair {pair.key} has no protective means selected, and clause "
+                    f"{APPLICABILITY_CLAUSE} scopes the partial-discharge test by the means: it "
+                    "asks it of the solid insulation of double insulation and of reinforced "
+                    "insulation. Until a means is selected, whether the test applies cannot be "
+                    "answered."
+                ),
+            ),
+            source_rule_ids=(gated.procedure.id,),
+        )
+    if implementation is ProtectionImplementation.OTHER_REVIEWED_MEANS:
+        return PartialDischargeOutcome(
+            applicability=TestApplicability.ENGINEERING_INPUT_REQUIRED,
+            recurring_peak_v=recurring_peak_v,
+            unresolved_inputs=(
+                (
+                    f"Pair {pair.key} is protected by other reviewed means, and nothing "
+                    "recorded here says whether that construction is realised as the solid "
+                    f"insulation of double or reinforced insulation, which is what clause "
+                    f"{APPLICABILITY_CLAUSE} is scoped to. Whether the partial-discharge test "
+                    "applies belongs to the review that approved the means."
+                ),
+            ),
+            source_rule_ids=(gated.procedure.id,),
+        )
+    return PartialDischargeOutcome(
+        applicability=TestApplicability.NOT_APPLICABLE,
+        recurring_peak_v=recurring_peak_v,
+        preparation_steps=(
+            (
+                f"Pair {pair.key} is protected by {implementation.value}, and clause "
+                f"{APPLICABILITY_CLAUSE} asks the partial-discharge test only of the solid "
+                "insulation of double insulation and of reinforced insulation. The pair is "
+                "outside that clause by rule, so no input of this pair's could make the test "
+                "apply to it."
+            ),
+        ),
+        source_rule_ids=(gated.procedure.id,),
+    )
+
+
+def _threshold_gap(pair: PairCase, gated: GatedProcedure) -> str:
+    """The one thing about applicability the approved package cannot be asked.
+
+    Stated per pair rather than once per plan because it is the reason *this* pair's answer is
+    unsettled, and a reviewer reads the reason beside the answer.
+    """
+
+    return (
+        f"Clause {APPLICABILITY_CLAUSE} asks the partial-discharge test of pair {pair.key} only "
+        "where both the recurring-peak working voltage across the insulation and the electric "
+        "stress derived from it exceed the values that clause states. The active package states "
+        f"no rule for either condition - its {gated.applicability.id} is projected from the "
+        "procedure's test-voltage row and answers a different question - so the comparison is "
+        "an engineering judgement recorded here rather than made here. Both quantities are "
+        "reported on this assessment."
+    )
+
+
+def _classifications(declared: SolidInsulationTestData) -> tuple[TestClassification, ...]:
+    """What kind of test the applicability clause states this is for ``declared``.
+
+    The clause asks it as a type test on the components, sub-assemblies and printed wiring
+    boards, and *in addition* as a sample test where the insulation consists of a single layer
+    of material. So the type test follows from the pair being in scope at all and the sample
+    test follows from the declared layer count - which is why an undeclared layer count leaves
+    the classification empty rather than assuming a construction.
+    """
+
+    if declared.layer_count is None:
+        return ()
+    if declared.layer_count == 1:
+        return (TestClassification.TYPE, TestClassification.SAMPLE)
+    return (TestClassification.TYPE,)
+
+
+def _classification_steps(declared: SolidInsulationTestData) -> tuple[str, ...]:
+    """Why the classification above came out the way it did, for the schedule to carry."""
+
+    classifications = _classifications(declared)
+    if not classifications:
+        return ()
+    if TestClassification.SAMPLE in classifications:
+        return (
+            (
+                "The insulation is declared as a single layer of material, so clause "
+                f"{APPLICABILITY_CLAUSE} asks a sample test in addition to the type test on "
+                "the components, sub-assemblies and printed wiring boards."
+            ),
+        )
+    return (
+        (
+            f"The insulation is declared as {declared.layer_count} layers, so clause "
+            f"{APPLICABILITY_CLAUSE} asks the type test on the components, sub-assemblies and "
+            "printed wiring boards; its additional sample test is conditioned on a single "
+            "layer of material and is not owed here."
+        ),
     )
 
 
@@ -287,8 +465,13 @@ def _electric_stress(
             output=Quantity(value=stress, unit=_STRESS_UNIT),
             unrounded_value=stress,
             reason=(
-                "The electric stress in the declared solid insulation, reported for review. "
-                "This application neither dimensions nor approves a thickness."
+                f"The electric stress clause {APPLICABILITY_CLAUSE} defines: the "
+                "recurring-peak working voltage over the distance between the two parts of "
+                "different potential, which for a declared construction is its minimum "
+                "thickness. "
+                "Reported because the clause's second condition is about it; nothing here "
+                "compares it against a value, and this application neither dimensions nor "
+                "approves a thickness."
             ),
         ),
     )
@@ -310,14 +493,8 @@ def _undeclared(pair: PairCase, declared: SolidInsulationTestData) -> tuple[str,
         )
     if declared.layer_count is None:
         missing.append(
-            f"Pair {pair.key} declares solid insulation but no layer count, so how the test "
-            "is applied to it is unresolved."
-        )
-    elif declared.layer_count > 1 and declared.separately_testable_layers is None:
-        missing.append(
-            f"Pair {pair.key} declares {declared.layer_count} insulation layers but does not "
-            "say whether they can be tested separately, so how the test is applied to them "
-            "is unresolved."
+            f"Pair {pair.key} declares solid insulation but no layer count, so whether clause "
+            f"{APPLICABILITY_CLAUSE}'s additional sample test is owed of it is unresolved."
         )
     if declared.material_pd_exempt is None:
         missing.append(
@@ -327,61 +504,11 @@ def _undeclared(pair: PairCase, declared: SolidInsulationTestData) -> tuple[str,
     return tuple(missing)
 
 
-def _layer_steps(declared: SolidInsulationTestData) -> tuple[str, ...]:
-    """How a declared multi-layer construction is presented to the test."""
-
-    if (
-        declared.layer_count is None
-        or declared.layer_count <= 1
-        or (declared.separately_testable_layers is None)
-    ):
-        return ()
-    if declared.separately_testable_layers:
-        return (
-            (
-                f"The {declared.layer_count} declared insulation layers can be tested "
-                "separately; test each layer as well as the assembled construction."
-            ),
-        )
-    return (
-        (
-            f"The {declared.layer_count} declared insulation layers cannot be tested "
-            "separately, so the test is applied to the assembled construction and no result "
-            "is attributable to one layer."
-        ),
-    )
-
-
-def _high_frequency_warnings(
-    pair: PairCase, effective: EffectiveCase
-) -> tuple[CalculationWarning, ...]:
-    """The review a pair above the Part 4 frequency owes, whatever else was concluded.
-
-    Attached to every outcome, including the settled ones: a pair that declared no solid
-    insulation at this frequency is still a pair whose partial-discharge behaviour was
-    assessed against a part of the standard this application does not apply.
-    """
-
-    frequency = effective.frequency_hz.value
-    if frequency is None or frequency <= PART4_FREQUENCY_THRESHOLD_HZ:
-        return ()
-    return (
-        CalculationWarning(
-            code=HIGH_FREQUENCY_REVIEW_WARNING,
-            message=(
-                f"Pair {pair.key} operates at {frequency} Hz, above the "
-                f"{PART4_FREQUENCY_THRESHOLD_HZ} Hz boundary where IEC 60664-4 governs. Its "
-                "partial-discharge assessment needs review under that part, which this "
-                "application does not apply."
-            ),
-        ),
-    )
-
-
 __all__ = [
+    "APPLICABILITY_CLAUSE",
     "ELECTRIC_STRESS_TRACE_ID",
     "GATE_INPUT_TRACE_ID",
-    "HIGH_FREQUENCY_REVIEW_WARNING",
+    "IN_SCOPE_IMPLEMENTATIONS",
     "PartialDischargeOutcome",
     "assess_partial_discharge",
 ]

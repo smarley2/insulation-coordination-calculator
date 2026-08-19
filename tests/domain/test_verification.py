@@ -302,6 +302,9 @@ def test_a_claimed_material_exemption_names_its_reference() -> None:
     with pytest.raises(ValidationError, match="material reference"):
         SolidInsulationTestData(material_pd_exempt=True)
 
+    with pytest.raises(ValidationError, match="material reference"):
+        SolidInsulationTestData(material_pd_exempt=True, material_reference="   ")
+
     exempt = SolidInsulationTestData(
         material_pd_exempt=True, material_reference="synthetic material sheet"
     )
