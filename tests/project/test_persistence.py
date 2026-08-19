@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from insulation_coordination.domain.enums import InsulationType, ReviewState
 from insulation_coordination.domain.project import (
     GroupSplit,
+    ImpulseVerificationMethod,
     NetClass,
     OverrideValue,
     PairCase,
@@ -50,6 +51,7 @@ from insulation_coordination.domain.verification import (
     VoltageQuantityKind,
 )
 from insulation_coordination.project.persistence import (
+    IMPULSE_VERIFICATION_KEY,
     NET_TOPOLOGY_KEYS,
     PAIR_VERIFICATION_KEYS,
     PROJECT_SCHEMA_VERSION,
@@ -130,8 +132,15 @@ def topology_migration_project() -> Project:
     )
 
 
+def _without_fields_added_since_v6(document: dict[str, object]) -> dict[str, object]:
+    """Strip everything the version 6 -> 7 migration introduces, in place."""
+    document.pop(IMPULSE_VERIFICATION_KEY, None)
+    return document
+
+
 def _without_fields_added_since_v5(document: dict[str, object]) -> dict[str, object]:
-    """Strip everything the version 5 -> 6 migration introduces, in place."""
+    """Strip everything the migrations after version 5 introduce, in place."""
+    _without_fields_added_since_v6(document)
     document.pop("voltage_evidence", None)
     for pair in document["pairs"]:  # type: ignore[union-attr]
         for key in PAIR_VERIFICATION_KEYS:
@@ -157,6 +166,10 @@ def _as_schema_v3_document(project: Project) -> dict[str, object]:
 
 def _as_schema_v5_document(project: Project) -> dict[str, object]:
     return _without_fields_added_since_v5({"schema_version": 5, **project.model_dump(mode="json")})
+
+
+def _as_schema_v6_document(project: Project) -> dict[str, object]:
+    return _without_fields_added_since_v6({"schema_version": 6, **project.model_dump(mode="json")})
 
 
 def _pairs_without_verification_keys(document: dict[str, object]) -> list[dict[str, object]]:
@@ -1085,6 +1098,71 @@ def test_verification_state_round_trips_unchanged(
     assert reloaded == verification_project
     save_project_atomic(path, reloaded)
     assert load_project(path) == verification_project
+
+
+def test_schema_v6_opens_with_no_impulse_verification_method_chosen(
+    verification_project: Project, tmp_path: Path
+) -> None:
+    """A project that never saw the choice has not made it, and nothing else is rewritten."""
+    document = _as_schema_v6_document(verification_project)
+    original = deepcopy(document)
+    path = tmp_path / "v6.icproj"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    loaded = load_project(path)
+
+    assert loaded == verification_project
+    assert loaded.impulse_verification_method is None
+    migrated = migrate_project_document(original)
+    assert set(migrated) - set(original) == set()
+    for key, value in original.items():
+        if key == "schema_version":
+            continue
+        assert migrated[key] == value, f"migration changed the pre-existing key {key!r}"
+
+
+def test_the_migration_leaves_the_method_absent_rather_than_nulled(
+    verification_project: Project,
+) -> None:
+    """The 4 -> 5 and 5 -> 6 steps left their optional records absent; so does this one.
+
+    A written null would say a decision was recorded, and the value recorded was nothing.
+    """
+    migrated = migrate_project_document(_as_schema_v6_document(verification_project))
+
+    assert IMPULSE_VERIFICATION_KEY not in migrated
+    assert migrated["schema_version"] == PROJECT_SCHEMA_VERSION
+
+
+def test_schema_v6_already_carrying_an_impulse_verification_method_is_rejected(
+    verification_project: Project, tmp_path: Path
+) -> None:
+    document = _as_schema_v6_document(verification_project)
+    document[IMPULSE_VERIFICATION_KEY] = ImpulseVerificationMethod.AC_VOLTAGE_TEST.value
+    original = json.dumps(document)
+    path = tmp_path / "mislabeled-v6.icproj"
+    path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ProjectVersionError, match=IMPULSE_VERIFICATION_KEY):
+        load_project(path)
+
+    assert path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize("method", list(ImpulseVerificationMethod))
+def test_a_chosen_impulse_verification_method_round_trips_unchanged(
+    verification_project: Project, tmp_path: Path, method: ImpulseVerificationMethod
+) -> None:
+    project = verification_project.model_copy(update={"impulse_verification_method": method})
+    path = tmp_path / "chosen.icproj"
+
+    save_project_atomic(path, project)
+    reloaded = load_project(path)
+
+    assert reloaded.impulse_verification_method is method
+    assert reloaded == project
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved[IMPULSE_VERIFICATION_KEY] == method.value
 
 
 def test_voltage_evidence_ids_must_be_unique(verification_project: Project) -> None:

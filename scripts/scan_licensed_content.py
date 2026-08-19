@@ -7,11 +7,13 @@ identifiers, literal factors in calculation code, source-like recipe text,
 value-plus-table-identifier pairings in documents) and leaves classification to
 human review.
 
-Report-only by default: findings are printed and the exit code stays 0 so the
-scanner can run before the issue-40 content migrations finish. ``--strict``
-exits non-zero on findings and is intended for CI once the tree is clean.
+Report-only by default: findings are printed and the exit code stays 0.
+``--strict`` is the CI gate: it compares what the tree produces now against the
+reviewed baseline recorded in ``docs/licensed-content-audit.md`` and exits
+non-zero when the two disagree, in either direction. ``--update-baseline``
+rewrites that record after a human has classified the change.
 
-Usage: python scripts/scan_licensed_content.py [ROOT] [--strict]
+Usage: python scripts/scan_licensed_content.py [ROOT] [--strict|--update-baseline]
 """
 
 from __future__ import annotations
@@ -73,6 +75,29 @@ ALLOWLIST = {
         "the audit inventory lists finding line numbers and categories, never licensed content"
     ),
 }
+
+
+# The reviewed baseline lives inside the audit inventory rather than in a file of
+# its own, so the counts and the prose that classifies them cannot drift apart.
+# Only the fenced block below the marker is machine-read; the surrounding prose is
+# never parsed.
+BASELINE_DOCUMENT = "docs/licensed-content-audit.md"
+BASELINE_MARKER = (
+    "<!-- scanner-baseline: regenerate with "
+    "`uv run python scripts/scan_licensed_content.py . --update-baseline` -->"
+)
+BASELINE_BLOCK = re.compile(
+    r"(?ms)^" + re.escape(BASELINE_MARKER) + r"\n\n```text\n(?P<body>.*?)^```$"
+)
+
+# A passing gate is not a clean tree. Printed on every run, in CI too.
+BLIND_SPOTS = """\
+A clean scan is not a clean tree. This scanner reads tracked files only, so an
+untracked or unstaged copy is never looked at; it matches numerals, so a licensed
+value written as a word is invisible to it; and it pairs a value with a nearby
+table or clause identifier, so a bare value in a sentence is not flagged. All
+three classes have leaked past it before and were found by reading. Review by
+reading is still required."""
 
 
 class Finding(NamedTuple):
@@ -360,16 +385,82 @@ def _synthetic_iec_source(relative: Path, text: str) -> Iterator[Finding]:
             )
 
 
+def finding_counts(findings: Iterable[Finding]) -> Counter[tuple[str, str]]:
+    """Findings keyed by path and category.
+
+    Deliberately not by line number: findings move whenever a file above them is
+    edited, and a baseline keyed on line numbers would fail on every unrelated
+    edit. Path plus category plus a count is stable under such moves and still
+    changes the moment a finding appears or disappears.
+    """
+    return Counter((finding.path.as_posix(), finding.category) for finding in findings)
+
+
+def read_baseline(root: Path) -> Counter[tuple[str, str]]:
+    """The reviewed counts recorded in the audit inventory; empty when absent."""
+    document = root / BASELINE_DOCUMENT
+    if not document.is_file():
+        return Counter()
+    match = BASELINE_BLOCK.search(document.read_text(encoding="utf-8"))
+    if match is None:
+        return Counter()
+    recorded: Counter[tuple[str, str]] = Counter()
+    for line in match.group("body").splitlines():
+        if line.strip():
+            path, category, count = line.split()
+            recorded[(path, category)] = int(count)
+    return recorded
+
+
+def render_baseline(counts: Counter[tuple[str, str]]) -> str:
+    return "".join(
+        f"{path} {category} {counts[path, category]}\n"
+        for path, category in sorted(counts)
+        if counts[path, category]
+    )
+
+
+def write_baseline(root: Path, counts: Counter[tuple[str, str]]) -> None:
+    document = root / BASELINE_DOCUMENT
+    text = document.read_text(encoding="utf-8")
+    match = BASELINE_BLOCK.search(text)
+    if match is None:
+        raise SystemExit(f"no scanner-baseline block found in {BASELINE_DOCUMENT}")
+    start, end = match.span("body")
+    document.write_text(text[:start] + render_baseline(counts) + text[end:], encoding="utf-8")
+
+
+def baseline_drift(
+    observed: Counter[tuple[str, str]], recorded: Counter[tuple[str, str]]
+) -> tuple[str, ...]:
+    """One line per path/category whose count moved away from the baseline."""
+    lines = []
+    for key in sorted(set(observed) | set(recorded)):
+        now, before = observed[key], recorded[key]
+        if now == before:
+            continue
+        path, category = key
+        verb = "new" if now > before else "gone"
+        lines.append(f"{path}: {category}: {before} reviewed, {now} found ({verb})")
+    return tuple(lines)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", nargs="?", default=".", help="tree to scan")
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="exit non-zero when findings exist (for CI once the tree is clean)",
+        help="exit non-zero when the findings differ from the reviewed baseline",
+    )
+    parser.add_argument(
+        "--update-baseline",
+        action="store_true",
+        help=f"rewrite the reviewed baseline in {BASELINE_DOCUMENT}",
     )
     arguments = parser.parse_args(argv)
-    findings = scan_tree(Path(arguments.root))
+    root = Path(arguments.root)
+    findings = scan_tree(root)
     for finding in findings:
         print(
             f"{finding.path.as_posix()}:{finding.line}: {finding.category}: {finding.description}"
@@ -378,7 +469,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     total = sum(counts.values())
     summary = ", ".join(f"{category}={count}" for category, count in sorted(counts.items()))
     print(f"{total} finding(s){': ' + summary if summary else ''}")
-    return 1 if arguments.strict and findings else 0
+    print(BLIND_SPOTS)
+
+    observed = finding_counts(findings)
+    if arguments.update_baseline:
+        write_baseline(root, observed)
+        print(f"baseline in {BASELINE_DOCUMENT} updated")
+        return 0
+    if not arguments.strict:
+        return 0
+    drift = baseline_drift(observed, read_baseline(root))
+    if not drift:
+        print("baseline matched: every finding is a reviewed one")
+        return 0
+    print("\nfindings differ from the reviewed baseline:")
+    for line in drift:
+        print(f"  {line}")
+    print(
+        "\nClassify each line above in "
+        f"{BASELINE_DOCUMENT}, then re-run with --update-baseline.\n"
+        "A 'gone' line means a reviewed finding was resolved: record the resolution "
+        "in the inventory so it does not silently rot."
+    )
+    return 1
 
 
 if __name__ == "__main__":

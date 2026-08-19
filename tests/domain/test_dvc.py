@@ -362,6 +362,30 @@ def test_protection_relationships_are_read_from_the_package_for_the_class() -> N
     assert len({item.label for item in summary.relationships}) == 2
 
 
+def test_every_cell_carries_the_selector_tokens_its_label_was_built_from() -> None:
+    """A consumer that selects a column needs the reading, not the prose assembled from it.
+
+    The label drops a dimension that does not apply, so nothing can be recovered from it -
+    and a verification plan choosing which column answers for a pair has to select on the
+    package's own tokens or it would be reading a second Table 3 of its own.
+    """
+    service = DvcGuidanceService(synthetic_dvc_rule_package())
+    summary = service.protection_relationships(DecisiveVoltageClass.DVC_C)
+
+    by_target = {item.target: item for item in summary.relationships}
+    assert set(by_target) == {"accessible_part", "adjacent_circuit"}
+    assert by_target["accessible_part"].pe_relationship == "connected_to_pe"
+    assert by_target["adjacent_circuit"].adjacent_dvc == "dvc_b"
+    for item in summary.relationships:
+        assert item.label == selector_label(
+            item.target,
+            item.pe_relationship,
+            item.access_context,
+            item.person_scope,
+            item.adjacent_dvc,
+        )
+
+
 def test_an_incoherent_protection_combination_answers_no_match_rather_than_raising() -> None:
     """The behaviour change #53A forced: the matrix is no longer an exhaustive rule.
 

@@ -44,6 +44,7 @@ from enum import StrEnum
 from typing import Final, Literal
 
 from insulation_coordination.calculation.clearance import CalculationError
+from insulation_coordination.domain.dvc import DVC_INPUT, PROTECTION_TARGET_DIMENSIONS
 from insulation_coordination.domain.frozen_model import FrozenModel
 from insulation_coordination.domain.rules import (
     DecisionRule,
@@ -157,6 +158,7 @@ CLASSIFICATION_NAMES: Mapping[TestClassification, str] = {
 # name written in two modules is a name one of them can get wrong, and this is the module whose
 # job is knowing it. The shape checks are built from exactly these, so a package that renames
 # one is refused here rather than quietly answering nothing at a call site.
+PROTECTION_REQUIREMENT_OUTPUT: Final = "protection_requirement"
 PARTIAL_DISCHARGE_GATE_INPUT: Final = "partial_discharge_test_voltage_declared"
 PARTIAL_DISCHARGE_GATE_OUTPUT: Final = "partial_discharge_test"
 FOIL_GATE_INPUT: Final = "non_conductive_accessible_surface_present"
@@ -203,6 +205,12 @@ _FOIL_TEST_KIND = "accessible_surface_foil_placement"
 # package declaring one more input than this application knows about cannot be asked anything
 # at all, and saying so is better than every query silently returning nothing. The output set
 # is compared for containment: an output nothing here reads is harmless.
+# Table 3's question, stated in the dimensions the DVC guidance service already resolves it
+# by rather than in a second list of names. A plan asks the same rule the same way that page
+# does, so the requirement it compares an implementation against is the one a reader is shown.
+_PROTECTION_MATRIX_INPUTS = frozenset({DVC_INPUT, *PROTECTION_TARGET_DIMENSIONS})
+_PROTECTION_MATRIX_OUTPUTS = frozenset({PROTECTION_REQUIREMENT_OUTPUT})
+
 _PARTIAL_DISCHARGE_GATE_INPUTS = frozenset({PARTIAL_DISCHARGE_GATE_INPUT})
 _PARTIAL_DISCHARGE_GATE_OUTPUTS = frozenset({PARTIAL_DISCHARGE_GATE_OUTPUT})
 
@@ -419,7 +427,11 @@ def _resolve(
 
     resolved = {
         "dvc_voltage_limits": reader.dvc_decision(ids.DVC_VOLTAGE_LIMITS),
-        "dvc_protection_matrix": reader.dvc_decision(ids.DVC_PROTECTION_MATRIX),
+        "dvc_protection_matrix": reader.decision(
+            ids.DVC_PROTECTION_MATRIX,
+            inputs=_PROTECTION_MATRIX_INPUTS,
+            outputs=_PROTECTION_MATRIX_OUTPUTS,
+        ),
         "dvc_fault_time_voltage": reader.curve(ids.DVC_FAULT_TIME_VOLTAGE),
         "working_voltage_determination": reader.procedure(
             ids.TEST_WORKING_VOLTAGE_DETERMINATION, test_kind=_WORKING_VOLTAGE_TEST_KIND
@@ -508,13 +520,18 @@ class _PackageReader:
     def dvc_decision(self, rule_id: str) -> DecisionRule | None:
         """A DVC decision, resolved for presence and edition only.
 
-        The input and output contract of Tables 2 and 3 is owned by
+        Table 2's input and output contract is owned by
         :class:`~insulation_coordination.domain.dvc.DvcGuidanceService`, which already resolves
-        both against their reviewed selector dimensions. Restating that contract here would put
-        it in two places, and asserting an input set this slice does not yet supply would block
-        a good package over a question nothing asks. What a verification plan needs from this
-        seam today is the guarantee that the rule is present and from the right edition, so
-        that a Table 3 requirement it reports came from the standard it names.
+        it against its reviewed selector dimensions, and no verification question asks it
+        anything: a plan reads its working voltages from the evidence library and its impulse
+        from issue #36's derivation. Asserting an input set nothing here supplies would block a
+        good package over a question nobody asks. What the plan needs from this seam is the
+        guarantee that the rule is present and from the right edition.
+
+        Table 3 is no longer resolved this way. A plan asks it what protection the package
+        requires, so it is resolved by :meth:`decision` against the same dimensions the
+        guidance service reads it by - a rule shaped differently answers ``input_required`` to
+        every question, and a plan cannot report that as a requirement.
         """
 
         return self._present(rule_id, self._package.decisions, "decision rule")
@@ -730,6 +747,7 @@ __all__ = [
     "PRECONDITIONING_PURPOSE_INPUT",
     "PRECONDITIONING_REQUIRED_OUTPUT",
     "PRECONDITIONING_ROUTE_OUTPUT",
+    "PROTECTION_REQUIREMENT_OUTPUT",
     "READ_SEMANTIC_IDS",
     "RULES_READ_ELSEWHERE",
     "VOLTAGE_FORMS",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from enum import StrEnum
 from itertools import combinations
 from typing import Self
 from uuid import UUID, uuid4
@@ -266,6 +267,29 @@ class PairCase(FrozenModel):
         )
 
 
+class ImpulseVerificationMethod(StrEnum):
+    """Which test the engineer has planned to verify impulse withstand with.
+
+    The source states one test and permits named alternatives to it, so the choice set is
+    those and nothing else. It is written down only once a reviewed package has said which
+    alternatives exist -- inventing the vocabulary first is what the earlier migration
+    deliberately refused to do.
+
+    The two alternative members are spelled as the suffixes the extraction gives the routes it
+    projects for them, so a stored choice joins to its rule by concatenation rather than
+    through a translation table that could disagree with either side. The first member is not
+    an alternative and names no route: it is the test the others may be performed instead of.
+
+    Kept out of the rule package on purpose. A project outlives the package it was last
+    calculated against, and a rule identifier stored in a project file would dangle the moment
+    the two parted company.
+    """
+
+    IMPULSE_WITHSTAND_TEST = "impulse_withstand_test"
+    AC_VOLTAGE_TEST = "ac_voltage_test"
+    DC_VOLTAGE_TEST = "dc_voltage_test"
+
+
 class Project(FrozenModel):
     id: UUID
     metadata: ProjectMetadata
@@ -290,6 +314,13 @@ class Project(FrozenModel):
     #: :class:`~insulation_coordination.calculation.voltage_evidence.VoltageEvidenceService`
     #: at read time rather than by whoever entered the last one.
     voltage_evidence: tuple[VoltageEvidence, ...] = ()
+    #: The impulse verification method the engineer has planned, project-wide. ``None`` means
+    #: nobody has chosen yet, and it is not the same as choosing the impulse test: a plan that
+    #: read absence as a decision would have selected a method on the engineer's behalf, which
+    #: is the one thing the alternative must never do. One choice for the project rather than
+    #: one per pair, because it is a decision about how the campaign is run, and a test house
+    #: performing two methods across one schedule is not a case anything has asked for.
+    impulse_verification_method: ImpulseVerificationMethod | None = None
 
     @model_validator(mode="after")
     def _requires_consistent_pairs(self) -> Self:

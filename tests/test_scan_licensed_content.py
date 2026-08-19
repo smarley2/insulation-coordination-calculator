@@ -11,13 +11,29 @@ from textwrap import dedent
 
 import pytest
 
-from scripts.scan_licensed_content import Finding, main, scan_tree
+from scripts.scan_licensed_content import (
+    BASELINE_DOCUMENT,
+    BASELINE_MARKER,
+    Finding,
+    main,
+    read_baseline,
+    scan_tree,
+)
+
+REPOSITORY = Path(__file__).parents[1]
+
+FLAGGED_DOCUMENT = "Table Q.7 returns 9.9 mm at the synthetic level.\n"
 
 
 def _write(root: Path, relative: str, text: str) -> None:
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(dedent(text), encoding="utf-8")
+
+
+def _write_baseline(root: Path, *entries: str) -> None:
+    body = "".join(f"{entry}\n" for entry in entries)
+    _write(root, BASELINE_DOCUMENT, f"# audit\n\n{BASELINE_MARKER}\n\n```text\n{body}```\n")
 
 
 def _categories(findings: tuple[Finding, ...]) -> set[str]:
@@ -220,3 +236,88 @@ def test_main_reports_zero_findings_for_clean_tree(
 ) -> None:
     assert main([str(tmp_path), "--strict"]) == 0
     assert "0 finding(s)" in capsys.readouterr().out
+
+
+def test_every_run_says_what_a_clean_scan_does_not_cover(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main([str(tmp_path)]) == 0
+    output = capsys.readouterr().out
+
+    assert "A clean scan is not a clean tree" in output
+    assert "tracked files only" in output
+
+
+def test_reviewed_finding_passes_the_gate(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(tmp_path, "docs/spec.md", FLAGGED_DOCUMENT)
+    _write_baseline(tmp_path, "docs/spec.md value-near-table-id 1")
+
+    assert main([str(tmp_path), "--strict"]) == 0
+    assert "baseline matched" in capsys.readouterr().out
+
+
+def test_new_finding_fails_the_gate(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _write(tmp_path, "docs/spec.md", FLAGGED_DOCUMENT)
+    _write(tmp_path, "docs/added.md", FLAGGED_DOCUMENT)
+    _write_baseline(tmp_path, "docs/spec.md value-near-table-id 1")
+
+    assert main([str(tmp_path), "--strict"]) == 1
+    output = capsys.readouterr().out
+
+    assert "docs/added.md: value-near-table-id: 0 reviewed, 1 found (new)" in output
+    assert output.count("(new)") == 1
+
+
+def test_extra_finding_in_a_reviewed_file_fails_the_gate(tmp_path: Path) -> None:
+    _write(tmp_path, "docs/spec.md", FLAGGED_DOCUMENT * 2)
+    _write_baseline(tmp_path, "docs/spec.md value-near-table-id 1")
+
+    assert main([str(tmp_path), "--strict"]) == 1
+
+
+def test_resolved_finding_fails_the_gate_so_the_baseline_cannot_rot(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(tmp_path, "docs/spec.md", "Table Q.7 spans two pages.\n")
+    _write_baseline(tmp_path, "docs/spec.md value-near-table-id 1")
+
+    assert main([str(tmp_path), "--strict"]) == 1
+    output = capsys.readouterr().out
+
+    assert "docs/spec.md: value-near-table-id: 1 reviewed, 0 found (gone)" in output
+    assert "record the resolution" in output
+
+
+def test_moving_a_finding_down_its_file_does_not_fail_the_gate(tmp_path: Path) -> None:
+    _write(tmp_path, "docs/spec.md", FLAGGED_DOCUMENT)
+    _write_baseline(tmp_path, "docs/spec.md value-near-table-id 1")
+    assert main([str(tmp_path), "--strict"]) == 0
+
+    _write(tmp_path, "docs/spec.md", "\n" * 40 + FLAGGED_DOCUMENT)
+
+    assert main([str(tmp_path), "--strict"]) == 0
+
+
+def test_update_baseline_records_the_current_findings(tmp_path: Path) -> None:
+    _write(tmp_path, "docs/spec.md", FLAGGED_DOCUMENT)
+    _write_baseline(tmp_path)
+    assert main([str(tmp_path), "--strict"]) == 1
+
+    assert main([str(tmp_path), "--update-baseline"]) == 0
+
+    assert read_baseline(tmp_path) == {("docs/spec.md", "value-near-table-id"): 1}
+    assert main([str(tmp_path), "--strict"]) == 0
+
+
+def test_update_baseline_without_a_block_is_refused(tmp_path: Path) -> None:
+    _write(tmp_path, BASELINE_DOCUMENT, "# audit with no baseline block\n")
+
+    with pytest.raises(SystemExit, match="no scanner-baseline block"):
+        main([str(tmp_path), "--update-baseline"])
+
+
+def test_this_repository_matches_its_reviewed_baseline() -> None:
+    """The gate CI runs, run against the real tree: it must be green today."""
+    assert main([str(REPOSITORY), "--strict"]) == 0

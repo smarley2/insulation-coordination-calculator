@@ -35,7 +35,11 @@ RULE_SCHEMA_VERSION = 4
 #: two clause fragments the older importer never extracted are what their rules rest on, and a
 #: bullet region holding a list's tail now extracts where it used to fail the shape check. None
 #: of that can be upgraded into an existing draft: it has to be re-extracted and re-reviewed.
-IEC_IMPORTER_VERSION = "iec-pdf-10"
+#: ``iec-pdf-11`` is issue #37's alternative impulse verification. The required inventory gains
+#: the impulse-alternative identifier, so a package built before it is incomplete rather than
+#: merely older, and the four clause regions its two routes rest on are regions the older
+#: importer never extracted. Neither can be upgraded into an existing draft.
+IEC_IMPORTER_VERSION = "iec-pdf-11"
 MAX_IDENTIFIER_LENGTH = 160
 MAX_REFERENCE_TEXT_LENGTH = 500
 MAX_NOTES_LENGTH = 2_000
@@ -793,6 +797,58 @@ def _require_consecutive(steps: tuple[ProcedureStep, ...], label: str) -> None:
         raise ValueError(f"{label} must be numbered consecutively from one")
 
 
+#: Which measure of an alternative test's own voltage carries the equivalence its clause
+#: states. Two neutral tokens for the two measures a source can name; no source wording, and
+#: no value -- what the measure is equal to is another rule's, named by identifier.
+EquivalenceMeasure = TypingLiteral["peak", "average"]
+
+
+class PermittedAlternative(FrozenModel):
+    """The terms on which the procedure carrying this may be performed instead of another test.
+
+    A source that permits an alternative test does not merely name it: it states what the
+    alternative replaces, how its voltage is made equivalent to the replaced test's, and how
+    that voltage may be applied. Each of those is a separate reading, and none of them can be
+    inferred from the substitute procedure's own steps -- so a procedure that carried only its
+    steps left a consumer with a test it could not dimension and a choice it could not make.
+
+    The direction is the source's own: the clause states the alternative and points back at
+    what it may be used instead of, so the alternative *is* the rule and the substitution is
+    what it declares. A consumer asking which alternatives a test permits reads the procedures
+    naming it in ``instead_of_rule_id``; the reverse -- a list hung on the replaced rule --
+    would mean one clause's projection editing another clause's rule.
+
+    What is deliberately **not** here:
+
+    * The cycle, duration and polarity of the application. ``ProcedureRule`` already carries
+      ``repetitions``, ``duration`` and ``polarity`` for a source that states them as separate
+      fields, and a source that states them in one sentence states one reviewed procedure step.
+      Splitting that sentence would mean parsing licensed prose in public code.
+    * What the alternative may be used to verify. That is ``ProcedureRule.applicability``,
+      which is the same question every other procedure answers there.
+    * The base procedure the alternative modifies. Known gap, disclosed rather than dropped:
+      an alternative is stated as modifications to a test performed according to another
+      clause, and no rule of the required inventory covers that clause, so there is no
+      identifier to name. Until one exists the reviewed applicability text is where a reader
+      finds it.
+    """
+
+    #: The test this procedure may be performed instead of. Names the required item's family
+    #: rather than one of its routes where the source permits the substitution for all of
+    #: them, exactly as a reviewed statement may defer to a route family.
+    instead_of_rule_id: Identifier
+    #: Which measure of this procedure's test voltage the equivalence is taken on.
+    equivalent_measure: EquivalenceMeasure
+    #: The rule resolving the voltage that measure must equal. Referenced, never restated: the
+    #: equivalence is a relation between two rules, and copying a value across it is how the
+    #: two drift apart.
+    equivalent_to_rule_id: Identifier
+    #: The reviewed allowance for ramping the voltage on, where the source states one. Text
+    #: rather than a duration, for the reason the neighbouring ``duration`` is: a limit is
+    #: licensed source content and belongs in the reviewed statement, not beside the recipe.
+    ramp: ReferenceText | None = None
+
+
 class ProcedureRule(FrozenModel):
     id: Identifier
     test_kind: Identifier
@@ -806,6 +862,8 @@ class ProcedureRule(FrozenModel):
     acceptance_reference: SourceReference | None = None
     applicability_rule_id: Identifier | None = None
     applicability: ApplicabilityText = ""
+    #: Set only where the source permits this procedure instead of another test.
+    permitted_alternative: PermittedAlternative | None = None
     source: SourceReference
 
     @model_validator(mode="after")
@@ -816,6 +874,10 @@ class ProcedureRule(FrozenModel):
         _require_consecutive(self.procedure_steps, "Procedure steps")
         if len(set(self.classifications)) != len(self.classifications):
             raise ValueError("Procedure classifications must be unique")
+        if self.permitted_alternative is not None:
+            alternative = self.permitted_alternative
+            if self.id in (alternative.instead_of_rule_id, alternative.equivalent_to_rule_id):
+                raise ValueError("A procedure cannot be a permitted alternative to itself")
         return self
 
 

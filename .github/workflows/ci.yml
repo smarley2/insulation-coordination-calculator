@@ -30,6 +30,11 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run ruff check .
       - run: uv run mypy
+      # Fails on findings the reviewed baseline in docs/licensed-content-audit.md
+      # does not already account for, in either direction. The step prints what a
+      # green result does not cover; read it before treating a pass as an all-clear.
+      - name: Licensed-content gate (structural findings only, not a clean-tree guarantee)
+        run: uv run python scripts/scan_licensed_content.py . --strict
       - name: Run tests with coverage
         env:
           QT_QPA_PLATFORM: offscreen
