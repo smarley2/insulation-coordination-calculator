@@ -2090,6 +2090,13 @@ _SYNTHETIC_DIELECTRIC_DURATION = (
 #: The reference vocabulary the topology selection declares. Neutral names, and the same four
 #: the public recipe declares, because a consumer resolves the rule by these names and a
 #: fixture spelling them differently would prove nothing about the consumer.
+#: The two thresholds this fixture's partial-discharge applicability decision states its
+#: condition on. Invented here, unrelated to any figure in any source and differing from the
+#: real ones in magnitude and in the relation between them; a test reads them by name so no
+#: number ever has to be repeated in an assertion.
+SYNTHETIC_PARTIAL_DISCHARGE_PEAK_THRESHOLD_V = Decimal(12)
+SYNTHETIC_PARTIAL_DISCHARGE_STRESS_THRESHOLD_V_PER_MM = Decimal(9)
+
 _SYNTHETIC_REFERENCE_KINDS = (
     "earthed_conductive_accessible_part",
     "unearthed_or_non_conductive_accessible_surface",
@@ -2402,6 +2409,71 @@ def synthetic_verification_rule_package(*, edition: str = EDITION) -> RulePackag
         exhaustive=False,
         source=reference,
     )
+    solid_partial_discharge = DecisionRule(
+        id=ids.TEST_SOLID_INSULATION_PARTIAL_DISCHARGE,
+        inputs=(
+            DecisionInput(name="working_voltage_recurring_peak_v", kind="numeric", unit="V"),
+            DecisionInput(name="voltage_stress_v_per_mm", kind="numeric", unit="V/mm"),
+        ),
+        outputs=(DecisionOutput(name="partial_discharge_test_required", kind="boolean"),),
+        rows=(
+            DecisionRow(
+                matchers=(
+                    Matcher(
+                        input="working_voltage_recurring_peak_v",
+                        op="range",
+                        minimum=SYNTHETIC_PARTIAL_DISCHARGE_PEAK_THRESHOLD_V,
+                        minimum_inclusive=False,
+                    ),
+                    Matcher(
+                        input="voltage_stress_v_per_mm",
+                        op="range",
+                        minimum=SYNTHETIC_PARTIAL_DISCHARGE_STRESS_THRESHOLD_V_PER_MM,
+                        minimum_inclusive=False,
+                    ),
+                ),
+                values=(DecisionValue(name="partial_discharge_test_required", boolean=True),),
+                source=reference,
+            ),
+            DecisionRow(
+                matchers=(
+                    Matcher(input="working_voltage_recurring_peak_v", op="any"),
+                    Matcher(input="voltage_stress_v_per_mm", op="any"),
+                ),
+                values=(DecisionValue(name="partial_discharge_test_required", boolean=False),),
+                source=reference,
+            ),
+        ),
+        exhaustive=False,
+        source=reference,
+    )
+    solid_partial_discharge_classification = DecisionRule(
+        id=f"{ids.TEST_SOLID_INSULATION_PARTIAL_DISCHARGE}.classification",
+        inputs=(DecisionInput(name="insulation_is_single_layer_of_material", kind="boolean"),),
+        outputs=(
+            DecisionOutput(name="type_test_required", kind="boolean"),
+            DecisionOutput(name="sample_test_required", kind="boolean"),
+        ),
+        rows=tuple(
+            DecisionRow(
+                matchers=(
+                    Matcher(
+                        input="insulation_is_single_layer_of_material",
+                        op="equals",
+                        boolean=single_layer,
+                    ),
+                ),
+                values=(
+                    DecisionValue(name="type_test_required", boolean=True),
+                    DecisionValue(name="sample_test_required", boolean=single_layer),
+                ),
+                source=reference,
+            )
+            for single_layer in (False, True)
+        ),
+        exhaustive=True,
+        source=reference,
+    )
     foil_gate = DecisionRule(
         id=f"{ids.TEST_ACCESSIBLE_SURFACE_FOIL}.applicability",
         inputs=(DecisionInput(name="non_conductive_accessible_surface_present", kind="boolean"),),
@@ -2581,6 +2653,8 @@ def synthetic_verification_rule_package(*, edition: str = EDITION) -> RulePackag
             boolean_gate(ids.DVC_VOLTAGE_LIMITS, ("synthetic_input",), ("synthetic_output",)),
             boolean_gate(ids.DVC_PROTECTION_MATRIX, ("synthetic_input",), ("synthetic_output",)),
             partial_discharge_gate,
+            solid_partial_discharge,
+            solid_partial_discharge_classification,
             foil_gate,
             preconditioning_gate,
             topology_selection,

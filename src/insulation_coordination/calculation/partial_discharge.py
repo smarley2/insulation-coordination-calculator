@@ -10,8 +10,9 @@ double insulation and of reinforced insulation, in addition to the impulse and t
 test, on the two conditions it states about the recurring-peak working voltage across the
 insulation and the electric stress derived from it. Table 30 says how the test is performed.
 Reading applicability off the procedure is how a pair that the clause never reached came to be
-told a test was owed of it, so the two are asked in that order here: the selected protective means
-first, and the procedure only for pairs the clause scopes.
+told a test was owed of it, so the questions are asked in the clause's own order here: the
+selected protective means first, because the clause states its scope in its heading, and its two
+conditions only for the pairs that heading names.
 
 *A pair the clause does not reach is not applicable rather than unresolved.* Where the project
 already holds the deciding input - the engineer's own selection of a protective means that is
@@ -23,42 +24,35 @@ engineering inputs.
 *Nothing unknown becomes "not required".* A pair that has declared nothing about its solid
 insulation gets :attr:`~insulation_coordination.domain.verification.TestApplicability.
 ENGINEERING_INPUT_REQUIRED` together with the list of what it has not declared. The two
-settled answers each need a positive statement from the engineer behind them - that there is
-no solid insulation here at all, or that the material is exempt and here is the reference -
-and neither can be reached by leaving a field blank. The package's own gate is built the same
-way: its outcome vocabulary offers "required" and "an input is missing", and no third option,
-because the source states its exemptions in prose the gate does not tabulate.
+settled answers each need a positive statement behind them - the engineer's, that there is no
+solid insulation here at all or that the material is exempt and here is the reference, or the
+rule's, that the clause's two conditions are or are not met - and none of them can be reached
+by leaving a field blank.
 
-*The gate is asked, not second-guessed.* Which of its outcomes applies is
-:func:`~insulation_coordination.calculation.verification_rules.read_verification_rules`'
-business and the package's; this module supplies the one input the gate declares and reads the
-one output it declares. An outcome the package states and this application has no name for is
-reported unresolved rather than rounded to the nearest one it does know.
+*The clause's own conditions are asked of the rule projected from it.* The package states them
+as one decision taking the recurring-peak working voltage across the insulation and the voltage
+stress on it, and answering whether the test is owed. This module supplies what the project
+holds, reads the one output the rule declares, and reports both a settled yes and a settled no.
+It never compares a quantity against a value of its own: the two thresholds are the source's,
+and a constant here would be a licensed figure in application code deciding an applicability
+the standard reserves to the rule that states it.
 
-*The recurring peak is what the test voltage is set from.* The gate asks whether a
-partial-discharge test voltage is declared, and the project has nowhere to record one of its
-own - see the module note below. The recurring-peak working voltage the pair has established
-is what answers it, and the trace says so in as many words, so a reader is never left thinking
-the package decided something this application decided.
-
-.. note::
-
-   **The gate's input has no home in the project model.** ``partial_discharge_test_voltage_
-   declared`` is a declaration about the test, and the project records solid-insulation
-   thickness, layers and material but no test voltage. Until a schema bump adds one, an established
-   recurring-peak working voltage stands in for it: that is the quantity the test voltage is
-   set from, so a pair that has one has the input the test needs and a pair that has none does
-   not. The substitution is stated on every assessment it decides.
+*The procedure table's own gate answers a different question and is not asked.* That route is
+projected from Table 30's test-voltage row - whether a partial-discharge test *voltage* has
+been declared - and reading it as the applicability of the test is how a basic-insulation pair
+with a fully declared solid insulation came to be told a test was owed of it.
 
 .. note::
 
-   **The clause's two conditions have no rule in the approved package.** 4.4.7.10.3 states
-   them, and the package's own applicability route is projected from Table 30's test-voltage
-   row rather than from that clause, so nothing here can be asked whether a pair exceeds them.
-   The comparison is therefore recorded as a named unresolved input on every pair the clause
-   scopes, which is why a scoped pair is never settled as required here. Restating the two
-   values as constants would put licensed figures in application code and would let this
-   module decide an applicability the standard reserves to the rules it states.
+   **The voltage stress has no home in the project model.** The clause defines it as the
+   recurring peak divided by the distance between the two parts of different potential, and
+   nothing in the project records that distance: the solid-insulation record holds the
+   *thickness* of the insulation, which is that distance only where the insulation fills the
+   whole gap, and nobody has been asked whether it does. So the stress is not supplied to the
+   rule and the rule reports it missing, which every scoped pair carries as one unresolved
+   input. It is a missing measurement, not a missing rule, and the wording says so - the
+   figure this module reports beside it is the quotient over the declared thickness, reported
+   for a reader and never offered as the clause's quantity.
 """
 
 from __future__ import annotations
@@ -67,14 +61,19 @@ from decimal import Decimal
 from typing import Final
 
 from insulation_coordination.calculation.verification_rules import (
-    PARTIAL_DISCHARGE_GATE_INPUT,
-    PARTIAL_DISCHARGE_GATE_OUTPUT,
-    PARTIAL_DISCHARGE_OUTCOMES,
+    SOLID_PARTIAL_DISCHARGE_PEAK_INPUT,
+    SOLID_PARTIAL_DISCHARGE_REQUIRED_OUTPUT,
+    SOLID_PARTIAL_DISCHARGE_SAMPLE_OUTPUT,
+    SOLID_PARTIAL_DISCHARGE_SINGLE_LAYER_INPUT,
+    SOLID_PARTIAL_DISCHARGE_STRESS_INPUT,
+    SOLID_PARTIAL_DISCHARGE_TYPE_OUTPUT,
     GatedProcedure,
+    SolidInsulationPartialDischargeRules,
 )
 from insulation_coordination.domain.frozen_model import FrozenModel
 from insulation_coordination.domain.project import EffectiveCase, PairCase
 from insulation_coordination.domain.quantities import DecimalValue
+from insulation_coordination.domain.rules import DecisionRule
 from insulation_coordination.domain.trace import CalculationWarning, Quantity, TraceStep
 from insulation_coordination.domain.verification import (
     ProtectionImplementation,
@@ -101,16 +100,13 @@ IN_SCOPE_IMPLEMENTATIONS: Final[frozenset[ProtectionImplementation]] = frozenset
     }
 )
 
-#: The trace identifier of the electric stress the applicability clause defines - the
-#: recurring-peak working voltage over the distance between the two parts of different
-#: potential, which for a declared construction is its minimum thickness. Not a semantic rule
-#: id: the quotient is this module's sum, and labelling it with a package identifier would
-#: credit the package with a figure it never stated. Reported because it is one of the two
-#: quantities the clause's conditions are about; nothing here compares it against anything,
-#: because no approved rule states what to compare it against.
+#: The trace identifier of the recurring peak over the declared minimum thickness. Not a
+#: semantic rule id: the quotient is this module's sum, and labelling it with a package
+#: identifier would credit the package with a figure it never stated. Reported for a reader
+#: judging a field strength rather than a voltage, and not offered to the applicability rule -
+#: the clause divides by the distance between the two parts of different potential, and the
+#: thickness is that distance only where the insulation fills the gap, which nothing records.
 ELECTRIC_STRESS_TRACE_ID: Final = "verification.partial_discharge_electric_stress"
-#: The trace identifier of the substitution the module note describes.
-GATE_INPUT_TRACE_ID: Final = "verification.partial_discharge_gate_input"
 
 _VOLTAGE_UNIT: Final = "V"
 _STRESS_UNIT: Final = "V/mm"
@@ -150,10 +146,15 @@ def assess_partial_discharge(
     pair: PairCase,
     effective: EffectiveCase,
     gated: GatedProcedure,
+    clause: SolidInsulationPartialDischargeRules,
     *,
     recurring_peak_v: Decimal | None,
 ) -> PartialDischargeOutcome:
     """Whether pair ``pair`` owes a partial-discharge test, and what is missing if nobody knows.
+
+    ``gated`` is the procedure and the test-voltage gate the procedure table projects; only the
+    procedure is read. ``clause`` is the pair of decisions the applicability subclause projects,
+    and they are what settle whether the test is owed and how it is classified.
 
     ``recurring_peak_v`` is the working voltage the plan already established for this pair -
     the governing approved evidence, or the figure recorded on the pair, whichever the
@@ -168,7 +169,7 @@ def assess_partial_discharge(
     natural place for a further per-pair stress to be read from.
     """
 
-    out_of_scope = _out_of_scope(pair, gated, recurring_peak_v)
+    out_of_scope = _out_of_scope(pair, clause.applicability.id, recurring_peak_v)
     if out_of_scope is not None:
         return out_of_scope
     declared = pair.solid_insulation
@@ -210,28 +211,33 @@ def assess_partial_discharge(
         )
     stress, stress_steps = _electric_stress(declared, recurring_peak_v)
     unresolved = list(_undeclared(pair, declared))
-    applicability, gate_steps, gate_unresolved = _gate_outcome(pair, gated, recurring_peak_v)
-    unresolved.extend(gate_unresolved)
-    unresolved.append(_threshold_gap(pair, gated))
-    # Unconditional while that gap line is, which is until the clause's own conditions have a
-    # rule. The gate is still asked and its answer still governs the moment they do, which is
-    # why this stays a test of the list rather than a straight assignment.
+    applicability, rule_unresolved = _rule_outcome(pair, clause.applicability, recurring_peak_v)
+    unresolved.extend(rule_unresolved)
+    classifications, classification_unresolved = _classifications(
+        pair, clause.classification, declared
+    )
+    unresolved.extend(classification_unresolved)
+    # A settled answer with something outstanding beside it would tell a reader two different
+    # things, so anything unresolved makes the answer the engineering input it depends on.
     if unresolved:
         applicability = TestApplicability.ENGINEERING_INPUT_REQUIRED
+    rule_ids = [gated.procedure.id, clause.applicability.id]
+    if declared.layer_count is not None:
+        rule_ids.append(clause.classification.id)
     return PartialDischargeOutcome(
         applicability=applicability,
         recurring_peak_v=recurring_peak_v,
         electric_stress_v_per_mm=stress,
-        classifications=_classifications(declared),
-        preparation_steps=_classification_steps(declared),
+        classifications=classifications,
+        preparation_steps=_classification_steps(declared, classifications),
         unresolved_inputs=tuple(unresolved),
-        source_rule_ids=(gated.procedure.id, gated.applicability.id),
-        trace_steps=(*stress_steps, *gate_steps),
+        source_rule_ids=tuple(rule_ids),
+        trace_steps=stress_steps,
     )
 
 
 def _out_of_scope(
-    pair: PairCase, gated: GatedProcedure, recurring_peak_v: Decimal | None
+    pair: PairCase, clause_rule_id: str, recurring_peak_v: Decimal | None
 ) -> PartialDischargeOutcome | None:
     """The answer for a pair the applicability clause does not reach, or ``None`` if it does.
 
@@ -242,9 +248,11 @@ def _out_of_scope(
     means at all - and a means approved by a review this application never saw - is nobody
     having said yet which clause applies.
 
-    Every answer carries the procedure identifier, because that is the inventory row against
-    which the applicability clause is recorded: the sentences below restate what that clause
-    obliges, and a restatement with no rule behind it is this application's own opinion.
+    Every answer carries the identifier of the decision the applicability clause projects,
+    because the sentences below restate what that clause obliges and a restatement with no
+    rule behind it is this application's own opinion. Scope is not an input to that decision -
+    the clause states it in its own heading - so it is settled here and the rule is asked only
+    about the pairs the heading names.
     """
 
     implementation = pair.protection_implementation
@@ -263,7 +271,7 @@ def _out_of_scope(
                     "answered."
                 ),
             ),
-            source_rule_ids=(gated.procedure.id,),
+            source_rule_ids=(clause_rule_id,),
         )
     if implementation is ProtectionImplementation.OTHER_REVIEWED_MEANS:
         return PartialDischargeOutcome(
@@ -278,7 +286,7 @@ def _out_of_scope(
                     "applies belongs to the review that approved the means."
                 ),
             ),
-            source_rule_ids=(gated.procedure.id,),
+            source_rule_ids=(clause_rule_id,),
         )
     return PartialDischargeOutcome(
         applicability=TestApplicability.NOT_APPLICABLE,
@@ -292,49 +300,143 @@ def _out_of_scope(
                 "apply to it."
             ),
         ),
-        source_rule_ids=(gated.procedure.id,),
+        source_rule_ids=(clause_rule_id,),
     )
 
 
-def _threshold_gap(pair: PairCase, gated: GatedProcedure) -> str:
-    """The one thing about applicability the approved package cannot be asked.
+def _rule_outcome(
+    pair: PairCase,
+    rule: DecisionRule,
+    recurring_peak_v: Decimal | None,
+) -> tuple[TestApplicability, tuple[str, ...]]:
+    """Ask the applicability clause's own decision, and report whatever it will not settle.
 
-    Stated per pair rather than once per plan because it is the reason *this* pair's answer is
-    unsettled, and a reviewer reads the reason beside the answer.
+    Two inputs are declared and one of them can be supplied. The recurring-peak working
+    voltage is the figure the plan established for this pair; the voltage stress is the
+    recurring peak over the distance between the two parts of different potential, and no
+    field of this project records that distance - see the module note. So the stress is left
+    out, the evaluator answers that an input is required and names it, and this reports that
+    as one missing measurement rather than inventing a distance to divide by.
+
+    A rule that settles no row is an open question and never a no, which is the direction this
+    module falls in everywhere: a package with nothing to say about a pair must not read as a
+    permission to skip the test.
     """
 
+    inputs: dict[str, Decimal | str | bool] = {}
+    if recurring_peak_v is not None:
+        inputs[SOLID_PARTIAL_DISCHARGE_PEAK_INPUT] = recurring_peak_v
+    result = evaluate_decision(rule, inputs)
+    if result.status == "input_required":
+        return TestApplicability.ENGINEERING_INPUT_REQUIRED, tuple(
+            _missing_input(pair, rule, name) for name in result.missing_inputs
+        )
+    if result.status != "matched":
+        return (
+            TestApplicability.ENGINEERING_INPUT_REQUIRED,
+            (
+                (
+                    f"The active package's {rule.id} settles no outcome for pair {pair.key}, "
+                    "so whether a partial-discharge test applies to it is an open engineering "
+                    "question rather than a no."
+                ),
+            ),
+        )
+    required = next(
+        (
+            item.boolean
+            for item in result.values
+            if item.name == SOLID_PARTIAL_DISCHARGE_REQUIRED_OUTPUT
+        ),
+        None,
+    )
+    if required is None:
+        return (
+            TestApplicability.ENGINEERING_INPUT_REQUIRED,
+            (
+                (
+                    f"The active package's {rule.id} answered pair {pair.key} without stating "
+                    f"{SOLID_PARTIAL_DISCHARGE_REQUIRED_OUTPUT}, so nothing it said settles "
+                    "whether the test applies."
+                ),
+            ),
+        )
+    if required:
+        return TestApplicability.REQUIRED, ()
+    return TestApplicability.NOT_REQUIRED, ()
+
+
+def _missing_input(pair: PairCase, rule: DecisionRule, name: str) -> str:
+    """One line naming what the applicability decision was not given, and why not.
+
+    The stress line is the one that matters: it names a measurement nobody has taken, which is
+    a much narrower thing to fix than the whole rule being absent, and a reviewer reading it
+    should be able to tell those two states apart at a glance.
+    """
+
+    if name == SOLID_PARTIAL_DISCHARGE_STRESS_INPUT:
+        return (
+            f"The active package's {rule.id} asks the voltage stress on pair {pair.key}'s "
+            f"insulation, and clause {APPLICABILITY_CLAUSE} defines it as the recurring-peak "
+            "working voltage over the distance between the two parts of different potential. "
+            "No field of this project records that distance - the declared minimum thickness "
+            "is the thickness of the insulation, which is the same distance only where the "
+            "insulation fills the whole gap, and nothing says it does. The measurement is "
+            "missing, not the rule, and until it is recorded this condition cannot be tested."
+        )
+    if name == SOLID_PARTIAL_DISCHARGE_PEAK_INPUT:
+        return (
+            f"No recurring-peak working voltage is established for pair {pair.key}, and the "
+            f"active package's {rule.id} states clause {APPLICABILITY_CLAUSE}'s first "
+            "condition on it, so whether the test applies cannot be answered."
+        )
     return (
-        f"Clause {APPLICABILITY_CLAUSE} asks the partial-discharge test of pair {pair.key} only "
-        "where both the recurring-peak working voltage across the insulation and the electric "
-        "stress derived from it exceed the values that clause states. The active package states "
-        f"no rule for either condition - its {gated.applicability.id} is projected from the "
-        "procedure's test-voltage row and answers a different question - so the comparison is "
-        "an engineering judgement recorded here rather than made here. Both quantities are "
-        "reported on this assessment."
+        f"The active package's {rule.id} declares the input {name!r}, which this application "
+        f"has nothing to supply for pair {pair.key}."
     )
 
 
-def _classifications(declared: SolidInsulationTestData) -> tuple[TestClassification, ...]:
-    """What kind of test the applicability clause states this is for ``declared``.
+def _classifications(
+    pair: PairCase, rule: DecisionRule, declared: SolidInsulationTestData
+) -> tuple[tuple[TestClassification, ...], tuple[str, ...]]:
+    """What kind of test the package says this is, for a declared layer count.
 
-    The clause asks it as a type test on the components, sub-assemblies and printed wiring
-    boards, and *in addition* as a sample test where the insulation consists of a single layer
-    of material. So the type test follows from the pair being in scope at all and the sample
-    test follows from the declared layer count - which is why an undeclared layer count leaves
-    the classification empty rather than assuming a construction.
+    The clause states its classification on one construction question - whether the insulation
+    consists of a single layer of material - and the package projects that as its own decision.
+    An undeclared layer count is not asked: answering it either way would state a construction
+    nobody declared, and the applicability question above takes different inputs and is still
+    answerable without it.
     """
 
     if declared.layer_count is None:
-        return ()
-    if declared.layer_count == 1:
-        return (TestClassification.TYPE, TestClassification.SAMPLE)
-    return (TestClassification.TYPE,)
+        return (), ()
+    result = evaluate_decision(
+        rule, {SOLID_PARTIAL_DISCHARGE_SINGLE_LAYER_INPUT: declared.layer_count == 1}
+    )
+    if result.status != "matched":
+        return (), (
+            (
+                f"The active package's {rule.id} states no classification for pair "
+                f"{pair.key}'s declared construction, so what kind of test this would be is "
+                "unresolved."
+            ),
+        )
+    stated = {item.name: item.boolean for item in result.values}
+    return tuple(
+        classification
+        for name, classification in (
+            (SOLID_PARTIAL_DISCHARGE_TYPE_OUTPUT, TestClassification.TYPE),
+            (SOLID_PARTIAL_DISCHARGE_SAMPLE_OUTPUT, TestClassification.SAMPLE),
+        )
+        if stated.get(name)
+    ), ()
 
 
-def _classification_steps(declared: SolidInsulationTestData) -> tuple[str, ...]:
-    """Why the classification above came out the way it did, for the schedule to carry."""
+def _classification_steps(
+    declared: SolidInsulationTestData, classifications: tuple[TestClassification, ...]
+) -> tuple[str, ...]:
+    """Why the classification the rule answered with came out the way it did."""
 
-    classifications = _classifications(declared)
     if not classifications:
         return ()
     if TestClassification.SAMPLE in classifications:
@@ -355,96 +457,17 @@ def _classification_steps(declared: SolidInsulationTestData) -> tuple[str, ...]:
     )
 
 
-def _gate_outcome(
-    pair: PairCase,
-    gated: GatedProcedure,
-    recurring_peak_v: Decimal | None,
-) -> tuple[TestApplicability, tuple[TraceStep, ...], tuple[str, ...]]:
-    """Ask the package's applicability gate, and report whatever it will not settle."""
-
-    declared_voltage = recurring_peak_v is not None
-    result = evaluate_decision(
-        gated.applicability, {PARTIAL_DISCHARGE_GATE_INPUT: declared_voltage}
-    )
-    step = _gate_input_step(pair, recurring_peak_v, declared_voltage)
-    if result.status != "matched":
-        return (
-            TestApplicability.ENGINEERING_INPUT_REQUIRED,
-            (step,),
-            (
-                (
-                    f"The active package's {gated.applicability.id} settles no outcome for "
-                    f"pair {pair.key}, so whether a partial-discharge test applies to it is "
-                    "an open engineering question rather than a no."
-                ),
-            ),
-        )
-    stated = next(
-        (item.categorical for item in result.values if item.name == PARTIAL_DISCHARGE_GATE_OUTPUT),
-        None,
-    )
-    applicability = None if stated is None else PARTIAL_DISCHARGE_OUTCOMES.get(stated)
-    if applicability is None:
-        return (
-            TestApplicability.ENGINEERING_INPUT_REQUIRED,
-            (step,),
-            (
-                (
-                    f"The active package's {gated.applicability.id} answers {stated!r}, which "
-                    "this application has no reading for; the outcome is reported rather than "
-                    "translated into the nearest one it knows."
-                ),
-            ),
-        )
-    if applicability is TestApplicability.ENGINEERING_INPUT_REQUIRED:
-        # The gate settled on "an input is missing", which is an answer and not a refusal. It
-        # still needs a line of its own: an application whose applicability says an input is
-        # required and whose unresolved list is empty tells a reader two different things.
-        return (
-            applicability,
-            (step,),
-            (
-                (
-                    f"The active package's {gated.applicability.id} answers that pair "
-                    f"{pair.key} owes an engineering input before a partial-discharge test can "
-                    "be settled, because no partial-discharge test voltage is established "
-                    "for it."
-                ),
-            ),
-        )
-    return applicability, (step,), ()
-
-
-def _gate_input_step(pair: PairCase, recurring_peak_v: Decimal | None, declared: bool) -> TraceStep:
-    """Say out loud which figure answered the gate's question, and that it is a stand-in."""
-
-    value = Decimal(0) if recurring_peak_v is None else recurring_peak_v
-    return TraceStep(
-        semantic_rule_id=GATE_INPUT_TRACE_ID,
-        operation="select",
-        symbolic=rf"\operatorname{{declared}}(\text{{{PARTIAL_DISCHARGE_GATE_INPUT}}})",
-        substituted=f"{PARTIAL_DISCHARGE_GATE_INPUT} = {declared}",
-        inputs=(),
-        source_reference=None,
-        output=Quantity(value=value, unit=_VOLTAGE_UNIT),
-        unrounded_value=value,
-        reason=(
-            f"The project records no partial-discharge test voltage of its own, so pair "
-            f"{pair.key}'s established recurring-peak working voltage answers the gate: it is "
-            "the quantity the test voltage is set from, and its absence is what leaves the "
-            "gate unsettled."
-        ),
-    )
-
-
 def _electric_stress(
     declared: SolidInsulationTestData, recurring_peak_v: Decimal | None
 ) -> tuple[Decimal | None, tuple[TraceStep, ...]]:
     """The recurring peak over the declared thickness, where both are known.
 
     Reported because a reviewer judging partial discharge is judging a field strength, not a
-    voltage. Nothing here compares it against anything: no inception value is held in this
-    application, and dimensioning solid insulation is explicitly not what this feature does.
+    voltage. It is not the clause's quantity and is not offered to the rule that asks for it:
+    the clause divides by the distance between the two parts of different potential, and the
+    thickness is that distance only where the insulation fills the whole gap. Nothing here
+    compares it against anything either - no inception value is held in this application, and
+    dimensioning solid insulation is explicitly not what this feature does.
     """
 
     thickness = declared.minimum_thickness_mm
@@ -465,13 +488,13 @@ def _electric_stress(
             output=Quantity(value=stress, unit=_STRESS_UNIT),
             unrounded_value=stress,
             reason=(
-                f"The electric stress clause {APPLICABILITY_CLAUSE} defines: the "
-                "recurring-peak working voltage over the distance between the two parts of "
-                "different potential, which for a declared construction is its minimum "
-                "thickness. "
-                "Reported because the clause's second condition is about it; nothing here "
-                "compares it against a value, and this application neither dimensions nor "
-                "approves a thickness."
+                "The recurring-peak working voltage over the declared minimum thickness of "
+                f"the insulation. Clause {APPLICABILITY_CLAUSE}'s second condition is about "
+                "the stress over the distance between the two parts of different potential, "
+                "which this is only where the insulation fills the whole gap; nothing records "
+                "that, so this figure is reported for a reader rather than supplied to the "
+                "rule. Nothing here compares it against a value, and this application neither "
+                "dimensions nor approves a thickness."
             ),
         ),
     )
@@ -507,7 +530,6 @@ def _undeclared(pair: PairCase, declared: SolidInsulationTestData) -> tuple[str,
 __all__ = [
     "APPLICABILITY_CLAUSE",
     "ELECTRIC_STRESS_TRACE_ID",
-    "GATE_INPUT_TRACE_ID",
     "IN_SCOPE_IMPLEMENTATIONS",
     "PartialDischargeOutcome",
     "assess_partial_discharge",

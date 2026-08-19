@@ -55,7 +55,6 @@ from insulation_coordination.domain.rules import (
     Table,
 )
 from insulation_coordination.domain.verification import (
-    TestApplicability,
     TestClassification,
     TestReferenceKind,
 )
@@ -122,10 +121,18 @@ PRECONDITIONING_MATERIAL_ROUTE = f"{ids.TEST_PRECONDITIONING}.material"
 FOIL_APPLICABILITY_ROUTE = f"{ids.TEST_ACCESSIBLE_SURFACE_FOIL}.applicability"
 PARTIAL_DISCHARGE_APPLICABILITY_ROUTE = f"{ids.TEST_PARTIAL_DISCHARGE}.applicability"
 
+#: The subclause that states when a solid insulation owes the partial-discharge test projects
+#: two decisions, because it states two questions taking different inputs: whether the test is
+#: owed, under the identifier itself, and how it is classified once it is, under this route. A
+#: consumer that cannot say how many layers its insulation has can still ask the first.
+SOLID_PARTIAL_DISCHARGE_CLASSIFICATION_ROUTE = (
+    f"{ids.TEST_SOLID_INSULATION_PARTIAL_DISCHARGE}.classification"
+)
+
 #: The identifiers this adapter resolves, as base identifiers rather than their routes: the
-#: thirteen issue #37 names as its rule dependency, and the four the body of clause 5.2.3.4
-#: was given once it turned out that nothing in the package stated the test its two value
-#: tables belong to.
+#: thirteen issue #37 names as its rule dependency, the four the body of clause 5.2.3.4 was
+#: given once it turned out that nothing in the package stated the test its two value tables
+#: belong to, and the subclause that states when the partial-discharge test is owed.
 READ_SEMANTIC_IDS: frozenset[str] = frozenset(
     {
         ids.TEST_DIELECTRIC_DISCONNECTION,
@@ -141,6 +148,7 @@ READ_SEMANTIC_IDS: frozenset[str] = frozenset(
         ids.TEST_MAINS_DIELECTRIC_VALUES,
         ids.TEST_NON_MAINS_DIELECTRIC_VALUES,
         ids.TEST_PARTIAL_DISCHARGE,
+        ids.TEST_SOLID_INSULATION_PARTIAL_DISCHARGE,
         ids.TEST_INTERNAL_SPD_MONITORING,
         ids.TEST_PRECONDITIONING,
         ids.TEST_ACCESSIBLE_SURFACE_FOIL,
@@ -194,8 +202,25 @@ CLASSIFICATION_NAMES: Mapping[TestClassification, str] = {
 # job is knowing it. The shape checks are built from exactly these, so a package that renames
 # one is refused here rather than quietly answering nothing at a call site.
 PROTECTION_REQUIREMENT_OUTPUT: Final = "protection_requirement"
+#: The procedure table's own gate, which asks whether a partial-discharge test *voltage* is
+#: declared. Resolved for its shape and no longer asked anything: it was read as the
+#: applicability of the test itself, and the applicability of the test is stated by the
+#: subclause below rather than by the row this gate is projected from.
 PARTIAL_DISCHARGE_GATE_INPUT: Final = "partial_discharge_test_voltage_declared"
 PARTIAL_DISCHARGE_GATE_OUTPUT: Final = "partial_discharge_test"
+#: The two quantities the applicability subclause states its condition on, and the one thing it
+#: settles. The second is defined by the subclause as the first divided by the distance between
+#: the two parts of different potential; resolving that division is the consumer's problem, and
+#: the consumer that cannot resolve it supplies neither a guess nor the input.
+SOLID_PARTIAL_DISCHARGE_PEAK_INPUT: Final = "working_voltage_recurring_peak_v"
+SOLID_PARTIAL_DISCHARGE_STRESS_INPUT: Final = "voltage_stress_v_per_mm"
+SOLID_PARTIAL_DISCHARGE_REQUIRED_OUTPUT: Final = "partial_discharge_test_required"
+#: The one construction question the classification is stated on, and the two tests it answers
+#: with. Both outputs are read: the subclause states the type test on every construction it
+#: reaches and adds the sample test on one of them.
+SOLID_PARTIAL_DISCHARGE_SINGLE_LAYER_INPUT: Final = "insulation_is_single_layer_of_material"
+SOLID_PARTIAL_DISCHARGE_TYPE_OUTPUT: Final = "type_test_required"
+SOLID_PARTIAL_DISCHARGE_SAMPLE_OUTPUT: Final = "sample_test_required"
 FOIL_GATE_INPUT: Final = "non_conductive_accessible_surface_present"
 FOIL_WRAP_OUTPUT: Final = "foil_wrap_required"
 FOIL_SUBSTITUTION_OUTPUT: Final = "permitted_classification_substitution"
@@ -258,16 +283,6 @@ EXEMPTION_CONDITION_INPUTS: Final[tuple[str, ...]] = (
     "assembled_type_test_passed",
 )
 
-#: What the partial-discharge gate's own outcome vocabulary means as an applicability. There is
-#: no "not required" among them on purpose: the source states its exemptions in prose the gate
-#: does not tabulate, so the rule can say a test is required or that an input is missing, and
-#: nothing else. An outcome this mapping does not name is reported unresolved rather than
-#: translated to the nearest thing it resembles.
-PARTIAL_DISCHARGE_OUTCOMES: Mapping[str, TestApplicability] = {
-    "required": TestApplicability.REQUIRED,
-    "engineering_input_required": TestApplicability.ENGINEERING_INPUT_REQUIRED,
-}
-
 # What each procedure says it is. A procedure resolved under one identifier that declares it
 # performs a different test is two readings of the package disagreeing, and there is no
 # precedence rule to apply - it blocks.
@@ -295,6 +310,17 @@ _PROTECTION_MATRIX_OUTPUTS = frozenset({PROTECTION_REQUIREMENT_OUTPUT})
 
 _PARTIAL_DISCHARGE_GATE_INPUTS = frozenset({PARTIAL_DISCHARGE_GATE_INPUT})
 _PARTIAL_DISCHARGE_GATE_OUTPUTS = frozenset({PARTIAL_DISCHARGE_GATE_OUTPUT})
+
+_SOLID_PARTIAL_DISCHARGE_INPUTS = frozenset(
+    {SOLID_PARTIAL_DISCHARGE_PEAK_INPUT, SOLID_PARTIAL_DISCHARGE_STRESS_INPUT}
+)
+_SOLID_PARTIAL_DISCHARGE_OUTPUTS = frozenset({SOLID_PARTIAL_DISCHARGE_REQUIRED_OUTPUT})
+_SOLID_PARTIAL_DISCHARGE_CLASSIFICATION_INPUTS = frozenset(
+    {SOLID_PARTIAL_DISCHARGE_SINGLE_LAYER_INPUT}
+)
+_SOLID_PARTIAL_DISCHARGE_CLASSIFICATION_OUTPUTS = frozenset(
+    {SOLID_PARTIAL_DISCHARGE_TYPE_OUTPUT, SOLID_PARTIAL_DISCHARGE_SAMPLE_OUTPUT}
+)
 
 _FOIL_GATE_INPUTS = frozenset({FOIL_GATE_INPUT})
 _FOIL_GATE_OUTPUTS = frozenset({FOIL_WRAP_OUTPUT, FOIL_SUBSTITUTION_OUTPUT})
@@ -430,6 +456,18 @@ class GatedProcedure(FrozenModel):
     applicability: DecisionRule
 
 
+class SolidInsulationPartialDischargeRules(FrozenModel):
+    """The two decisions the partial-discharge applicability subclause projects.
+
+    Resolved together because one subclause states both, and separate because they take
+    different inputs: a pair that has not said how many layers its insulation has can still be
+    asked whether the test is owed of it at all.
+    """
+
+    applicability: DecisionRule
+    classification: DecisionRule
+
+
 class PreconditioningRules(FrozenModel):
     """The gate, and the two procedures it selects between."""
 
@@ -461,6 +499,11 @@ class VerificationRuleSet(FrozenModel):
     dielectric_application_duration: ProcedureRule
     dielectric_acceptance: DecisionRule
     partial_discharge: GatedProcedure
+    #: The subclause that says when the procedure above is owed at all, and how it is
+    #: classified. The gate on ``partial_discharge`` is projected from the procedure table's
+    #: test-voltage row and answers whether a test voltage is declared, which is a different
+    #: question; reading it as the test's applicability is what these two replace.
+    solid_insulation_partial_discharge: SolidInsulationPartialDischargeRules
     internal_spd_monitoring: ProcedureRule
     preconditioning: PreconditioningRules
     accessible_surface_foil: GatedProcedure
@@ -572,6 +615,7 @@ def _resolve(
             gate_inputs=_PARTIAL_DISCHARGE_GATE_INPUTS,
             gate_outputs=_PARTIAL_DISCHARGE_GATE_OUTPUTS,
         ),
+        "solid_insulation_partial_discharge": reader.solid_partial_discharge_rules(),
         "internal_spd_monitoring": reader.procedure(
             ids.TEST_INTERNAL_SPD_MONITORING, test_kind=_INTERNAL_SPD_TEST_KIND
         ),
@@ -716,6 +760,30 @@ class _PackageReader:
         if any(rule is None for rule in resolved.values()):
             return None
         return ImpulseProcedureRules.model_validate(resolved)
+
+    def solid_partial_discharge_rules(self) -> SolidInsulationPartialDischargeRules | None:
+        """The applicability subclause's two decisions, resolved by the questions they answer.
+
+        No importer version is compared. A package built before these regions were extracted
+        carries neither identifier, so it blocks with both named - which is the shape check
+        doing the work, because a version string is a claim and a missing rule is a fact.
+        """
+
+        applicability = self.decision(
+            ids.TEST_SOLID_INSULATION_PARTIAL_DISCHARGE,
+            inputs=_SOLID_PARTIAL_DISCHARGE_INPUTS,
+            outputs=_SOLID_PARTIAL_DISCHARGE_OUTPUTS,
+        )
+        classification = self.decision(
+            SOLID_PARTIAL_DISCHARGE_CLASSIFICATION_ROUTE,
+            inputs=_SOLID_PARTIAL_DISCHARGE_CLASSIFICATION_INPUTS,
+            outputs=_SOLID_PARTIAL_DISCHARGE_CLASSIFICATION_OUTPUTS,
+        )
+        if applicability is None or classification is None:
+            return None
+        return SolidInsulationPartialDischargeRules(
+            applicability=applicability, classification=classification
+        )
 
     def preconditioning_rules(self) -> PreconditioningRules | None:
         applicability = self.decision(
@@ -905,7 +973,6 @@ __all__ = [
     "PARTIAL_DISCHARGE_APPLICABILITY_ROUTE",
     "PARTIAL_DISCHARGE_GATE_INPUT",
     "PARTIAL_DISCHARGE_GATE_OUTPUT",
-    "PARTIAL_DISCHARGE_OUTCOMES",
     "PRECONDITIONING_APPLICABILITY_ROUTE",
     "PRECONDITIONING_CONTEXT_INPUT",
     "PRECONDITIONING_ELECTRICAL_ROUTE",
@@ -916,12 +983,20 @@ __all__ = [
     "PROTECTION_REQUIREMENT_OUTPUT",
     "READ_SEMANTIC_IDS",
     "RULES_READ_ELSEWHERE",
+    "SOLID_PARTIAL_DISCHARGE_CLASSIFICATION_ROUTE",
+    "SOLID_PARTIAL_DISCHARGE_PEAK_INPUT",
+    "SOLID_PARTIAL_DISCHARGE_REQUIRED_OUTPUT",
+    "SOLID_PARTIAL_DISCHARGE_SAMPLE_OUTPUT",
+    "SOLID_PARTIAL_DISCHARGE_SINGLE_LAYER_INPUT",
+    "SOLID_PARTIAL_DISCHARGE_STRESS_INPUT",
+    "SOLID_PARTIAL_DISCHARGE_TYPE_OUTPUT",
     "VOLTAGE_FORMS",
     "DielectricValueTables",
     "GatedProcedure",
     "ImpulseProcedureRules",
     "ImpulseSelectionTables",
     "PreconditioningRules",
+    "SolidInsulationPartialDischargeRules",
     "VerificationRuleBlock",
     "VerificationRuleBlockCode",
     "VerificationRuleSet",

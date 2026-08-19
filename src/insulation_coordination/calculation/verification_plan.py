@@ -740,7 +740,11 @@ def _plan_pair(
         ),
     )
     discharge = assess_partial_discharge(
-        pair, effective, rules.partial_discharge, recurring_peak_v=recurring_peak
+        pair,
+        effective,
+        rules.partial_discharge,
+        rules.solid_insulation_partial_discharge,
+        recurring_peak_v=recurring_peak,
     )
     warnings.extend(discharge.warnings)
     exemption = assess_routine_exemption(pair, rules.assembled_routine_exemption)
@@ -1266,12 +1270,19 @@ def _reinforced_floor(
     the reduction itself to basic and supplementary insulation only, for exactly one step of the
     overvoltage category.
 
-    *The floor can be breached today, and this is where it is caught.* The stress resolution
-    applies the recorded reduction and then steps the reduced figure one coordinate along the
-    requirement axis for a reinforced class. Where the reduction was one coordinate the step
-    lands back on the pre-reduction figure and the floor holds by arithmetic; where it was two or
-    more - and nothing validates a recorded override against the category series - the step lands
-    below it, and a reinforced pair was planned under what basic insulation would have owed.
+    *The permission the floor closes is the limiting device's, and no other.* 4.4.7.2.6's
+    high-frequency transformer attenuation and 4.4.7.3's shown circuit characteristic are
+    separate permissions in separate clauses, and neither carries this sentence - read in the
+    licensed printing. A reduction resting on either of those bases keeps its whole depth here,
+    and raising the planned test voltage for them asked for a voltage no clause states.
+
+    *What still reaches this floor.* The stress resolution applies the same floor to the value
+    the clearance engine is dimensioned from, so a pair whose insulation class is the reinforced
+    one arrives here already at or above the figure. What is left is a pair whose *construction*
+    is double or reinforced while its spacing was dimensioned on another class: the resolution's
+    floor does not reach that pair, and it is the case where the reduction of two coordinates or
+    more - nothing validates a recorded override against the category series - lands below what
+    basic insulation would have owed.
 
     The floor's own basis is the pre-override figure, which is what basic insulation requires
     with the reducing means absent: basic insulation takes the impulse withstand voltage
@@ -1286,6 +1297,12 @@ def _reinforced_floor(
     """
 
     reduction = _verified_reduction(resolution)
+    if (
+        reduction is not None
+        and reduction.basis is not ImpulseOverrideBasis.SPD_OR_TRANSIENT_LIMITER
+    ):
+        # The other bases are other clauses' permissions, and none of them states this floor.
+        reduction = None
     stronger = (
         effective.insulation_type.value is InsulationType.REINFORCED
         or implementation in _DOUBLE_OR_REINFORCED
@@ -1298,9 +1315,12 @@ def _reinforced_floor(
         f"recorded at {reduction.affected_location!r} took its treated impulse to {treated} "
         f"{_VOLTAGE_UNIT} - below the {unreduced} {_VOLTAGE_UNIT} basic insulation would need "
         "with that reducing means absent. 4.4.7.2.3 and 4.4.7.2.4 both refuse that reduction, so "
-        f"this test is planned at {unreduced} {_VOLTAGE_UNIT}. The clearance was dimensioned "
-        "from the lower figure and needs revisiting: the reduction those subclauses permit is "
-        "one overvoltage-category step, and it is offered to basic and supplementary insulation."
+        f"this test is planned at {unreduced} {_VOLTAGE_UNIT}. The reduction those subclauses "
+        "permit is one overvoltage-category step, and it is offered to basic and supplementary "
+        "insulation. The stress resolution holds a pair dimensioned on the reinforced spacing "
+        "path at this same floor before the clearance engine sees it, so what reaches here is a "
+        "pair whose construction is stronger than the class its spacing was dimensioned on - and "
+        "that clearance came from the lower figure and needs revisiting."
     )
 
 

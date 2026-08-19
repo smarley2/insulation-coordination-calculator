@@ -1808,22 +1808,32 @@ def test_a_reduction_on_another_basis_owes_no_transformer_showing(package: RuleP
 # --- the floor a reduced requirement may not cross ------------------------------------------
 
 
-def _reinforced_with_reduction(package: RulePackage, value_v: Decimal) -> tuple[Project, PairCase]:
-    """A reinforced pair alone in its live group, carrying a reduction of ``value_v``.
+def _reinforced_with_reduction(
+    package: RulePackage,
+    value_v: Decimal,
+    *,
+    insulation: InsulationType = InsulationType.REINFORCED,
+    basis: ImpulseOverrideBasis = ImpulseOverrideBasis.SPD_OR_TRANSIENT_LIMITER,
+) -> tuple[Project, PairCase]:
+    """A pair protected by reinforced insulation, carrying a reduction of ``value_v``.
 
     ``LIVE_C`` rather than ``LIVE_A`` on purpose: it is the only circuit of its domain, so its
     impulse row is not merged with a sibling pair's and the voltage the row carries is this
     pair's own answer rather than the more severe of two.
+
+    ``insulation`` is the class its *spacing* is dimensioned on, which is not always the class
+    its construction is: that is the one combination the stress resolution's own floor does not
+    reach, and so the one the plan's floor still has work to do on.
     """
 
     project = with_protection(
         verification_topology(
-            supply_configurations=(mains_configuration(),), insulation=InsulationType.REINFORCED
+            supply_configurations=(mains_configuration(),), insulation=insulation
         ),
         REINFORCED,
     )
     pair = pair_between(project, LIVE_C, ENCLOSURE)
-    reduced = _with_override(project, pair.id, value_v)
+    reduced = _with_override(project, pair.id, value_v, basis=basis)
     return reduced, pair_between(reduced, LIVE_C, ENCLOSURE)
 
 
@@ -1832,12 +1842,13 @@ def test_a_reinforced_requirement_is_not_planned_below_the_floor_a_reduction_may
 ) -> None:
     """Both reduction subclauses close with the same refusal, and it was not being applied.
 
-    The resolution reduces first and treats the reduced figure afterwards. For a reduction of one
-    coordinate the treatment lands back where it started and the floor holds by arithmetic; for a
-    deeper one it lands below what basic insulation would have owed with the reducing means
-    absent, and the reinforced pair was planned - and dimensioned - under it.
+    What reaches the plan below the floor is a pair whose construction is reinforced while its
+    spacing was dimensioned on another class - the stress resolution floors the reinforced
+    dimensioning path itself, and only that path.
     """
-    project, pair = _reinforced_with_reduction(package, Decimal(50))
+    project, pair = _reinforced_with_reduction(
+        package, Decimal(50), insulation=InsulationType.BASIC
+    )
     supply = derive_project_supply(project, package)
     _effective, resolution = resolve_supply_effective_case(project, pair, supply)
     assert resolution is not None
@@ -1851,6 +1862,32 @@ def test_a_reinforced_requirement_is_not_planned_below_the_floor_a_reduction_may
     assert impulse.voltage.value == unreduced
     assert REINFORCED_FLOOR_WARNING in {warning.code for warning in plan.warnings}
     assert states(impulse, "4.4.7.2.3", "4.4.7.2.4", "double or reinforced")
+    assert states(impulse, "stronger than the class its spacing was dimensioned on")
+
+
+def test_a_reduction_on_a_shown_circuit_characteristic_keeps_its_whole_depth(
+    package: RulePackage,
+) -> None:
+    """The floor sentence belongs to the limiting-device permission and to nothing else.
+
+    4.4.7.3's shown circuit characteristic is a separate permission in a separate clause and
+    does not close with that refusal - read in the licensed printing, alongside 4.4.7.2.6's
+    transformer attenuation, which does not either. Applying it to them raised the planned test
+    voltage above what any clause asks. Both bases take the same branch here, and this is the
+    one a pair against its enclosure can carry: #36 grants the transformer's permission across
+    a verified barrier alone, and only where the circuit's decisive voltage class allows it.
+    """
+    project, pair = _reinforced_with_reduction(
+        package,
+        Decimal(50),
+        insulation=InsulationType.BASIC,
+        basis=ImpulseOverrideBasis.VERIFIED_CIRCUIT_CHARACTERISTIC,
+    )
+    plan = build(project, package)
+    impulse = one(plan, pair, TestKind.IMPULSE_WITHSTAND)
+    assert impulse.voltage is not None
+    assert impulse.voltage.value == Decimal(50)
+    assert REINFORCED_FLOOR_WARNING not in {warning.code for warning in plan.warnings}
 
 
 def test_a_reduction_that_leaves_the_floor_alone_is_planned_at_the_treated_figure(
