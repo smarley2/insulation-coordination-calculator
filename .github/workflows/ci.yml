@@ -1,11 +1,22 @@
 name: CI
 
 on:
+  # Only the default branch on push. A pull request already runs this workflow, and running
+  # both on the same commit is what let one stalled leg block a merge the other leg proved.
   push:
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
+
+# Successive pushes to the same pull request supersede each other; only the newest matters.
+# Keyed on the pull request when there is one, so a push event and its pull-request event
+# cannot land in different groups - which is the mistake that made the first attempt at this
+# a no-op.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   quality:
@@ -16,9 +27,68 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The runner image usually already carries these, so the common path touches no
+      # network at all. When something is genuinely missing, apt is bounded and retried
+      # against a *different* mirror: the failure mode is a silent hang rather than an
+      # error, so each attempt is killed on its own timeout, and retrying the same dead
+      # endpoint three times is three failures rather than a retry. An apt outage only
+      # fails the job if a library is actually absent afterwards. See #129.
       - name: Install Qt system dependencies (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libdbus-1-3
+        timeout-minutes: 8
+        run: |
+          set -uo pipefail
+          packages="libegl1 libgl1 libxkbcommon0 libdbus-1-3"
+
+          missing() {
+            local absent=""
+            for package in ${packages}; do
+              dpkg -s "${package}" >/dev/null 2>&1 || absent="${absent} ${package}"
+            done
+            echo "${absent# }"
+          }
+
+          absent="$(missing)"
+          if [ -z "${absent}" ]; then
+            echo "every Qt dependency is already present; skipping apt"
+            exit 0
+          fi
+          echo "missing: ${absent}"
+          echo "configured mirrors:"
+          grep -Rhs '^URIs:\|^deb ' /etc/apt/sources.list /etc/apt/sources.list.d || true
+
+          install_missing() {
+            timeout 60 sudo apt-get               -o Acquire::Retries=2               -o Acquire::http::Timeout=20               -o Acquire::https::Timeout=20               update -qq               && timeout 90 sudo apt-get install -y --no-install-recommends ${absent}
+          }
+
+          if install_missing; then
+            echo "installed from the runner's default mirror"
+            exit 0
+          fi
+
+          # The runners resolve their mirrors through mirror+file:/etc/apt/apt-mirrors.txt
+          # rather than naming a host in the sources, so there is no URI to rewrite - point
+          # that file at the canonical archive instead. Every probe here is guarded: grep
+          # exits 1 when it matches nothing, and under pipefail that would abort the script
+          # before the retry it exists to reach.
+          echo "default mirror failed; switching to the canonical archive" >&2
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            echo 'http://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          fi
+          grep -Rls 'azure.archive.ubuntu.com'             /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null             | xargs -r sudo sed -i 's|://azure.archive.ubuntu.com|://archive.ubuntu.com|g'             || true
+
+          if install_missing; then
+            echo "installed from the fallback mirror"
+            exit 0
+          fi
+
+          absent="$(missing)"
+          if [ -z "${absent}" ]; then
+            echo "::warning::apt was unreachable, but every Qt dependency is present (see #129)"
+            exit 0
+          fi
+          echo "::error::apt failed on both mirrors and these are still missing: ${absent} (see #129)"
+          exit 1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
