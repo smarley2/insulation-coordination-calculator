@@ -173,10 +173,18 @@ class TestReferenceKind(StrEnum):
     has to tell a within-circuit application apart from a circuit-to-adjacent-circuit one.
     ``ACCESSIBLE_INSULATING_SURFACE_FOIL`` is named for the preparation it implies, because a
     test against an insulating surface only exists once conductive foil is wrapped around it.
+
+    ``DVC_AS_ADJACENT_CIRCUIT`` is its own relationship rather than a flavour of
+    ``ADJACENT_CIRCUIT`` because the standard tests it differently: a DVC A-s circuit is
+    excepted from the tests against accessible parts and is verified against its adjacent
+    circuits instead, its row is keyed on the higher-voltage circuit of the two rather than on
+    the circuit under test, and its type test reads the stronger column. A plan that could not
+    name the case could not apply any of that.
     """
 
     WITHIN_CIRCUIT = "within_circuit"
     ADJACENT_CIRCUIT = "adjacent_circuit"
+    DVC_AS_ADJACENT_CIRCUIT = "dvc_as_adjacent_circuit"
     PE_BONDED_ACCESSIBLE_PART = "pe_bonded_accessible_part"
     ACCESSIBLE_CONDUCTIVE_PART = "accessible_conductive_part"
     ACCESSIBLE_INSULATING_SURFACE_FOIL = "accessible_insulating_surface_foil"

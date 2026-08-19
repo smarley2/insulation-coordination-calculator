@@ -906,6 +906,131 @@ def test_a_dvc_as_circuit_is_excepted_from_the_test_against_an_accessible_part(
     )
 
 
+# --- the DVC A-s adjacency --------------------------------------------------------------
+
+
+#: The pair's own recurring peak in the DVC A-s fixtures below, and the three circuits' own.
+#: All inside the fixture's band axis, all different, and the pair's deliberately unequal to
+#: any of them: a row keyed on the pair rather than on the higher-voltage circuit reads a
+#: different cell and can be told apart by the value alone.
+PAIR_PEAK_V = Decimal(15)
+CIRCUIT_PEAKS_V: dict[UUID, Decimal] = {
+    LIVE_A: Decimal(18),
+    LIVE_B: Decimal(12),
+    LIVE_C: Decimal(25),
+}
+
+
+def dvc_as_topology(
+    *,
+    implementation: ProtectionImplementation = BASIC,
+    classes: tuple[UUID, ...] = (LIVE_C,),
+    peaks: tuple[UUID, ...] = (LIVE_A, LIVE_B, LIVE_C),
+) -> Project:
+    """Three circuits with no supply arrangement, so every pair takes the non-mains route.
+
+    ``classes`` names the circuits reclassified as DVC A-s and ``peaks`` the circuits given an
+    approved working voltage of their own, so a test can withhold exactly one of them.
+    """
+
+    project = with_protection(
+        verification_topology(temporary_overvoltage=NO_OVERVOLTAGE, recurring_peak_v=PAIR_PEAK_V),
+        implementation,
+    )
+    for net_id in classes:
+        project = with_class(project, net_id, DecisiveVoltageClass.DVC_AS)
+    return project.model_copy(
+        update={
+            "voltage_evidence": tuple(
+                _net_evidence(net_id, CIRCUIT_PEAKS_V[net_id], index)
+                for index, net_id in enumerate(peaks)
+            )
+        }
+    )
+
+
+def test_a_pair_facing_a_dvc_as_circuit_is_its_own_relationship(package: RulePackage) -> None:
+    project = dvc_as_topology()
+    pair = pair_between(project, LIVE_A, LIVE_C)
+    plan = VerificationPlanService().build(project, package, None)
+    assert assessment_for(plan, pair).reference_kind is TestReferenceKind.DVC_AS_ADJACENT_CIRCUIT
+
+
+def test_the_dvc_as_adjacency_type_test_reads_the_enhanced_column(package: RulePackage) -> None:
+    """A basic-protection pair, so the column cannot be coming from the construction."""
+    project = dvc_as_topology()
+    pair = pair_between(project, LIVE_A, LIVE_C)
+    plan = VerificationPlanService().build(project, package, None)
+    type_test = one(plan, pair, TestKind.AC_DIELECTRIC, classifications=(TestClassification.TYPE,))
+    routine = one(plan, pair, TestKind.AC_DIELECTRIC, classifications=(TestClassification.ROUTINE,))
+    assert dielectric_route(type_test) == (
+        f"{ids.TEST_NON_MAINS_DIELECTRIC_VALUES}.enhanced_type.ac"
+    )
+    assert dielectric_route(routine) == (
+        f"{ids.TEST_NON_MAINS_DIELECTRIC_VALUES}.routine_and_basic_type.ac"
+    )
+
+
+def test_the_dvc_as_adjacency_row_is_keyed_on_the_higher_voltage_circuit(
+    package: RulePackage,
+) -> None:
+    """Not on the circuit under test and not on the voltage across the pair."""
+    project = dvc_as_topology()
+    pair = pair_between(project, LIVE_A, LIVE_C)
+    plan = VerificationPlanService().build(project, package, None)
+    routine = one(plan, pair, TestKind.AC_DIELECTRIC, classifications=(TestClassification.ROUTINE,))
+    assert routine.voltage is not None
+    assert routine.voltage.value == _interpolated(
+        ids.TEST_NON_MAINS_DIELECTRIC_VALUES,
+        "routine_and_basic_type",
+        "ac",
+        max(CIRCUIT_PEAKS_V[LIVE_A], CIRCUIT_PEAKS_V[LIVE_C]),
+    )
+    assert routine.voltage.value != _interpolated(
+        ids.TEST_NON_MAINS_DIELECTRIC_VALUES, "routine_and_basic_type", "ac", PAIR_PEAK_V
+    )
+
+
+def test_a_dvc_as_adjacency_refuses_a_row_it_cannot_decide_the_higher_circuit_of(
+    package: RulePackage,
+) -> None:
+    project = dvc_as_topology(peaks=(LIVE_A, LIVE_B))
+    pair = pair_between(project, LIVE_A, LIVE_C)
+    plan = VerificationPlanService().build(project, package, None)
+    routine = one(plan, pair, TestKind.AC_DIELECTRIC, classifications=(TestClassification.ROUTINE,))
+    assert routine.voltage is None
+    assert any(
+        "which of them is the higher cannot be decided" in item
+        for item in routine.unresolved_inputs
+    )
+
+
+def test_functional_insulation_between_two_dvc_as_circuits_is_not_tested(
+    package: RulePackage,
+) -> None:
+    project = dvc_as_topology(
+        implementation=ProtectionImplementation.FUNCTIONAL_INSULATION,
+        classes=(LIVE_A, LIVE_B, LIVE_C),
+    )
+    pair = pair_between(project, LIVE_A, LIVE_C)
+    plan = VerificationPlanService().build(project, package, None)
+    applications = applications_for(plan, pair, TestKind.AC_DIELECTRIC)
+    assert applications
+    assert {item.applicability for item in applications} == {TestApplicability.NOT_APPLICABLE}
+
+
+def test_basic_insulation_between_two_dvc_as_circuits_is_still_tested(
+    package: RulePackage,
+) -> None:
+    """The other half of the same rule: only the functional case is excused."""
+    project = dvc_as_topology(classes=(LIVE_A, LIVE_B, LIVE_C))
+    pair = pair_between(project, LIVE_A, LIVE_C)
+    plan = VerificationPlanService().build(project, package, None)
+    routine = one(plan, pair, TestKind.AC_DIELECTRIC, classifications=(TestClassification.ROUTINE,))
+    assert routine.applicability is not TestApplicability.NOT_APPLICABLE
+    assert routine.voltage is not None
+
+
 def test_a_route_that_states_no_duration_says_so_rather_than_leaving_it_blank(
     project: Project, package: RulePackage
 ) -> None:
@@ -1133,6 +1258,22 @@ def _identified(package: RulePackage) -> RulePackage:
     """The same package with a SHA-256 identity, which a generated test id is derived from."""
 
     return package.model_copy(update={"package_sha256": "b" * 64})
+
+
+def _net_evidence(net_id: UUID, value_v: Decimal, index: int) -> VoltageEvidence:
+    """One circuit's own approved working voltage, which is what keys a DVC A-s adjacency."""
+
+    return VoltageEvidence(
+        id=UUID(int=910 + index),
+        net_id=net_id,
+        quantity_kind=VoltageQuantityKind.RECURRING_PEAK,
+        value_v=value_v,
+        method=VoltageEvidenceMethod.CALCULATION,
+        operating_condition="rated load",
+        source_reference=f"SYN-NET-EV-{index}",
+        recorded_at=RECORDED_AT,
+        approval_state=EvidenceApprovalState.APPROVED_FOR_DESIGN,
+    )
 
 
 def _evidence(pair_id: UUID, value_v: Decimal) -> VoltageEvidence:

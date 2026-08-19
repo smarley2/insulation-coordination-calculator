@@ -174,6 +174,7 @@ ENHANCED_PROTECTION_IMPLEMENTATIONS: Final[frozenset[ProtectionImplementation]] 
 #: what the test is applied to, which the topology already carries.
 _REQUIREMENT_TARGETS: Final[Mapping[TestReferenceKind, str]] = {
     TestReferenceKind.ADJACENT_CIRCUIT: "adjacent_circuit",
+    TestReferenceKind.DVC_AS_ADJACENT_CIRCUIT: "adjacent_circuit",
     TestReferenceKind.PE_BONDED_ACCESSIBLE_PART: "accessible_part",
     TestReferenceKind.ACCESSIBLE_CONDUCTIVE_PART: "accessible_part",
     TestReferenceKind.ACCESSIBLE_INSULATING_SURFACE_FOIL: "accessible_part",
@@ -188,6 +189,13 @@ _REQUIREMENT_PE_RELATIONSHIPS: Final[Mapping[TestReferenceKind, str]] = {
     TestReferenceKind.PE_BONDED_ACCESSIBLE_PART: "connected_to_pe",
     TestReferenceKind.ACCESSIBLE_CONDUCTIVE_PART: "not_connected_to_pe",
 }
+
+#: Every relationship that puts one circuit against another. Both read Table 3 in both
+#: directions and both take the other side's class as the adjacent one; what separates them is
+#: how the *test* is keyed and columned, which is a question for the dielectric route.
+_CIRCUIT_TO_CIRCUIT_KINDS: Final[frozenset[TestReferenceKind]] = frozenset(
+    {TestReferenceKind.ADJACENT_CIRCUIT, TestReferenceKind.DVC_AS_ADJACENT_CIRCUIT}
+)
 
 #: Every relationship that puts a circuit against an accessible part rather than against
 #: another circuit. Derived from the requirement targets so the two readings of "this is an
@@ -208,6 +216,7 @@ _ENHANCED_COLUMN_TOPOLOGIES: Final[frozenset[TestReferenceKind]] = frozenset(
     {
         TestReferenceKind.ACCESSIBLE_CONDUCTIVE_PART,
         TestReferenceKind.ACCESSIBLE_INSULATING_SURFACE_FOIL,
+        TestReferenceKind.DVC_AS_ADJACENT_CIRCUIT,
     }
 )
 
@@ -490,6 +499,7 @@ def _plan_pair(
         () if override is None else (_reduction_application(subject, rules, revision, override),)
     )
     recurring_peak = _recurring_peak(project, pair, effective)
+    adjacency = _dvc_as_adjacency(project, pair, subject)
     dielectric = _dielectric_applications(
         pair,
         subject,
@@ -497,9 +507,13 @@ def _plan_pair(
         revision,
         enhanced,
         mains,
-        recurring_peak,
+        recurring_peak if adjacency is None else adjacency.row_v,
         _overvoltage_present(effective, resolution),
-        _accessible_part_exception(project, pair, subject),
+        _accessible_part_exception(project, pair, subject)
+        or (None if adjacency is None else adjacency.not_applicable),
+        row_label="recurring-peak working voltage" if adjacency is None else adjacency.row_label,
+        extra_unresolved=() if adjacency is None else adjacency.unresolved,
+        extra_preparation=() if adjacency is None else adjacency.preparation,
     )
     discharge = assess_partial_discharge(
         pair, effective, rules.partial_discharge, recurring_peak_v=recurring_peak
@@ -595,7 +609,7 @@ def _required_protection(
     first, second = nets[pair.net_a], nets[pair.net_b]
     target = _REQUIREMENT_TARGETS[subject.reference_kind]
     directions: tuple[tuple[NetClass, NetClass], ...]
-    if subject.reference_kind is TestReferenceKind.ADJACENT_CIRCUIT:
+    if subject.reference_kind in _CIRCUIT_TO_CIRCUIT_KINDS:
         directions = ((first, second), (second, first))
     elif first.net_type is NetClassType.CIRCUIT:
         directions = ((first, second),)
@@ -607,7 +621,7 @@ def _required_protection(
     reasons: list[str] = []
     for circuit, other in directions:
         adjacent = None
-        if subject.reference_kind is TestReferenceKind.ADJACENT_CIRCUIT:
+        if subject.reference_kind in _CIRCUIT_TO_CIRCUIT_KINDS:
             adjacent = _designation(other)
             if adjacent is None:
                 reasons.append(_no_class_reason(pair, other.name))
@@ -919,6 +933,10 @@ def _dielectric_applications(
     recurring_peak_v: Decimal | None,
     overvoltage_present: bool | None,
     not_applicable: str | None,
+    *,
+    row_label: str,
+    extra_unresolved: tuple[str, ...] = (),
+    extra_preparation: tuple[str, ...] = (),
 ) -> tuple[TestApplication, ...]:
     """The routine and type dielectric applications, in both voltage forms the package states.
 
@@ -954,7 +972,9 @@ def _dielectric_applications(
     if not_applicable is not None:
         return _not_applicable_applications(subject, revision, not_applicable)
     tables = rules.mains_dielectric_values if mains else rules.non_mains_dielectric_values
-    row, row_reason, row_unresolved = _row_value(pair, mains, recurring_peak_v, overvoltage_present)
+    row, row_reason, row_unresolved = _row_value(
+        pair, mains, recurring_peak_v, overvoltage_present, row_label
+    )
     enhanced_column = enhanced or subject.reference_kind in _ENHANCED_COLUMN_TOPOLOGIES
     routes: tuple[tuple[TestClassification, VoltageTablePair], ...] = (
         (TestClassification.ROUTINE, tables.routine_and_basic_type),
@@ -979,8 +999,9 @@ def _dielectric_applications(
                     polarity=None,
                     duration=None,
                     repetitions=None,
-                    preparation_steps=subject.preparation_steps,
+                    preparation_steps=(*subject.preparation_steps, *extra_preparation),
                     unresolved=(
+                        *extra_unresolved,
                         *row_unresolved,
                         *unresolved,
                         (
@@ -1067,6 +1088,98 @@ def _accessible_part_exception(
         "voltage test between a circuit and an accessible part is stated for each circuit "
         "except a DVC A-s one, whose case is settled as a test against its adjacent circuits "
         "instead, so no voltage is planned here."
+    )
+
+
+class _DvcAsAdjacency(FrozenModel):
+    """What the plan makes of a pair with a DVC A-s circuit on one side of it.
+
+    Private and unexported: it exists so :func:`_dvc_as_adjacency` can answer four things at
+    once about one pair without four functions asking the same question of the same project.
+    """
+
+    #: The working voltage that keys the row, which is the higher-voltage circuit's and not
+    #: the pair's. ``None`` where it could not be established for both circuits.
+    row_v: Decimal | None = None
+    row_label: str = "recurring-peak working voltage"
+    unresolved: tuple[str, ...] = ()
+    not_applicable: str | None = None
+    preparation: tuple[str, ...] = ()
+
+
+def _dvc_as_adjacency(
+    project: Project, pair: PairCase, subject: TestSubject
+) -> _DvcAsAdjacency | None:
+    """How clause 5.2.3.4.4 c) keys the test between a DVC A-s circuit and an adjacent circuit.
+
+    Two things separate this test from every other circuit-to-circuit one, and the plan applied
+    neither before the relationship had a name.
+
+    *The row is keyed on the higher-voltage circuit of the two*, not on the circuit under test.
+    The same principle is stated generally for insulation between circuits: the more severe of
+    the two sides, or the working voltage between them, whichever is more severe. The two
+    circuits' own working voltages are what decides which is higher, so both have to be
+    established; where either is not, the row is refused and the missing one is named. Reading
+    the pair's own figure in their place would answer a question nobody asked and could land
+    below the row the source states.
+
+    *Functional insulation between two DVC A-s circuits need not be tested, while basic
+    insulation between DVC A-s circuits must be.* That distinction turns on the construction
+    the engineer selected, which the project holds, so it is applied rather than reported.
+
+    A mains circuit is unaffected: its row axis is the supply's system voltage, and the plan
+    already keys it on the most severe measure across every supply reaching either side, which
+    is the same principle applied to the axis that route actually has.
+    """
+
+    if subject.reference_kind is not TestReferenceKind.DVC_AS_ADJACENT_CIRCUIT:
+        return None
+    nets = {net.id: net for net in project.net_classes}
+    first, second = nets[pair.net_a], nets[pair.net_b]
+    both = (
+        _designation(first) is DecisiveVoltageClass.DVC_AS
+        and _designation(second) is DecisiveVoltageClass.DVC_AS
+    )
+    if both and pair.protection_implementation is ProtectionImplementation.FUNCTIONAL_INSULATION:
+        return _DvcAsAdjacency(
+            not_applicable=(
+                f"Pair {pair.key} is functional insulation between two adjacent DVC A-s "
+                "circuits, which need not be voltage tested. Basic insulation between DVC A-s "
+                "circuits does have to be, so this answer follows the construction selected "
+                "for this pair and no other pair of the group."
+            )
+        )
+    service = VoltageEvidenceService()
+    figures = {
+        net.name: service.governing(
+            project, EvidenceTarget(net_id=net.id), VoltageQuantityKind.RECURRING_PEAK
+        ).effective_value_v
+        for net in (first, second)
+    }
+    missing = sorted(name for name, value in figures.items() if value is None)
+    keying = (
+        f"This test is keyed on the higher-voltage of {first.name} and {second.name} rather "
+        "than on the circuit under test, because one of them is a DVC A-s circuit."
+    )
+    if missing:
+        return _DvcAsAdjacency(
+            unresolved=(
+                (
+                    f"Pair {pair.key} is tested between a DVC A-s circuit and an adjacent "
+                    "circuit, whose row is keyed on the higher-voltage of the two. No "
+                    f"recurring-peak working voltage is established for {', '.join(missing)}, "
+                    "so which of them is the higher cannot be decided. The pair's own figure "
+                    "is not read in their place: it is a voltage across the insulation and not "
+                    "either circuit's own."
+                ),
+            ),
+            preparation=(keying,),
+        )
+    highest = max(figures, key=lambda name: figures[name] or Decimal(0))
+    return _DvcAsAdjacency(
+        row_v=figures[highest],
+        row_label=f"recurring-peak working voltage of {highest}, the higher-voltage circuit,",
+        preparation=(keying,),
     )
 
 
@@ -1182,6 +1295,7 @@ def _row_value(
     mains: Sequence[DerivedSupplyScenario],
     recurring_peak_v: Decimal | None,
     overvoltage_present: bool | None,
+    row_label: str,
 ) -> tuple[Decimal | None, str, tuple[str, ...]]:
     """The voltage that keys the dielectric table's row axis, and where it came from.
 
@@ -1221,7 +1335,7 @@ def _row_value(
         )
     return (
         recurring_peak_v,
-        f"recurring-peak working voltage {recurring_peak_v} V",
+        f"{row_label} {recurring_peak_v} V",
         (),
     )
 
@@ -1288,6 +1402,11 @@ def _column_reason(
         return "every routine test reads the basic column"
     if enhanced:
         return "the type test of a pair protected by enhanced protection reads the enhanced column"
+    if reference_kind is TestReferenceKind.DVC_AS_ADJACENT_CIRCUIT:
+        return (
+            "the type test between a DVC A-s circuit and an adjacent circuit reads the "
+            "enhanced column whatever the pair's construction"
+        )
     if reference_kind in _ENHANCED_COLUMN_TOPOLOGIES:
         return (
             "the type test against an accessible surface that is non-conductive, or "

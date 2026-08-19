@@ -38,7 +38,7 @@ from typing import Final
 from uuid import UUID
 
 from insulation_coordination.calculation.stress_propagation import DomainStressMap
-from insulation_coordination.domain.enums import NetClassType
+from insulation_coordination.domain.enums import DecisiveVoltageClass, NetClassType
 from insulation_coordination.domain.frozen_model import FrozenModel
 from insulation_coordination.domain.project import Project
 from insulation_coordination.domain.topology import domain_for_net
@@ -149,9 +149,17 @@ def subjects_for(
     group is the other's, so grouping either would put the same conductor on both sides of the
     test. Their insulation is between those two nets and nowhere else, and that is what is
     planned.
+
+    A circuit-to-circuit pair with a DVC A-s circuit on either side is narrowed to
+    :attr:`~insulation_coordination.domain.verification.TestReferenceKind.DVC_AS_ADJACENT_CIRCUIT`.
+    That is the one place the decisive voltage class enters the topology, and it earns its
+    place: the standard verifies a DVC A-s circuit against its adjacent circuits instead of
+    against accessible parts, and keys and columns that test differently from every other
+    circuit-to-circuit one. A class nobody assigned narrows nothing.
     """
 
     net_types = {net.id: net.net_type for net in project.net_classes}
+    classes = {net.id: net.decisive_voltage_class for net in project.net_classes}
     subjects: list[TestSubject] = []
     for pair in project.pairs:
         if pair.is_excluded:
@@ -159,6 +167,11 @@ def subjects_for(
         kind = reference_kind_for(net_types[pair.net_a], net_types[pair.net_b])
         if kind is None:
             continue
+        if kind is TestReferenceKind.ADJACENT_CIRCUIT and DecisiveVoltageClass.DVC_AS in (
+            classes[pair.net_a],
+            classes[pair.net_b],
+        ):
+            kind = TestReferenceKind.DVC_AS_ADJACENT_CIRCUIT
         high_net, low_net = (
             (pair.net_a, pair.net_b)
             if net_types[pair.net_a] is NetClassType.CIRCUIT
