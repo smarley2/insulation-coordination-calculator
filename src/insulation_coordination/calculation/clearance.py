@@ -194,6 +194,46 @@ def apply_reinforced_stress_treatment(
     )
 
 
+def reinforced_stress_floor(
+    stress_v: Decimal,
+    *,
+    kind: InsulationType,
+    stress_field: str,
+    reinforced: ReinforcedRuleSet | None,
+) -> Decimal:
+    """The lowest stress whose reinforced treatment still reaches ``stress_v``.
+
+    The inverse of :func:`apply_reinforced_stress_treatment`, and the seam a caller holding a
+    floor under a *treated* figure uses to express it as a floor under the untreated stress
+    this engine is handed. Going through this function rather than restating the inverse is
+    what keeps the two directions reading the same rule and mapping the same quantity.
+
+    A class this application applies no treatment to is its own floor, and reads no rule -
+    the same answer, for the same reason, that the forward direction gives.
+    """
+
+    from insulation_coordination.calculation.reinforced_rules import (
+        CLEARANCE_ROUTE,
+        read_reinforced_rules,
+        untreated_floor,
+    )
+
+    if kind is not InsulationType.REINFORCED:
+        return stress_v
+    quantity = TREATED_QUANTITY_BY_STRESS_FIELD.get(stress_field)
+    if quantity is None:
+        raise UnsupportedCaseError(
+            f"{stress_field} is not a quantity the reinforced treatment rule is asked about"
+        )
+    return untreated_floor(
+        stress_v,
+        rules=reinforced if reinforced is not None else read_reinforced_rules(None),
+        route=CLEARANCE_ROUTE,
+        insulation_class=kind.value,
+        treated_quantity=quantity,
+    )
+
+
 def select_f2_impulse_clearance(
     effective: EffectiveCase,
     rules: RulePackage,

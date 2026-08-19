@@ -233,6 +233,64 @@ def next_preferred_level(levels: tuple[Decimal, ...], value: Decimal) -> Decimal
     return ordered[index]
 
 
+def _previous_preferred_level(levels: tuple[Decimal, ...], value: Decimal) -> Decimal:
+    """The coordinate below ``value``, or ``value`` itself where it is the lowest one carried.
+
+    The lowest coordinate has nothing under it to step down to, so the lowest quantity whose
+    step still reaches it is that coordinate. Off the axis there is no answer at all, which is
+    the same refusal :func:`next_preferred_level` makes for the same reason.
+    """
+
+    ordered = tuple(sorted(levels))
+    if value not in ordered:
+        raise ReinforcedTreatmentUnavailable(
+            (
+                ReinforcedRuleBlock(
+                    code=ReinforcedRuleBlockCode.VALUE_OFF_AXIS,
+                    message=(
+                        f"{value} {_VOLTAGE_UNIT} is not a coordinate of the requirement axis "
+                        "the reinforced treatment steps along, so it has no level below."
+                    ),
+                ),
+            )
+        )
+    index = ordered.index(value)
+    return ordered[index - 1] if index else value
+
+
+def untreated_floor(
+    floor: Decimal,
+    *,
+    route: str,
+    insulation_class: str,
+    treated_quantity: str,
+    rules: ReinforcedRuleSet,
+) -> Decimal:
+    """The lowest quantity whose treatment still reaches ``floor``.
+
+    The inverse of :func:`apply_reinforced_treatment`, for a caller holding a floor under a
+    *treated* figure and handing an untreated one to an engine that will do the treating
+    itself. Both modes invert against the same reviewed statement the forward direction reads,
+    so the two cannot drift apart: a step's inverse is the coordinate below, and a
+    multiplication's is a division by the same factor.
+
+    No floor of its own is stated here. What the caller passes in is the caller's, and this
+    only says which untreated quantity carries it.
+    """
+
+    treatment = rules.treatment(
+        route, insulation_class=insulation_class, treated_quantity=treated_quantity
+    )
+    if treatment.mode == NEXT_LEVEL_IN_REQUIREMENT_AXIS:
+        return _previous_preferred_level(treatment.levels, floor)
+    # A division that does not come out exactly leaves the product a unit in the last place
+    # short of the floor, and short of the floor is the one place the answer may not sit.
+    lowest = floor / treatment.multiplier
+    if multiply_stress(lowest, treatment.multiplier) < floor:
+        return lowest.next_plus()
+    return lowest
+
+
 def apply_reinforced_treatment(
     value: Decimal,
     *,
@@ -455,4 +513,5 @@ __all__ = [
     "next_preferred_level",
     "read_reinforced_rules",
     "reinforced_rule_blocks",
+    "untreated_floor",
 ]
