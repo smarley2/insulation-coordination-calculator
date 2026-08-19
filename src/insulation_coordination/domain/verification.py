@@ -316,13 +316,17 @@ class SolidInsulationTestData(FrozenModel):
 
     This application does not calculate or approve a thickness. The thickness is recorded so a
     procedure that asks for it has an answer, not so anything can be dimensioned from it.
+
+    ``layer_count`` is what the applicability clause's sample-test condition is asked about.
+    There is deliberately no field for whether the layers can be tested one at a time: no
+    clause of the approved package's standard asks that question, and a persisted field nothing
+    reads is a field an engineer fills in believing something depends on it.
     """
 
     present: bool | None = None
     minimum_thickness_mm: PositiveDecimal | None = None
     material_pd_exempt: bool | None = None
     layer_count: int | None = Field(default=None, ge=1)
-    separately_testable_layers: bool | None = None
     material_reference: str | None = None
     notes: str = ""
 

@@ -13,11 +13,10 @@ from pathlib import Path
 import pytest
 
 from insulation_coordination.calculation.engine import derive_project_supply
-from insulation_coordination.calculation.high_frequency import PART4_FREQUENCY_THRESHOLD_HZ
 from insulation_coordination.calculation.partial_discharge import (
+    APPLICABILITY_CLAUSE,
     ELECTRIC_STRESS_TRACE_ID,
     GATE_INPUT_TRACE_ID,
-    HIGH_FREQUENCY_REVIEW_WARNING,
     PartialDischargeOutcome,
     assess_partial_discharge,
 )
@@ -37,6 +36,7 @@ from insulation_coordination.domain.verification import (
     SolidInsulationTestData,
     TestApplicability,
     TestApplication,
+    TestClassification,
     TestKind,
 )
 from insulation_coordination.project.resolver import resolve_effective_case
@@ -53,6 +53,10 @@ from tests.fixtures.verification_topologies import (
 )
 
 BASIC = ProtectionImplementation.BASIC_INSULATION
+#: The one means every test here uses unless it is testing the scope itself. The applicability
+#: clause is scoped to double and to reinforced insulation, so a pair protected by anything
+#: else is outside it and its assessment answers a different question.
+REINFORCED = ProtectionImplementation.REINFORCED_INSULATION
 #: The fixture's recurring peak for a non-mains pair. Named so a test reads the quotient rather
 #: than a bare number.
 RECURRING_PEAK_V = Decimal(25)
@@ -86,6 +90,7 @@ def project_with(
     *,
     recurring_peak_v: Decimal | None = RECURRING_PEAK_V,
     frequency_hz: Decimal = Decimal(50),
+    implementation: ProtectionImplementation | None = REINFORCED,
 ) -> Project:
     """The verification topology with one protection implementation and one declaration."""
 
@@ -94,7 +99,26 @@ def project_with(
         recurring_peak_v=recurring_peak_v,
         frequency_hz=frequency_hz,
     )
-    return with_pair_fields(project, protection_implementation=BASIC, solid_insulation=solid)
+    return with_pair_fields(
+        project, protection_implementation=implementation, solid_insulation=solid
+    )
+
+
+def assess(project: Project, package: RulePackage) -> PartialDischargeOutcome:
+    """The assessment of one pair, read without the schedule row in the way.
+
+    The classification the applicability clause states is read here rather than off a schedule
+    row, because the row still takes its classifications from the procedure the package
+    declares. That is a call site outside this module.
+    """
+
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    return assess_partial_discharge(
+        pair,
+        resolve_effective_case(project.defaults, pair),
+        read_verification_rules(package).partial_discharge,
+        recurring_peak_v=RECURRING_PEAK_V,
+    )
 
 
 def build(project: Project, package: RulePackage) -> VerificationPlan:
@@ -138,16 +162,134 @@ def test_a_pair_with_no_solid_insulation_at_all_has_nothing_to_verify(
     assert row.unresolved_inputs == ()
 
 
-def test_a_fully_declared_pair_is_told_the_test_is_required(package: RulePackage) -> None:
+def test_a_fully_declared_pair_still_names_the_two_conditions_nobody_can_be_asked(
+    package: RulePackage,
+) -> None:
+    """Everything this project can state is stated, and the clause's own test is still open.
+
+    Answering "required" here would credit the package with the two conditions
+    4.4.7.10.3 states, which it does not carry. Answering "not required" would be worse.
+    """
     project = project_with(declared_solid_insulation())
     pair = pair_between(project, LIVE_A, ENCLOSURE)
     row = discharge_row(build(project, package), pair)
-    assert row.applicability is TestApplicability.REQUIRED
-    assert row.unresolved_inputs == ()
+    assert row.applicability is TestApplicability.ENGINEERING_INPUT_REQUIRED
     assert row.source_rule_ids == (
         ids.TEST_PARTIAL_DISCHARGE,
         f"{ids.TEST_PARTIAL_DISCHARGE}.applicability",
     )
+    gap = next(item for item in row.unresolved_inputs if APPLICABILITY_CLAUSE in item)
+    assert "recurring-peak working voltage across the insulation" in gap
+    assert "electric stress derived from it" in gap
+    assert "states no rule for either condition" in gap
+
+
+# --- the clause's own scope ---------------------------------------------------------------
+
+
+def test_a_means_that_is_neither_double_nor_reinforced_is_outside_the_clause(
+    package: RulePackage,
+) -> None:
+    """The project already holds the deciding input, so nothing more is asked of it."""
+    project = project_with(declared_solid_insulation(), implementation=BASIC)
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    row = discharge_row(build(project, package), pair)
+    assert row.applicability is TestApplicability.NOT_APPLICABLE
+    assert row.unresolved_inputs == ()
+    assert any("outside that clause by rule" in step for step in row.preparation_steps)
+
+
+def test_a_clearance_only_pair_is_outside_the_clause_whatever_its_means(
+    package: RulePackage,
+) -> None:
+    project = project_with(
+        declared_solid_insulation(present=False, material_pd_exempt=None), implementation=BASIC
+    )
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    row = discharge_row(build(project, package), pair)
+    assert row.applicability is TestApplicability.NOT_APPLICABLE
+    assert row.unresolved_inputs == ()
+
+
+def test_double_insulation_is_in_scope_beside_reinforced(package: RulePackage) -> None:
+    project = project_with(
+        declared_solid_insulation(),
+        implementation=ProtectionImplementation.DOUBLE_INSULATION,
+    )
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    row = discharge_row(build(project, package), pair)
+    assert row.applicability is TestApplicability.ENGINEERING_INPUT_REQUIRED
+    assert any(APPLICABILITY_CLAUSE in item for item in row.unresolved_inputs)
+
+
+def test_a_pair_with_no_means_selected_is_asked_which_one_rather_than_told_no(
+    package: RulePackage,
+) -> None:
+    project = project_with(declared_solid_insulation(), implementation=None)
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    row = discharge_row(build(project, package), pair)
+    assert row.applicability is TestApplicability.ENGINEERING_INPUT_REQUIRED
+    assert any("no protective means selected" in item for item in row.unresolved_inputs)
+
+
+def test_other_reviewed_means_belongs_to_the_review_that_approved_it(
+    package: RulePackage,
+) -> None:
+    """A means approved elsewhere may or may not be solid insulation; nothing here knows."""
+    project = project_with(
+        declared_solid_insulation(),
+        implementation=ProtectionImplementation.OTHER_REVIEWED_MEANS,
+    )
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    row = discharge_row(build(project, package), pair)
+    assert row.applicability is TestApplicability.ENGINEERING_INPUT_REQUIRED
+    assert any("review that approved the means" in item for item in row.unresolved_inputs)
+
+
+def test_an_enhanced_means_that_is_not_solid_insulation_is_outside_the_clause(
+    package: RulePackage,
+) -> None:
+    """Enhanced protection is not the scope; the two constructions the clause names are.
+
+    A protective screen with basic insulation is enhanced protection, and 4.4.7.10.1 routes
+    its basic insulation to the sibling clause, which asks for no partial-discharge test.
+    """
+    project = project_with(
+        declared_solid_insulation(),
+        implementation=ProtectionImplementation.PROTECTIVE_SCREEN_PLUS_BASIC,
+    )
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    row = discharge_row(build(project, package), pair)
+    assert row.applicability is TestApplicability.NOT_APPLICABLE
+    assert row.unresolved_inputs == ()
+
+
+# --- the classification the clause states -------------------------------------------------
+
+
+def test_a_single_layer_declaration_owes_a_sample_test_beside_the_type_test(
+    package: RulePackage,
+) -> None:
+    outcome = assess(project_with(declared_solid_insulation(layer_count=1)), package)
+
+    assert outcome.classifications == (TestClassification.TYPE, TestClassification.SAMPLE)
+    assert any("single layer of material" in step for step in outcome.preparation_steps)
+
+
+def test_a_multi_layer_declaration_owes_the_type_test_alone(package: RulePackage) -> None:
+    outcome = assess(project_with(declared_solid_insulation(layer_count=3)), package)
+
+    assert outcome.classifications == (TestClassification.TYPE,)
+    assert any("is not owed here" in step for step in outcome.preparation_steps)
+
+
+def test_an_undeclared_layer_count_states_no_classification_and_says_why(
+    package: RulePackage,
+) -> None:
+    outcome = assess(project_with(declared_solid_insulation(layer_count=None)), package)
+
+    assert outcome.classifications == ()
+    assert any("no layer count" in item for item in outcome.unresolved_inputs)
 
 
 def test_a_documented_material_exemption_settles_the_test_as_not_required(
@@ -197,39 +339,6 @@ def test_each_missing_declaration_is_named_on_its_own(
     assert any(expected in item for item in row.unresolved_inputs)
 
 
-def test_layers_nobody_said_were_separately_testable_are_an_open_question(
-    package: RulePackage,
-) -> None:
-    project = project_with(declared_solid_insulation(layer_count=3))
-    pair = pair_between(project, LIVE_A, ENCLOSURE)
-    row = discharge_row(build(project, package), pair)
-    assert row.applicability is TestApplicability.ENGINEERING_INPUT_REQUIRED
-    assert any("tested separately" in item for item in row.unresolved_inputs)
-
-
-def test_separately_testable_layers_are_each_tested_and_the_construction_with_them(
-    package: RulePackage,
-) -> None:
-    project = project_with(
-        declared_solid_insulation(layer_count=3, separately_testable_layers=True)
-    )
-    pair = pair_between(project, LIVE_A, ENCLOSURE)
-    row = discharge_row(build(project, package), pair)
-    assert row.applicability is TestApplicability.REQUIRED
-    assert any("test each layer" in step for step in row.preparation_steps)
-
-
-def test_layers_that_cannot_be_separated_say_no_result_belongs_to_one_of_them(
-    package: RulePackage,
-) -> None:
-    project = project_with(
-        declared_solid_insulation(layer_count=2, separately_testable_layers=False)
-    )
-    pair = pair_between(project, LIVE_A, ENCLOSURE)
-    row = discharge_row(build(project, package), pair)
-    assert any("attributable to one layer" in step for step in row.preparation_steps)
-
-
 # --- the working voltage and the stress it produces -----------------------------------------
 
 
@@ -275,36 +384,21 @@ def test_no_thickness_means_no_stress_rather_than_a_stress_of_nothing(
     assert all(item.semantic_rule_id != ELECTRIC_STRESS_TRACE_ID for item in row.trace_steps)
 
 
-# --- the high-frequency review ---------------------------------------------------------------
+# --- the high-frequency review this assessment no longer carries --------------------------
 
 
-def test_a_pair_above_the_part_4_boundary_carries_a_prominent_review_warning(
+def test_no_partial_discharge_warning_is_raised_for_a_pair_above_the_high_frequency_boundary(
     package: RulePackage,
 ) -> None:
-    frequency = PART4_FREQUENCY_THRESHOLD_HZ + Decimal(1)
-    project = project_with(declared_solid_insulation(), frequency_hz=frequency)
-    plan = build(project, package)
-    warnings = [item for item in plan.warnings if item.code == HIGH_FREQUENCY_REVIEW_WARNING]
-    assert warnings
-    assert "IEC 60664-4" in warnings[0].message
+    """The annex that owns that boundary governs the insulation design, not this procedure.
 
+    The review is raised where the pair is dimensioned - see
+    ``tests/calculation/test_engine.py`` - and the partial-discharge procedure itself is
+    specified at power frequency, so nothing about it belongs on this assessment.
+    """
+    project = project_with(declared_solid_insulation(), frequency_hz=Decimal(200_000))
 
-def test_a_pair_at_the_boundary_is_not_above_it(package: RulePackage) -> None:
-    project = project_with(declared_solid_insulation(), frequency_hz=PART4_FREQUENCY_THRESHOLD_HZ)
-    plan = build(project, package)
-    assert all(item.code != HIGH_FREQUENCY_REVIEW_WARNING for item in plan.warnings)
-
-
-def test_the_review_warning_is_raised_even_where_the_test_itself_does_not_apply(
-    package: RulePackage,
-) -> None:
-    """A pair assessed against a part this application does not apply is still a pair assessed."""
-    project = project_with(
-        SolidInsulationTestData(present=False),
-        frequency_hz=PART4_FREQUENCY_THRESHOLD_HZ + Decimal(1),
-    )
-    plan = build(project, package)
-    assert any(item.code == HIGH_FREQUENCY_REVIEW_WARNING for item in plan.warnings)
+    assert assess(project, package).warnings == ()
 
 
 # --- how the plan carries it -------------------------------------------------------------
@@ -317,7 +411,7 @@ def test_every_pair_gets_a_partial_discharge_row_and_its_assessment_names_the_an
     pair = pair_between(project, LIVE_A, ENCLOSURE)
     plan = build(project, package)
     assessment = next(item for item in plan.pair_assessments if item.pair_id == pair.id)
-    assert assessment.partial_discharge is TestApplicability.REQUIRED
+    assert assessment.partial_discharge is TestApplicability.ENGINEERING_INPUT_REQUIRED
     assert discharge_row(plan, pair).test_id in assessment.test_ids
 
 
@@ -395,13 +489,15 @@ def test_an_outcome_this_application_has_no_reading_for_is_reported_not_rounded(
     assert any(unknown in item for item in outcome.unresolved_inputs)
 
 
-def test_a_package_stating_no_classification_is_asked_for_one_rather_than_given_one(
+def test_the_clause_states_the_classification_even_where_the_package_states_none(
     unclassified_package: RulePackage,
 ) -> None:
-    """This is the real package's shape, and it is why a plan against it is never settled here."""
-    project = project_with(declared_solid_insulation())
-    pair = pair_between(project, LIVE_A, ENCLOSURE)
-    row = discharge_row(build(project, unclassified_package), pair)
-    assert row.classifications == ()
-    assert row.applicability is TestApplicability.ENGINEERING_INPUT_REQUIRED
-    assert any("states no test classification" in item for item in row.unresolved_inputs)
+    """This is the real package's shape: Table 30 carries no classification at all.
+
+    It does not have to. The applicability clause states the classification itself, and it is
+    read from the declared layer count rather than asked of the procedure.
+    """
+    outcome = assess(project_with(declared_solid_insulation()), unclassified_package)
+
+    assert outcome.classifications == (TestClassification.TYPE, TestClassification.SAMPLE)
+    assert not any("states no test classification" in item for item in outcome.unresolved_inputs)

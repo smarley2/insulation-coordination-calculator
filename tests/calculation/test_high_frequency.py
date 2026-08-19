@@ -8,7 +8,11 @@ from insulation_coordination.calculation.clearance import (
     CalculationRangeError,
     calculate_clearance_candidates,
 )
-from insulation_coordination.calculation.engine import RequiredStressError, calculate_pair
+from insulation_coordination.calculation.engine import (
+    HIGH_FREQUENCY_REVIEW_WARNING,
+    RequiredStressError,
+    calculate_pair,
+)
 from insulation_coordination.calculation.high_frequency import (
     A2_ALTITUDE_ROUTE,
     HighFrequencyCalculationError,
@@ -31,6 +35,7 @@ from insulation_coordination.domain.project import (
 )
 from insulation_coordination.domain.rules import RulePackage
 from insulation_coordination.rules.archive import load_rule_package, write_rule_package
+from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 from tests.fixtures.synthetic_rules import claimed_standards
 
 
@@ -135,6 +140,31 @@ def test_part4_starts_only_above_30_khz(
 
     assert at_boundary.trace.used_part4 is False
     assert above.trace.used_part4 is True
+
+
+def test_a_pair_above_the_boundary_owes_the_annex_review_where_it_is_dimensioned(
+    case_factory,
+    semantic_part4_rules: RulePackage,
+) -> None:
+    """The obligation belongs to the insulation design, and it never states the boundary.
+
+    The annex that owns the boundary is normative and covers clearance, creepage distance and
+    solid insulation together, so the review is raised against the pair's result rather than
+    against one test. What the warning states is the rule that decided it; the frequency the
+    rule states is the rule's, and never appears in the sentence.
+    """
+    at_boundary = calculate_pair(case_factory(frequency_hz="30000"), semantic_part4_rules)
+    above = calculate_pair(case_factory(frequency_hz="30000.1"), semantic_part4_rules)
+
+    assert all(item.code != HIGH_FREQUENCY_REVIEW_WARNING for item in at_boundary.warnings)
+    warning = next(item for item in above.warnings if item.code == HIGH_FREQUENCY_REVIEW_WARNING)
+    assert warning.semantic_rule_id == ids.HIGH_FREQUENCY_APPLICABILITY
+    assert "clearance, creepage distance and solid insulation" in warning.message
+    assert "greater of the two" in warning.message
+    assert "IEC 60664-4" in warning.message
+    assert "30" not in warning.message
+    assert "kHz" not in warning.message
+    assert above.trace.warnings == above.warnings
 
 
 def test_critical_frequency_uses_each_pairs_clearance(

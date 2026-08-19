@@ -62,6 +62,7 @@ from insulation_coordination.domain.supply import GoverningSupplyStress
 from insulation_coordination.domain.trace import CalculationWarning, Quantity, TraceStep
 from insulation_coordination.project.resolver import resolve_effective_case
 from insulation_coordination.rules.evaluator import EvaluationError, evaluate_formula
+from insulation_coordination.rules.importer.iec62477_2022 import semantic_ids as ids
 
 CALCULATION_ENGINE_VERSION = "pcb-annex-gh-3"
 
@@ -74,9 +75,20 @@ SUPERSEDED_ENTRY_WARNING = "supply_derived_stress_supersedes_entry"
 ENTRY_EXCEEDS_DERIVED_WARNING = "supply_entry_exceeds_derived_stress"
 """An entered stress is more severe than the derived one, so the entry is what governs."""
 
+HIGH_FREQUENCY_REVIEW_WARNING = "high_frequency_insulation_review"
+"""This pair is above the boundary the high-frequency annex states, so a review is owed.
+
+Raised here, against the insulation design, and not against one test. The annex is normative
+and its scope is clearance, creepage distance and solid insulation together, so the obligation
+belongs to whatever dimensions all three - which is this module. It used to be raised against
+the partial-discharge test alone, which both understated its reach and attached it to a
+procedure the source specifies at power frequency.
+"""
+
 __all__ = [
     "CALCULATION_ENGINE_VERSION",
     "ENTRY_EXCEEDS_DERIVED_WARNING",
+    "HIGH_FREQUENCY_REVIEW_WARNING",
     "INNER_LAYER_POLLUTION_DEGREE",
     "SUPERSEDED_ENTRY_WARNING",
     "CalculationError",
@@ -475,6 +487,7 @@ def calculate_pair(
         creepage_candidates,
         steps,
         rules,
+        used_part4=used_part4,
     )
     if supply is not None:
         warnings = (*supply.warnings, *warnings)
@@ -562,10 +575,15 @@ def _advisories(
     creepage_candidates: tuple[DistanceCandidate, ...],
     steps: tuple[TraceStep, ...],
     rules: RulePackage,
+    *,
+    used_part4: bool = False,
 ) -> tuple[tuple[CalculationWarning, ...], tuple[VerificationRequirement, ...]]:
     warnings: list[CalculationWarning] = []
     requirements: list[VerificationRequirement] = []
     candidates = (*clearance_candidates, *creepage_candidates)
+
+    if used_part4:
+        warnings.append(_high_frequency_review(rules))
 
     field = effective.field_condition.value
     if field in (FieldCondition.HOMOGENEOUS, FieldCondition.APPROXIMATELY_HOMOGENEOUS):
@@ -637,6 +655,44 @@ def _advisories(
         )
 
     return tuple(warnings), tuple(requirements)
+
+
+def _high_frequency_review(rules: RulePackage) -> CalculationWarning:
+    """The comparison and the review a pair above the high-frequency boundary owes.
+
+    Original prose against the rule that owns the boundary, in the shape
+    ``impulse_override`` states its obligations in: the sentence names what the annex requires
+    and carries the annex's own semantic identifier, and it never states the boundary as a
+    figure - the rule named is what decided that this pair is above it.
+
+    The annex's applicability rule is looked up only for its provenance, so a reader can follow
+    the warning to the page it comes from. A package that carries no such rule still gets the
+    warning: the obligation is the annex's and does not depend on this application having found
+    the rule that records it.
+    """
+
+    route = next(
+        (
+            decision
+            for decision in rules.decisions
+            if decision.id.startswith(ids.HIGH_FREQUENCY_APPLICABILITY)
+        ),
+        None,
+    )
+    return CalculationWarning(
+        code=HIGH_FREQUENCY_REVIEW_WARNING,
+        message=(
+            "This pair's frequency is above the boundary the high-frequency annex of "
+            "IEC 62477-1 states. That annex is normative and covers clearance, creepage "
+            "distance and solid insulation alike: the result reached under it shall be "
+            "compared with the ordinary determination and the greater of the two chosen, and "
+            "the solid insulation needs review under IEC 60664-4, which this application does "
+            "not apply. The partial-discharge test procedure itself is specified at power "
+            "frequency and is not what this review is about."
+        ),
+        semantic_rule_id=ids.HIGH_FREQUENCY_APPLICABILITY,
+        source_reference=None if route is None else route.source,
+    )
 
 
 def _advisory_context(

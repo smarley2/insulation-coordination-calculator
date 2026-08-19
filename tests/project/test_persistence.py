@@ -55,6 +55,7 @@ from insulation_coordination.project.persistence import (
     NET_TOPOLOGY_KEYS,
     PAIR_VERIFICATION_KEYS,
     PROJECT_SCHEMA_VERSION,
+    SEPARABLE_LAYERS_KEY,
     ProjectLoadError,
     ProjectSaveError,
     ProjectVersionError,
@@ -132,6 +133,19 @@ def topology_migration_project() -> Project:
     )
 
 
+def _as_written_at_schema_v7(document: dict[str, object]) -> dict[str, object]:
+    """Put the key the version 7 -> 8 migration drops back on every declaring pair, in place.
+
+    The other builders here strip what a later migration *adds*; this one restores what one
+    removes, because a version-7 document written by the application always carried it.
+    """
+    for pair in document["pairs"]:  # type: ignore[union-attr]
+        declared = pair.get("solid_insulation")
+        if isinstance(declared, dict):
+            declared[SEPARABLE_LAYERS_KEY] = False
+    return document
+
+
 def _without_fields_added_since_v6(document: dict[str, object]) -> dict[str, object]:
     """Strip everything the version 6 -> 7 migration introduces, in place."""
     document.pop(IMPULSE_VERIFICATION_KEY, None)
@@ -170,6 +184,10 @@ def _as_schema_v5_document(project: Project) -> dict[str, object]:
 
 def _as_schema_v6_document(project: Project) -> dict[str, object]:
     return _without_fields_added_since_v6({"schema_version": 6, **project.model_dump(mode="json")})
+
+
+def _as_schema_v7_document(project: Project) -> dict[str, object]:
+    return _as_written_at_schema_v7({"schema_version": 7, **project.model_dump(mode="json")})
 
 
 def _pairs_without_verification_keys(document: dict[str, object]) -> list[dict[str, object]]:
@@ -1163,6 +1181,92 @@ def test_a_chosen_impulse_verification_method_round_trips_unchanged(
     assert reloaded == project
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert saved[IMPULSE_VERIFICATION_KEY] == method.value
+
+
+# --- the layer question no clause asks (schema 7 -> 8) ------------------------------------
+
+
+def test_schema_v7_opens_and_keeps_everything_except_the_dropped_layer_field(
+    verification_project: Project, tmp_path: Path
+) -> None:
+    """A project written at the previous schema loads, and only the dropped field is gone."""
+    project = verification_project.model_copy(
+        update={
+            "circuit_diagram": attachment_from(
+                png_bytes(), caption="Main topology", source_note="EDA export"
+            )
+        }
+    )
+    document = _as_schema_v7_document(project)
+    original = deepcopy(document)
+    path = tmp_path / "v7.icproj"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    loaded = load_project(path)
+
+    assert loaded == project
+    assert loaded.circuit_diagram is not None
+    assert original["circuit_diagram"] is not None
+    assert loaded.circuit_diagram.model_dump(mode="json") == original["circuit_diagram"]
+    assert loaded.circuit_diagram.decoded_bytes() == project.circuit_diagram.decoded_bytes()  # type: ignore[union-attr]
+    for loaded_pair, original_pair in zip(loaded.pairs, original["pairs"], strict=True):  # type: ignore[arg-type]
+        assert str(loaded_pair.id) == original_pair["id"]
+        assert loaded_pair.key == original_pair["key"]
+        assert loaded_pair.voltages.model_dump(mode="json") == original_pair["voltages"]
+        assert loaded_pair.frequency_hz.model_dump(mode="json") == original_pair["frequency_hz"]
+
+    migrated = migrate_project_document(original)
+
+    assert migrated["schema_version"] == PROJECT_SCHEMA_VERSION
+    assert set(migrated) - set(original) == set()
+    declared = migrated["pairs"][0]["solid_insulation"]  # type: ignore[index]
+    assert SEPARABLE_LAYERS_KEY not in declared
+    assert declared["layer_count"] == 3
+
+
+def test_a_v7_pair_that_declared_no_solid_insulation_is_left_alone(
+    sample_project: Project, tmp_path: Path
+) -> None:
+    """The step walks every pair, and a pair with nothing to strip is not rewritten."""
+    document = _as_schema_v7_document(sample_project)
+    original = deepcopy(document)
+    path = tmp_path / "v7-bare.icproj"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    assert load_project(path) == sample_project
+    assert migrate_project_document(original)["pairs"] == original["pairs"]
+
+
+@pytest.mark.parametrize("pairs", ["not a list", [None], [{"solid_insulation": "not an object"}]])
+def test_a_hand_edited_v7_document_reaches_the_loader_rather_than_crashing(
+    sample_project: Project, tmp_path: Path, pairs: object
+) -> None:
+    """Same defensive shape as the version 3 and 5 steps: the loader reports the problem."""
+    document = _as_schema_v7_document(sample_project)
+    document["pairs"] = pairs
+    path = tmp_path / "hand-edited-v7.icproj"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ProjectLoadError):
+        load_project(path)
+
+
+def test_a_document_at_the_current_schema_still_carrying_the_dropped_field_is_refused(
+    verification_project: Project, tmp_path: Path
+) -> None:
+    """No migration step runs, so the model's own refusal of an undeclared field is what speaks.
+
+    The removal step deliberately carries no version guard - a version-7 document is expected
+    to hold the key - and this is what stands in its place at the current version.
+    """
+    document = _as_written_at_schema_v7(
+        {"schema_version": PROJECT_SCHEMA_VERSION, **verification_project.model_dump(mode="json")}
+    )
+    path = tmp_path / "current-with-dropped-field.icproj"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ProjectLoadError, match=SEPARABLE_LAYERS_KEY):
+        load_project(path)
 
 
 def test_voltage_evidence_ids_must_be_unique(verification_project: Project) -> None:
