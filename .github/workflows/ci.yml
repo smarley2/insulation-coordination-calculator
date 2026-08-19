@@ -1,17 +1,21 @@
 name: CI
 
 on:
+  # Only the default branch on push. A pull request already runs this workflow, and running
+  # both on the same commit is what let one stalled leg block a merge the other leg proved.
   push:
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
 
-# A push to a branch with an open pull request starts two runs on the same commit, and both
-# feed required checks - so one stalled leg blocks a merge the other leg has already proved.
-# Keep the newest run per ref and cancel the rest.
+# Successive pushes to the same pull request supersede each other; only the newest matters.
+# Keyed on the pull request when there is one, so a push event and its pull-request event
+# cannot land in different groups - which is the mistake that made the first attempt at this
+# a no-op.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
