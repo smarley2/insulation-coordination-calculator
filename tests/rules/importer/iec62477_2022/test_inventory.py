@@ -7,6 +7,8 @@ from insulation_coordination.rules.importer.iec62477_2022.semantic_ids import (
     ALTITUDE_TEST_VOLTAGE_CORRECTION,
     DVC_FAULT_TIME_VOLTAGE,
     REQUIRED_SEMANTIC_IDS,
+    TEST_IMPULSE_SELECTION,
+    TEST_PARTIAL_DISCHARGE,
 )
 from insulation_coordination.rules.importer.recipes import RECIPES
 
@@ -43,6 +45,33 @@ def test_fault_time_voltage_is_a_curve() -> None:
         item for item in REQUIRED_SOURCE_ITEMS if item.semantic_id == DVC_FAULT_TIME_VOLTAGE
     )
     assert item.expected_output_kind == "curve"
+
+
+def test_impulse_selection_is_declared_a_table() -> None:
+    """The recipe projects Table 27 as four table specs, not a decision.
+
+    A conformance review (issue #37, 2026-08-18) flagged this row: the declared kind must
+    match what the recipe actually projects, or completeness checks are comparing the wrong
+    shape.
+    """
+    item = next(
+        item for item in REQUIRED_SOURCE_ITEMS if item.semantic_id == TEST_IMPULSE_SELECTION
+    )
+    assert item.expected_output_kind == "table"
+    assert item.expected_table == "Table 27"
+
+
+def test_partial_discharge_applicability_locator_is_the_clause_not_the_table() -> None:
+    """Table 30 is the procedure; 4.4.7.10.3 is the applicability and classification rule.
+
+    Same conformance review, finding A6: the inventory row named only Table 30, with no
+    clause locator for the rule that actually decides when the test applies.
+    """
+    item = next(
+        item for item in REQUIRED_SOURCE_ITEMS if item.semantic_id == TEST_PARTIAL_DISCHARGE
+    )
+    assert item.expected_table == "Table 30"
+    assert item.expected_clause == "4.4.7.10.3"
 
 
 def test_every_deferred_identifier_is_a_required_inventory_item() -> None:
