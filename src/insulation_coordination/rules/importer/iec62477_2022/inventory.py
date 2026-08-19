@@ -80,6 +80,7 @@ REQUIRED_SOURCE_ITEMS: tuple[RequiredSourceItem, ...] = (
     _item(ids.HIGH_FREQUENCY_BAND_FACTOR, "decision", (36,), table="Table F.2", clause="F.2.3"),
     _item(ids.TEST_IMPULSE_PROCEDURE, "procedure", (37,), table="Table 26"),
     _item(ids.TEST_IMPULSE_SELECTION, "decision", (37,), table="Table 27"),
+    _item(ids.TEST_IMPULSE_ALTERNATIVE, "procedure", (37,), clause="5.2.3.3"),
     _item(ids.TEST_MAINS_DIELECTRIC_VALUES, "table", (37,), table="Table 28"),
     _item(ids.TEST_NON_MAINS_DIELECTRIC_VALUES, "table", (37,), table="Table 29"),
     _item(ids.TEST_PARTIAL_DISCHARGE, "procedure", (37,), table="Table 30"),

@@ -20,7 +20,12 @@ from insulation_coordination.domain.enums import (
 from insulation_coordination.domain.project import Project
 from insulation_coordination.domain.verification import ProtectionImplementation
 
-PROJECT_SCHEMA_VERSION = 6
+PROJECT_SCHEMA_VERSION = 7
+
+# The project-level key the version 6 -> 7 migration introduces. Guarded like every other
+# introduced key: a version-6 document already carrying it was migrated once or hand-edited,
+# and a second pass must not touch a method someone actually chose.
+IMPULSE_VERIFICATION_KEY = "impulse_verification_method"
 
 # Net-level keys the version 3 -> 4 migration adds. A version-3 document must not carry any of
 # these yet - their presence means the document was already migrated (or hand-edited), and the
@@ -175,6 +180,18 @@ def migrate_project_document(raw: dict[str, object]) -> dict[str, object]:
             pair["protection_implementation"] = _migrated_protection(pair)
             pair["protection_review_state"] = ReviewState.NEEDS_REVIEW.value
         version = 6
+    if version == 6:
+        if IMPULSE_VERIFICATION_KEY in document:
+            raise ProjectVersionError(
+                f"Project schema {declared} must not contain {IMPULSE_VERIFICATION_KEY}"
+            )
+        # Nothing is written. An existing project chose no impulse verification method, and the
+        # field defaults to none, so the key is left absent exactly as the pair-level impulse
+        # override and the solid-insulation record are: writing a null would record a decision
+        # as having been made and not made at the same time, and there is no conservative value
+        # to migrate to - the impulse test is the source's own default, but a project that
+        # never saw the choice has not selected it.
+        version = 7
     if version != PROJECT_SCHEMA_VERSION:
         raise ProjectVersionError(f"Project schema {declared} is unsupported")
     document["schema_version"] = PROJECT_SCHEMA_VERSION

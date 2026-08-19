@@ -13,6 +13,14 @@ verified override recorded at that pair - already treated for the pair's insulat
 nothing here multiplies it again. Deriving a second figure here would give the schedule the
 chance to disagree with the calculation it is verifying.
 
+*The requirement is read, never derived from the implementation.* What level of protection a
+pair needs comes from the package's own Table 3, asked for the classes on either side and the
+relationship between them; what an engineer selected to provide it is a separate record. The
+two are compared, and a construction that does not reach the level required is a finding the
+plan reports. Deriving one from the other - which is what "enhanced" alone amounted to - would
+mean a wrong implementation could never be detected, because the requirement would move to
+meet it.
+
 *Enhanced protection does not collapse into reinforced insulation.* Which construction an
 engineer selected and which spacing path the clearance engine dimensioned are two separate
 records, and where they disagree the plan says so instead of picking one. Double insulation is
@@ -32,7 +40,7 @@ input on the application it belongs to. There is no path from "nothing is known"
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal
 from typing import Final
 from uuid import UUID
@@ -74,10 +82,22 @@ from insulation_coordination.calculation.voltage_evidence import (
     VoltageEvidenceService,
     plan_working_voltage,
 )
-from insulation_coordination.domain.enums import Applicability, InsulationType, ReviewState
+from insulation_coordination.domain.dvc import (
+    ProtectionGuidance,
+    ProtectionRequirement,
+    protection_cells,
+)
+from insulation_coordination.domain.enums import (
+    Applicability,
+    DecisiveVoltageClass,
+    InsulationType,
+    NetClassType,
+    ReviewState,
+)
 from insulation_coordination.domain.frozen_model import FrozenModel
 from insulation_coordination.domain.project import (
     EffectiveCase,
+    NetClass,
     PairCase,
     Project,
     RulePackageReference,
@@ -109,22 +129,65 @@ from insulation_coordination.rules.evaluator import EvaluationError, evaluate_fo
 
 _VOLTAGE_UNIT: Final = "V"
 
+#: What each construction an engineer can select provides, in the same vocabulary the package
+#: states a requirement in. This is the only place the two sides are put on one scale, and it
+#: is what lets a wrong implementation be detected instead of being described.
+#:
+#: Supplementary insulation is deliberately absent. On its own it is insulation applied *in
+#: addition to* basic insulation, and stating what level it provides by itself would be this
+#: application settling an engineering question rather than reading one. A pair carrying it has
+#: its comparison reported as an outstanding judgement, which is neither a pass nor a failure.
+_IMPLEMENTATION_PROVIDES: Final[Mapping[ProtectionImplementation, ProtectionRequirement]] = {
+    ProtectionImplementation.FUNCTIONAL_INSULATION: "none",
+    ProtectionImplementation.BASIC_INSULATION: "basic_protection",
+    ProtectionImplementation.DOUBLE_INSULATION: "enhanced_protection",
+    ProtectionImplementation.REINFORCED_INSULATION: "enhanced_protection",
+    ProtectionImplementation.PROTECTIVE_SCREEN_PLUS_BASIC: "enhanced_protection",
+    ProtectionImplementation.PROTECTIVE_IMPEDANCE: "enhanced_protection",
+    ProtectionImplementation.OTHER_REVIEWED_MEANS: "enhanced_protection",
+}
+
+#: How the three levels rank, so a requirement is met by a construction providing its level or
+#: a higher one.
+_PROTECTION_RANK: Final[Mapping[ProtectionRequirement, int]] = {
+    "none": 0,
+    "basic_protection": 1,
+    "enhanced_protection": 2,
+}
+
 #: The five constructions the standard offers for an enhanced level of protection. Enhanced
 #: protection is a reliability level rather than a voltage class, so this is a property of the
 #: *implementation* an engineer selected and never of the pair's decisive voltage class.
+#: Derived from the levels above rather than written out again, so the set that selects the
+#: reinforced impulse variant and the set that satisfies an enhanced requirement cannot part.
 ENHANCED_PROTECTION_IMPLEMENTATIONS: Final[frozenset[ProtectionImplementation]] = frozenset(
-    {
-        ProtectionImplementation.REINFORCED_INSULATION,
-        ProtectionImplementation.DOUBLE_INSULATION,
-        ProtectionImplementation.PROTECTIVE_SCREEN_PLUS_BASIC,
-        ProtectionImplementation.PROTECTIVE_IMPEDANCE,
-        ProtectionImplementation.OTHER_REVIEWED_MEANS,
-    }
+    item for item, level in _IMPLEMENTATION_PROVIDES.items() if level == "enhanced_protection"
 )
+
+#: How each test relationship reads as Table 3's ``target`` dimension. Three of the four are
+#: one accessible part as far as the requirement is concerned; what differs between them is
+#: what the test is applied to, which the topology already carries.
+_REQUIREMENT_TARGETS: Final[Mapping[TestReferenceKind, str]] = {
+    TestReferenceKind.ADJACENT_CIRCUIT: "adjacent_circuit",
+    TestReferenceKind.PE_BONDED_ACCESSIBLE_PART: "accessible_part",
+    TestReferenceKind.ACCESSIBLE_CONDUCTIVE_PART: "accessible_part",
+    TestReferenceKind.ACCESSIBLE_INSULATING_SURFACE_FOIL: "accessible_part",
+}
+
+#: What the project states about an accessible part's relationship to PE, where it states it.
+#: An insulating surface is left out rather than answered: nothing in the project says whether
+#: it is bonded, and choosing one would narrow the lookup on a guess. Left out, every reviewed
+#: column for an accessible part is a candidate and they have to agree before anything is
+#: reported.
+_REQUIREMENT_PE_RELATIONSHIPS: Final[Mapping[TestReferenceKind, str]] = {
+    TestReferenceKind.PE_BONDED_ACCESSIBLE_PART: "connected_to_pe",
+    TestReferenceKind.ACCESSIBLE_CONDUCTIVE_PART: "not_connected_to_pe",
+}
 
 #: Warning codes a report can group on without matching a message.
 ENHANCED_SPACING_MISMATCH_WARNING: Final = "verification_enhanced_protection_not_dimensioned"
 SPD_MONITORING_OWED_WARNING: Final = "verification_internal_spd_monitoring_owed"
+PROTECTION_REQUIREMENT_UNMET_WARNING: Final = "verification_protection_requirement_not_met"
 
 #: The trace identifier of this application's own selection of a dielectric route. Not a
 #: semantic rule id: which of the package's four routes answers a pair's question is this
@@ -171,6 +234,17 @@ class PairVerificationAssessment(FrozenModel):
     reference_kind: TestReferenceKind
     protection_implementation: ProtectionImplementation | None = None
     protection_review_state: ReviewState = ReviewState.NEEDS_REVIEW
+    #: The level of protection the package requires between these two, read from Table 3 for
+    #: this pair's decisive voltage classes and relationship. ``None`` where the package could
+    #: not be asked or would not answer, which is an unresolved input and never a pass.
+    required_protection: ProtectionRequirement | None = None
+    #: Which reviewed column or columns stated it, in this application's own words, so a
+    #: reader can see what the requirement was read from.
+    requirement_columns: str = ""
+    #: Whether the selected implementation provides at least the required level. ``None``
+    #: where either side is unknown - the requirement exists to be compared against, so a
+    #: comparison that could not be made says so rather than reading as satisfied.
+    protection_satisfied: bool | None = None
     enhanced_protection: bool = False
     mains_connected: bool = False
     test_ids: tuple[str, ...] = ()
@@ -262,6 +336,13 @@ class VerificationPlanService:
         determinations = plan_working_voltage(project, rule_set)
         subjects = subjects_for(project, None if supply is None else supply.domain_stresses)
         pairs = {pair.id: pair for pair in project.pairs}
+        # Table 3 is read once per class the project assigns rather than once per pair: the
+        # reading enumerates the rule's whole declared vocabulary, and a project's pairs stand
+        # between far fewer classes than it has pairs.
+        matrix = {
+            dvc: protection_cells(rule_set.dvc_protection_matrix, dvc)
+            for dvc in _assigned_classes(project)
+        }
 
         generated: list[TestApplication] = []
         assessments: list[PairVerificationAssessment] = []
@@ -270,7 +351,15 @@ class VerificationPlanService:
             pair = pairs[subject.pair_id]
             effective, resolution = resolve_supply_effective_case(project, pair, supply)
             applications, assessment = _plan_pair(
-                project, pair, subject, effective, resolution, rule_set, revision, warnings
+                project,
+                pair,
+                subject,
+                effective,
+                resolution,
+                rule_set,
+                revision,
+                matrix,
+                warnings,
             )
             generated.extend(applications)
             assessments.append(assessment)
@@ -302,6 +391,9 @@ class VerificationPlanService:
                 (
                     *(item for entry in determinations for item in entry.source_rule_ids),
                     *(item for entry in applications for item in entry.source_rule_ids),
+                    # Asked of every pair there is, whether or not it answered. A project with
+                    # no pair asked nothing.
+                    *((rule_set.dvc_protection_matrix.id,) if assessments else ()),
                 )
             ),
         )
@@ -315,6 +407,7 @@ def _plan_pair(
     resolution: EffectivePairStressResolution | None,
     rules: VerificationRuleSet,
     revision: str,
+    matrix: Mapping[DecisiveVoltageClass, tuple[ProtectionGuidance, ...]],
     warnings: list[CalculationWarning],
 ) -> tuple[tuple[TestApplication, ...], PairVerificationAssessment]:
     """One pair's impulse and dielectric applications, and the assessment that summarises them."""
@@ -327,6 +420,21 @@ def _plan_pair(
         unresolved.append(
             f"Pair {pair.key} has no protection implementation selected, so the plan cannot "
             "say which construction its tests verify."
+        )
+    required, columns, requirement_reasons = _required_protection(
+        project, pair, subject, matrix, rules.dvc_protection_matrix.id
+    )
+    unresolved.extend(requirement_reasons)
+    satisfied, finding = _protection_finding(pair, implementation, required)
+    if finding:
+        unresolved.append(finding)
+    if satisfied is False:
+        warnings.append(
+            CalculationWarning(
+                code=PROTECTION_REQUIREMENT_UNMET_WARNING,
+                message=finding,
+                semantic_rule_id=rules.dvc_protection_matrix.id,
+            )
         )
     dependency = _spd_dependency(resolution)
     monitoring: tuple[TestApplication, ...] = ()
@@ -382,14 +490,171 @@ def _plan_pair(
         reference_kind=subject.reference_kind,
         protection_implementation=implementation,
         protection_review_state=pair.protection_review_state,
+        required_protection=required,
+        requirement_columns=columns,
+        protection_satisfied=satisfied,
         enhanced_protection=enhanced,
         mains_connected=bool(mains),
         spd_monitoring_dependency=dependency,
         partial_discharge=discharge.applicability,
         recurring_peak_v=recurring_peak,
         routine_exemption=exemption,
-        status=_pair_status(pair, applications),
+        status=_pair_status(pair, applications, tuple(unresolved)),
         unresolved_inputs=tuple(unresolved),
+    )
+
+
+# --- the protection requirement ---------------------------------------------------------
+
+
+def _assigned_classes(project: Project) -> frozenset[DecisiveVoltageClass]:
+    """Every decisive voltage class the project actually assigns to a circuit.
+
+    ``NOT_EVALUATED`` is not one of them: it is the absence of a class, no package declares it
+    as a designation, and asking Table 3 for it would return nothing for a reason that reads
+    like a package problem rather than a project one.
+    """
+
+    return frozenset(
+        net.decisive_voltage_class
+        for net in project.net_classes
+        if net.decisive_voltage_class is not None
+        and net.decisive_voltage_class is not DecisiveVoltageClass.NOT_EVALUATED
+    )
+
+
+def _required_protection(
+    project: Project,
+    pair: PairCase,
+    subject: TestSubject,
+    matrix: Mapping[DecisiveVoltageClass, tuple[ProtectionGuidance, ...]],
+    rule_id: str,
+) -> tuple[ProtectionRequirement | None, str, tuple[str, ...]]:
+    """What the package requires for this pair, which columns said so, and what stopped it.
+
+    The requirement is the whole point of reading Table 3 here: it is the thing an engineer's
+    selected implementation is compared *against*. Deriving it from that implementation - which
+    is what the plan did before this - means a wrong implementation can never be detected,
+    because the requirement would move to meet it.
+
+    A pair between two circuits is asked in both directions. Each circuit has to be protected
+    from the other, both statements apply to the one insulation between them, and the more
+    demanding of the two is what it has to provide. A pair against an accessible part is asked
+    once, from the circuit towards the part.
+
+    The lookup is narrowed only by what the project states: the classes on either side, the
+    relationship, and whether an accessible part is bonded to PE where the project says so.
+    Table 3's columns also distinguish an access context and a person scope, and nothing in a
+    project records either, so every column carrying them stays a candidate and a requirement
+    is reported only where they agree. Where they do not, or where no reviewed column carries
+    the relationship at all, the answer is an unresolved input naming what is missing - never a
+    silent pass and never the most convenient of the candidates.
+    """
+
+    nets = {net.id: net for net in project.net_classes}
+    first, second = nets[pair.net_a], nets[pair.net_b]
+    target = _REQUIREMENT_TARGETS[subject.reference_kind]
+    directions: tuple[tuple[NetClass, NetClass], ...]
+    if subject.reference_kind is TestReferenceKind.ADJACENT_CIRCUIT:
+        directions = ((first, second), (second, first))
+    elif first.net_type is NetClassType.CIRCUIT:
+        directions = ((first, second),)
+    else:
+        directions = ((second, first),)
+
+    stated: list[ProtectionRequirement] = []
+    columns: list[str] = []
+    reasons: list[str] = []
+    for circuit, other in directions:
+        adjacent = None
+        if subject.reference_kind is TestReferenceKind.ADJACENT_CIRCUIT:
+            adjacent = _designation(other)
+            if adjacent is None:
+                reasons.append(_no_class_reason(pair, other.name))
+                continue
+        designation = _designation(circuit)
+        if designation is None:
+            reasons.append(_no_class_reason(pair, circuit.name))
+            continue
+        candidates = tuple(
+            cell
+            for cell in matrix.get(designation, ())
+            if cell.target == target
+            and _REQUIREMENT_PE_RELATIONSHIPS.get(subject.reference_kind)
+            in (None, cell.pe_relationship)
+            and adjacent in (None, cell.adjacent_dvc)
+        )
+        requirements = {cell.requirement for cell in candidates}
+        if not requirements:
+            reasons.append(
+                f"The active package's {rule_id} carries no reviewed column for "
+                f"{circuit.name} against {other.name}, so the protection it requires between "
+                "them cannot be read."
+            )
+            continue
+        if len(requirements) > 1:
+            reasons.append(
+                f"The active package's {rule_id} states more than one requirement for "
+                f"{circuit.name} against {other.name} "
+                f"({', '.join(sorted(_words(item) for item in requirements))}), and the "
+                "project does not record which of its reviewed columns applies: "
+                f"{'; '.join(sorted({cell.label for cell in candidates}))}."
+            )
+            continue
+        stated.append(requirements.pop())
+        columns.extend(cell.label for cell in candidates)
+    if reasons or not stated:
+        return None, "", _unique(reasons)
+    return (
+        max(stated, key=lambda item: _PROTECTION_RANK[item]),
+        "; ".join(dict.fromkeys(columns)),
+        (),
+    )
+
+
+def _designation(net: NetClass) -> DecisiveVoltageClass | None:
+    dvc = net.decisive_voltage_class
+    return None if dvc is None or dvc is DecisiveVoltageClass.NOT_EVALUATED else dvc
+
+
+def _no_class_reason(pair: PairCase, name: str) -> str:
+    return (
+        f"No decisive voltage class is assigned to {name}, so the protection required for "
+        f"pair {pair.key} cannot be read from the package."
+    )
+
+
+def _protection_finding(
+    pair: PairCase,
+    implementation: ProtectionImplementation | None,
+    required: ProtectionRequirement | None,
+) -> tuple[bool | None, str]:
+    """Whether the selected construction provides what the package requires, and the finding.
+
+    A mismatch is reported, not raised: it is a design finding about a project, and a plan that
+    refused to build for one would take away the schedule a reader needs in order to fix it.
+
+    ``None`` is never a pass. A comparison missing either half is reported as outstanding,
+    because a requirement nobody could read and an implementation nobody selected both look
+    exactly like agreement if the answer is allowed to default to true.
+    """
+
+    if required is None or implementation is None:
+        return None, ""
+    provided = _IMPLEMENTATION_PROVIDES.get(implementation)
+    if provided is None:
+        return None, (
+            f"Pair {pair.key} is protected by {_words(implementation.value)}, which this "
+            "application does not rank as a level of protection on its own. The package "
+            f"requires {_words(required)} here; whether that construction meets it is an "
+            "engineering judgement this plan does not make."
+        )
+    if _PROTECTION_RANK[provided] >= _PROTECTION_RANK[required]:
+        return True, ""
+    return False, (
+        f"The package requires {_words(required)} for pair {pair.key}, and the selected "
+        f"{_words(implementation.value)} provides {_words(provided)}. The implementation does "
+        "not meet the requirement stated for this relationship."
     )
 
 
@@ -1049,15 +1314,24 @@ def _spd_dependency(
     return None if outcome is None else outcome.spd_monitoring_dependency
 
 
-def _pair_status(pair: PairCase, applications: Sequence[TestApplication]) -> VerificationStatus:
+def _pair_status(
+    pair: PairCase,
+    applications: Sequence[TestApplication],
+    unresolved: Sequence[str],
+) -> VerificationStatus:
     """How far this pair's verification has got.
 
     A selection nobody has confirmed is a review, not a plan: a protection implementation this
     application mapped during a migration is not a decision an engineer made, and a schedule
     that reported it as planned would hide that.
+
+    ``unresolved`` is what the pair itself has outstanding rather than what its tests have. A
+    requirement that could not be read, and an implementation that does not meet the one that
+    was, are findings about the pair that no individual test row carries - and a pair reported
+    as planned while one of them stands would be a plan nobody should sign.
     """
 
-    if any(
+    if unresolved or any(
         item.applicability is TestApplicability.ENGINEERING_INPUT_REQUIRED for item in applications
     ):
         return VerificationStatus.ENGINEERING_REVIEW_REQUIRED
@@ -1080,10 +1354,17 @@ def _unique(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(values))
 
 
+def _words(token: str) -> str:
+    """One vocabulary token as prose. The tokens are neutral names, so opening them is enough."""
+
+    return token.replace("_", " ")
+
+
 __all__ = [
     "DIELECTRIC_ROUTE_TRACE_ID",
     "ENHANCED_PROTECTION_IMPLEMENTATIONS",
     "ENHANCED_SPACING_MISMATCH_WARNING",
+    "PROTECTION_REQUIREMENT_UNMET_WARNING",
     "SPD_MONITORING_OWED_WARNING",
     "PairVerificationAssessment",
     "VerificationPlan",

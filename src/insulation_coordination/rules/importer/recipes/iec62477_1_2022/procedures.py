@@ -18,12 +18,16 @@ from collections.abc import Mapping
 from typing import NoReturn
 
 from insulation_coordination.domain.rules import (
+    MAX_APPLICABILITY_LENGTH,
+    MAX_REFERENCE_TEXT_LENGTH,
     DecisionInput,
     DecisionOutput,
     DecisionRow,
     DecisionRule,
     DecisionValue,
+    EquivalenceMeasure,
     Matcher,
+    PermittedAlternative,
     ProcedureRule,
     ProcedureStep,
     RuleKind,
@@ -277,6 +281,13 @@ PRECONDITIONING_MATERIAL_ID = f"{ids.TEST_PRECONDITIONING}.material"
 #: thin-sheet procedure, which is not one of the required items and is not extracted here.
 _VOLTAGE_TEST_PERFORMANCE_CLAUSE = "5.2.3.4.4"
 FOIL_APPLICABILITY_ID = f"{ids.TEST_ACCESSIBLE_SURFACE_FOIL}.applicability"
+#: The clause permitting a voltage test in place of the impulse withstand test.
+_IMPULSE_ALTERNATIVE_CLAUSE = "5.2.3.3"
+#: One route per permitted alternative, because the engineer chooses between them and a choice
+#: needs something to name. The suffixes are the tokens the project's own stored selection uses,
+#: so a consumer joins a saved choice to its rule without a translation table in between.
+IMPULSE_ALTERNATIVE_AC_ID = f"{ids.TEST_IMPULSE_ALTERNATIVE}.ac_voltage_test"
+IMPULSE_ALTERNATIVE_DC_ID = f"{ids.TEST_IMPULSE_ALTERNATIVE}.dc_voltage_test"
 
 PROCEDURE_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ClauseAuditSpec(
@@ -370,6 +381,34 @@ PROCEDURE_CLAUSES: tuple[ClauseAuditSpec, ...] = (
             ),
         ),
         output_kind="decision",
+    ),
+    ClauseAuditSpec(
+        semantic_id=ids.TEST_IMPULSE_ALTERNATIVE,
+        clause=_IMPULSE_ALTERNATIVE_CLAUSE,
+        #: Four regions of running prose, one per paragraph, because a paragraph region is one
+        #: node: the permission, the first alternative's modification, the second's, and the
+        #: ramp allowance. Declared apart rather than as one region so each reading stays its
+        #: own node -- merged, the two alternatives would share one text and neither could be
+        #: attributed to the choice it belongs to.
+        #:
+        #: The subclause's closing line is deliberately outside every region. It points at
+        #: another standard for further information and states no modification, so extracting
+        #: it would add a fifth node this recipe would then have to drop.
+        segments=tuple(
+            ClauseSegmentSpec(
+                page_number=125,
+                expected_bbox=bbox,
+                expected_root_kind="paragraph",
+            )
+            for bbox in (
+                (65.0, 500.0, 535.0, 543.0),
+                (65.0, 548.0, 535.0, 581.0),
+                (65.0, 586.0, 535.0, 619.0),
+                (65.0, 624.0, 535.0, 646.0),
+            )
+        ),
+        output_kind="procedure",
+        projected_rule_ids=(IMPULSE_ALTERNATIVE_AC_ID, IMPULSE_ALTERNATIVE_DC_ID),
     ),
 )
 
@@ -928,7 +967,92 @@ def project_assembled_routine_exemption(
     return (rule,), (_proposal(rule, "decision", fragment),)
 
 
+# --- the permitted alternative to the impulse withstand test --------------------------
+
+_IMPULSE_ALTERNATIVE_SHAPE = ("paragraph",) * 4
+#: Which node states the permission -- what the alternative may be used for, and which test it
+#: may be used instead of. Shared by both routes, because the source states it once for both.
+_IMPULSE_ALTERNATIVE_PERMISSION_NODE = 0
+#: Which node states the ramp allowance. Shared for the same reason.
+_IMPULSE_ALTERNATIVE_RAMP_NODE = 3
+#: One entry per permitted alternative, in source order: the node stating its modification, the
+#: route it is projected under, what kind of test it is, and which measure of its own voltage
+#: carries the equivalence the source states. Positional first -- the node index is the
+#: structural fact -- and the remaining three are neutral identifiers for what that node is
+#: about, never its wording. The measure is the one thing here that is not a layout fact, and
+#: it is the same class of reading as Table 26's condition columns: which of two named measures
+#: a paragraph is about, recorded as a token rather than copied as text.
+IMPULSE_ALTERNATIVE_VARIANTS: tuple[tuple[int, str, str, EquivalenceMeasure], ...] = (
+    (1, IMPULSE_ALTERNATIVE_AC_ID, "ac_voltage_test", "peak"),
+    (2, IMPULSE_ALTERNATIVE_DC_ID, "dc_voltage_test", "average"),
+)
+
+
+def project_impulse_alternative(
+    fragment: RawClauseFragment,
+    identity: StandardIdentity,
+    _draft: object = None,
+    _confirmed_facts: object = None,
+) -> tuple[tuple[ProcedureRule, ...], tuple[SemanticProposal, ...]]:
+    """Project the alternative to the impulse withstand test into one procedure per method.
+
+    The subclause permits a voltage test in place of the impulse withstand test, states one
+    modification per method, and states one ramp allowance covering both. So it projects two
+    procedures rather than one: the engineer selects a method, and a single rule carrying both
+    modifications would leave that selection nothing to name.
+
+    Each route declares what makes it usable as a substitute -- the test it replaces, and the
+    measure of its own voltage that the replaced test's voltage must equal. Neither is derived:
+    which test is replaced is stated by the permission node the recipe declares, and the measure
+    is the variant. **No voltage is read here at all**; the equivalence names the rule that
+    resolves one.
+
+    The application pattern -- how many times, for how long, in which polarity -- stays in the
+    reviewed step. The source states it as one sentence per method, and splitting that sentence
+    into ``repetitions``, ``duration`` and ``polarity`` would mean parsing licensed prose in
+    public code; those fields stay open for a source that states them separately.
+
+    Neither route declares a classification, for the reason the accessible-surface procedure
+    declares none: the cross-reference matrix has no row for this subclause, so a classification
+    here would be this recipe's invention. A consumer needing one reads it from the test named
+    in ``instead_of_rule_id``, which is the test this one is performed in place of.
+    """
+
+    label = "impulse alternative"
+    _require_own_fragment(fragment, identity, ids.TEST_IMPULSE_ALTERNATIVE, label)
+    _require_shape(fragment, _IMPULSE_ALTERNATIVE_SHAPE, label)
+
+    permission = fragment.nodes[_IMPULSE_ALTERNATIVE_PERMISSION_NODE].raw_text
+    ramp = fragment.nodes[_IMPULSE_ALTERNATIVE_RAMP_NODE].raw_text.strip()
+    rules: list[ProcedureRule] = []
+    proposals: list[SemanticProposal] = []
+    for node_index, rule_id, test_kind, measure in IMPULSE_ALTERNATIVE_VARIANTS:
+        node = fragment.nodes[node_index]
+        rule = ProcedureRule(
+            id=rule_id,
+            test_kind=test_kind,
+            procedure_steps=(ProcedureStep(order=1, text=node.raw_text, source=node.source),),
+            # What the substitution may be used to verify, which is the same question every
+            # other procedure answers here. Truncated the way Table 26's continuations are:
+            # a reflowed printing must not turn a reading into a validation error.
+            applicability=permission[:MAX_APPLICABILITY_LENGTH],
+            permitted_alternative=PermittedAlternative(
+                # The whole test rather than one of its variants: the permission is stated
+                # over the impulse withstand test, not over the insulation it is performed for.
+                instead_of_rule_id=ids.TEST_IMPULSE_PROCEDURE,
+                equivalent_measure=measure,
+                equivalent_to_rule_id=ids.TEST_IMPULSE_SELECTION,
+                ramp=ramp[:MAX_REFERENCE_TEXT_LENGTH] or None,
+            ),
+            source=fragment.source,
+        )
+        rules.append(rule)
+        proposals.append(_proposal(rule, "procedure", fragment))
+    return tuple(rules), tuple(proposals)
+
+
 CLAUSE_PROJECTORS: Mapping[str, ClauseProjector] = {
+    ids.TEST_IMPULSE_ALTERNATIVE: project_impulse_alternative,
     ids.TEST_WORKING_VOLTAGE_DETERMINATION: project_working_voltage_determination,
     ids.TEST_INTERNAL_SPD_MONITORING: project_internal_spd_monitoring,
     ids.TEST_PRECONDITIONING: project_preconditioning,
@@ -944,6 +1068,9 @@ __all__ = [
     "CLASSIFICATION_MATRIX_SPECS",
     "CLAUSE_PROJECTORS",
     "FOIL_APPLICABILITY_ID",
+    "IMPULSE_ALTERNATIVE_AC_ID",
+    "IMPULSE_ALTERNATIVE_DC_ID",
+    "IMPULSE_ALTERNATIVE_VARIANTS",
     "MATERIAL_PRECONDITIONING_INVOCATIONS",
     "PRECONDITIONING_APPLICABILITY_ID",
     "PRECONDITIONING_ELECTRICAL_ID",
@@ -956,6 +1083,7 @@ __all__ = [
     "matrix_grid",
     "project_accessible_surface_foil",
     "project_assembled_routine_exemption",
+    "project_impulse_alternative",
     "project_internal_spd_monitoring",
     "project_preconditioning",
     "project_preconditioning_applicability",

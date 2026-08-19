@@ -28,7 +28,7 @@ from insulation_coordination.calculation.verification_plan import (
     VerificationPlan,
     VerificationPlanService,
 )
-from insulation_coordination.domain.enums import ReviewState
+from insulation_coordination.domain.enums import DecisiveVoltageClass, ReviewState
 from insulation_coordination.domain.project import PairCase, Project
 from insulation_coordination.domain.rules import RulePackage
 from insulation_coordination.domain.supply import SpdDevicePlacement
@@ -100,6 +100,21 @@ def panel(qtbot: QtBot) -> VerificationPanel:
 
 def _planned_pair(project: Project) -> PairCase:
     return pair_between(project, LIVE_A, ENCLOSURE)
+
+
+def _reclassified(
+    project: Project, dvc: DecisiveVoltageClass = DecisiveVoltageClass.DVC_C
+) -> Project:
+    """The same project with ``LIVE_A`` in another class, which moves its Table 3 row."""
+
+    return project.model_copy(
+        update={
+            "net_classes": tuple(
+                net.model_copy(update={"decisive_voltage_class": dvc}) if net.id == LIVE_A else net
+                for net in project.net_classes
+            )
+        }
+    )
 
 
 def test_the_panel_shows_the_status_the_plan_decided(
@@ -394,6 +409,52 @@ def test_the_monitoring_row_repeats_the_dependency_issue_36_recorded() -> None:
     assert "the input filter" in shown
     assert "synthetic.monitoring" in shown
     assert spd_monitoring_text(None) == EMPTY_VALUE
+
+
+def test_the_requirement_row_states_what_the_package_requires_and_whether_it_is_met(
+    panel: VerificationPanel, project: Project, plan: VerificationPlan
+) -> None:
+    panel.set_pair(_planned_pair(project), plan)
+    shown = panel.value_text("Protection requirement")
+
+    assert "basic protection" in shown
+    assert "met by the selected implementation" in shown
+    assert "NOT met" not in shown
+
+
+def test_the_requirement_row_says_so_when_the_implementation_does_not_meet_it(
+    panel: VerificationPanel, package: RulePackage
+) -> None:
+    """The row a reader signs off has to be able to say no, which is why it is read at all."""
+    project = with_pair_fields(
+        _reclassified(verification_topology(supply_configurations=(mains_configuration(),))),
+        protection_implementation=BASIC,
+        protection_review_state=ReviewState.USER_CONFIRMED,
+    )
+    plan = _build(project, package)
+    panel.set_pair(_planned_pair(project), plan)
+
+    assert "NOT met by the selected implementation" in panel.value_text("Protection requirement")
+
+
+def test_the_requirement_row_never_reports_the_implementation_back_as_the_requirement(
+    panel: VerificationPanel, package: RulePackage
+) -> None:
+    """A pair whose class nobody assigned has no requirement, whatever was selected for it."""
+    project = with_pair_fields(
+        _reclassified(
+            verification_topology(supply_configurations=(mains_configuration(),)),
+            dvc=DecisiveVoltageClass.NOT_EVALUATED,
+        ),
+        protection_implementation=REINFORCED,
+        protection_review_state=ReviewState.USER_CONFIRMED,
+    )
+    plan = _build(project, package)
+    panel.set_pair(_planned_pair(project), plan)
+    shown = panel.value_text("Protection requirement")
+
+    assert "not established from the active package" in shown
+    assert "enhanced" not in shown
 
 
 def test_plan_rows_answer_every_label_even_with_nothing_planned() -> None:
