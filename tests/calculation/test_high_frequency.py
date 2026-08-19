@@ -15,6 +15,7 @@ from insulation_coordination.calculation.engine import (
 )
 from insulation_coordination.calculation.high_frequency import (
     A2_ALTITUDE_ROUTE,
+    PART4_FREQUENCY_THRESHOLD_HZ,
     HighFrequencyCalculationError,
     calculate_critical_frequency,
     calculate_high_frequency_candidates,
@@ -153,8 +154,11 @@ def test_a_pair_above_the_boundary_owes_the_annex_review_where_it_is_dimensioned
     against one test. What the warning states is the rule that decided it; the frequency the
     rule states is the rule's, and never appears in the sentence.
     """
-    at_boundary = calculate_pair(case_factory(frequency_hz="30000"), semantic_part4_rules)
-    above = calculate_pair(case_factory(frequency_hz="30000.1"), semantic_part4_rules)
+    boundary = PART4_FREQUENCY_THRESHOLD_HZ
+    at_boundary = calculate_pair(case_factory(frequency_hz=str(boundary)), semantic_part4_rules)
+    above = calculate_pair(
+        case_factory(frequency_hz=str(boundary + Decimal(1))), semantic_part4_rules
+    )
 
     assert all(item.code != HIGH_FREQUENCY_REVIEW_WARNING for item in at_boundary.warnings)
     warning = next(item for item in above.warnings if item.code == HIGH_FREQUENCY_REVIEW_WARNING)
@@ -162,7 +166,10 @@ def test_a_pair_above_the_boundary_owes_the_annex_review_where_it_is_dimensioned
     assert "clearance, creepage distance and solid insulation" in warning.message
     assert "greater of the two" in warning.message
     assert "IEC 60664-4" in warning.message
-    assert "30" not in warning.message
+    # The two standard identities are the only numerals the sentence is allowed; the boundary
+    # they decided is named by the rule that states it and never written out.
+    named = warning.message.replace("62477-1", "").replace("60664-4", "")
+    assert not any(character.isdigit() for character in named)
     assert "kHz" not in warning.message
     assert above.trace.warnings == above.warnings
 

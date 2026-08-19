@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from insulation_coordination.calculation.engine import derive_project_supply
+from insulation_coordination.calculation.high_frequency import PART4_FREQUENCY_THRESHOLD_HZ
 from insulation_coordination.calculation.partial_discharge import (
     APPLICABILITY_CLAUSE,
     ELECTRIC_STRESS_TRACE_ID,
@@ -396,7 +397,8 @@ def test_no_partial_discharge_warning_is_raised_for_a_pair_above_the_high_freque
     ``tests/calculation/test_engine.py`` - and the partial-discharge procedure itself is
     specified at power frequency, so nothing about it belongs on this assessment.
     """
-    project = project_with(declared_solid_insulation(), frequency_hz=Decimal(200_000))
+    frequency = PART4_FREQUENCY_THRESHOLD_HZ + Decimal(1)
+    project = project_with(declared_solid_insulation(), frequency_hz=frequency)
 
     assert assess(project, package).warnings == ()
 
