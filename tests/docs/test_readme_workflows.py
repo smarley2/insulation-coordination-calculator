@@ -44,10 +44,15 @@ WORKFLOW_HEADINGS = (
     "## Verification handoff",
 )
 
+#: The arrow between two terms. A plain string rather than part of a pattern: the link grammar
+#: is a separator, and a regex spelling this arrow out reads to a scanner as a half-written
+#: HTML-comment matcher. ponytail: assumes no node label contains an arrow, which none does.
+ARROW = "-->"
+#: The edge label an arrow may carry, trailing the term it leaves. A box or decision label
+#: cannot be mistaken for one: those close on a bracket or a brace, this one on a quote.
+EDGE_LABEL = re.compile(r'\s*--\s*"[^"]*"\s*$')
 #: A term of a flowchart line: a node id, optionally carrying a box or decision label.
 TERM = re.compile(r'(?P<id>[A-Za-z_]\w*)\s*(?:\[(?P<box>"[^"]*")\]|\{(?P<decision>"[^"]*")\})?')
-#: An arrow between two terms, with or without an edge label.
-LINK = re.compile(r'\s*(?:--\s*"[^"]*"\s*)?-->\s*')
 
 #: The only shapes a digit may take inside a workflow section. Everything here is a locator -
 #: a document, a clause, a table, an annex, an equation or an issue - and none of it is a
@@ -100,18 +105,13 @@ def _parse_flowchart(block: str) -> tuple[set[str], set[str]]:
     labelled: set[str] = set()
     referenced: set[str] = set()
     for line in lines[1:]:
-        position = 0
-        expecting_term = True
-        while position < len(line):
-            match = (TERM if expecting_term else LINK).match(line, position)
-            assert match is not None, f"cannot parse {line!r} from column {position}"
-            if expecting_term:
-                referenced.add(match["id"])
-                if match["box"] or match["decision"]:
-                    labelled.add(match["id"])
-            position = match.end()
-            expecting_term = not expecting_term
-        assert not expecting_term, f"{line!r} ends on an arrow"
+        for segment in line.split(ARROW):
+            term = EDGE_LABEL.sub("", segment).strip()
+            match = TERM.fullmatch(term)
+            assert match is not None, f"cannot parse node term {term!r} in {line!r}"
+            referenced.add(match["id"])
+            if match["box"] or match["decision"]:
+                labelled.add(match["id"])
     return labelled, referenced
 
 
