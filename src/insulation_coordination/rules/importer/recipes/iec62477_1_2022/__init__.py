@@ -8,6 +8,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022 import (
     curves,
     high_frequency,
     identity,
+    partial_discharge,
     procedures,
     projection,
     reinforced,
@@ -34,6 +35,7 @@ RECIPE = StandardRecipe(
         *supply.SUPPLY_CLAUSES,
         *high_frequency.HIGH_FREQUENCY_CLAUSES,
         *procedures.PROCEDURE_CLAUSES,
+        *partial_discharge.PARTIAL_DISCHARGE_CLAUSES,
     ),
     curves=curves.CURVES,
     required_curves=(ids.DVC_FAULT_TIME_VOLTAGE,),
@@ -49,6 +51,7 @@ RECIPE = StandardRecipe(
         **high_frequency.CLAUSE_PROJECTORS,
         **procedures.CLAUSE_PROJECTORS,
         **reinforced.CLAUSE_PROJECTORS,
+        **partial_discharge.CLAUSE_PROJECTORS,
     },
     cross_standard_checks=spacing.CROSS_STANDARD_CHECKS,
 )

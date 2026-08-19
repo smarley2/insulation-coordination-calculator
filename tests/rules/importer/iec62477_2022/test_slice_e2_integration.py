@@ -33,7 +33,7 @@ def test_the_deferred_set_is_empty_and_every_item_has_a_recipe() -> None:
     items is declared by a spec, under its own identifier or one of its routes.
     """
     assert DEFERRED_SEMANTIC_IDS == frozenset()
-    assert len(REQUIRED_SOURCE_ITEMS) == 34
+    assert len(REQUIRED_SOURCE_ITEMS) == 35
 
     declared = frozenset(EXPECTATIONS.typed_results)
     for item in REQUIRED_SOURCE_ITEMS:

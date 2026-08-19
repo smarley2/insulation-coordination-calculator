@@ -160,6 +160,7 @@ in-flight #53 workstream.
 | `src/insulation_coordination/rules/importer/recipes/iec60664_4_2005.py:131,211` | numeric-series | Structural extraction geometry | allowed-structural |
 | `src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/clauses.py:30` | numeric-series | Structural extraction geometry | allowed-structural |
 | `src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/clauses.py:63,65` | source-like-text | Error-message strings, not source text | false-positive |
+| `src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/partial_discharge.py:67` | numeric-series | Page number and three paragraph bounding boxes for the clause that decides partial-discharge applicability | allowed-structural (added under issue #37; extraction geometry of the same shape as every other clause spec container in this recipe package, measured against the licensed printing. No cell, axis coordinate or threshold: the clause's two thresholds are read at extraction time from the reviewed fragment's node text and never reach public source) |
 | `src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/high_frequency.py:54` | numeric-series | Structural extraction geometry | allowed-structural |
 | `src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/procedures.py:72,280` | numeric-series | Grid row indexes and segment geometry | allowed-structural |
 | `src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/reinforced.py:55` | numeric-series | Clause bounding boxes and page numbers (issue #110) | allowed-structural |
@@ -317,6 +318,7 @@ src/insulation_coordination/rules/importer/recipes/iec60664_4_2005.py source-lik
 src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/clauses.py numeric-series 1
 src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/clauses.py source-like-text 2
 src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/high_frequency.py numeric-series 1
+src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/partial_discharge.py numeric-series 1
 src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/procedures.py numeric-series 2
 src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/reinforced.py numeric-series 1
 src/insulation_coordination/rules/importer/recipes/iec62477_1_2022/spacing.py numeric-series 2

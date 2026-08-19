@@ -63,6 +63,15 @@ TEST_DIELECTRIC_TOPOLOGY_SELECTION = "iec62477_2022.test.dielectric_topology_sel
 TEST_DIELECTRIC_APPLICATION_DURATION = "iec62477_2022.test.dielectric_application_duration"
 TEST_DIELECTRIC_ACCEPTANCE = "iec62477_2022.test.dielectric_acceptance"
 TEST_PARTIAL_DISCHARGE = "iec62477_2022.test.partial_discharge"
+#: When a solid insulation owes the partial-discharge test in addition to the two tests its
+#: subclause asks for, and how that test is then classified. A sibling of the procedure above
+#: rather than a route of it, for the reason the permitted impulse alternative is a sibling: a
+#: statement about when a test is owed is not a way of performing it. Named for the insulation
+#: the obligation attaches to rather than for its subclause, so a renumbered edition does not
+#: rename the contract -- and deliberately not under the ``partial_discharge`` stem, which
+#: already carries the procedure's own applicability route and whose raw artifact id this one
+#: would otherwise be a prefix of.
+TEST_SOLID_INSULATION_PARTIAL_DISCHARGE = "iec62477_2022.test.solid_insulation_partial_discharge"
 TEST_WORKING_VOLTAGE_DETERMINATION = "iec62477_2022.test.working_voltage_determination"
 TEST_INTERNAL_SPD_MONITORING = "iec62477_2022.test.internal_spd_monitoring"
 TEST_PRECONDITIONING = "iec62477_2022.test.preconditioning"
@@ -100,6 +109,7 @@ REQUIRED_SEMANTIC_IDS: frozenset[str] = frozenset(
         TEST_DIELECTRIC_APPLICATION_DURATION,
         TEST_DIELECTRIC_ACCEPTANCE,
         TEST_PARTIAL_DISCHARGE,
+        TEST_SOLID_INSULATION_PARTIAL_DISCHARGE,
         TEST_WORKING_VOLTAGE_DETERMINATION,
         TEST_INTERNAL_SPD_MONITORING,
         TEST_PRECONDITIONING,
