@@ -27,12 +27,17 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The runner image usually already carries these, so the common path touches no
-      # network at all. When something is genuinely missing, apt is bounded and retried
-      # against a *different* mirror: the failure mode is a silent hang rather than an
-      # error, so each attempt is killed on its own timeout, and retrying the same dead
-      # endpoint three times is three failures rather than a retry. An apt outage only
-      # fails the job if a library is actually absent afterwards. See #129.
+      # libegl1 is genuinely absent from the ubuntu-latest image and apt runs on every
+      # Linux job to install it. It cannot be dropped: pytest-qt imports QtGui during
+      # pytest_configure and PySide6's QtGui links libEGL at load time, before the
+      # offscreen platform plugin is ever chosen - a run with this step disabled fails
+      # collection with ImportError: libEGL.so.1 (probed under #129). The other three
+      # packages are already present, which is what the dpkg check is for. apt is
+      # bounded and retried against a *different* mirror: the failure mode is a silent
+      # hang rather than an error, so each attempt is killed on its own timeout, and
+      # retrying the same dead endpoint three times is three failures rather than a
+      # retry. An apt outage only fails the job if a library is actually absent
+      # afterwards. See #129.
       - name: Install Qt system dependencies (Linux)
         if: runner.os == 'Linux'
         timeout-minutes: 8
