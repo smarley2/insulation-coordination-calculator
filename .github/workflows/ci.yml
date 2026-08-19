@@ -34,7 +34,7 @@ jobs:
       # endpoint three times is three failures rather than a retry. An apt outage only
       # fails the job if a library is actually absent afterwards. See #129.
       - name: Install Qt system dependencies (Linux)
-        if: runner.os == 'Linux'
+        if: false  # probe for #129: does the offscreen suite need these at all?
         timeout-minutes: 8
         run: |
           set -uo pipefail
