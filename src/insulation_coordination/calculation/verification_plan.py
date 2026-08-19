@@ -39,11 +39,11 @@ input on the application it belongs to. There is no path from "nothing is known"
 
 *An obligation with no rule behind it is still stated.* Several subclauses oblige something the
 recipe projects no rule for: the body of the AC/DC test subclause outside its two value tables,
-the clearance and visual-inspection subclauses, the protective-impedance test. Each of those
-reached the schedule as nothing at all,
+the clearance and visual-inspection subclauses, the protective-impedance test, the floor a
+reduced requirement may not fall below. Each of those reached the schedule as nothing at all,
 which for a preparation instruction means a test performed wrongly rather than a test left
 unplanned. They are restated here, in this application's own words, against the identifier that
-obliges them - see :func:`_clause_obligations`. Where the deciding
+obliges them - see :func:`_clause_obligations` and :func:`_reinforced_floor`. Where the deciding
 input is one the project holds it narrows the statement; where it is not, the statement says so.
 """
 
@@ -184,8 +184,8 @@ ENHANCED_PROTECTION_IMPLEMENTATIONS: Final[frozenset[ProtectionImplementation]] 
     item for item, level in _IMPLEMENTATION_PROVIDES.items() if level == "enhanced_protection"
 )
 
-#: The two constructions the homogeneous-field refusal is stated for.
-#: Narrower than the enhanced set on purpose: the clause names double and reinforced insulation
+#: The two constructions the reinforced floor and the homogeneous-field refusal are stated for.
+#: Narrower than the enhanced set on purpose: both clauses name double and reinforced insulation
 #: specifically, and a protective impedance or another reviewed means reaches an enhanced level
 #: without being either of them.
 _DOUBLE_OR_REINFORCED: Final[frozenset[ProtectionImplementation]] = frozenset(
@@ -250,6 +250,7 @@ _ENHANCED_COLUMN_TOPOLOGIES: Final[frozenset[TestReferenceKind]] = frozenset(
 ENHANCED_SPACING_MISMATCH_WARNING: Final = "verification_enhanced_protection_not_dimensioned"
 SPD_MONITORING_OWED_WARNING: Final = "verification_internal_spd_monitoring_owed"
 PROTECTION_REQUIREMENT_UNMET_WARNING: Final = "verification_protection_requirement_not_met"
+REINFORCED_FLOOR_WARNING: Final = "verification_reinforced_floor_breached"
 HF_TRANSFORMER_SHOWING_WARNING: Final = "verification_hf_transformer_showing_owed"
 
 #: What a DVC A-s circuit's schedule rows say about the one place a single-fault consideration
@@ -1165,6 +1166,9 @@ def _impulse_application(
     insulation class asks of that. It is taken already treated and is never multiplied again -
     a reinforced pair tested at a treated figure that was treated twice would be tested at a
     voltage nothing asked for.
+
+    One thing does raise it: the floor a double or reinforced requirement may not be reduced
+    below. See :func:`_reinforced_floor`.
     """
 
     procedure = _impulse_procedure(rules, implementation)
@@ -1190,7 +1194,12 @@ def _impulse_application(
             "plan this test at."
         )
     else:
-        voltage = Quantity(value=treated, unit=_VOLTAGE_UNIT)
+        assert resolution is not None  # a treated figure only exists on a resolution
+        floor, floor_step = _reinforced_floor(pair, effective, resolution, implementation, treated)
+        if floor_step is not None:
+            preparation.append(floor_step)
+            warnings.append(CalculationWarning(code=REINFORCED_FLOOR_WARNING, message=floor_step))
+        voltage = Quantity(value=floor, unit=_VOLTAGE_UNIT)
     altitude_unresolved, altitude_preparation = _altitude_inputs(pair, effective, band)
     unresolved.extend(altitude_unresolved)
     preparation.extend(altitude_preparation)
@@ -1232,6 +1241,59 @@ def _impulse_application(
         unresolved=tuple(unresolved),
         source_rule_ids=() if procedure is None else (procedure.id,),
         trace_steps=() if resolution is None else resolution.trace_steps,
+    )
+
+
+def _reinforced_floor(
+    pair: PairCase,
+    effective: EffectiveCase,
+    resolution: EffectivePairStressResolution,
+    implementation: ProtectionImplementation | None,
+    treated: Decimal,
+) -> tuple[Decimal, str | None]:
+    """The figure a double or reinforced pair is planned at once its floor is applied.
+
+    Both subclauses that permit a reducing means to lower an impulse requirement close with the
+    same constraint, in the same words: the requirement for double or reinforced insulation is
+    not reduced below what basic insulation would need with those means absent. And both grant
+    the reduction itself to basic and supplementary insulation only, for exactly one step of the
+    overvoltage category.
+
+    *The floor can be breached today, and this is where it is caught.* The stress resolution
+    applies the recorded reduction and then steps the reduced figure one coordinate along the
+    requirement axis for a reinforced class. Where the reduction was one coordinate the step
+    lands back on the pre-reduction figure and the floor holds by arithmetic; where it was two or
+    more - and nothing validates a recorded override against the category series - the step lands
+    below it, and a reinforced pair was planned under what basic insulation would have owed.
+
+    The floor's own basis is the pre-override figure, which is what basic insulation requires
+    with the reducing means absent: basic insulation takes the impulse withstand voltage
+    untreated, so no second lookup is needed to state it. The comparison is this application's
+    own - the reduction recipe resolves the family's floor statements and deliberately routes
+    them to no decision, so there is no rule to ask - and it is a comparison of two figures the
+    plan already holds rather than a value read from anywhere.
+
+    The warning matters as much as the raised voltage: the clearance the engine dimensioned was
+    dimensioned from the same treated figure, so a breach here is a dimensioning finding as well
+    as a planning one.
+    """
+
+    reduction = _verified_reduction(resolution)
+    stronger = (
+        effective.insulation_type.value is InsulationType.REINFORCED
+        or implementation in _DOUBLE_OR_REINFORCED
+    )
+    unreduced = resolution.governing_pre_override_impulse_v
+    if reduction is None or not stronger or unreduced is None or treated >= unreduced:
+        return treated, None
+    return unreduced, (
+        f"The requirement for pair {pair.key} is a double or reinforced one, and the reduction "
+        f"recorded at {reduction.affected_location!r} took its treated impulse to {treated} "
+        f"{_VOLTAGE_UNIT} - below the {unreduced} {_VOLTAGE_UNIT} basic insulation would need "
+        "with that reducing means absent. 4.4.7.2.3 and 4.4.7.2.4 both refuse that reduction, so "
+        f"this test is planned at {unreduced} {_VOLTAGE_UNIT}. The clearance was dimensioned "
+        "from the lower figure and needs revisiting: the reduction those subclauses permit is "
+        "one overvoltage-category step, and it is offered to basic and supplementary insulation."
     )
 
 
@@ -2324,6 +2386,7 @@ __all__ = [
     "ENHANCED_SPACING_MISMATCH_WARNING",
     "HF_TRANSFORMER_SHOWING_WARNING",
     "PROTECTION_REQUIREMENT_UNMET_WARNING",
+    "REINFORCED_FLOOR_WARNING",
     "SPD_MONITORING_OWED_WARNING",
     "PairVerificationAssessment",
     "VerificationPlan",

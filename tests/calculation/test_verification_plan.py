@@ -15,7 +15,10 @@ from uuid import UUID
 
 import pytest
 
-from insulation_coordination.calculation.engine import derive_project_supply
+from insulation_coordination.calculation.engine import (
+    derive_project_supply,
+    resolve_supply_effective_case,
+)
 from insulation_coordination.calculation.high_frequency import altitude_correction_band
 from insulation_coordination.calculation.test_topology import (
     CONFLICTING_APPLICATION_WARNING,
@@ -25,6 +28,7 @@ from insulation_coordination.calculation.verification_plan import (
     ENHANCED_SPACING_MISMATCH_WARNING,
     HF_TRANSFORMER_SHOWING_WARNING,
     PROTECTION_REQUIREMENT_UNMET_WARNING,
+    REINFORCED_FLOOR_WARNING,
     SPD_MONITORING_OWED_WARNING,
     PairVerificationAssessment,
     VerificationPlan,
@@ -1629,6 +1633,85 @@ def test_a_reduction_on_another_basis_owes_no_transformer_showing(package: RuleP
     pair = pair_between(project, LIVE_A, LIVE_C)
     plan = build(_with_override(project, pair.id, Decimal(200)), package)
     assert HF_TRANSFORMER_SHOWING_WARNING not in {warning.code for warning in plan.warnings}
+
+
+# --- the floor a reduced requirement may not cross ------------------------------------------
+
+
+def _reinforced_with_reduction(package: RulePackage, value_v: Decimal) -> tuple[Project, PairCase]:
+    """A reinforced pair alone in its live group, carrying a reduction of ``value_v``.
+
+    ``LIVE_C`` rather than ``LIVE_A`` on purpose: it is the only circuit of its domain, so its
+    impulse row is not merged with a sibling pair's and the voltage the row carries is this
+    pair's own answer rather than the more severe of two.
+    """
+
+    project = with_protection(
+        verification_topology(
+            supply_configurations=(mains_configuration(),), insulation=InsulationType.REINFORCED
+        ),
+        REINFORCED,
+    )
+    pair = pair_between(project, LIVE_C, ENCLOSURE)
+    reduced = _with_override(project, pair.id, value_v)
+    return reduced, pair_between(reduced, LIVE_C, ENCLOSURE)
+
+
+def test_a_reinforced_requirement_is_not_planned_below_the_floor_a_reduction_may_not_cross(
+    package: RulePackage,
+) -> None:
+    """Both reduction subclauses close with the same refusal, and it was not being applied.
+
+    The resolution reduces first and treats the reduced figure afterwards. For a reduction of one
+    coordinate the treatment lands back where it started and the floor holds by arithmetic; for a
+    deeper one it lands below what basic insulation would have owed with the reducing means
+    absent, and the reinforced pair was planned - and dimensioned - under it.
+    """
+    project, pair = _reinforced_with_reduction(package, Decimal(50))
+    supply = derive_project_supply(project, package)
+    _effective, resolution = resolve_supply_effective_case(project, pair, supply)
+    assert resolution is not None
+    unreduced = resolution.governing_pre_override_impulse_v
+    treated = resolution.insulation_treated_impulse_v
+    assert unreduced is not None and treated is not None and treated < unreduced
+
+    plan = build(project, package)
+    impulse = one(plan, pair, TestKind.IMPULSE_WITHSTAND)
+    assert impulse.voltage is not None
+    assert impulse.voltage.value == unreduced
+    assert REINFORCED_FLOOR_WARNING in {warning.code for warning in plan.warnings}
+    assert states(impulse, "4.4.7.2.3", "4.4.7.2.4", "double or reinforced")
+
+
+def test_a_reduction_that_leaves_the_floor_alone_is_planned_at_the_treated_figure(
+    package: RulePackage,
+) -> None:
+    """The floor is a floor, not a ceiling: a treated figure above it is what the pair is owed."""
+    project, pair = _reinforced_with_reduction(package, Decimal(200))
+    supply = derive_project_supply(project, package)
+    _effective, resolution = resolve_supply_effective_case(project, pair, supply)
+    assert resolution is not None
+    treated = resolution.insulation_treated_impulse_v
+    assert treated is not None
+    plan = build(project, package)
+    impulse = one(plan, pair, TestKind.IMPULSE_WITHSTAND)
+    assert impulse.voltage is not None
+    assert impulse.voltage.value == treated
+    assert REINFORCED_FLOOR_WARNING not in {warning.code for warning in plan.warnings}
+
+
+def test_a_basic_pair_keeps_the_reduction_the_subclauses_grant_it(package: RulePackage) -> None:
+    """The floor is stated for double and reinforced insulation; basic insulation is the basis."""
+    project = with_protection(
+        verification_topology(supply_configurations=(mains_configuration(),)), BASIC
+    )
+    pair = pair_between(project, LIVE_C, ENCLOSURE)
+    project = _with_override(project, pair.id, Decimal(50))
+    plan = build(project, package)
+    impulse = one(plan, pair, TestKind.IMPULSE_WITHSTAND)
+    assert impulse.voltage is not None
+    assert impulse.voltage.value == Decimal(50)
+    assert REINFORCED_FLOOR_WARNING not in {warning.code for warning in plan.warnings}
 
 
 # --- status ---------------------------------------------------------------------------------
