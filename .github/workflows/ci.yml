@@ -28,11 +28,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The runner image usually already carries these, so the common path touches no
-      # network at all. When something is genuinely missing, apt is bounded and retried:
-      # its failure mode here is a silent hang rather than an error, so each attempt is
-      # killed on its own timeout - a bare retry loop never advances past the first.
-      # An apt outage only fails the job if a library is actually absent, because blocking
-      # every merge on a mirror being unreachable is worse than the risk it guards. See #129.
+      # network at all. When something is genuinely missing, apt is bounded and retried
+      # against a *different* mirror: the failure mode is a silent hang rather than an
+      # error, so each attempt is killed on its own timeout, and retrying the same dead
+      # endpoint three times is three failures rather than a retry. An apt outage only
+      # fails the job if a library is actually absent afterwards. See #129.
       - name: Install Qt system dependencies (Linux)
         if: runner.os == 'Linux'
         timeout-minutes: 8
@@ -53,23 +53,35 @@ jobs:
             echo "every Qt dependency is already present; skipping apt"
             exit 0
           fi
-          echo "missing:${absent}"
+          echo "missing: ${absent}"
+          echo "configured mirrors:"
+          grep -Rhs '^URIs:\|^deb ' /etc/apt/sources.list /etc/apt/sources.list.d || true
 
-          for attempt in 1 2 3; do
-            if timeout 60 sudo apt-get update -qq               && timeout 90 sudo apt-get install -y --no-install-recommends ${absent}; then
-              echo "installed on attempt ${attempt}"
-              exit 0
-            fi
-            echo "apt-get attempt ${attempt} timed out or failed; retrying" >&2
-            sleep 5
-          done
+          install_missing() {
+            timeout 60 sudo apt-get               -o Acquire::Retries=2               -o Acquire::http::Timeout=20               -o Acquire::https::Timeout=20               update -qq               && timeout 90 sudo apt-get install -y --no-install-recommends ${absent}
+          }
+
+          if install_missing; then
+            echo "installed from the runner's default mirror"
+            exit 0
+          fi
+
+          # The runners point at azure.archive.ubuntu.com, which has a history of going
+          # unreachable on its own. Fall back to the canonical archive before giving up.
+          echo "default mirror failed; switching to the canonical archive" >&2
+          grep -Rls 'azure.archive.ubuntu.com' /etc/apt/sources.list /etc/apt/sources.list.d             | xargs -r sudo sed -i 's|://azure.archive.ubuntu.com|://archive.ubuntu.com|g'
+
+          if install_missing; then
+            echo "installed from the fallback mirror"
+            exit 0
+          fi
 
           absent="$(missing)"
           if [ -z "${absent}" ]; then
-            echo "::warning::apt-get was unreachable, but every Qt dependency is present (see #129)"
+            echo "::warning::apt was unreachable, but every Qt dependency is present (see #129)"
             exit 0
           fi
-          echo "::error::apt-get failed and these are still missing:${absent} (see #129)"
+          echo "::error::apt failed on both mirrors and these are still missing: ${absent} (see #129)"
           exit 1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
