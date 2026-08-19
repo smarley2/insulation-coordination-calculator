@@ -850,6 +850,62 @@ def test_a_basic_pair_takes_both_from_the_route_whose_own_name_covers_both(
     assert routes == {f"{ids.TEST_MAINS_DIELECTRIC_VALUES}.routine_and_basic_type.ac"}
 
 
+@pytest.mark.parametrize("reference", [TOUCHABLE, COVER])
+def test_a_basic_pair_against_an_unbonded_surface_type_tests_at_the_enhanced_column(
+    project: Project, package: RulePackage, reference: UUID
+) -> None:
+    """The column is a question about the topology, not only about what the engineer built.
+
+    The package's own label for the enhanced column names this topology beside enhanced
+    protection. Selecting the column from the selected construction alone planned a
+    basic-protection pair against an unbonded accessible surface at the lower column.
+    """
+    pair = pair_between(project, LIVE_A, reference)
+    plan = build(project, package)
+    type_test = one(plan, pair, TestKind.AC_DIELECTRIC, classifications=(TestClassification.TYPE,))
+    routine = one(plan, pair, TestKind.AC_DIELECTRIC, classifications=(TestClassification.ROUTINE,))
+    assert dielectric_route(type_test) == f"{ids.TEST_MAINS_DIELECTRIC_VALUES}.enhanced_type.ac"
+    assert dielectric_route(routine) == (
+        f"{ids.TEST_MAINS_DIELECTRIC_VALUES}.routine_and_basic_type.ac"
+    )
+
+
+def test_a_basic_pair_against_a_pe_bonded_part_stays_on_the_basic_column(
+    project: Project, package: RulePackage
+) -> None:
+    """The topology the clause excludes from the enhanced column has to stay excluded."""
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    plan = build(project, package)
+    routes = {
+        dielectric_route(item) for item in applications_for(plan, pair, TestKind.AC_DIELECTRIC)
+    }
+    assert routes == {f"{ids.TEST_MAINS_DIELECTRIC_VALUES}.routine_and_basic_type.ac"}
+
+
+@pytest.mark.parametrize("reference", [ENCLOSURE, TOUCHABLE, COVER])
+def test_a_dvc_as_circuit_is_excepted_from_the_test_against_an_accessible_part(
+    package: RulePackage, reference: UUID
+) -> None:
+    """The rule excepts it and settles the case elsewhere, so the row is not planned."""
+    project = with_class(
+        with_protection(
+            verification_topology(supply_configurations=(mains_configuration(),)), BASIC
+        ),
+        LIVE_C,
+        DecisiveVoltageClass.DVC_AS,
+    )
+    pair = pair_between(project, LIVE_C, reference)
+    applications = applications_for(build(project, package), pair, TestKind.AC_DIELECTRIC)
+    assert applications
+    assert {item.applicability for item in applications} == {TestApplicability.NOT_APPLICABLE}
+    assert all(item.voltage is None for item in applications)
+    assert all(not item.unresolved_inputs for item in applications)
+    assert all(
+        any("except a DVC A-s one" in step for step in item.preparation_steps)
+        for item in applications
+    )
+
+
 def test_a_route_that_states_no_duration_says_so_rather_than_leaving_it_blank(
     project: Project, package: RulePackage
 ) -> None:

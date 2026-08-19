@@ -189,6 +189,28 @@ _REQUIREMENT_PE_RELATIONSHIPS: Final[Mapping[TestReferenceKind, str]] = {
     TestReferenceKind.ACCESSIBLE_CONDUCTIVE_PART: "not_connected_to_pe",
 }
 
+#: Every relationship that puts a circuit against an accessible part rather than against
+#: another circuit. Derived from the requirement targets so the two readings of "this is an
+#: accessible part" cannot part company.
+_ACCESSIBLE_PART_KINDS: Final[frozenset[TestReferenceKind]] = frozenset(
+    kind for kind, target in _REQUIREMENT_TARGETS.items() if target == "accessible_part"
+)
+
+#: The topologies whose *type* test reads the enhanced column whatever construction the pair
+#: carries. Both of them are an accessible surface that is non-conductive, or conductive and
+#: not bonded to PE, and the package's own label for that column names the topology beside
+#: enhanced protection. Selecting the column from the pair's ``ProtectionImplementation``
+#: alone planned a basic-protection pair against such a surface at the lower column.
+#:
+#: A PE-bonded accessible part is deliberately absent: its test reads the basic column for
+#: both classifications, which is what the plan already did for it.
+_ENHANCED_COLUMN_TOPOLOGIES: Final[frozenset[TestReferenceKind]] = frozenset(
+    {
+        TestReferenceKind.ACCESSIBLE_CONDUCTIVE_PART,
+        TestReferenceKind.ACCESSIBLE_INSULATING_SURFACE_FOIL,
+    }
+)
+
 #: Warning codes a report can group on without matching a message.
 ENHANCED_SPACING_MISMATCH_WARNING: Final = "verification_enhanced_protection_not_dimensioned"
 SPD_MONITORING_OWED_WARNING: Final = "verification_internal_spd_monitoring_owed"
@@ -477,6 +499,7 @@ def _plan_pair(
         mains,
         recurring_peak,
         _overvoltage_present(effective, resolution),
+        _accessible_part_exception(project, pair, subject),
     )
     discharge = assess_partial_discharge(
         pair, effective, rules.partial_discharge, recurring_peak_v=recurring_peak
@@ -895,6 +918,7 @@ def _dielectric_applications(
     mains: Sequence[DerivedSupplyScenario],
     recurring_peak_v: Decimal | None,
     overvoltage_present: bool | None,
+    not_applicable: str | None,
 ) -> tuple[TestApplication, ...]:
     """The routine and type dielectric applications, in both voltage forms the package states.
 
@@ -913,15 +937,30 @@ def _dielectric_applications(
     own route says it covers both. The enhanced-protection type test is read from its own
     route and is never taken from the other one: reusing a value across the two would assert
     an equality the source was not asked for.
+
+    *Which column the type test reads is a question about the topology as well as about the
+    construction.* The routine test always reads the basic column. The type test reads the
+    enhanced one where the pair is protected by enhanced protection **or** where the low side
+    is an accessible surface that is non-conductive, or conductive and not bonded to PE -
+    which is the second case the package's own label for that column names. Reading the
+    column from the selected implementation alone planned a basic-protection pair against
+    such a surface at the lower of the two.
+
+    ``not_applicable`` is the one condition that stops a row being planned at all. It states
+    why, the rows are generated anyway so a reader can tell an excepted test from one nobody
+    planned, and none of them carries a voltage.
     """
 
+    if not_applicable is not None:
+        return _not_applicable_applications(subject, revision, not_applicable)
     tables = rules.mains_dielectric_values if mains else rules.non_mains_dielectric_values
     row, row_reason, row_unresolved = _row_value(pair, mains, recurring_peak_v, overvoltage_present)
+    enhanced_column = enhanced or subject.reference_kind in _ENHANCED_COLUMN_TOPOLOGIES
     routes: tuple[tuple[TestClassification, VoltageTablePair], ...] = (
         (TestClassification.ROUTINE, tables.routine_and_basic_type),
         (
             TestClassification.TYPE,
-            tables.enhanced_type if enhanced else tables.routine_and_basic_type,
+            tables.enhanced_type if enhanced_column else tables.routine_and_basic_type,
         ),
     )
     applications: list[TestApplication] = []
@@ -950,10 +989,93 @@ def _dielectric_applications(
                         ),
                     ),
                     source_rule_ids=(table.id,),
-                    trace_steps=(*_route_step(table, classification, row, row_reason), *steps),
+                    trace_steps=(
+                        *_route_step(
+                            table,
+                            classification,
+                            row,
+                            row_reason,
+                            _column_reason(classification, subject.reference_kind, enhanced),
+                        ),
+                        *steps,
+                    ),
                 )
             )
     return tuple(applications)
+
+
+def _not_applicable_applications(
+    subject: TestSubject,
+    revision: str,
+    reason: str,
+) -> tuple[TestApplication, ...]:
+    """The dielectric rows of a pair the topology rule excepts from the test.
+
+    Generated rather than omitted, exactly as the partial-discharge row is: a pair the rule
+    settles is a different thing from a pair nobody planned, and a schedule showing only the
+    required rows could not tell them apart. None of them carries a voltage, a route or an
+    unresolved input - there is nothing outstanding about a test that is not owed.
+    """
+
+    return tuple(
+        _application(
+            subject=subject,
+            test_kind=test_kind,
+            classifications=(classification,),
+            revision=revision,
+            voltage=None,
+            waveform=None,
+            polarity=None,
+            duration=None,
+            repetitions=None,
+            preparation_steps=(*subject.preparation_steps, reason),
+            unresolved=(),
+            source_rule_ids=(),
+            trace_steps=(),
+            applicability=TestApplicability.NOT_APPLICABLE,
+        )
+        for classification in (TestClassification.ROUTINE, TestClassification.TYPE)
+        for test_kind in _DIELECTRIC_KINDS.values()
+    )
+
+
+def _accessible_part_exception(
+    project: Project, pair: PairCase, subject: TestSubject
+) -> str | None:
+    """Why a DVC A-s circuit is given no voltage test against an accessible part.
+
+    The topology rule states the test against an earthed conductive accessible part and the
+    test against an accessible surface for each circuit in turn *except* a DVC A-s one, and
+    settles that circuit's case separately as a test against its adjacent circuits. Planning
+    the excepted test anyway asks a test house for work no rule asks for, and reporting it as
+    required-with-something-unresolved reads in a schedule exactly like a test nobody could
+    settle.
+
+    The active package projects the two dielectric value tables and no rule for the topology
+    clause that routes a pair to them, so this reading is stated here rather than read from
+    it. A pair whose circuit side carries no decisive voltage class is not excepted: the
+    absence of a class is reported by the requirement lookup, and treating it as a DVC A-s
+    would take a test away on the strength of something nobody said.
+    """
+
+    if subject.reference_kind not in _ACCESSIBLE_PART_KINDS:
+        return None
+    if _circuit_side_class(project, pair) is not DecisiveVoltageClass.DVC_AS:
+        return None
+    return (
+        f"Pair {pair.key} stands between a DVC A-s circuit and an accessible part. The "
+        "voltage test between a circuit and an accessible part is stated for each circuit "
+        "except a DVC A-s one, whose case is settled as a test against its adjacent circuits "
+        "instead, so no voltage is planned here."
+    )
+
+
+def _circuit_side_class(project: Project, pair: PairCase) -> DecisiveVoltageClass | None:
+    """The decisive voltage class of the circuit side of a pair, where one is assigned."""
+
+    nets = {net.id: net for net in project.net_classes}
+    first, second = nets[pair.net_a], nets[pair.net_b]
+    return _designation(first if first.net_type is NetClassType.CIRCUIT else second)
 
 
 def _recurring_peak(project: Project, pair: PairCase, effective: EffectiveCase) -> Decimal | None:
@@ -1155,11 +1277,32 @@ def _dielectric_value(
     )
 
 
+def _column_reason(
+    classification: TestClassification,
+    reference_kind: TestReferenceKind,
+    enhanced: bool,
+) -> str:
+    """Why this classification reads the column it reads, in one clause of a sentence."""
+
+    if classification is not TestClassification.TYPE:
+        return "every routine test reads the basic column"
+    if enhanced:
+        return "the type test of a pair protected by enhanced protection reads the enhanced column"
+    if reference_kind in _ENHANCED_COLUMN_TOPOLOGIES:
+        return (
+            "the type test against an accessible surface that is non-conductive, or "
+            "conductive and not bonded to PE, reads the enhanced column whatever the pair's "
+            "construction"
+        )
+    return "the type test reads the basic column"
+
+
 def _route_step(
     table: Table,
     classification: TestClassification,
     row: Decimal | None,
     row_reason: str,
+    column_reason: str,
 ) -> tuple[TraceStep, ...]:
     """Which route answers this classification, and what the row axis was keyed on.
 
@@ -1179,10 +1322,7 @@ def _route_step(
             source_reference=table.source,
             output=Quantity(value=row, unit=_VOLTAGE_UNIT),
             unrounded_value=row,
-            reason=(
-                f"The {classification.value} test is read from {table.id}, which is the route "
-                "the package states for it."
-            ),
+            reason=(f"The {classification.value} test is read from {table.id}: {column_reason}."),
         ),
     )
 
