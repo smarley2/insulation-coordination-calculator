@@ -110,7 +110,11 @@ from insulation_coordination.domain.rules import (
     TableSelect,
     Variable,
 )
-from insulation_coordination.domain.supply import MAINS_SUPPLY_KINDS, DerivedSupplyScenario
+from insulation_coordination.domain.supply import (
+    MAINS_SUPPLY_KINDS,
+    DerivedSupplyScenario,
+    VerifiedImpulseOverride,
+)
 from insulation_coordination.domain.trace import CalculationWarning, Quantity, TraceStep
 from insulation_coordination.domain.verification import (
     EvidenceTarget,
@@ -459,6 +463,10 @@ def _plan_pair(
     impulse = _impulse_application(
         pair, subject, effective, resolution, rules, revision, implementation, enhanced, warnings
     )
+    override = _verified_reduction(resolution)
+    reduction = (
+        () if override is None else (_reduction_application(subject, rules, revision, override),)
+    )
     recurring_peak = _recurring_peak(project, pair, effective)
     dielectric = _dielectric_applications(
         pair,
@@ -490,6 +498,7 @@ def _plan_pair(
             ),
             exemption,
         ),
+        *reduction,
         *monitoring,
     )
     return applications, PairVerificationAssessment(
@@ -689,7 +698,7 @@ def _impulse_application(
     voltage nothing asked for.
     """
 
-    procedure = _impulse_procedure(rules, implementation, resolution)
+    procedure = _impulse_procedure(rules, implementation)
     unresolved: list[str] = []
     preparation = [*subject.preparation_steps, _ALTERNATIVE_METHOD_STEP, _CLEARANCE_SCOPE_STEP]
     if procedure is None:
@@ -751,24 +760,100 @@ def _impulse_application(
 def _impulse_procedure(
     rules: VerificationRuleSet,
     implementation: ProtectionImplementation | None,
-    resolution: EffectivePairStressResolution | None,
 ) -> ProcedureRule | None:
     """Which of the impulse procedure's variants states the conditions for this pair.
 
-    A pair whose impulse was reduced by a verified override is a transient-reduction case, and
-    the variant the package projects for it states conditions the other two do not. It is
-    selected in preference to the construction variants because it is the narrower statement:
-    the reduction is the reason this pair's figure is what it is.
+    The pair's construction, and nothing else. The package's third variant is not a third
+    construction: it states the conditions for verifying a claimed reduction of the
+    overvoltage, which is a separate test applied to the equipment. Selecting it here in
+    preference to a construction variant took a pair's insulation impulse application away
+    from it whenever somebody recorded a reduction - see :func:`_reduction_application`, which
+    is where that test is generated instead, in addition to this one rather than in place of
+    it.
     """
 
-    outcome = None if resolution is None else resolution.override_outcome
-    if outcome is not None and outcome.applied and outcome.override.is_reduction:
-        return rules.impulse_procedure.transient_reduction
     if implementation is None:
         return None
     if implementation in ENHANCED_PROTECTION_IMPLEMENTATIONS:
         return rules.impulse_procedure.insulation_reinforced
     return rules.impulse_procedure.insulation_basic
+
+
+def _verified_reduction(
+    resolution: EffectivePairStressResolution | None,
+) -> VerifiedImpulseOverride | None:
+    """The reduction claim recorded at this pair that actually applied, if there is one."""
+
+    outcome = None if resolution is None else resolution.override_outcome
+    if outcome is None or not outcome.applied or not outcome.override.is_reduction:
+        return None
+    return outcome.override
+
+
+def _reduction_application(
+    subject: TestSubject,
+    rules: VerificationRuleSet,
+    revision: str,
+    override: VerifiedImpulseOverride,
+) -> TestApplication:
+    """The type test that verifies a claimed reduction of the overvoltage does what is claimed.
+
+    Owed in addition to the insulation impulse applications of the pairs the reduction affects
+    and never instead of one: clause 5.2.3.2 states it as a further requirement, and the
+    package's own variant of the procedure carries its own subject, preconditioning answer and
+    power condition. Clause 4.4.7.3 asks for the same test where circuit characteristics
+    rather than a device are what the reduction rests on, which is why this is generated for
+    every applied reduction and not only for the ones that owe monitoring.
+
+    The row stands between the pair's own electrodes, as the monitoring row does and for the
+    same reason: the test is not measured there - it is applied to the equipment, which the
+    preparation says - but it is what ties the test to the reduction it verifies, and it means
+    two pairs of one connected group carrying one reduction produce one row rather than two.
+
+    No voltage. The package states this variant's test voltage as one column of its impulse
+    selection route, that route carries more than one column, and nothing in it says which
+    applies here - the same refusal the dielectric lookup makes, for the same reason. It is
+    emphatically not the pair's own reduced figure: the point of the test is to show the
+    reduction holds when the unreduced stress arrives.
+    """
+
+    procedure = rules.impulse_procedure.transient_reduction
+    return _application(
+        subject=subject,
+        test_kind=TestKind.TRANSIENT_OVERVOLTAGE_REDUCTION,
+        classifications=classifications_of(procedure),
+        revision=revision,
+        voltage=None,
+        waveform=procedure.waveform,
+        polarity=procedure.polarity,
+        duration=procedure.duration,
+        repetitions=procedure.repetitions,
+        preparation_steps=(
+            (
+                "Apply this test to the equipment, not between the conductors of one pair. "
+                f"It verifies the reduction recorded at {override.affected_location!r}, on "
+                f"the basis of {_words(override.basis.value)}, against "
+                f"{override.evidence_reference}."
+            ),
+            *(step.text for step in procedure.preparation_steps),
+        ),
+        unresolved=(
+            (
+                f"The active package states this test's voltage as one column of "
+                f"{ids.TEST_IMPULSE_SELECTION}, that route states more than one column, and "
+                "nothing in it says which one applies here. The reduced figure recorded at "
+                f"{override.affected_location!r} is not it: this test exists to show the "
+                "reduction holds, so planning it at the reduced value would verify nothing."
+            ),
+            (
+                "The acceptance criterion compares the measured peak against the next lower "
+                f"step of the same {ids.TEST_IMPULSE_SELECTION} column. Read it from that "
+                "column once the column above is settled; this plan does not choose it."
+            ),
+        ),
+        source_rule_ids=(procedure.id,),
+        trace_steps=(),
+    )
 
 
 def _altitude_inputs(pair: PairCase, effective: EffectiveCase) -> tuple[str, ...]:

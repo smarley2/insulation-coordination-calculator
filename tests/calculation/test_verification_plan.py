@@ -975,6 +975,53 @@ def test_a_reduction_recorded_on_an_internal_device_carries_its_monitoring_depen
     assert any(ids.TEST_INTERNAL_SPD_MONITORING in item for item in plan.unresolved_inputs)
 
 
+def test_a_verified_reduction_does_not_take_the_pair_s_insulation_impulse_test_away(
+    package: RulePackage,
+) -> None:
+    """Both are owed: the insulation test at the pair's construction, and the reduction's own.
+
+    Verifying that a reduction does what is claimed for it is a separate type test applied to
+    the equipment. Selecting its procedure in place of the construction procedure deleted a
+    verification from the schedule for every pair whose stress somebody had reduced.
+    """
+    project = with_protection(
+        verification_topology(supply_configurations=(mains_configuration(),)), BASIC
+    )
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    project = _with_override(project, pair.id, Decimal(50))
+    plan = build(project, package)
+    insulation = one(plan, pair, TestKind.IMPULSE_WITHSTAND)
+    assert f"{ids.TEST_IMPULSE_PROCEDURE}.insulation_basic" in insulation.source_rule_ids
+    reduction = one(plan, pair, TestKind.TRANSIENT_OVERVOLTAGE_REDUCTION)
+    assert reduction.source_rule_ids == (f"{ids.TEST_IMPULSE_PROCEDURE}.transient_reduction",)
+    assert any(
+        "the primary to enclosure insulation" in item for item in reduction.preparation_steps
+    )
+
+
+def test_the_reduction_verification_is_not_planned_at_the_reduced_voltage(
+    package: RulePackage,
+) -> None:
+    """Its voltage is not the pair's, and the package projects no route that states it."""
+    project = with_protection(
+        verification_topology(supply_configurations=(mains_configuration(),)), BASIC
+    )
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    project = _with_override(project, pair.id, Decimal(50))
+    reduction = one(build(project, package), pair, TestKind.TRANSIENT_OVERVOLTAGE_REDUCTION)
+    assert reduction.voltage is None
+    assert reduction.applicability is TestApplicability.ENGINEERING_INPUT_REQUIRED
+    assert any(ids.TEST_IMPULSE_SELECTION in item for item in reduction.unresolved_inputs)
+
+
+def test_a_pair_with_no_reduction_owes_no_reduction_verification(
+    project: Project, package: RulePackage
+) -> None:
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    plan = build(project, package)
+    assert applications_for(plan, pair, TestKind.TRANSIENT_OVERVOLTAGE_REDUCTION) == ()
+
+
 def test_a_pair_with_no_reduction_carries_no_monitoring_dependency(
     project: Project, package: RulePackage
 ) -> None:

@@ -252,6 +252,28 @@ def test_a_reduction_a_device_underwrites_schedules_its_monitoring_test(
     assert not plan.is_complete
 
 
+def test_the_protected_pair_owes_both_its_insulation_test_and_the_reduction_s(
+    package: RulePackage,
+) -> None:
+    """The reduction verification joins the schedule; it does not take a row out of it."""
+
+    project = surge_protected_input()
+
+    plan = build(project, package)
+
+    protected = protected_pair(project)
+    reduction = rows(plan, TestKind.TRANSIENT_OVERVOLTAGE_REDUCTION)
+    assert len(reduction) == 1
+    assert reduction[0].covered_pair_ids == (protected.id,)
+    assert reduction[0].applicability is TestApplicability.ENGINEERING_INPUT_REQUIRED
+    insulation = [
+        item
+        for item in rows(plan, TestKind.IMPULSE_WITHSTAND)
+        if protected.id in item.covered_pair_ids
+    ]
+    assert len(insulation) == 1
+
+
 def test_the_pair_without_the_reduction_owes_no_monitoring(package: RulePackage) -> None:
     project = surge_protected_input()
 
