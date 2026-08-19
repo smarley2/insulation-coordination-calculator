@@ -123,7 +123,7 @@ supply, verification, and verification-topology fixtures inventoried below).
 | Location | Class | Description | Assessment |
 | --- | --- | --- | --- |
 | `src/insulation_coordination/ui/value_options.py:14` | numeric-series | Complete constrained option series with unit labels, offered by the UI | resolved (issue #40 Task 3, #92; the series is gone from the module, which now names only the row-axis identifier an approved package publishes the levels under. This row was left stale and is corrected 2026-08-18) |
-| `src/insulation_coordination/ui/value_options.py:24-30` | manual | `POLLUTION_OPTIONS` and `MATERIAL_OPTIONS` tuples, the two option lists that remain in the module now that the impulse levels come from the package | resolved (issue #40 Task 3, private-session review concluded 2026-08-19; both tuples are category labels — pollution-degree numbers 1-2 and material-group letters I/II/IIIa/IIIb — not normative values. This issue's own ownership boundary already permits "units and generic concepts such as voltage, RMS, peak, DVC, OVC, pollution degree" in public source, and a material-group identifier is the same class of generic vocabulary. Neither tuple pairs a value with a table or clause identifier, and which subset of degrees this product offers is a product-scope choice, not licensed content) |
+| `src/insulation_coordination/ui/value_options.py:24-30` | manual | `POLLUTION_OPTIONS` and `MATERIAL_OPTIONS` tuples, the two option lists that remain in the module now that the impulse levels come from the package | resolved (issue #40 Task 3, reviewed 2026-08-19; both tuples are category labels — pollution-degree numbers 1-2 and material-group letters I/II/IIIa/IIIb — not normative values. This issue's own ownership boundary already permits "units and generic concepts such as voltage, RMS, peak, DVC, OVC, pollution degree" in public source, and a material-group identifier is the same class of generic vocabulary. Neither tuple pairs a value with a table or clause identifier, and which subset of degrees this product offers is a product-scope choice, not licensed content) |
 | `src/insulation_coordination/calculation/clearance.py:132` | numeric-series | Preferred-level series used by the reinforced treatment | resolved (issue #40 Task 4, #117; the series is read off the row axis of the requirement the treatment rule refers to, and no series remains in the module) |
 | `src/insulation_coordination/calculation/clearance.py:155` | inline-factor | Reinforced stress multiplier in calculation code | resolved (issue #40 Task 4, #117; the factor comes from the approved package, and an absent, unapproved or incompatible package blocks instead of falling back) |
 | `src/insulation_coordination/calculation/clearance.py:146-166` | manual | Treatment trace wording and symbolic text mirror the source procedure rather than neutral application text | resolved (issue #40 Task 4, #117; the step now states what this application did and names the rule that decided it) |
@@ -227,8 +227,9 @@ Done since the first audit:
 - UI option lists supplied entirely by a rules package (Task 3). The impulse
   levels come from the approved package, since #92. What was left in
   `ui/value_options.py` — the pollution-degree and material-group label
-  tuples — was reviewed in a private session on 2026-08-19 and found to be
-  generic vocabulary, not licensed content; see the corresponding
+  tuples — was reviewed on 2026-08-19 and found to be generic vocabulary
+  rather than licensed content, needing no comparison against the source; see
+  the corresponding
   `value_options.py:24-30` row above.
 
 - The scanner running with `--strict` in CI (Task 11). See the baseline section
