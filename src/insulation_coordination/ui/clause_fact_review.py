@@ -39,6 +39,13 @@ from PySide6.QtWidgets import (
 )
 
 from insulation_coordination.domain.project import FrozenModel
+from insulation_coordination.rules.importer.clause_fact_ai_prompt import (
+    ClauseFactPromptContext,
+    ClauseFactPromptFact,
+    ClauseFactPromptNode,
+    ClauseFactPromptProposal,
+    build_clause_fact_ai_prompt,
+)
 from insulation_coordination.rules.importer.clause_fact_proposals import (
     PRIVATE_MATERIAL_DIRECTORY_VARIABLE,
     SCOPE_UNRESTRICTED,
@@ -84,6 +91,7 @@ from insulation_coordination.rules.importer.review import (
     retract_clause_fact_dismissal,
     uncovered_clause_fact_statements,
 )
+from insulation_coordination.ui.clause_fact_ai_prompt import ClauseFactAiPromptDialog
 from insulation_coordination.ui.page_preview import PagePreview, Region
 
 _HEADINGS = ("route", "authored", "status", "fragment")
@@ -102,6 +110,7 @@ _DISABLED_REASONS = {
         "Select a proposed draft in the list first. Record this only for a sentence you have read "
         "and found no statement of this route's own kind in."
     ),
+    "ai_prompt": "Select a rule route first: a prompt is generated for one route at a time.",
 }
 _NO_SOURCE_REGION = (
     "Source region not available: re-extract from the licensed PDFs to see the clause's own page."
@@ -205,6 +214,28 @@ def _reading_summary(fact: SupplyFact) -> str:
         for name, kind, _options in fact_dimensions(fact.fact_kind, variant)
     )
     return reading if variant is None else f"{variant} · {reading}"
+
+
+def _prompt_proposal(proposal: ClauseFactProposal) -> ClauseFactPromptProposal:
+    """One grammar draft as an advisory prompt quotes it.
+
+    The settled dimensions are ordered by the model's own field order rather than by whatever
+    order the grammar happened to fill them in, so two runs over one draft render identically.
+    """
+
+    variant = _statement_kind(proposal)
+    return ClauseFactPromptProposal(
+        sentence_index=proposal.sentence_index,
+        sentence_text=proposal.sentence_text,
+        statement_kind=proposal.statement_kind,
+        cited_nodes=tuple(item.node_order for item in proposal.node_references),
+        chosen=tuple(
+            (name, proposal.chosen[name])
+            for name, _kind, _options in fact_dimensions(proposal.fact_kind, variant)
+            if name in proposal.chosen
+        ),
+        unchosen=proposal.unchosen,
+    )
 
 
 #: Dimensions whose agreement says nothing about *which* sentence a statement was authored from, so
@@ -575,6 +606,74 @@ class ClauseFactReviewModel:
 
         return uncovered_clause_fact_statements(self._draft, rule_route)
 
+    def ai_prompt_context(self, rule_route: str) -> ClauseFactPromptContext:
+        """One route's live review state, snapshotted for an advisory external-model prompt.
+
+        Read through the same accessors the dialog itself reads, so a prompt can never describe a
+        route differently from the surface beside it. Assembled on every call and stored nowhere:
+        the context carries licensed clause text, and a cached one would be both a copy of that
+        text outliving its display and a description of the route as it was before the last thing
+        the reviewer authored.
+
+        The recipe's declared route references are filled in here rather than by the formatter,
+        because ``fact_dimensions`` deliberately leaves that vocabulary empty -- which ids exist is
+        the recipe's question -- and a model asked to name a rule with no list would invent one.
+        """
+
+        row = next((item for item in self.routes() if item.rule_route == rule_route), None)
+        if row is None:
+            raise KeyError(rule_route)
+        family = SUPPLY_FACT_FAMILY_BY_ROUTE[rule_route]
+        standard, regions = self.source_regions(rule_route)
+        declares_supply_kind = any(
+            name == "supply_kind"
+            for variant in fact_variants(family) or (None,)
+            for name, _kind, _options in fact_dimensions(family, variant)
+        )
+        return ClauseFactPromptContext(
+            rule_route=rule_route,
+            fragment_id=row.fragment_id,
+            fact_family=family,
+            status=row.status,
+            defect=row.defect,
+            next_statement_index=self.next_statement_index(rule_route),
+            source_standard=standard,
+            source_pages=tuple(sorted({page for page, _bbox in regions})),
+            nodes=tuple(
+                ClauseFactPromptNode(order=node.node_order, kind=node.node_kind, text=node.raw_text)
+                for node in self.nodes(row.fragment_id)
+            ),
+            facts=tuple(
+                ClauseFactPromptFact(
+                    statement_index=fact_row.statement_index,
+                    statement_kind=_statement_kind(fact_row.fact) or "",
+                    dimensions=tuple(
+                        (name, _dimension_text(kind, getattr(fact_row.fact, name)))
+                        for name, kind, _options in fact_dimensions(
+                            fact_row.fact.fact_kind, _statement_kind(fact_row.fact)
+                        )
+                    ),
+                    cited_nodes=tuple(item.node_order for item in fact_row.fact.node_references),
+                    evidence=fact_row.evidence,
+                )
+                for fact_row in self.facts(rule_route)
+            ),
+            open_proposals=tuple(
+                _prompt_proposal(item) for item in self.open_proposals(rule_route)
+            ),
+            dismissed_proposals=tuple(
+                _prompt_proposal(item) for item in self.dismissed_proposals(rule_route)
+            ),
+            proposals_unavailable=self.proposals_unavailable(rule_route),
+            uncovered=self.uncovered(rule_route),
+            route_references=declared_rule_references(),
+            fixed_dimensions=(
+                (("supply_kind", SUPPLY_FACT_SUPPLY_KIND_BY_ROUTE[rule_route]),)
+                if declares_supply_kind
+                else ()
+            ),
+        )
+
     def next_statement_index(self, rule_route: str) -> int:
         """The first index this route's authored statements have not already used.
 
@@ -935,11 +1034,20 @@ class ClauseFactReviewDialog(QDialog):
         self.complete_button = QPushButton("Record completion", self)
         self.complete_button.setEnabled(False)
         self.complete_button.clicked.connect(self.complete_selected)
+        # An aid, deliberately worded as one and deliberately not beside Author fact's own
+        # column: it records nothing, and what comes back from a model is advice a maintainer
+        # still has to read the clause to accept.
+        self.ai_prompt_button = QPushButton("Generate AI review prompt…", self)
+        # Through ``_set_enabled`` even here, because a draft with no route at all never selects a
+        # row and so never reaches ``_show_route`` to be told why the button is grey.
+        self._set_enabled(self.ai_prompt_button, False, "ai_prompt")
+        self.ai_prompt_button.clicked.connect(self.show_ai_prompt)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
         buttons.rejected.connect(self.reject)
         actions = QHBoxLayout()
         actions.addWidget(self.author_button)
         actions.addWidget(self.complete_button)
+        actions.addWidget(self.ai_prompt_button)
         actions.addWidget(buttons)
 
         layout = QVBoxLayout(self)
@@ -1225,6 +1333,29 @@ class ClauseFactReviewDialog(QDialog):
         self._load_route()
         self._status.setText("Completion recorded for this route.")
 
+    def ai_prompt_dialog(self) -> ClauseFactAiPromptDialog | None:
+        """A preview of the advisory prompt for the selected route, built from live state.
+
+        Built here rather than in ``show_ai_prompt`` so the prompt can be read without a modal
+        loop. Generated on every press: the reviewer authors, retracts and dismisses between
+        presses, and a prompt describing the route as it was would send a model to answer a
+        question that has already moved.
+        """
+
+        row = self._current_route_row()
+        if row is None:
+            self._status.setText("Select a rule route first.")
+            return None
+        prompt = build_clause_fact_ai_prompt(self._model.ai_prompt_context(row.rule_route))
+        return ClauseFactAiPromptDialog(prompt, self)
+
+    def show_ai_prompt(self) -> None:
+        """Show the preview. It records nothing, so nothing is refreshed when it closes."""
+
+        dialog = self.ai_prompt_dialog()
+        if dialog is not None:
+            dialog.exec()
+
     def _current_route_row(self) -> ClauseFactRouteRow | None:
         rows = self._model.routes()
         position = self.table.currentRow()
@@ -1321,8 +1452,10 @@ class ClauseFactReviewDialog(QDialog):
             self._set_enabled(self.retract_button, False, "retract")
             self._set_enabled(self.duplicate_button, False, "duplicate")
             self._set_enabled(self.dismiss_button, False, "dismiss")
+            self._set_enabled(self.ai_prompt_button, False, "ai_prompt")
             self._status.clear()
             return
+        self._set_enabled(self.ai_prompt_button, True, "ai_prompt")
         standard, regions = self._model.source_regions(row.rule_route)
         self.source_preview.render_regions(
             self._pdf_paths.get(standard) if regions else None,
