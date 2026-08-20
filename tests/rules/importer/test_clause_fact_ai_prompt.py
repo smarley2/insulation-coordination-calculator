@@ -221,7 +221,8 @@ def test_a_stale_authored_fact_is_labelled_stale_and_the_label_is_explained() ->
     )
 
     assert "evidence stale" in prompt
-    assert "cites a node whose text has changed" in prompt
+    # Explained once, in section 2, where the citation rule the label follows from is stated.
+    assert "the statement is marked stale" in prompt
 
 
 def test_open_and_dismissed_proposals_are_reported_separately() -> None:
@@ -359,13 +360,123 @@ def test_a_dimension_the_grammar_left_open_is_not_thereby_unrestricted() -> None
     assert "are three different answers" in prompt
 
 
-def test_a_restriction_inherited_from_a_scoping_sentence_must_be_named() -> None:
-    """Folding one in silently is the failure: the inheritance is the reviewer's judgement."""
+def test_the_unrestricted_reading_is_the_default_and_narrowing_is_the_exception() -> None:
+    """Read as permission, the old transparency rule narrowed five statements that were right."""
 
     prompt = build_clause_fact_ai_prompt(_context())
 
-    assert "Never carry a restriction down from such a sentence silently" in prompt
+    assert "restricted only where the statement's own sentence restricts it" in prompt
+    assert "is the default, and it is not the weaker answer" in prompt
+
+
+def test_an_inherited_restriction_needs_the_scoping_sentence_to_restrict_that_dimension() -> None:
+    """The generic failure: a neighbouring property of the same situation is not that dimension."""
+
+    prompt = build_clause_fact_ai_prompt(_context())
+
+    assert "restricts that same dimension" in prompt
+    assert "neighbouring property of the same situation" in prompt
+
+
+def test_a_later_node_reaching_back_at_a_statement_is_evidence_against_narrowing_it() -> None:
+    """What the model missed: narrowing cut a later node off from the only rules answering it."""
+
+    prompt = build_clause_fact_ai_prompt(_context())
+
+    assert "Before you narrow a dimension" in prompt
+    assert "as determined above" in prompt
+    assert "reaches cases your narrowing would cut it off from" in prompt
+
+
+def test_an_inherited_restriction_is_still_reported_on_the_scoping_line() -> None:
+    """#149's transparency requirement survives, now reporting an exception rather than licensing
+    one."""
+
+    prompt = build_clause_fact_ai_prompt(_context())
+
+    assert "name that node and say what you took from it" in prompt
     assert "Scoping: none | node <order>" in prompt
+
+
+def test_a_dimension_the_statement_never_speaks_to_is_unrestricted_not_unresolved() -> None:
+    """UNRESOLVED is for evidence that could settle a field and did not, and for nothing else."""
+
+    prompt = build_clause_fact_ai_prompt(_context())
+
+    assert "UNRESOLVED is only for a dimension the evidence could settle and did not" in prompt
+    assert "is unrestricted, not unresolved" in prompt
+
+
+def test_only_a_scope_dimension_may_be_answered_unrestricted() -> None:
+    """The unrestricted reading has no spelling an exact choice or a boolean would accept.
+
+    The sibling rule says a dimension the statement never speaks to is unrestricted. Read without
+    this one it invites the unrestricted marker into a field whose options the dialog fixes, which
+    the reviewer then cannot select.
+    """
+
+    prompt = build_clause_fact_ai_prompt(_context())
+
+    assert "Only a scope dimension can be unrestricted" in prompt
+    assert "an exact choice, a boolean or a declared rule id will accept" in prompt
+
+
+def test_an_unsettled_exact_choice_points_at_the_statement_kind_first() -> None:
+    """A measure statement that names no measure is usually an applicability statement.
+
+    Seen on a real route: the grammar proposed one kind and left the field defining it open, and
+    the sentence was of the family's other kind entirely.
+    """
+
+    prompt = build_clause_fact_ai_prompt(_context())
+
+    assert "treat that as evidence before treating it as UNRESOLVED" in prompt
+    assert "is usually the wrong kind for that sentence" in prompt
+
+
+def test_a_vocabulary_that_does_not_fit_the_subject_is_noted_rather_than_refused() -> None:
+    """One unanswerable field took ASK_HUMAN and stranded a whole one-statement route."""
+
+    prompt = build_clause_fact_ai_prompt(_context())
+
+    assert "no not-applicable value" in prompt
+    assert "note the misfit on the Why line" in prompt
+    assert "never grounds to refuse the field" in prompt
+
+
+def test_a_citation_is_defined_as_the_evidence_binding_it_actually_is() -> None:
+    """Without the digest contract stated, the same model cited differently on two runs."""
+
+    prompt = build_clause_fact_ai_prompt(_context())
+
+    assert "A citation is an evidence binding, not a bibliography" in prompt
+    assert "changes, the statement is marked stale" in prompt
+
+
+def test_the_citation_rule_is_derived_from_the_digest_in_both_directions() -> None:
+    """Cite what a change should force a re-read of, and nothing else: staleness has a cost."""
+
+    prompt = build_clause_fact_ai_prompt(_context())
+
+    assert "every node whose wording your reading depends on" in prompt
+    assert "manufactures staleness" in prompt
+
+
+def test_agreeing_with_a_correct_proposal_is_named_as_the_expected_outcome() -> None:
+    """All eight rows came back edited; five were right as proposed."""
+
+    prompt = build_clause_fact_ai_prompt(_context())
+
+    assert "the expected answer wherever the grammar settled the statement correctly" in prompt
+    assert "never manufactured to show diligence" in prompt
+
+
+def test_the_outstanding_list_carries_only_what_the_blocks_do_not_already_say() -> None:
+    """It came back restating one line per row, duplicating the summary verbatim."""
+
+    prompt = build_clause_fact_ai_prompt(_context())
+
+    assert "only what the blocks above do not already say" in prompt
 
 
 def test_the_reading_is_formed_before_the_proposals_are_read() -> None:

@@ -151,21 +151,42 @@ def _role() -> tuple[str, ...]:
             "the statement kind. Judge them against the clause instead of agreeing with them."
         ),
         (
-            '- A dimension a proposal reports as "settled by nobody yet" is not thereby '
-            "unrestricted. That line records that the keyword grammar matched nothing, which is a "
-            "fact about the grammar and not about the clause. Read the dimension off the evidence "
-            f"like any other: {SCOPE_UNRESTRICTED} (the clause restricts nothing here), a named set "
-            "(the clause names exactly those values) and UNRESOLVED (the evidence does not settle "
-            "it) are three different answers, and the grammar's silence is evidence for none of "
-            "them."
+            "- A dimension is restricted only where the statement's own sentence restricts it. "
+            "The unrestricted reading is the default, and it is not the weaker answer. A sentence "
+            "that only scopes the ones after it states nothing of this family itself, and it "
+            "narrows a statement under it only where it restricts that same dimension -- never "
+            "where it restricts a neighbouring property of the same situation, however related "
+            "the two feel. Before you narrow a dimension, look for another node that leans on the "
+            'statement you are narrowing: a later sentence pointing back at it -- "as determined '
+            'above", "taking into account X", "according to the preceding", any wording of that '
+            "form -- is evidence that the statement reaches cases your narrowing would cut it off "
+            "from. Where you do inherit a restriction, name that node and say what you took from "
+            "it on the block's Scoping line: that inheritance is the reviewer's judgement to make "
+            "and is invisible to them otherwise."
         ),
         (
-            "- A sentence that only scopes the ones after it is not itself a statement of this "
-            "family, but it can decide what the statements under it mean. Never carry a "
-            "restriction down from such a sentence silently. Where a statement's reading depends "
-            "on one, name that node and say what you took from it -- above all when you did carry "
-            "the restriction into a field, because that inheritance is the reviewer's judgement to "
-            "make and it is invisible to them unless you state it."
+            '- A dimension a proposal reports as "settled by nobody yet" is not thereby '
+            "unrestricted either: that line records that the keyword grammar matched nothing, "
+            f"which is a fact about the grammar and not about the clause. {SCOPE_UNRESTRICTED}, a "
+            "named set and UNRESOLVED are three different answers, and the grammar's silence is "
+            "evidence for none of them. UNRESOLVED is only for a dimension the evidence could "
+            "settle and did not: a scope dimension the statement never speaks to is "
+            "unrestricted, not unresolved. That holds even where the dimension's vocabulary "
+            "describes something this statement's subject is not, so that no value can be right "
+            "and the clause names none -- the schema has no not-applicable value, and refusing "
+            "the field there strands the statement, and on a one-statement route the whole "
+            f"route, on a question with no answer. Answer {SCOPE_UNRESTRICTED} and note the "
+            "misfit on the Why line instead: that observation is how a vocabulary the schema is "
+            "missing gets noticed, and it is never grounds to refuse the field."
+        ),
+        (
+            f"- Only a scope dimension can be unrestricted. {SCOPE_UNRESTRICTED} is not a value "
+            "an exact choice, a boolean or a declared rule id will accept, so never write it "
+            "into one: section 4 lists every value those take, and the reviewer can select "
+            "nothing else. Where an exact choice is the one thing the statement leaves open, "
+            "treat that as evidence before treating it as UNRESOLVED -- a statement kind whose "
+            "defining choice the sentence never makes is usually the wrong kind for that "
+            "sentence, and the right answer is the other kind rather than a blocked field."
         ),
         (
             "- The quoted text is extracted, so it has lost typography, list indentation, table "
@@ -205,6 +226,17 @@ def _evidence(context: ClauseFactPromptContext) -> tuple[str, ...]:
         (
             "Every node of this route's fragment, in reading order. Cite nodes by the order number "
             "shown here."
+        ),
+        "",
+        (
+            "A citation is an evidence binding, not a bibliography. The application digests the "
+            "text of every node a statement cites and re-checks that digest against these nodes "
+            "each time the route is read; the moment any cited node's text changes, the statement "
+            "is marked stale and has to be read again before it counts for anything. So cite "
+            "every node whose wording your reading depends on -- exactly the nodes where a later "
+            "change to the wording should force that re-reading -- and no others: a node cited "
+            "for context alone manufactures staleness and costs the reviewer a re-reading that "
+            "gains nothing."
         ),
         "",
     ]
@@ -254,11 +286,6 @@ def _findings(context: ClauseFactPromptContext) -> tuple[str, ...]:
         lines += _dimension_lines(fact.dimensions, "  ")
     lines += [
         "",
-        (
-            'A statement whose evidence reads "stale" cites a node whose text has changed since it '
-            "was authored, so its reading is no longer known to match the clause quoted above."
-        ),
-        "",
         "### Open grammar proposals",
         "",
     ]
@@ -302,10 +329,9 @@ def _dimension_entry(name: str, kind: DimensionKind, options: tuple[str, ...]) -
             f"- {name} -- scope over: {', '.join(options)}",
             (
                 f"    A scope is either the unrestricted reading, written {SCOPE_UNRESTRICTED}, or "
-                "an explicit set of the values above joined by |. These are different readings: "
-                f"{SCOPE_UNRESTRICTED} says the statement places no restriction on this dimension, "
-                "while naming every value says the statement names exactly those values. Never "
-                "substitute one for the other."
+                f"an explicit set of the values above joined by |. {SCOPE_UNRESTRICTED} says the "
+                "statement places no restriction on this dimension; naming every value says it "
+                "names exactly those values. Never substitute one for the other."
             ),
         ]
     if kind == "pair_sequence":
@@ -395,11 +421,13 @@ def _schema(context: ClauseFactPromptContext) -> tuple[str, ...]:
 def _task() -> tuple[str, ...]:
     """The order of reasoning, which the response format cannot impose.
 
-    Everything the template already forces -- comparing against the proposal field by field,
-    naming a proposal that states nothing this family models -- was cut from here rather than
-    said twice. What is left is the sequence: the clause is read into statements *before* the
-    proposals are opened, so a proposal-keyed answer is still a reading of the clause and not a
-    critique of the grammar.
+    Everything said elsewhere is cut from here rather than said twice: comparing against the
+    proposal field by field and naming a proposal that states nothing this family models, both
+    of which the template forces; writing UNRESOLVED and asking a question per unresolved
+    dimension, which the role's rules state and the template's FILL and Questions lines carry;
+    and not assuming one node is one statement, which is a standing rule. What is left is the
+    sequence: the clause is read into statements *before* the proposals are opened, so a
+    proposal-keyed answer is still a reading of the clause and not a critique of the grammar.
     """
 
     return (
@@ -407,8 +435,7 @@ def _task() -> tuple[str, ...]:
         "",
         (
             "1. Read section 2 and identify every normative statement in it that belongs to this "
-            "route's fact family, before you read the proposals in section 3. Do not assume one "
-            "node is one statement."
+            "route's fact family, before you read the proposals in section 3."
         ),
         (
             "2. For each statement, in this order: choose its statement kind from section 4, state "
@@ -417,20 +444,16 @@ def _task() -> tuple[str, ...]:
             "first."
         ),
         (
-            "3. Write UNRESOLVED for any dimension the evidence does not settle, and ask one "
-            "precise question per unresolved dimension."
-        ),
-        (
-            "4. Only now read the proposals in section 3 and map your statements onto them, as "
+            "3. Only now read the proposals in section 3 and map your statements onto them, as "
             "section 6 lays out. Where a proposal and your reading of the clause differ, the "
             "clause decides."
         ),
         (
-            "5. Check the already-authored statements for citations they appear to be missing, "
+            "4. Check the already-authored statements for citations they appear to be missing, "
             "citations they should not carry, and dimensions inconsistent with the evidence."
         ),
         (
-            "6. Finish with what still has to be authored, dismissed or re-read before the human "
+            "5. Finish with what still has to be authored, dismissed or re-read before the human "
             "should even consider recording completion."
         ),
         "",
@@ -491,7 +514,9 @@ def _response_format(context: ClauseFactPromptContext) -> tuple[str, ...]:
         "Action is exactly one of:",
         (
             "- AUTHOR_AS_PROPOSED -- the proposal is right as it stands; the reviewer loads it and "
-            "changes nothing."
+            "changes nothing. This is the expected answer wherever the grammar settled the "
+            "statement correctly, and it is a complete one: an edit is forced by the evidence, "
+            "never manufactured to show diligence."
         ),
         (
             "- AUTHOR_WITH_EDITS -- the reviewer loads it and changes the lines this block marks "
@@ -551,7 +576,7 @@ def _response_format(context: ClauseFactPromptContext) -> tuple[str, ...]:
         "## Completion",
         "Recommendation: NOT_READY | APPEARS_READY_FOR_HUMAN_CONFIRMATION",
         "Outstanding:",
-        "- none | <one line each>",
+        "- none | <only what the blocks above do not already say, one line each>",
         "```",
         "",
         (
