@@ -407,6 +407,33 @@ def test_a_dimension_the_statement_never_speaks_to_is_unrestricted_not_unresolve
     assert "is unrestricted, not unresolved" in prompt
 
 
+def test_only_a_scope_dimension_may_be_answered_unrestricted() -> None:
+    """The unrestricted reading has no spelling an exact choice or a boolean would accept.
+
+    The sibling rule says a dimension the statement never speaks to is unrestricted. Read without
+    this one it invites the unrestricted marker into a field whose options the dialog fixes, which
+    the reviewer then cannot select.
+    """
+
+    prompt = build_clause_fact_ai_prompt(_context())
+
+    assert "Only a scope dimension can be unrestricted" in prompt
+    assert "an exact choice, a boolean or a declared rule id will accept" in prompt
+
+
+def test_an_unsettled_exact_choice_points_at_the_statement_kind_first() -> None:
+    """A measure statement that names no measure is usually an applicability statement.
+
+    Seen on a real route: the grammar proposed one kind and left the field defining it open, and
+    the sentence was of the family's other kind entirely.
+    """
+
+    prompt = build_clause_fact_ai_prompt(_context())
+
+    assert "treat that as evidence before treating it as UNRESOLVED" in prompt
+    assert "is usually the wrong kind for that sentence" in prompt
+
+
 def test_a_vocabulary_that_does_not_fit_the_subject_is_noted_rather_than_refused() -> None:
     """One unanswerable field took ASK_HUMAN and stranded a whole one-statement route."""
 
