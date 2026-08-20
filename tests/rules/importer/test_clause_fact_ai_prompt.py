@@ -26,6 +26,19 @@ from insulation_coordination.rules.importer.clause_fact_proposals import (
 _REFERENCES = ("synthetic.rule.alpha", "synthetic.rule.beta")
 
 
+def _proposal(sentence_index: int) -> ClauseFactPromptProposal:
+    """One open draft, distinguished from its siblings only by the label the dialog shows."""
+
+    return ClauseFactPromptProposal(
+        sentence_index=sentence_index,
+        sentence_text=f"invented sentence {sentence_index}",
+        statement_kind="requirement",
+        cited_nodes=(sentence_index,),
+        chosen=(("obligation", "requirement"),),
+        unchosen=("evidence_kind",),
+    )
+
+
 def _context(**overrides: object) -> ClauseFactPromptContext:
     """One route's context with every collection empty, for a test to fill one of them in."""
 
@@ -250,7 +263,6 @@ def test_no_proposal_at_all_is_stated_rather_than_shown_as_an_empty_list() -> No
     )
 
     assert "no proposal at all: synthetic reason there is no grammar" in prompt
-    assert "NO_PROPOSAL" in prompt
 
 
 def test_the_completion_guard_items_are_carried_as_findings() -> None:
@@ -278,14 +290,91 @@ def test_the_conservative_instructions_are_present(instruction: str) -> None:
     assert instruction in build_clause_fact_ai_prompt(_context())
 
 
-def test_the_response_format_asks_for_a_decision_the_human_acts_on() -> None:
+def test_each_block_recommends_one_action_naming_what_the_human_would_press() -> None:
+    """One word per block, and the reviewer knows which button it heads for."""
+
     prompt = build_clause_fact_ai_prompt(_context())
 
-    assert "Decision: AUTHOR | DISMISS_PROPOSAL | NEEDS_HUMAN_REVIEW" in prompt
+    for action in (
+        "AUTHOR_AS_PROPOSED",
+        "AUTHOR_WITH_EDITS",
+        "AUTHOR_UNPROPOSED",
+        "DISMISS",
+        "ASK_HUMAN",
+    ):
+        assert action in prompt
+    # An action the reviewer cannot carry out is worse than no action: a block still holding an
+    # UNRESOLVED field is a question, however many of its other fields came out settled.
+    assert "Any block carrying an UNRESOLVED line takes this action and no other" in prompt
     assert "Recommendation: NOT_READY | APPEARS_READY_FOR_HUMAN_CONFIRMATION" in prompt
     # The authority statement comes last as well as first: a model that skimmed the opening
     # paragraph still has to read this to produce the final block.
     assert prompt.rstrip().endswith("on the maintainer's behalf.")
+
+
+def test_the_blocks_to_produce_are_named_after_the_rows_the_dialog_shows() -> None:
+    """The fault this replaced: the model numbered its own blocks and nothing matched a row."""
+
+    prompt = build_clause_fact_ai_prompt(_context(open_proposals=(_proposal(2), _proposal(5))))
+
+    listed = prompt[prompt.index("Blocks to produce") :]
+    assert "- sentence 2" in listed
+    assert "- sentence 5" in listed
+    assert listed.index("- sentence 2") < listed.index("- sentence 5")
+
+
+def test_a_route_with_no_open_proposal_asks_only_for_unproposed_blocks() -> None:
+    prompt = build_clause_fact_ai_prompt(_context(proposals_unavailable="synthetic reason"))
+
+    assert "Section 3 lists no open proposal" in prompt
+    assert "Blocks to produce, in this order:" not in prompt
+
+
+def test_every_field_is_marked_kept_changed_or_filled_rather_than_described_in_prose() -> None:
+    """The prose delta is what the reviewer had to interpret; a marker per field replaces it."""
+
+    prompt = build_clause_fact_ai_prompt(_context())
+
+    assert "- keep <field>: <value>" in prompt
+    assert "- SET <field>: <value> (proposal had <value>)" in prompt
+    assert "- FILL <field>: <value | UNRESOLVED> (proposal left this open)" in prompt
+    assert "Compared with app proposal" not in prompt
+    assert "differences" not in prompt
+
+
+def test_the_summary_lists_the_whole_route_before_the_first_block() -> None:
+    prompt = build_clause_fact_ai_prompt(_context())
+
+    assert "## Summary" in prompt
+    assert prompt.index("## Summary") < prompt.index("Action: <exactly one")
+
+
+def test_a_dimension_the_grammar_left_open_is_not_thereby_unrestricted() -> None:
+    """Grammar silence and "the clause restricts nothing" are different claims."""
+
+    prompt = build_clause_fact_ai_prompt(_context())
+
+    assert "is not thereby unrestricted" in prompt
+    assert "a fact about the grammar and not about the clause" in prompt
+    assert "are three different answers" in prompt
+
+
+def test_a_restriction_inherited_from_a_scoping_sentence_must_be_named() -> None:
+    """Folding one in silently is the failure: the inheritance is the reviewer's judgement."""
+
+    prompt = build_clause_fact_ai_prompt(_context())
+
+    assert "Never carry a restriction down from such a sentence silently" in prompt
+    assert "Scoping: none | node <order>" in prompt
+
+
+def test_the_reading_is_formed_before_the_proposals_are_read() -> None:
+    """The one ordering the proposal-keyed template would otherwise invert."""
+
+    prompt = build_clause_fact_ai_prompt(_context())
+
+    assert "before you read the proposals in section 3" in prompt
+    assert "Only now read the proposals in section 3" in prompt
 
 
 def test_one_context_always_renders_the_same_prompt() -> None:
