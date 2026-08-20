@@ -97,8 +97,8 @@ def build_clause_fact_ai_prompt(context: ClauseFactPromptContext) -> str:
     """One self-contained advisory prompt for one route, for the reviewer to copy by hand.
 
     Ordered so the authority boundary comes first and the response format that enforces it comes
-    last: a model that skims the opening paragraph still has to produce a ``Decision:`` line per
-    statement, which names what the *human* should consider doing.
+    last: a model that skims the opening paragraph still has to produce an ``Action:`` line per
+    block, which names what the *human* should consider doing.
     """
 
     return "\n".join(
@@ -109,7 +109,7 @@ def build_clause_fact_ai_prompt(context: ClauseFactPromptContext) -> str:
             *_findings(context),
             *_schema(context),
             *_task(),
-            *_response_format(),
+            *_response_format(context),
         )
     )
 
@@ -149,6 +149,23 @@ def _role() -> tuple[str, ...]:
             "- The application's own proposals in section 3 are machine prefills from a keyword "
             "grammar. They are suggestions: routinely incomplete, and capable of being wrong about "
             "the statement kind. Judge them against the clause instead of agreeing with them."
+        ),
+        (
+            '- A dimension a proposal reports as "settled by nobody yet" is not thereby '
+            "unrestricted. That line records that the keyword grammar matched nothing, which is a "
+            "fact about the grammar and not about the clause. Read the dimension off the evidence "
+            f"like any other: {SCOPE_UNRESTRICTED} (the clause restricts nothing here), a named set "
+            "(the clause names exactly those values) and UNRESOLVED (the evidence does not settle "
+            "it) are three different answers, and the grammar's silence is evidence for none of "
+            "them."
+        ),
+        (
+            "- A sentence that only scopes the ones after it is not itself a statement of this "
+            "family, but it can decide what the statements under it mean. Never carry a "
+            "restriction down from such a sentence silently. Where a statement's reading depends "
+            "on one, name that node and say what you took from it -- above all when you did carry "
+            "the restriction into a field, because that inheritance is the reviewer's judgement to "
+            "make and it is invisible to them unless you state it."
         ),
         (
             "- The quoted text is extracted, so it has lost typography, list indentation, table "
@@ -376,90 +393,181 @@ def _schema(context: ClauseFactPromptContext) -> tuple[str, ...]:
 
 
 def _task() -> tuple[str, ...]:
+    """The order of reasoning, which the response format cannot impose.
+
+    Everything the template already forces -- comparing against the proposal field by field,
+    naming a proposal that states nothing this family models -- was cut from here rather than
+    said twice. What is left is the sequence: the clause is read into statements *before* the
+    proposals are opened, so a proposal-keyed answer is still a reading of the clause and not a
+    critique of the grammar.
+    """
+
     return (
         "## 5. What to do, in this order",
         "",
         (
-            "1. Identify every normative statement in the evidence that belongs to this route's "
-            "fact family. Do not assume one node is one statement, and ignore sentences that only "
-            "scope the ones after them."
+            "1. Read section 2 and identify every normative statement in it that belongs to this "
+            "route's fact family, before you read the proposals in section 3. Do not assume one "
+            "node is one statement."
         ),
-        "2. For each statement, choose its statement kind from the list in section 4.",
-        "3. State which node orders the statement should cite.",
-        "4. Fill every dimension of that kind, using only the values section 4 allows.",
         (
-            "5. Write UNRESOLVED for any dimension the evidence does not settle, and ask one "
+            "2. For each statement, in this order: choose its statement kind from section 4, state "
+            "which node orders it cites, then fill every dimension that kind carries using only "
+            "the values section 4 allows. The kind decides which dimensions exist, so it comes "
+            "first."
+        ),
+        (
+            "3. Write UNRESOLVED for any dimension the evidence does not settle, and ask one "
             "precise question per unresolved dimension."
         ),
         (
-            "6. Compare your reading against the application's proposal for the same sentence, "
-            "where there is one, and state every disagreement explicitly."
+            "4. Only now read the proposals in section 3 and map your statements onto them, as "
+            "section 6 lays out. Where a proposal and your reading of the clause differ, the "
+            "clause decides."
         ),
         (
-            "7. Name any open proposal whose sentence appears to state nothing this family models, "
-            "and say why -- that is the reviewer's dismissal decision to make, not yours."
-        ),
-        (
-            "8. Check the already-authored statements for citations they appear to be missing, "
+            "5. Check the already-authored statements for citations they appear to be missing, "
             "citations they should not carry, and dimensions inconsistent with the evidence."
         ),
         (
-            "9. Finish with what still has to be authored, dismissed or re-read before the human "
+            "6. Finish with what still has to be authored, dismissed or re-read before the human "
             "should even consider recording completion."
         ),
         "",
     )
 
 
-def _response_format() -> tuple[str, ...]:
-    return (
+def _response_format(context: ClauseFactPromptContext) -> tuple[str, ...]:
+    """A per-proposal answer the reviewer executes beside the dialog without interpreting it.
+
+    Keyed on the labels section 3 already prints, and enumerated here from the same proposals, so
+    a block cannot be numbered independently of the row it is about. Every value the reviewer
+    might have to change is marked as kept, changed or filled instead of being described in
+    prose, because the prose delta is exactly the part that had to be read twice.
+    """
+
+    lines = [
         "## 6. Required response format",
         "",
         (
-            "Answer in exactly this structure, repeating the first block once per statement you "
-            "identify. Every Decision line names what the human should consider doing; it is never "
-            "an instruction to the application and never an approval. If you cannot complete a "
-            "section, say so inside that section rather than dropping it."
+            "Answer in exactly this structure and nothing else. It is written to be executed "
+            "beside the application's own list of drafts, so every line is a value to select "
+            "rather than a paragraph to interpret. Every Action names what the human should "
+            "consider doing; none of them is an instruction to the application and none of them "
+            "is an approval."
         ),
         "",
-        "```",
-        "## Statement <suggested index>",
-        "Decision: AUTHOR | DISMISS_PROPOSAL | NEEDS_HUMAN_REVIEW",
-        "Cite nodes: <ordered node numbers>",
-        "Statement kind: <exact allowed value>",
-        "",
-        "Fields:",
-        "- <field_name>: <exact allowed value | UNRESOLVED>",
-        "",
-        "Compared with app proposal:",
-        "- AGREE | DISAGREE | NO_PROPOSAL",
-        "- differences: ...",
-        "",
-        "Evidence summary:",
+    ]
+    if context.open_proposals:
+        lines += [
+            (
+                "One block per open proposal, keyed on the label section 3 gives it and carrying "
+                "the nodes it cites, in that order; then one further block per statement you find "
+                "that none of them covers. Never renumber a proposal, never merge two into one "
+                "block, and never leave one out."
+            ),
+            "",
+            "Blocks to produce, in this order:",
+            *(
+                f"- sentence {proposal.sentence_index} (cites node "
+                f"{', '.join(str(order) for order in proposal.cited_nodes)})"
+                for proposal in context.open_proposals
+            ),
+            (
+                '- then one "unproposed statement <k>" block, numbered from 1, per statement of '
+                "yours none of the above covers"
+            ),
+            "",
+        ]
+    else:
+        lines += [
+            (
+                'Section 3 lists no open proposal, so every block is an "unproposed statement '
+                '<k>" block, numbered from 1, one per statement you found.'
+            ),
+            "",
+        ]
+    lines += [
+        "Action is exactly one of:",
         (
-            "- <short explanation referencing node numbers; do not reproduce clause text you do not "
-            "need>"
+            "- AUTHOR_AS_PROPOSED -- the proposal is right as it stands; the reviewer loads it and "
+            "changes nothing."
+        ),
+        (
+            "- AUTHOR_WITH_EDITS -- the reviewer loads it and changes the lines this block marks "
+            "SET or FILL first."
+        ),
+        (
+            "- AUTHOR_UNPROPOSED -- no proposal covers this statement; the reviewer enters every "
+            "line from scratch."
+        ),
+        (
+            "- DISMISS -- the sentence states nothing this route's fact family models, so the "
+            "reviewer may consider recording that instead of authoring."
+        ),
+        (
+            "- ASK_HUMAN -- do not act on this block at all; it turns on a question only the "
+            "reviewer can settle. Any block carrying an UNRESOLVED line takes this action and no "
+            "other: a statement with a field nobody has settled cannot be authored."
         ),
         "",
-        "Questions:",
-        "- <only the questions needed to resolve an UNRESOLVED field>",
+        (
+            "Mark the statement kind, the citation and every single dimension of the chosen kind "
+            "-- in section 4's order, the unchanged ones included -- with one of:"
+        ),
+        "- keep -- the proposal's value is right and the reviewer touches nothing.",
+        "- SET -- the reviewer changes it; name the proposed value being replaced.",
+        (
+            '- FILL -- the proposal offered no value ("settled by nobody yet", or there is no '
+            "proposal at all); the reviewer enters it."
+        ),
         "",
-        "## Existing authored-fact review",
-        "- statement <n>: OK | REVIEW",
-        "- issue: ...",
-        "",
-        "## Completion assessment",
-        "Recommendation: NOT_READY | APPEARS_READY_FOR_HUMAN_CONFIRMATION",
-        "Still unresolved:",
-        "- ...",
         "```",
+        "## Summary",
+        "- sentence <n>: AUTHOR_AS_PROPOSED, nothing to change",
+        "- sentence <n>: AUTHOR_WITH_EDITS, <count> line(s) to change or fill",
+        "- sentence <n>: DISMISS, <why, at most eight words>",
+        "- sentence <n>: ASK_HUMAN, <the blocking question, at most eight words>",
+        "- unproposed statement <k>: AUTHOR_UNPROPOSED, <count> line(s) to fill",
+        "",
+        "## sentence <n>",
+        "Action: <exactly one of the five>",
+        "Statement kind: keep <value> | SET <value> (proposal had <value>)",
+        "Cite nodes: keep <orders> | SET <orders> (proposal had <orders>)",
+        "Fields:",
+        "- keep <field>: <value>",
+        "- SET <field>: <value> (proposal had <value>)",
+        "- FILL <field>: <value | UNRESOLVED> (proposal left this open)",
+        "Scoping: none | node <order> restricts <what>, carried into <field> as <value>",
+        "Why: <at most two sentences, citing node numbers>",
+        "Questions: none | <one per UNRESOLVED field>",
+        "",
+        "## unproposed statement <k>",
+        "<the same lines, with Action AUTHOR_UNPROPOSED and every line marked FILL>",
+        "",
+        "## Authored facts",
+        "- statement <n>: OK | REVIEW -- <the citation or dimension at issue, one line>",
+        "",
+        "## Completion",
+        "Recommendation: NOT_READY | APPEARS_READY_FOR_HUMAN_CONFIRMATION",
+        "Outstanding:",
+        "- none | <one line each>",
+        "```",
+        "",
+        (
+            "A DISMISS block carries Action, Scoping and Why only: there is nothing to author, so "
+            "field lines would be noise. An ASK_HUMAN block carries every line you can fill and "
+            "puts the blocking question in Questions. Omit the statement kind line entirely for a "
+            "family that states one kind of reading."
+        ),
         "",
         (
             "APPEARS_READY_FOR_HUMAN_CONFIRMATION means only that you found nothing outstanding. It "
             "is not approval, and it does not permit the application or anyone else to record "
             "completion on the maintainer's behalf."
         ),
-    )
+    ]
+    return tuple(lines)
 
 
 __all__ = [
