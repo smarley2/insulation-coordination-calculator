@@ -90,7 +90,8 @@ class ClauseFactAiPromptDialog(QDialog):
     def copy_prompt(self) -> None:
         QGuiApplication.clipboard().setText(self.prompt)
         self._status.setText(
-            "Copied to the clipboard. It is not stored anywhere else; close this and it is gone."
+            "Copied to the clipboard, and now subject to whatever your clipboard does next. "
+            "This application stores it nowhere: closing the preview discards its own copy."
         )
 
 
