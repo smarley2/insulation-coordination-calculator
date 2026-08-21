@@ -19,6 +19,7 @@ from insulation_coordination.rules.importer.iec62477_2022.semantic_ids import (
     TEST_DIELECTRIC_TOPOLOGY_SELECTION,
     TEST_IMPULSE_SELECTION,
     TEST_PARTIAL_DISCHARGE,
+    TEST_PROTECTIVE_IMPEDANCE,
     TEST_SOLID_INSULATION_PARTIAL_DISCHARGE,
 )
 from insulation_coordination.rules.importer.recipes import RECIPES
@@ -232,6 +233,38 @@ def test_a_package_predating_the_partial_discharge_rule_is_blocked_by_name() -> 
     assert not status.deferred
     assert not (status.extracted or status.typed or status.approved)
     assert TEST_SOLID_INSULATION_PARTIAL_DISCHARGE in {
+        item.semantic_id for item in missing_inventory_items(draft)
+    }
+    with pytest.raises(ApprovalError, match="required inventory item"):
+        _require_complete_inventory(draft)
+
+
+def test_the_protective_impedance_test_is_its_own_required_item() -> None:
+    """Finding A9.4: the two tests are in 5.2.3.6, and its requirement subclause only points.
+
+    A procedure item rather than a decision, because the subclause states obligations and a
+    method rather than a choice keyed on an input. Stated here rather than derived from the
+    specs, so it cannot be quietly folded into a dielectric route.
+    """
+    items = {item.semantic_id: item for item in REQUIRED_SOURCE_ITEMS}
+    item = items[TEST_PROTECTIVE_IMPEDANCE]
+
+    assert (item.expected_clause, item.expected_output_kind) == ("5.2.3.6", "procedure")
+    assert item.expected_table is None
+    assert item.consumer_issue_ids == (37,)
+
+
+def test_a_package_predating_the_protective_impedance_test_is_blocked_by_name() -> None:
+    """The required set grows, so an approved package built before it is incomplete."""
+    draft = _draft()
+    status = {status.semantic_id: status for status in inventory_report(draft)}[
+        TEST_PROTECTIVE_IMPEDANCE
+    ]
+
+    assert status.located
+    assert not status.deferred
+    assert not (status.extracted or status.typed or status.approved)
+    assert TEST_PROTECTIVE_IMPEDANCE in {
         item.semantic_id for item in missing_inventory_items(draft)
     }
     with pytest.raises(ApprovalError, match="required inventory item"):

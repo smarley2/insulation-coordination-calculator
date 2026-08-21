@@ -2718,6 +2718,19 @@ def synthetic_verification_rule_package(*, edition: str = EDITION) -> RulePackag
                 "dielectric_voltage_application",
                 duration=_SYNTHETIC_DIELECTRIC_DURATION,
             ),
+            #: The protective-impedance subclause's two routes, one classification each, as the
+            #: real projection produces them. Purely additive: no existing route changes, so
+            #: every caller of this fixture keeps the package it already had.
+            procedure(
+                f"{ids.TEST_PROTECTIVE_IMPEDANCE}.type_test",
+                "protective_impedance_current",
+                classifications=("type_test",),
+            ),
+            procedure(
+                f"{ids.TEST_PROTECTIVE_IMPEDANCE}.routine_test",
+                "protective_impedance_value",
+                classifications=("routine_test",),
+            ),
         ),
         curves=(fault_time_voltage,),
     )

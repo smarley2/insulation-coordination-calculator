@@ -107,6 +107,11 @@ REQUIRED_SOURCE_ITEMS: tuple[RequiredSourceItem, ...] = (
         (37,),
         clause="4.4.7.10.3",
     ),
+    #: The test a protective impedance owes in its own right. Its requirement subclause states
+    #: the limits and points here; this subclause is where both classifications are named, and
+    #: without it a pair protected by a protective impedance carried an obligation no row could
+    #: state a procedure for.
+    _item(ids.TEST_PROTECTIVE_IMPEDANCE, "procedure", (37,), clause="5.2.3.6"),
     _item(ids.TEST_WORKING_VOLTAGE_DETERMINATION, "procedure", (37,)),
     _item(ids.TEST_INTERNAL_SPD_MONITORING, "procedure", (37,)),
     _item(ids.TEST_PRECONDITIONING, "procedure", (37,)),

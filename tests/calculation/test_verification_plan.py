@@ -652,16 +652,20 @@ def test_enhanced_protection_dimensioned_on_a_lesser_path_is_reported_not_planne
     assert ENHANCED_SPACING_MISMATCH_WARNING in {warning.code for warning in plan.warnings}
 
 
-def test_a_protective_impedance_stays_a_disclosed_engineering_item(
+def test_a_protective_impedance_creates_no_invented_spacing_result(
     package: RulePackage,
 ) -> None:
+    """The means is not a dimensioned spacing, so the impulse row plans no result for it."""
     project = with_protection(
         verification_topology(supply_configurations=(mains_configuration(),)),
         ProtectionImplementation.PROTECTIVE_IMPEDANCE,
     )
     pair = pair_between(project, LIVE_A, ENCLOSURE)
     application = one(build(project, package), pair, TestKind.IMPULSE_WITHSTAND)
-    assert any("protective impedance" in item for item in application.unresolved_inputs)
+    assert any(
+        "not a dimensioned spacing this test verifies" in item
+        for item in application.unresolved_inputs
+    )
 
 
 # --- AC and DC dielectric -----------------------------------------------------------------
@@ -1686,23 +1690,101 @@ def test_the_component_that_may_be_disconnected_stays_a_permission(
         assert states(row, "5.2.3.4.3", "permission and not a requirement")
 
 
-def test_a_protective_impedance_states_both_routes_and_the_two_tests_it_owes(
+def test_a_protective_impedance_states_both_routes_of_the_voltage_test(
     package: RulePackage,
 ) -> None:
-    """Treating it as a disclosure dropped a type test and a routine test the standard names."""
     project = with_protection(
         verification_topology(supply_configurations=(mains_configuration(),)),
         ProtectionImplementation.PROTECTIVE_IMPEDANCE,
     )
     pair = pair_between(project, LIVE_A, ENCLOSURE)
-    plan = build(project, package)
-    rows = voltage_rows(plan, pair)
+    rows = voltage_rows(build(project, package), pair)
     assert rows
     for row in rows:
         assert states(row, "5.2.3.4.3", "included in the test", "carefully restored")
-    assert any(
-        "5.2.3.6" in item and "type test" in item and "routine test" in item
-        for item in assessment_for(plan, pair).unresolved_inputs
+
+
+# --- the two tests a protective impedance owes ---------------------------------------------
+
+
+def impedance_project() -> Project:
+    return with_protection(
+        verification_topology(supply_configurations=(mains_configuration(),)),
+        ProtectionImplementation.PROTECTIVE_IMPEDANCE,
+    )
+
+
+def impedance_rows(package: RulePackage) -> tuple[TestApplication, TestApplication]:
+    """The pair's type-test row and its routine-test row, selected by what each verifies."""
+
+    project = impedance_project()
+    rows = applications_for(
+        build(project, package),
+        pair_between(project, LIVE_A, ENCLOSURE),
+        TestKind.PROTECTIVE_IMPEDANCE,
+    )
+    by_classification = {row.classifications: row for row in rows}
+    assert len(by_classification) == 2, rows
+    return (
+        by_classification[(TestClassification.TYPE,)],
+        by_classification[(TestClassification.ROUTINE,)],
+    )
+
+
+def test_a_protective_impedance_is_scheduled_as_a_type_test_and_a_routine_test(
+    package: RulePackage,
+) -> None:
+    """#138 could name the two tests on the pair; the package can now state their procedures."""
+    type_row, routine_row = impedance_rows(package)
+
+    assert type_row.source_rule_ids == (f"{ids.TEST_PROTECTIVE_IMPEDANCE}.type_test",)
+    assert routine_row.source_rule_ids == (f"{ids.TEST_PROTECTIVE_IMPEDANCE}.routine_test",)
+
+
+def test_each_of_the_two_rows_carries_only_its_own_route_steps(
+    package: RulePackage,
+) -> None:
+    """One procedure carrying both would put the current measurement on the value's row."""
+    type_row, routine_row = impedance_rows(package)
+    package_steps = {
+        rule.id: tuple(step.text for step in rule.procedure_steps) for rule in package.procedures
+    }
+
+    assert type_row.preparation_steps == package_steps[f"{ids.TEST_PROTECTIVE_IMPEDANCE}.type_test"]
+    assert (
+        routine_row.preparation_steps
+        == package_steps[f"{ids.TEST_PROTECTIVE_IMPEDANCE}.routine_test"]
+    )
+
+
+def test_neither_row_invents_a_voltage_or_a_result(package: RulePackage) -> None:
+    """Neither is a withstand test, and neither quantity is anything the project records."""
+    type_row, routine_row = impedance_rows(package)
+
+    for row in (type_row, routine_row):
+        assert row.voltage is None
+        assert row.applicability is TestApplicability.ENGINEERING_INPUT_REQUIRED
+        assert any("which component provides" in item for item in row.unresolved_inputs)
+    assert any("4.4.5.5" in item and "single fault" in item for item in type_row.unresolved_inputs)
+    assert any("no declared value" in item for item in routine_row.unresolved_inputs)
+
+
+def test_the_two_tests_are_no_longer_a_finding_on_the_pair(package: RulePackage) -> None:
+    """The rows replace the disclosure #138 left on the pair; saying both would double-count."""
+    project = impedance_project()
+    pair = pair_between(project, LIVE_A, ENCLOSURE)
+    plan = build(project, package)
+
+    assert not any("5.2.3.6" in item for item in assessment_for(plan, pair).unresolved_inputs)
+    assert applications_for(plan, pair, TestKind.PROTECTIVE_IMPEDANCE)
+
+
+def test_a_pair_protected_by_anything_else_owes_no_impedance_row(
+    project: Project, package: RulePackage
+) -> None:
+    plan = build(project, package)
+    assert not any(
+        item.test_kind is TestKind.PROTECTIVE_IMPEDANCE for item in plan.test_applications
     )
 
 

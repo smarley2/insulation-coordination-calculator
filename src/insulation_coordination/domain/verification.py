@@ -163,6 +163,12 @@ class TestKind(StrEnum):
     DC_DIELECTRIC = "dc_dielectric"
     PARTIAL_DISCHARGE = "partial_discharge"
     INTERNAL_SPD_MONITORING = "internal_spd_monitoring"
+    #: What a protective impedance owes when it is the selected means of protection. Its own
+    #: kind rather than a classification of a dielectric one: it measures a current and an
+    #: impedance rather than a withstand, its acceptance is a limit the requirement subclause
+    #: states rather than the absence of a breakdown, and it is a property of the component
+    #: rather than of the spacing between the pair's electrodes.
+    PROTECTIVE_IMPEDANCE = "protective_impedance"
 
 
 class TestReferenceKind(StrEnum):

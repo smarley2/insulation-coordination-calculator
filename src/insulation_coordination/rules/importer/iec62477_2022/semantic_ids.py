@@ -72,6 +72,13 @@ TEST_PARTIAL_DISCHARGE = "iec62477_2022.test.partial_discharge"
 #: already carries the procedure's own applicability route and whose raw artifact id this one
 #: would otherwise be a prefix of.
 TEST_SOLID_INSULATION_PARTIAL_DISCHARGE = "iec62477_2022.test.solid_insulation_partial_discharge"
+#: The test a protective impedance owes when it is the selected protection means. Its own
+#: identifier rather than a route of any dielectric test: it measures a current and an
+#: impedance rather than a withstand, its acceptance is a limit stated in the requirement
+#: subclause rather than the absence of a breakdown, and it is not applied between a pair's
+#: electrodes at all. Named for the means the obligation attaches to rather than for its
+#: subclause, so a renumbered edition does not rename the contract.
+TEST_PROTECTIVE_IMPEDANCE = "iec62477_2022.test.protective_impedance"
 TEST_WORKING_VOLTAGE_DETERMINATION = "iec62477_2022.test.working_voltage_determination"
 TEST_INTERNAL_SPD_MONITORING = "iec62477_2022.test.internal_spd_monitoring"
 TEST_PRECONDITIONING = "iec62477_2022.test.preconditioning"
@@ -110,6 +117,7 @@ REQUIRED_SEMANTIC_IDS: frozenset[str] = frozenset(
         TEST_DIELECTRIC_ACCEPTANCE,
         TEST_PARTIAL_DISCHARGE,
         TEST_SOLID_INSULATION_PARTIAL_DISCHARGE,
+        TEST_PROTECTIVE_IMPEDANCE,
         TEST_WORKING_VOLTAGE_DETERMINATION,
         TEST_INTERNAL_SPD_MONITORING,
         TEST_PRECONDITIONING,
