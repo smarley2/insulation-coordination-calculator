@@ -8,6 +8,10 @@ from insulation_coordination.rules.importer.identify import (
     TableColumnSpec,
     TableSegmentSpec,
 )
+from insulation_coordination.rules.importer.recipes.iec60664_clauses import (
+    PARTIAL_DISCHARGE_ADVICE_CLAUSES,
+    PARTIAL_DISCHARGE_ADVICE_PROJECTORS,
+)
 
 ColumnRole = Literal["axis", "data", "context"]
 
@@ -383,4 +387,6 @@ RECIPE = StandardRecipe(
         ),
     ),
     mappings=_mapping_specs(),
+    clauses=PARTIAL_DISCHARGE_ADVICE_CLAUSES,
+    clause_projectors=PARTIAL_DISCHARGE_ADVICE_PROJECTORS,
 )
