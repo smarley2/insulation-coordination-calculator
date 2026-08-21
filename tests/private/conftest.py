@@ -19,6 +19,75 @@ from insulation_coordination.rules.importer.identify import (
     identify_standard,
 )
 
+#: The most workers this directory can be shared between and still report the truth.
+#:
+#: Its fixtures extract all three licensed PDFs and drive a full review-and-approve pass, and
+#: they are session-scoped, so under xdist *every* worker builds its own copy. Past a few
+#: workers they contend until the suite reports a different handful of fabricated failures each
+#: run -- some as bare timeouts with no assertion, some as workers dying with "node down: Not
+#: properly terminated". Measured on main: 104 passed, 1 skipped at -n 4, and at -n 12 one
+#: passing run followed by two runs of six and seven failures with an xdist INTERNALERROR.
+#:
+#: That nondeterminism is the danger, not the failure: it has been read as a code regression
+#: twice, and once as evidence the repository's --timeout=120 was too low, which measurement
+#: later disproved. Raising the timeout does not help and neither does pinning the directory to
+#: one worker with --dist loadgroup, which was tried here and did not hold.
+_MAX_PRIVATE_WORKERS = 4
+
+
+def pytest_cmdline_main(config: pytest.Config) -> None:
+    """Refuse a worker count this directory cannot report the truth at.
+
+    In the controller, before any worker exists: pytest loads this conftest up front when the
+    command line names this directory, and refusing here is what makes the message readable.
+    Raising it from inside a worker instead -- the obvious place, since that is where the
+    contention is -- surfaces as an xdist INTERNALERROR whose assertion never mentions the cause.
+
+    Silent when the command line does not name this directory: a whole-tree run collects it in
+    the workers, where this hook has already been passed, so there is nothing to catch. CI is
+    that case and is unaffected in any event, having no licensed PDFs to run these tests against.
+    """
+
+    workers = getattr(config.option, "numprocesses", None)
+    if not isinstance(workers, int) or workers <= _MAX_PRIVATE_WORKERS:
+        return
+    raise pytest.UsageError(
+        f"tests/private cannot report the truth at -n {workers}. Each worker extracts all three "
+        f"licensed PDFs into its own session fixtures, and past {_MAX_PRIVATE_WORKERS} they "
+        "contend until the suite invents a different handful of failures every run. Use "
+        "`uv run pytest tests/private -n 4` -- the baseline there is 104 passed, 1 skipped -- or "
+        "drop -n entirely to run serially. See issue #146."
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Skip this directory in a worker the whole-tree run gave too many siblings.
+
+    The other half of the refusal above, for the case it cannot reach: ``pytest -n 12`` over the
+    whole tree never names this directory on the command line, so the controller loads this
+    conftest only inside the workers, by which time ``pytest_cmdline_main`` has long passed.
+    A skip is the strongest thing a worker can say without an INTERNALERROR, and it is enough --
+    the reviewer reads that this directory did not run and why, instead of reading a failure the
+    contention invented.
+    """
+
+    workers = getattr(config, "workerinput", {}).get("workercount", 1)
+    if workers <= _MAX_PRIVATE_WORKERS:
+        return
+    skip = pytest.mark.skip(
+        reason=(
+            f"not run: -n {workers} is too many workers for this directory to report the truth "
+            "at. Run `uv run pytest tests/private -n 4` on its own. See issue #146."
+        )
+    )
+    # This hook is handed the whole session's items, not this directory's -- a conftest is
+    # loaded once and then speaks for every test collected. Filtering is what keeps the skip
+    # from swallowing the public suite, which it did on the first attempt: 2 997 skipped.
+    directory = Path(__file__).parent
+    for item in items:
+        if directory in Path(str(item.fspath)).parents:
+            item.add_marker(skip)
+
 
 @pytest.fixture(scope="session")
 def supplied_standards() -> dict[str, Path]:
