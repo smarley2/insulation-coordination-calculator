@@ -99,7 +99,7 @@ def test_every_required_semantic_id_is_queryable_after_a_round_trip(
     package = licensed_package
     available = _rule_ids(package)
 
-    assert len(REQUIRED_SOURCE_ITEMS) == 35
+    assert len(REQUIRED_SOURCE_ITEMS) == 36
     for item in REQUIRED_SOURCE_ITEMS:
         assert any(_covers(candidate, item.semantic_id) for candidate in available), (
             item.semantic_id

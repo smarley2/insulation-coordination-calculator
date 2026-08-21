@@ -14,7 +14,7 @@ the calculator executes.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Literal, NoReturn
 
 from insulation_coordination.domain.rules import (
@@ -32,7 +32,7 @@ from insulation_coordination.domain.rules import (
     ProcedureStep,
     RuleKind,
 )
-from insulation_coordination.rules.importer.clauses import RawClauseFragment
+from insulation_coordination.rules.importer.clauses import ClauseNode, RawClauseFragment
 from insulation_coordination.rules.importer.extract import (
     ImportedRuleDraft,
     RawGrid,
@@ -295,6 +295,18 @@ _DIELECTRIC_DISCONNECTION_CLAUSE = "5.2.3.4.3"
 _DIELECTRIC_DURATION_CLAUSE = "5.2.3.4.5"
 _DIELECTRIC_ACCEPTANCE_CLAUSE = "5.2.3.4.6"
 
+#: The clause that states the test a protective impedance owes. Its requirement subclause
+#: states the limits and points here; this one names both classifications in its own heading.
+_PROTECTIVE_IMPEDANCE_CLAUSE = "5.2.3.6"
+#: One route per classification, for the reason preconditioning has one route per clause: the
+#: subclause states two obligations with two different subjects -- a current measured against
+#: the requirement subclause's limits, and the impedance's own value -- and one procedure
+#: carrying both would put the current measurement's method on the row that verifies a value.
+#: The suffixes are the classification names the package's own vocabulary uses, so a consumer
+#: joins a route to the classification it is scheduled under without a translation table.
+PROTECTIVE_IMPEDANCE_TYPE_ID = f"{ids.TEST_PROTECTIVE_IMPEDANCE}.type_test"
+PROTECTIVE_IMPEDANCE_ROUTINE_ID = f"{ids.TEST_PROTECTIVE_IMPEDANCE}.routine_test"
+
 PROCEDURE_CLAUSES: tuple[ClauseAuditSpec, ...] = (
     ClauseAuditSpec(
         semantic_id=ids.TEST_WORKING_VOLTAGE_DETERMINATION,
@@ -490,6 +502,31 @@ PROCEDURE_CLAUSES: tuple[ClauseAuditSpec, ...] = (
         ),
         output_kind="decision",
     ),
+    ClauseAuditSpec(
+        semantic_id=ids.TEST_PROTECTIVE_IMPEDANCE,
+        clause=_PROTECTIVE_IMPEDANCE_CLAUSE,
+        #: Three regions of running prose, one per paragraph, in reading order: the type
+        #: test's obligation, the method it is carried out by, and the routine test's
+        #: obligation. Declared apart because a paragraph region extracts as one node, and
+        #: merged the two obligations would share one text neither route could be attributed
+        #: to. The subclause's heading is above the first region and is not extracted, and the
+        #: note printed between the second region and the third is deliberately outside both:
+        #: a note states no obligation and no step, so it belongs to neither route.
+        segments=tuple(
+            ClauseSegmentSpec(
+                page_number=132,
+                expected_bbox=bbox,
+                expected_root_kind="paragraph",
+            )
+            for bbox in (
+                (65.0, 104.0, 535.0, 145.0),
+                (65.0, 153.0, 535.0, 182.0),
+                (65.0, 220.0, 535.0, 237.0),
+            )
+        ),
+        output_kind="procedure",
+        projected_rule_ids=(PROTECTIVE_IMPEDANCE_TYPE_ID, PROTECTIVE_IMPEDANCE_ROUTINE_ID),
+    ),
 )
 
 #: Reviewed structural contract per projection: the node kind expected at each position, in
@@ -557,13 +594,23 @@ def matrix_grid(draft: ImportedRuleDraft, label: str) -> RawGrid:
     return _sibling_grid(draft, CLASSIFICATION_MATRIX_ID, label)
 
 
-def _steps(fragment: RawClauseFragment) -> tuple[ProcedureStep, ...]:
-    """One reviewed node, one step. One source condition is one action."""
+def _steps_of(nodes: Sequence[ClauseNode]) -> tuple[ProcedureStep, ...]:
+    """One reviewed node, one step, numbered from one within the procedure they belong to.
+
+    Takes nodes rather than a fragment for the one clause whose regions project two procedures:
+    each route carries the nodes that state it, and neither inherits the other's method.
+    """
 
     return tuple(
         ProcedureStep(order=order, text=node.raw_text, source=node.source)
-        for order, node in enumerate(fragment.nodes, start=1)
+        for order, node in enumerate(nodes, start=1)
     )
+
+
+def _steps(fragment: RawClauseFragment) -> tuple[ProcedureStep, ...]:
+    """One reviewed node, one step. One source condition is one action."""
+
+    return _steps_of(fragment.nodes)
 
 
 def project_working_voltage_determination(
@@ -1250,6 +1297,56 @@ def project_dielectric_acceptance(
     return (rule,), (_proposal(rule, "decision", fragment),)
 
 
+#: The obligation, the method it is carried out by, and the second obligation.
+_PROTECTIVE_IMPEDANCE_SHAPE = ("paragraph",) * 3
+#: What each route says it is. Neutral names for the quantity each one measures, which is what
+#: separates them from every other test in this recipe: neither is a withstand.
+_PROTECTIVE_IMPEDANCE_CURRENT_TEST_KIND = "protective_impedance_current"
+_PROTECTIVE_IMPEDANCE_VALUE_TEST_KIND = "protective_impedance_value"
+
+
+def project_protective_impedance(
+    fragment: RawClauseFragment,
+    identity: StandardIdentity,
+    draft: ImportedRuleDraft,
+    _confirmed_facts: object = None,
+) -> tuple[tuple[ProcedureRule, ...], tuple[SemanticProposal, ...]]:
+    """Project the two tests a protective impedance owes, one route each.
+
+    The subclause states them separately and states one method between them. The first
+    obligation and that method are the type test's two steps -- the method describes how the
+    current is measured, and belongs to the route that measures it. The third node is the
+    routine test, which measures the impedance itself and takes no step from the other two.
+
+    Each route declares the one classification the subclause's own heading names for it, and
+    both are checked against the cross-reference matrix, which marks this clause under both.
+    """
+
+    label = "protective impedance test"
+    _require_own_fragment(fragment, identity, ids.TEST_PROTECTIVE_IMPEDANCE, label)
+    _require_shape(fragment, _PROTECTIVE_IMPEDANCE_SHAPE, label)
+
+    type_test = ProcedureRule(
+        id=PROTECTIVE_IMPEDANCE_TYPE_ID,
+        test_kind=_PROTECTIVE_IMPEDANCE_CURRENT_TEST_KIND,
+        classifications=("type_test",),
+        procedure_steps=_steps_of(fragment.nodes[:2]),
+        source=fragment.source,
+    )
+    routine_test = ProcedureRule(
+        id=PROTECTIVE_IMPEDANCE_ROUTINE_ID,
+        test_kind=_PROTECTIVE_IMPEDANCE_VALUE_TEST_KIND,
+        classifications=("routine_test",),
+        procedure_steps=_steps_of(fragment.nodes[2:]),
+        source=fragment.source,
+    )
+    grid = matrix_grid(draft, label)
+    validate_classifications(grid, type_test)
+    validate_classifications(grid, routine_test)
+    procedures = (type_test, routine_test)
+    return procedures, tuple(_proposal(rule, "procedure", fragment) for rule in procedures)
+
+
 #: The reference an application is made against -- the low side of the pair. Neutral names for
 #: the three the subclause's list enumerates, plus the adjacency case it states separately
 #: because that one reads its row from the other side of the pair.
@@ -1430,6 +1527,7 @@ CLAUSE_PROJECTORS: Mapping[str, ClauseProjector] = {
     PRECONDITIONING_APPLICABILITY_ID: project_preconditioning_applicability,
     ids.TEST_ACCESSIBLE_SURFACE_FOIL: project_accessible_surface_foil,
     ids.TEST_ASSEMBLED_ROUTINE_EXEMPTION: project_assembled_routine_exemption,
+    ids.TEST_PROTECTIVE_IMPEDANCE: project_protective_impedance,
 }
 
 __all__ = [
@@ -1453,6 +1551,8 @@ __all__ = [
     "PRECONDITIONING_MATERIAL_CONTEXTS",
     "PRECONDITIONING_MATERIAL_ID",
     "PROCEDURE_CLAUSES",
+    "PROTECTIVE_IMPEDANCE_ROUTINE_ID",
+    "PROTECTIVE_IMPEDANCE_TYPE_ID",
     "REQUIREMENT_CLAUSE_COLUMN",
     "TEST_CLAUSE_COLUMN",
     "matrix_classifications",
@@ -1467,6 +1567,7 @@ __all__ = [
     "project_internal_spd_monitoring",
     "project_preconditioning",
     "project_preconditioning_applicability",
+    "project_protective_impedance",
     "project_working_voltage_determination",
     "validate_classifications",
 ]

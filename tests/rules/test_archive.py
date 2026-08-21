@@ -246,7 +246,7 @@ def test_load_rejects_malformed_checksum_set_and_unsupported_schema(
 
 def test_current_rule_trust_versions_require_semantic_pcb_packages() -> None:
     assert RULE_SCHEMA_VERSION == 4
-    assert IMPORTER_VERSION == "iec-pdf-13"
+    assert IMPORTER_VERSION == "iec-pdf-14"
 
 
 def test_legacy_schema_tells_maintainer_to_regenerate_from_pdfs(

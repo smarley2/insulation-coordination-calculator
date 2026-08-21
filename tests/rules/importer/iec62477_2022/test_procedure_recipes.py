@@ -41,6 +41,8 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.procedures i
     PRECONDITIONING_MATERIAL_CONTEXTS,
     PRECONDITIONING_MATERIAL_ID,
     PROCEDURE_CLAUSES,
+    PROTECTIVE_IMPEDANCE_ROUTINE_ID,
+    PROTECTIVE_IMPEDANCE_TYPE_ID,
     REQUIREMENT_CLAUSE_COLUMN,
     TEST_CLAUSE_COLUMN,
     project_accessible_surface_foil,
@@ -53,6 +55,7 @@ from insulation_coordination.rules.importer.recipes.iec62477_1_2022.procedures i
     project_internal_spd_monitoring,
     project_preconditioning,
     project_preconditioning_applicability,
+    project_protective_impedance,
     project_working_voltage_determination,
 )
 from insulation_coordination.rules.importer.recipes.iec62477_1_2022.verification import (
@@ -89,6 +92,7 @@ CLAUSE_OF = {
     ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION: "5.2.3.4.4",
     ids.TEST_DIELECTRIC_APPLICATION_DURATION: "5.2.3.4.5",
     ids.TEST_DIELECTRIC_ACCEPTANCE: "5.2.3.4.6",
+    ids.TEST_PROTECTIVE_IMPEDANCE: "5.2.3.6",
 }
 
 
@@ -818,3 +822,75 @@ def test_each_voltage_test_body_projection_blocks_on_an_undeclared_node_shape() 
         project_dielectric_topology_selection(
             _topology_fragment(("paragraph", "bullet", "bullet")), IDENTITY
         )
+
+
+def _protective_impedance_matrix(*classifications: str) -> RawGrid:
+    return _matrix_grid({CLAUSE_OF[ids.TEST_PROTECTIVE_IMPEDANCE]: classifications})
+
+
+def test_the_protective_impedance_clause_projects_one_route_per_classification() -> None:
+    """Finding A9.4: the two tests are in 5.2.3.6, and neither is a dielectric test.
+
+    Each route takes the nodes that state it: the obligation and the method it is carried out
+    by belong to the type test, the third node is the routine test on its own. One procedure
+    carrying all three would put the current measurement's method on the row that verifies a
+    value.
+    """
+    rules, proposals = project_protective_impedance(
+        _fragment(ids.TEST_PROTECTIVE_IMPEDANCE, 3, kind="paragraph"),
+        IDENTITY,
+        _draft(_protective_impedance_matrix("type_test", "routine_test")),
+    )
+    type_test, routine_test = rules
+
+    assert (type_test.id, routine_test.id) == (
+        PROTECTIVE_IMPEDANCE_TYPE_ID,
+        PROTECTIVE_IMPEDANCE_ROUTINE_ID,
+    )
+    assert (type_test.classifications, routine_test.classifications) == (
+        ("type_test",),
+        ("routine_test",),
+    )
+    assert (type_test.test_kind, routine_test.test_kind) == (
+        "protective_impedance_current",
+        "protective_impedance_value",
+    )
+    assert len(type_test.procedure_steps) == 2
+    assert len(routine_test.procedure_steps) == 1
+    assert {proposal.semantic_id for proposal in proposals} == {
+        PROTECTIVE_IMPEDANCE_TYPE_ID,
+        PROTECTIVE_IMPEDANCE_ROUTINE_ID,
+    }
+
+
+def test_the_protective_impedance_routes_are_both_checked_against_the_matrix() -> None:
+    """A matrix marking one of the two is the document disagreeing with itself."""
+    with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_TEST_CLASSIFICATION"):
+        project_protective_impedance(
+            _fragment(ids.TEST_PROTECTIVE_IMPEDANCE, 3, kind="paragraph"),
+            IDENTITY,
+            _draft(_protective_impedance_matrix("type_test")),
+        )
+
+
+def test_the_protective_impedance_clause_blocks_on_a_node_count_it_does_not_declare() -> None:
+    with pytest.raises(ProcedureStructureError, match="AMBIGUOUS_PROCEDURE_STRUCTURE"):
+        project_protective_impedance(
+            _fragment(ids.TEST_PROTECTIVE_IMPEDANCE, 2, kind="paragraph"),
+            IDENTITY,
+            _draft(_protective_impedance_matrix("type_test", "routine_test")),
+        )
+
+
+def test_the_protective_impedance_clause_declares_three_paragraph_regions() -> None:
+    """The heading and the note are outside them: neither is an obligation or a step."""
+    spec = {item.semantic_id: item for item in PROCEDURE_CLAUSES}[ids.TEST_PROTECTIVE_IMPEDANCE]
+
+    assert spec.clause == CLAUSE_OF[ids.TEST_PROTECTIVE_IMPEDANCE]
+    assert len(spec.segments) == 3
+    assert {segment.expected_root_kind for segment in spec.segments} == {"paragraph"}
+    assert spec.projected_rule_ids == (
+        PROTECTIVE_IMPEDANCE_TYPE_ID,
+        PROTECTIVE_IMPEDANCE_ROUTINE_ID,
+    )
+    assert ids.TEST_PROTECTIVE_IMPEDANCE in IEC_RECIPE.clause_projectors

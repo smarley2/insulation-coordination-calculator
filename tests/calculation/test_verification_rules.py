@@ -16,6 +16,8 @@ from insulation_coordination.calculation.verification_rules import (
     PRECONDITIONING_ELECTRICAL_ROUTE,
     PRECONDITIONING_MATERIAL_ROUTE,
     PROTECTION_REQUIREMENT_OUTPUT,
+    PROTECTIVE_IMPEDANCE_ROUTINE_ROUTE,
+    PROTECTIVE_IMPEDANCE_TYPE_ROUTE,
     READ_SEMANTIC_IDS,
     RULES_READ_ELSEWHERE,
     SOLID_PARTIAL_DISCHARGE_CLASSIFICATION_ROUTE,
@@ -223,6 +225,39 @@ def test_the_partial_discharge_subclause_resolves_both_of_its_decisions(
     assert clause.classification.id == SOLID_PARTIAL_DISCHARGE_CLASSIFICATION_ROUTE
 
 
+def test_the_protective_impedance_subclause_resolves_both_of_its_procedures(
+    verification_package: RulePackage,
+) -> None:
+    """One route per classification, each declaring the quantity it measures."""
+    rules = read_verification_rules(verification_package).protective_impedance
+
+    assert rules.type_test.id == PROTECTIVE_IMPEDANCE_TYPE_ROUTE
+    assert rules.routine_test.id == PROTECTIVE_IMPEDANCE_ROUTINE_ROUTE
+    assert classifications_of(rules.type_test) == (TestClassification.TYPE,)
+    assert classifications_of(rules.routine_test) == (TestClassification.ROUTINE,)
+
+
+def test_a_protective_impedance_route_performing_the_other_test_is_refused(
+    verification_package: RulePackage,
+) -> None:
+    """Two routes that measure the same quantity are one reading of the subclause, not two."""
+    swapped = verification_package.model_copy(
+        update={
+            "procedures": tuple(
+                item.model_copy(update={"test_kind": "protective_impedance_current"})
+                if item.id == PROTECTIVE_IMPEDANCE_ROUTINE_ROUTE
+                else item
+                for item in verification_package.procedures
+            )
+        }
+    )
+
+    assert (
+        VerificationRuleBlockCode.UNEXPECTED_SHAPE,
+        PROTECTIVE_IMPEDANCE_ROUTINE_ROUTE,
+    ) in _blocks(swapped)
+
+
 def test_a_duration_rule_stating_no_duration_is_refused(
     verification_package: RulePackage,
 ) -> None:
@@ -327,18 +362,19 @@ def test_each_dielectric_route_labels_its_own_data_column(
                 )
 
 
-def test_the_read_identifiers_are_the_eighteen_the_issue_requires() -> None:
+def test_the_read_identifiers_are_the_nineteen_the_issue_requires() -> None:
     # Every identifier this adapter resolves is a required inventory item, and none of the
     # ones it deliberately leaves to another consumer is also claimed here. Thirteen from the
-    # issue's own list, the four the body of clause 5.2.3.4 was given, and the subclause that
-    # states when a solid insulation owes the partial-discharge test. That subclause projects
-    # two decisions and both are resolved, but they share one base identifier: the
-    # classification is a route beneath it, exactly as every other route here is.
+    # issue's own list, the four the body of clause 5.2.3.4 was given, the subclause that
+    # states when a solid insulation owes the partial-discharge test, and the subclause that
+    # states the two tests a protective impedance owes. Each of those last two projects two
+    # rules and both are resolved, but each pair shares one base identifier: the second is a
+    # route beneath it, exactly as every other route here is.
     from insulation_coordination.rules.importer.iec62477_2022.semantic_ids import (
         REQUIRED_SEMANTIC_IDS,
     )
 
-    assert len(READ_SEMANTIC_IDS) == 18
+    assert len(READ_SEMANTIC_IDS) == 19
     assert READ_SEMANTIC_IDS <= REQUIRED_SEMANTIC_IDS
     assert RULES_READ_ELSEWHERE <= REQUIRED_SEMANTIC_IDS
     assert not READ_SEMANTIC_IDS & RULES_READ_ELSEWHERE
@@ -468,6 +504,8 @@ def test_a_wrong_edition_package_carries_the_right_identifiers_and_still_blocks(
         ("procedures", ids.TEST_ACCESSIBLE_SURFACE_FOIL),
         ("procedures", PRECONDITIONING_ELECTRICAL_ROUTE),
         ("procedures", PRECONDITIONING_MATERIAL_ROUTE),
+        ("procedures", PROTECTIVE_IMPEDANCE_TYPE_ROUTE),
+        ("procedures", PROTECTIVE_IMPEDANCE_ROUTINE_ROUTE),
         ("procedures", f"{ids.TEST_IMPULSE_PROCEDURE}.insulation_reinforced"),
         ("tables", f"{ids.TEST_IMPULSE_SELECTION}.mains_circuits.dc"),
         ("tables", f"{ids.TEST_MAINS_DIELECTRIC_VALUES}.enhanced_type.ac"),

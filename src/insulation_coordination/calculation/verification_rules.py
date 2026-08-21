@@ -129,12 +129,21 @@ SOLID_PARTIAL_DISCHARGE_CLASSIFICATION_ROUTE = (
     f"{ids.TEST_SOLID_INSULATION_PARTIAL_DISCHARGE}.classification"
 )
 
+#: The subclause that states what a protective impedance owes projects one route per
+#: classification, because it states two obligations with two different subjects: a current
+#: measured against the limits its requirement subclause states, and the impedance's own
+#: value. A consumer schedules them as two rows and reads one route for each.
+PROTECTIVE_IMPEDANCE_TYPE_ROUTE = f"{ids.TEST_PROTECTIVE_IMPEDANCE}.type_test"
+PROTECTIVE_IMPEDANCE_ROUTINE_ROUTE = f"{ids.TEST_PROTECTIVE_IMPEDANCE}.routine_test"
+
 #: The identifiers this adapter resolves, as base identifiers rather than their routes: the
 #: thirteen issue #37 names as its rule dependency, the four the body of clause 5.2.3.4 was
 #: given once it turned out that nothing in the package stated the test its two value tables
-#: belong to, and the subclause that states when the partial-discharge test is owed.
+#: belong to, the subclause that states when the partial-discharge test is owed, and the
+#: subclause that states the two tests a protective impedance owes.
 READ_SEMANTIC_IDS: frozenset[str] = frozenset(
     {
+        ids.TEST_PROTECTIVE_IMPEDANCE,
         ids.TEST_DIELECTRIC_DISCONNECTION,
         ids.TEST_DIELECTRIC_TOPOLOGY_SELECTION,
         ids.TEST_DIELECTRIC_APPLICATION_DURATION,
@@ -295,6 +304,9 @@ _PRECONDITIONING_MATERIAL_TEST_KIND = "material_preconditioning"
 _FOIL_TEST_KIND = "accessible_surface_foil_placement"
 _DIELECTRIC_DISCONNECTION_TEST_KIND = "dielectric_test_disconnection"
 _DIELECTRIC_DURATION_TEST_KIND = "dielectric_voltage_application"
+#: Neither route is a withstand, and their test kinds say which quantity each one measures.
+_PROTECTIVE_IMPEDANCE_CURRENT_TEST_KIND = "protective_impedance_current"
+_PROTECTIVE_IMPEDANCE_VALUE_TEST_KIND = "protective_impedance_value"
 
 # The question each decision rule is resolved by: exactly the inputs this application supplies,
 # and the outputs it reads. The input set is compared for equality rather than containment
@@ -468,6 +480,19 @@ class SolidInsulationPartialDischargeRules(FrozenModel):
     classification: DecisionRule
 
 
+class ProtectiveImpedanceRules(FrozenModel):
+    """The two procedures the protective-impedance subclause projects, one per classification.
+
+    Resolved together because one subclause states both, and separate because they verify two
+    different things: the current the impedance passes, and the impedance's own value. A
+    schedule plans one row from each, so folding them into one procedure would put the
+    current measurement's method on the row that verifies a value.
+    """
+
+    type_test: ProcedureRule
+    routine_test: ProcedureRule
+
+
 class PreconditioningRules(FrozenModel):
     """The gate, and the two procedures it selects between."""
 
@@ -504,6 +529,10 @@ class VerificationRuleSet(FrozenModel):
     #: test-voltage row and answers whether a test voltage is declared, which is a different
     #: question; reading it as the test's applicability is what these two replace.
     solid_insulation_partial_discharge: SolidInsulationPartialDischargeRules
+    #: The type test and the routine test a protective impedance owes. Read for every plan
+    #: rather than only where a pair selects that means, because this seam resolves what the
+    #: package must be able to answer, not what one project happens to ask.
+    protective_impedance: ProtectiveImpedanceRules
     internal_spd_monitoring: ProcedureRule
     preconditioning: PreconditioningRules
     accessible_surface_foil: GatedProcedure
@@ -616,6 +645,7 @@ def _resolve(
             gate_outputs=_PARTIAL_DISCHARGE_GATE_OUTPUTS,
         ),
         "solid_insulation_partial_discharge": reader.solid_partial_discharge_rules(),
+        "protective_impedance": reader.protective_impedance_rules(),
         "internal_spd_monitoring": reader.procedure(
             ids.TEST_INTERNAL_SPD_MONITORING, test_kind=_INTERNAL_SPD_TEST_KIND
         ),
@@ -784,6 +814,24 @@ class _PackageReader:
         return SolidInsulationPartialDischargeRules(
             applicability=applicability, classification=classification
         )
+
+    def protective_impedance_rules(self) -> ProtectiveImpedanceRules | None:
+        """The subclause's two routes, resolved by the quantity each one measures.
+
+        No importer version is compared, for the reason the partial-discharge subclause's
+        routes compare none: a package built before this clause was located carries neither
+        route and blocks with both named, which is a fact rather than a claim.
+        """
+
+        type_test = self.procedure(
+            PROTECTIVE_IMPEDANCE_TYPE_ROUTE, test_kind=_PROTECTIVE_IMPEDANCE_CURRENT_TEST_KIND
+        )
+        routine_test = self.procedure(
+            PROTECTIVE_IMPEDANCE_ROUTINE_ROUTE, test_kind=_PROTECTIVE_IMPEDANCE_VALUE_TEST_KIND
+        )
+        if type_test is None or routine_test is None:
+            return None
+        return ProtectiveImpedanceRules(type_test=type_test, routine_test=routine_test)
 
     def preconditioning_rules(self) -> PreconditioningRules | None:
         applicability = self.decision(
@@ -981,6 +1029,8 @@ __all__ = [
     "PRECONDITIONING_REQUIRED_OUTPUT",
     "PRECONDITIONING_ROUTE_OUTPUT",
     "PROTECTION_REQUIREMENT_OUTPUT",
+    "PROTECTIVE_IMPEDANCE_ROUTINE_ROUTE",
+    "PROTECTIVE_IMPEDANCE_TYPE_ROUTE",
     "READ_SEMANTIC_IDS",
     "RULES_READ_ELSEWHERE",
     "SOLID_PARTIAL_DISCHARGE_CLASSIFICATION_ROUTE",
@@ -996,6 +1046,7 @@ __all__ = [
     "ImpulseProcedureRules",
     "ImpulseSelectionTables",
     "PreconditioningRules",
+    "ProtectiveImpedanceRules",
     "SolidInsulationPartialDischargeRules",
     "VerificationRuleBlock",
     "VerificationRuleBlockCode",

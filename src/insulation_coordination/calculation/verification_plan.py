@@ -40,7 +40,7 @@ input on the application it belongs to. There is no path from "nothing is known"
 *An obligation with no rule behind it is still stated.* Several subclauses oblige something the
 recipe projects no rule for: the enclosure condition and the impracticable fall-back the AC/DC
 test subclause states outside what its selection rule settles, the clearance and
-visual-inspection subclauses, the protective-impedance test, the floor a reduced requirement may
+visual-inspection subclauses, the floor a reduced requirement may
 not fall below. Each of those reached the schedule as nothing at all,
 which for a preparation instruction means a test performed wrongly rather than a test left
 unplanned. They are restated here, in this application's own words, against the identifier that
@@ -395,20 +395,6 @@ _PROTECTIVE_IMPEDANCE_TEST_STEP: Final = (
     "it."
 )
 
-#: The two tests a protective impedance owes in its own right. They are not dielectric tests and
-#: no row of this schedule can carry them: the application's test-kind vocabulary has no member
-#: for a current or an impedance measurement, and the package projects no procedure for the
-#: subclause that states them. Named here so the obligation is in the plan rather than lost in
-#: the phrase "a separately disclosed engineering item".
-_PROTECTIVE_IMPEDANCE_TESTS_OWED: Final = (
-    "4.4.5.5 with 5.2.3.6 owes two tests for a protective impedance beyond anything this "
-    "schedule plans: a type test showing that the current through it stays within the limits "
-    "4.4.5.5 states under normal operating conditions and under single fault, and a routine "
-    "test verifying its value. Neither is a dielectric test, no test kind in this application "
-    "names a current or an impedance measurement, and the active package projects no procedure "
-    "for the subclause that states them, so they are recorded here and not as schedule rows."
-)
-
 #: The mandatory disconnection the project cannot narrow. Which nets belong to a monitoring or a
 #: protection circuit, and which of those are built to sustain the test, is not something the
 #: topology model records - so this is reported rather than emitted against particular nets.
@@ -680,6 +666,11 @@ def _plan_pair(
         )
         monitoring = (_monitoring_application(subject, rules, revision, dependency, message),)
 
+    impedance = (
+        _protective_impedance_applications(pair, subject, rules, revision)
+        if implementation is ProtectionImplementation.PROTECTIVE_IMPEDANCE
+        else ()
+    )
     obligations = _clause_obligations(pair, effective, resolution, implementation, enhanced)
     unresolved.extend(obligations.pair_unresolved)
     warnings.extend(obligations.warnings)
@@ -765,6 +756,7 @@ def _plan_pair(
         ),
         *reduction,
         *monitoring,
+        *impedance,
     )
     return applications, PairVerificationAssessment(
         pair_id=pair.id,
@@ -868,7 +860,6 @@ def _clause_obligations(
         voltage.append(_SCREEN_CONNECTED_STEP)
     if implementation is ProtectionImplementation.PROTECTIVE_IMPEDANCE:
         voltage.append(_PROTECTIVE_IMPEDANCE_TEST_STEP)
-        pair_unresolved.append(_PROTECTIVE_IMPEDANCE_TESTS_OWED)
     if implementation is ProtectionImplementation.OTHER_REVIEWED_MEANS:
         pair_unresolved.append(_other_reviewed_means_reason(pair))
     if implementation is ProtectionImplementation.SUPPLEMENTARY_INSULATION:
@@ -1233,9 +1224,9 @@ def _impulse_application(
     if implementation is ProtectionImplementation.PROTECTIVE_IMPEDANCE:
         unresolved.append(
             f"Pair {pair.key} is protected by a protective impedance, which is not a dimensioned "
-            "spacing this test verifies. It owes two tests of its own, named on the pair rather "
-            "than on this row: 4.4.5.5 with 5.2.3.6 asks for a type test of the current through "
-            "it and a routine test of its value."
+            "spacing this test verifies. It owes two tests of its own, planned as their own rows "
+            "of this schedule rather than carried here: 5.2.3.6 asks for a type test of the "
+            "current through it and a routine test of its value."
         )
     classifications = () if procedure is None else classifications_of(procedure)
     return _application(
@@ -2319,6 +2310,82 @@ def _monitoring_application(
         unresolved=(owed,),
         source_rule_ids=rule_ids,
         trace_steps=(),
+    )
+
+
+# --- protective impedance ----------------------------------------------------------------
+
+
+def _impedance_component_unresolved(pair: PairCase) -> str:
+    """The subject neither of the two rows has. Stated on both, because both measure it."""
+
+    return (
+        f"Nothing in the project says which component provides pair {pair.key}'s protective "
+        "impedance. The selection records the means and not the part, so this row names the "
+        "pair it protects and cannot name what the instrument is connected to: identify the "
+        "component before the test."
+    )
+
+
+def _protective_impedance_applications(
+    pair: PairCase,
+    subject: TestSubject,
+    rules: VerificationRuleSet,
+    revision: str,
+) -> tuple[TestApplication, ...]:
+    """The type test and the routine test 5.2.3.6 owes wherever that means was selected.
+
+    Two rows rather than one, because the subclause states two obligations measuring two
+    different quantities and the package projects a route for each. Each row reads its steps,
+    its classification and every other declared field from its own route, exactly as the
+    impulse and monitoring rows read theirs - this module states none of it.
+
+    The rows stand between the pair's own electrodes, as the monitoring row does and for the
+    same reason: that is not where either quantity is measured, but it is what ties the tests
+    to the protection they underwrite, and it keeps one impedance's tests to one pair of rows.
+    The pair's own preparation steps are deliberately not carried - those prepare an insulation
+    for a withstand test, and neither of these measures a withstand.
+
+    Both rows are engineering inputs whatever the package states, because the project records
+    neither the component nor a value to verify. That is the honest reading: the schedule now
+    plans the tests instead of naming them, and still says what has to arrive before either
+    can be performed.
+    """
+
+    component = _impedance_component_unresolved(pair)
+
+    def row(procedure: ProcedureRule, unresolved: str) -> TestApplication:
+        return _application(
+            subject=subject,
+            test_kind=TestKind.PROTECTIVE_IMPEDANCE,
+            classifications=classifications_of(procedure),
+            revision=revision,
+            voltage=None,
+            waveform=procedure.waveform,
+            polarity=procedure.polarity,
+            duration=procedure.duration,
+            repetitions=procedure.repetitions,
+            preparation_steps=tuple(step.text for step in procedure.procedure_steps),
+            unresolved=(component, unresolved),
+            source_rule_ids=(procedure.id,),
+            trace_steps=(),
+        )
+
+    return (
+        row(
+            rules.protective_impedance.type_test,
+            f"5.2.3.6 compares the current through pair {pair.key}'s protective impedance "
+            "against the limits 4.4.5.5 states, under normal operating conditions and under "
+            "single fault conditions. The project records no such measurement, and 4.4.5.5's "
+            "limits are not among the identifiers the active package carries, so this row "
+            "plans the test without stating what it is judged against.",
+        ),
+        row(
+            rules.protective_impedance.routine_test,
+            f"5.2.3.6 verifies the value of pair {pair.key}'s protective impedance as a "
+            "routine test, and the project records no declared value for the verification to "
+            "be made against.",
+        ),
     )
 
 

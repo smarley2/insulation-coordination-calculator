@@ -48,7 +48,13 @@ RULE_SCHEMA_VERSION = 4
 #: identifier -- the subclause stating when a solid insulation owes the partial-discharge test and
 #: how it is classified -- so a package built before it is incomplete rather than merely older, and
 #: the three clause regions its two rules rest on are regions the older importer never extracted.
-IEC_IMPORTER_VERSION = "iec-pdf-13"
+#: ``iec-pdf-14`` is two slices landing together, deliberately: both grow the required
+#: inventory, and the maintainer re-extracts once for the pair rather than once each. Issue
+#: #37 adds the subclause stating the two tests a protective impedance owes, and issue #133
+#: adds the two IEC 60664 boundary clauses -- Part 4's own scope, and the Annex F advisory
+#: whose identifier the engine has cited since before any rule carried it. Three identifiers,
+#: and five clause regions no older importer extracted.
+IEC_IMPORTER_VERSION = "iec-pdf-14"
 MAX_IDENTIFIER_LENGTH = 160
 MAX_REFERENCE_TEXT_LENGTH = 500
 MAX_NOTES_LENGTH = 2_000
