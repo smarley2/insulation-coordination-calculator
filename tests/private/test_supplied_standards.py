@@ -11,7 +11,10 @@ import pytest
 
 from insulation_coordination.calculation.clearance import calculate_clearance_candidates
 from insulation_coordination.calculation.engine import calculate_pair
-from insulation_coordination.calculation.high_frequency import assess_part4_clearance
+from insulation_coordination.calculation.high_frequency import (
+    PART4_FREQUENCY_THRESHOLD_HZ,
+    assess_part4_clearance,
+)
 from insulation_coordination.domain.enums import (
     ConstructionType,
     FieldCondition,
@@ -26,6 +29,7 @@ from insulation_coordination.domain.project import (
 from insulation_coordination.domain.rules import RulePackage
 from insulation_coordination.project.resolver import resolve_effective_case
 from insulation_coordination.rules.archive import load_rule_package, write_rule_package
+from insulation_coordination.rules.evaluator import evaluate_decision
 from insulation_coordination.rules.importer.approval import approve_draft, is_fully_resolved
 from insulation_coordination.rules.importer.extract import (
     _REQUIRED_RECIPES,
@@ -35,6 +39,10 @@ from insulation_coordination.rules.importer.extract import (
 from insulation_coordination.rules.importer.identify import (
     StandardIdentificationError,
     identify_standard,
+)
+from insulation_coordination.rules.importer.recipes.iec60664_clauses import (
+    PART4_SCOPE_FREQUENCY_APPLICABILITY,
+    PARTIAL_DISCHARGE_ADVICE,
 )
 from insulation_coordination.rules.importer.review import draft_review_digest
 from insulation_coordination.rules.validation import validate_rule_package
@@ -287,3 +295,56 @@ def test_supplied_standards_approve_and_calculate_pcb_annex_gh(
         and step.formula_source_reference.standard == "IEC 60664-4"
         for step in table1.iterations[-1].steps
     )
+
+
+def test_the_two_boundary_clauses_are_located_on_the_licensed_pages(
+    extracted_draft,
+    licensed_package: RulePackage,
+) -> None:
+    """Issue #133's two locators reach the clauses that state the boundaries, not their neighbours.
+
+    A bounding box that drifted onto an adjoining region would still extract *something*, and
+    the projections only refuse a region that states the wrong *number* of boundaries. So the
+    frequency gate is checked against the figure a maintainer already reviewed into the tree as
+    ``PART4_FREQUENCY_THRESHOLD_HZ``: the rule agrees with it exactly, which is what makes
+    removing that constant a no-op rather than a change of behaviour. The advisory boundary has
+    no reviewed twin in the tree to compare against, so what is asserted there is that the
+    clause yielded one and that the rule settles both answers around it.
+
+    No licensed figure is written down here: every quantity is read back out of the package.
+    """
+
+    fragments = {fragment.id: fragment for fragment in extracted_draft.raw_clause_fragments}
+    decisions = {rule.id: rule for rule in licensed_package.decisions}
+
+    def answer(rule_id: str, name: str, value: Decimal) -> bool:
+        result = evaluate_decision(decisions[rule_id], {name: value})
+        assert result.status == "matched", (rule_id, name)
+        (only,) = result.values
+        assert only.boolean is not None
+        return only.boolean
+
+    for semantic_id in (PART4_SCOPE_FREQUENCY_APPLICABILITY, PARTIAL_DISCHARGE_ADVICE):
+        assert [node.kind for node in fragments[f"raw-{semantic_id}"].nodes] == ["paragraph"]
+        assert semantic_id in decisions
+
+    assert (
+        answer(PART4_SCOPE_FREQUENCY_APPLICABILITY, "frequency_hz", PART4_FREQUENCY_THRESHOLD_HZ)
+        is False
+    )
+    assert (
+        answer(
+            PART4_SCOPE_FREQUENCY_APPLICABILITY, "frequency_hz", PART4_FREQUENCY_THRESHOLD_HZ + 1
+        )
+        is True
+    )
+
+    boundary = next(
+        matcher.minimum
+        for row in decisions[PARTIAL_DISCHARGE_ADVICE].rows
+        for matcher in row.matchers
+        if matcher.minimum is not None
+    )
+    assert boundary > 0
+    assert answer(PARTIAL_DISCHARGE_ADVICE, "steady_state_peak_v", boundary) is True
+    assert answer(PARTIAL_DISCHARGE_ADVICE, "steady_state_peak_v", boundary - 1) is False
